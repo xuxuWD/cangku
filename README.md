@@ -36,6 +36,17 @@ docker compose up -d
 
 生产启动必须设置 `WORKBENCH_ENV=production`、`WORKBENCH_STORAGE_BACKEND=postgres`、可访问的 PostgreSQL 地址和长度不少于 32 位的 `WORKBENCH_AUTH_SECRET`。缺少任一项时服务会拒绝启动，不会悄悄回退到内存数据。
 
+## Worker 启动
+
+生产环境使用独立进程运行 Celery Worker 和定时调度器。启动前必须完成 PostgreSQL、Redis 和迁移配置：
+
+```powershell
+celery -A app.worker:celery_app worker --loglevel=INFO
+celery -A app.worker:celery_app beat --loglevel=INFO
+```
+
+Worker 只在 PostgreSQL 模式下自动接入 Outbox 发布器；开发环境不会连接外部数据库或 Redis。真实 Worker、消息堆积、死信通知和 staging 验收仍属于交付门禁。
+
 ## 第一阶段 API 行为
 
 - `GET /api/v1/health`：服务健康检查。

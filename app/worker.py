@@ -21,6 +21,19 @@ def configure_outbox_publisher(publisher: OutboxPublisherProtocol | None) -> Non
     _outbox_publisher = publisher
 
 
+def configure_runtime(*, settings=None, connection=None, redis_client=None) -> OutboxPublisherProtocol:
+    """Wire a production Outbox publisher into this Celery process."""
+    if settings is None:
+        settings = get_settings()
+    if settings.storage_backend != "postgres":
+        raise ValueError("Worker 必须使用 PostgreSQL")
+    from .bootstrap import build_outbox_publisher
+
+    publisher = build_outbox_publisher(settings, connection=connection, redis_client=redis_client)
+    configure_outbox_publisher(publisher)
+    return publisher
+
+
 def create_celery_app() -> Celery:
     settings = get_settings()
     celery = Celery("company_workbench", broker=settings.redis_url, backend=settings.redis_url)
@@ -43,6 +56,9 @@ def create_celery_app() -> Celery:
 
 
 celery_app = create_celery_app()
+
+if get_settings().env != "development":
+    configure_runtime()
 
 
 @celery_app.task(bind=True, autoretry_for=(TimeoutError,), retry_backoff=True, max_retries=3)

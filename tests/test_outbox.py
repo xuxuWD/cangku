@@ -2,7 +2,8 @@ from datetime import UTC, datetime
 
 from app.events import InMemoryEventBus
 from app.outbox import OutboxPublisher
-from app.worker import celery_app, configure_outbox_publisher, publish_outbox
+from app.worker import celery_app, configure_outbox_publisher, publish_outbox, configure_runtime
+from app.settings import Settings
 
 
 class Cursor:
@@ -111,3 +112,31 @@ def test_publish_outbox_delegates_to_configured_publisher() -> None:
         assert publish_outbox.run() == 3
     finally:
         configure_outbox_publisher(None)
+
+
+def test_worker_runtime_requires_postgres_and_wires_injected_clients() -> None:
+    class Connection:
+        pass
+
+    class Redis:
+        pass
+
+    publisher = configure_runtime(
+        settings=Settings(
+            env="development",
+            storage_backend="postgres",
+            database_url="postgresql://localhost/workbench",
+        ),
+        connection=Connection(),
+        redis_client=Redis(),
+    )
+    try:
+        assert publisher is not None
+        assert publisher.event_bus.client.__class__.__name__ == "Redis"
+    finally:
+        configure_outbox_publisher(None)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="Worker 必须使用 PostgreSQL"):
+        configure_runtime(settings=Settings(env="development", storage_backend="memory"))
