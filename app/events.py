@@ -77,6 +77,12 @@ class InMemoryEventBus:
             events = [event for event in self._events if event.sequence > after_sequence]
             return events if limit is None else events[:limit]
 
+    def read_recent(self, *, limit: int = 50) -> list[EventEnvelope]:
+        with self._lock:
+            if limit <= 0:
+                return []
+            return self._events[-limit:]
+
 
 class RedisStreamEventBus:
     """Redis Streams adapter; publishing uses XADD and consumers can replay by sequence."""
@@ -87,6 +93,12 @@ class RedisStreamEventBus:
 
     def publish(self, event: EventEnvelope) -> str:
         return str(self.client.xadd(self.stream, {"event": event.to_json()}, id="*"))
+
+    def read_recent(self, *, limit: int = 50) -> list[EventEnvelope]:
+        if limit <= 0:
+            return []
+        rows = self.client.xrevrange(self.stream, max="+", min="-", count=limit)
+        return [event for _message_id, event in reversed(self._decode_messages([(self.stream, rows)]))]
 
     def ensure_group(self, group: str, *, start_id: str = "0-0") -> None:
         try:

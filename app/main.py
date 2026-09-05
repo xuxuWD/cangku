@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from .bootstrap import build_dead_letter_store, build_event_bus, build_task_repository
@@ -90,6 +90,16 @@ class DeadLetterView(BaseModel):
     replayed_by: str | None
 
 
+class CollaborationDynamicView(BaseModel):
+    event_id: str
+    aggregate_id: str
+    action: str
+    title: str
+    employee_key: str
+    status: TaskStatus
+    occurred_at: datetime
+
+
 def current_user(
     tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
     user_id: str | None = Header(default=None, alias="X-User-Id"),
@@ -160,6 +170,33 @@ def replay_dead_letter(event_id: str, context: UserContext = Depends(current_use
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="死信事件不存在") from exc
     return {"status": result, "event_id": event_id}
+
+
+@app.get("/api/v1/collaboration-dynamics", response_model=list[CollaborationDynamicView])
+def collaboration_dynamics(
+    context: UserContext = Depends(current_user),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[CollaborationDynamicView]:
+    dynamics: list[CollaborationDynamicView] = []
+    for event in event_bus.read_recent(limit=limit):
+        if event.aggregate_type != "task":
+            continue
+        try:
+            task = store.get(context, event.aggregate_id)
+        except TaskNotFound:
+            continue
+        dynamics.append(
+            CollaborationDynamicView(
+                event_id=event.event_id,
+                aggregate_id=event.aggregate_id,
+                action=event.action,
+                title=task.title,
+                employee_key=task.employee_key,
+                status=task.status,
+                occurred_at=event.occurred_at,
+            )
+        )
+    return dynamics
 
 
 @app.post("/api/v1/tasks", response_model=TaskView, status_code=status.HTTP_201_CREATED)

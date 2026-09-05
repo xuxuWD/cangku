@@ -28,6 +28,7 @@ def test_event_bus_preserves_order_and_supports_replay() -> None:
 
     assert [event.event_id for event in first] == ["event-1", "event-2"]
     assert [event.event_id for event in replay] == ["event-1", "event-2"]
+    assert [event.event_id for event in bus.read_recent(limit=1)] == ["event-2"]
 
 
 def test_consumer_processes_each_dedupe_key_once() -> None:

@@ -265,3 +265,45 @@ def test_employee_cannot_list_dead_letters() -> None:
     response = client.get("/api/v1/dead-letters", headers=headers())
 
     assert response.status_code == 403
+
+
+def test_collaboration_dynamics_are_filtered_by_task_access() -> None:
+    from app import main
+
+    own = client.post(
+        "/api/v1/tasks",
+        headers=headers(user_id="dynamic-owner"),
+        json={
+            "title": "自己的动态",
+            "employee_key": "content-operator",
+            "risk_level": "low",
+            "budget": 1,
+            "idempotency_key": "dynamic-own-001",
+        },
+    )
+    other = client.post(
+        "/api/v1/tasks",
+        headers=headers(user_id="dynamic-other"),
+        json={
+            "title": "他人的动态",
+            "employee_key": "content-operator",
+            "risk_level": "low",
+            "budget": 1,
+            "idempotency_key": "dynamic-other-001",
+        },
+    )
+
+    employee_view = client.get(
+        "/api/v1/collaboration-dynamics",
+        headers=headers(user_id="dynamic-owner"),
+    )
+    assert employee_view.status_code == 200
+    assert {item["aggregate_id"] for item in employee_view.json()} >= {own.json()["id"]}
+    assert other.json()["id"] not in {item["aggregate_id"] for item in employee_view.json()}
+
+    ceo_view = client.get(
+        "/api/v1/collaboration-dynamics",
+        headers=headers(role="ceo", user_id="dynamic-ceo"),
+    )
+    assert ceo_view.status_code == 200
+    assert other.json()["id"] in {item["aggregate_id"] for item in ceo_view.json()}
