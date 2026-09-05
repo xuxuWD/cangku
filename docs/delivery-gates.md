@@ -9,7 +9,8 @@
 - [x] 分层记忆和受控成长提案
 - [x] 基础依赖、环境示例和 Docker Compose
 - [x] 契约测试和 Python 编译检查
-- [ ] PostgreSQL 生产仓储、唯一约束和数据库迁移（staging 前置）
+- [x] PostgreSQL 任务 CRUD、唯一约束、原子审批和迁移 runner 契约
+- [ ] PostgreSQL 连接池、审计完整读取和 staging 数据库实测
 - [ ] Redis/Celery 异步运行与可靠事件投递
 - [ ] 统一登录、设备绑定和生产密钥管理
 - [ ] Electron 桌面端和 PWA 伴侣端

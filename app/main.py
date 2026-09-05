@@ -6,6 +6,7 @@ import json
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from .bootstrap import build_task_repository
 from .domain import (
     AuditEvent,
     IdempotencyConflict,
@@ -15,7 +16,6 @@ from .domain import (
     TaskNotFound,
     TaskStatus,
     TaskStateConflict,
-    TaskStore,
     UserContext,
     ensure_can_approve,
     ensure_can_create,
@@ -25,9 +25,9 @@ from .settings import get_settings, validate_runtime_settings
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
-store = TaskStore()
 settings = get_settings()
 validate_runtime_settings(settings)
+store = build_task_repository(settings)
 
 
 class TaskCreate(BaseModel):

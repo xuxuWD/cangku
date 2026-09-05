@@ -34,4 +34,4 @@ CREATE TABLE IF NOT EXISTS workbench_audit_events (
 -- The affected-row count is the source of truth for 200 vs 409.
 -- UPDATE workbench_tasks
 -- SET status = 'queued', updated_at = now()
--- WHERE id = $1 AND tenant_id = $2 AND status = 'pending_approval';
+-- WHERE id = %s AND tenant_id = %s AND status = 'pending_approval';
