@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+from typing import Protocol
+
 from celery import Celery
 
 from .settings import get_settings
+
+
+class OutboxPublisherProtocol(Protocol):
+    def publish_pending(self, *, limit: int = 100) -> int:
+        ...
+
+
+_outbox_publisher: OutboxPublisherProtocol | None = None
+
+
+def configure_outbox_publisher(publisher: OutboxPublisherProtocol | None) -> None:
+    """Inject the process-local publisher during worker startup or tests."""
+    global _outbox_publisher
+    _outbox_publisher = publisher
 
 
 def create_celery_app() -> Celery:
@@ -38,5 +54,8 @@ def dispatch_event(self, event_json: str) -> str:
 
 @celery_app.task
 def publish_outbox() -> int:
-    """Periodic hook; production wiring injects the pool and Redis stream bus."""
-    return 0
+    """Publish pending rows when the worker has been wired to a publisher."""
+    publisher = _outbox_publisher
+    if publisher is None:
+        return 0
+    return publisher.publish_pending(limit=100)

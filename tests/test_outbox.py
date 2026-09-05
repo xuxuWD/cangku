@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from app.events import InMemoryEventBus
 from app.outbox import OutboxPublisher
-from app.worker import celery_app
+from app.worker import celery_app, configure_outbox_publisher, publish_outbox
 
 
 class Cursor:
@@ -92,3 +92,22 @@ def test_outbox_publisher_does_not_mark_a_failed_publish() -> None:
 def test_celery_worker_has_periodic_outbox_schedule_and_late_ack() -> None:
     assert celery_app.conf.task_acks_late is True
     assert "outbox-publisher" in celery_app.conf.beat_schedule
+
+
+def test_publish_outbox_is_safe_when_publisher_is_not_configured() -> None:
+    configure_outbox_publisher(None)
+
+    assert publish_outbox.run() == 0
+
+
+def test_publish_outbox_delegates_to_configured_publisher() -> None:
+    class Publisher:
+        def publish_pending(self, *, limit: int = 100) -> int:
+            assert limit == 100
+            return 3
+
+    configure_outbox_publisher(Publisher())
+    try:
+        assert publish_outbox.run() == 3
+    finally:
+        configure_outbox_publisher(None)
