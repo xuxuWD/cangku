@@ -21,12 +21,13 @@ from .domain import (
     ensure_can_create,
 )
 from .auth import verify_access_token
-from .settings import get_settings
+from .settings import get_settings, validate_runtime_settings
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
 store = TaskStore()
 settings = get_settings()
+validate_runtime_settings(settings)
 
 
 class TaskCreate(BaseModel):
