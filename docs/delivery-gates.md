@@ -12,7 +12,8 @@
 - [x] PostgreSQL 任务 CRUD、唯一约束、原子审批和迁移 runner 契约
 - [x] PostgreSQL 连接池适配、审计读取和审批事务契约
 - [ ] staging 数据库实测、迁移回滚演练和真实并发压测
-- [ ] Redis/Celery 异步运行与可靠事件投递
+- [x] Redis Streams/Celery 事件总线、Outbox 事务写入与幂等消费者骨架
+- [ ] Celery Worker 实跑、Outbox 发布器、死信告警和 staging 验收
 - [ ] 统一登录、设备绑定和生产密钥管理
 - [ ] Electron 桌面端和 PWA 伴侣端
 - [ ] GEO 版本化适配器

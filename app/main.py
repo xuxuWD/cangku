@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from .bootstrap import build_task_repository
+from .events import EventEnvelope, InMemoryEventBus
 from .domain import (
     AuditEvent,
     IdempotencyConflict,
@@ -28,6 +30,24 @@ app = FastAPI(title="公司数字员工工作台", version="0.1.0")
 settings = get_settings()
 validate_runtime_settings(settings)
 store = build_task_repository(settings)
+event_bus = InMemoryEventBus()
+
+
+def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
+    event_bus.publish(
+        EventEnvelope(
+            event_id=f"{task.id}:{action}:1",
+            tenant_id=task.tenant_id,
+            aggregate_type="task",
+            aggregate_id=task.id,
+            version=1,
+            sequence=len(event_bus.read("system", after_sequence=0)) + 1,
+            dedupe_key=f"{task.id}:{action}:1",
+            action=action,
+            occurred_at=datetime.now(UTC),
+            payload={"status": task.status.value, "actor_id": actor.user_id},
+        )
+    )
 
 
 class TaskCreate(BaseModel):
@@ -131,6 +151,7 @@ def create_task(
     if not created:
         response.status_code = status.HTTP_200_OK
         return to_view(stored)
+    publish_task_event(stored, "task.created", context)
     return to_view(stored)
 
 
@@ -153,4 +174,5 @@ def approve_task(task_id: str, context: UserContext = Depends(current_user)) -> 
         raise HTTPException(status_code=404, detail="任务不存在") from exc
     except TaskStateConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    publish_task_event(task, "task.approved", context)
     return to_view(task)

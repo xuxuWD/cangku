@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager, nullcontext
 from typing import Protocol
 
@@ -55,6 +56,7 @@ class PostgresTaskRepository:
                         """,
                         (task_id, context.tenant_id, "task.approved", context.user_id, context.role),
                     )
+                    self._enqueue_event(cursor, task_id, context.tenant_id, "task.approved", context.user_id, TaskStatus.QUEUED, 2)
         return self.get(context, task_id)
 
     def create(self, context: UserContext, task: Task) -> tuple[Task, bool]:
@@ -102,6 +104,7 @@ class PostgresTaskRepository:
                         """,
                         (task.id, context.tenant_id, "task.created", context.user_id, context.role),
                     )
+                    self._enqueue_event(cursor, task.id, context.tenant_id, "task.created", context.user_id, task.status, 1)
                     created = self._row_to_task(row)
                     created.audits.append(AuditEvent(action="task.created", actor_id=context.user_id, actor_role=context.role))
                     return created, True
@@ -143,4 +146,27 @@ class PostgresTaskRepository:
             employee_key=str(row[4]), title=str(row[5]), risk_level=RiskLevel(str(row[6])),
             budget=float(row[7]), idempotency_key=str(row[8]), request_fingerprint=str(row[9]),
             status=TaskStatus(str(row[10])), audits=[],
+        )
+
+    @staticmethod
+    def _enqueue_event(cursor, task_id: str, tenant_id: str, action: str, actor_id: str, status: TaskStatus, sequence: int) -> None:
+        cursor.execute(
+            """
+            INSERT INTO workbench_event_outbox
+                (event_id, tenant_id, aggregate_type, aggregate_id, version, sequence,
+                 dedupe_key, action, payload)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT (dedupe_key) DO NOTHING
+            """,
+            (
+                f"{task_id}:{action}:1",
+                tenant_id,
+                "task",
+                task_id,
+                1,
+                sequence,
+                f"{task_id}:{action}:1",
+                action,
+                json.dumps({"status": status.value, "actor_id": actor_id}, ensure_ascii=False),
+            ),
         )

@@ -43,6 +43,8 @@ docker compose up -d
 - `GET /api/v1/tasks/{task_id}`：在当前租户范围查看任务。
 - `POST /api/v1/tasks/{task_id}/approve`：由 CEO 或超级管理员审批高风险任务。
 
+任务创建和审批会产生统一事件，供多端同步任务状态。开发环境使用内存事件总线；生产环境使用 PostgreSQL Outbox、Redis Streams 和 Celery，失败事件经过有限重试后进入死信队列。
+
 任务创建支持幂等键。重复提交不会创建第二个任务，也不会重复写入审计事件。所有高风险动作都必须经过服务端权限策略，前端隐藏按钮不属于安全边界。
 
 ## 安全边界

@@ -109,6 +109,7 @@ def test_postgres_create_runs_in_transaction_and_writes_audit() -> None:
     assert created.id == "task-1"
     assert connection.transaction_count == 1
     assert any("INSERT INTO workbench_audit_events" in sql for sql, _ in connection.cursor_instance.statements)
+    assert any("INSERT INTO workbench_event_outbox" in sql for sql, _ in connection.cursor_instance.statements)
 
 
 def test_postgres_approval_writes_audit_and_hydrates_history() -> None:
@@ -122,6 +123,7 @@ def test_postgres_approval_writes_audit_and_hydrates_history() -> None:
     assert approved.status == TaskStatus.QUEUED
     assert [event.action for event in approved.audits] == ["task.created", "task.approved"]
     assert any("INSERT INTO workbench_audit_events" in sql and "task.approved" in params for sql, params in connection.cursor_instance.statements)
+    assert any("INSERT INTO workbench_event_outbox" in sql and "task.approved" in params for sql, params in connection.cursor_instance.statements)
 
 
 def test_postgres_approval_missing_task_is_not_found() -> None:

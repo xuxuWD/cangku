@@ -70,6 +70,39 @@ def test_high_risk_task_requires_approval_and_ceo_can_approve() -> None:
     assert approve.json()["audit_count"] == 2
 
 
+def test_task_lifecycle_publishes_events_once() -> None:
+    from app import main
+
+    create = client.post(
+        "/api/v1/tasks",
+        headers=headers(),
+        json={
+            "title": "事件任务",
+            "employee_key": "content-operator",
+            "risk_level": "high",
+            "budget": 2,
+            "idempotency_key": "events-001",
+        },
+    )
+    task_id = create.json()["id"]
+    client.post(
+        "/api/v1/tasks",
+        headers=headers(),
+        json={
+            "title": "事件任务",
+            "employee_key": "content-operator",
+            "risk_level": "high",
+            "budget": 2,
+            "idempotency_key": "events-001",
+        },
+    )
+    client.post(f"/api/v1/tasks/{task_id}/approve", headers=headers(role="ceo", user_id="ceo-events"))
+
+    events = main.event_bus.read("test", after_sequence=0)
+    matching = [event for event in events if event.aggregate_id == task_id]
+    assert [event.action for event in matching] == ["task.created", "task.approved"]
+
+
 def test_same_idempotency_key_returns_same_task_without_duplicate_audit() -> None:
     payload = {
         "title": "生成日报摘要",
