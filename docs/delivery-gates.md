@@ -19,6 +19,7 @@
 - [ ] Celery Worker 实跑、Outbox 生产连接池、死信通知渠道和 staging 验收
 - [ ] 统一登录、设备绑定和生产密钥管理
 - [ ] Electron 桌面端和 PWA 伴侣端
+- [ ] 协同动态表现层（先静态状态列表，后续再评估 Pixi/Spine 动画）
 - [ ] GEO 版本化适配器
 - [ ] 真实 staging 与真实平台账号验收
 
