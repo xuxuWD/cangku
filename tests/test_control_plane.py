@@ -234,3 +234,34 @@ def test_concurrent_approval_allows_only_one_state_transition() -> None:
         results = list(pool.map(lambda _: approve(), range(2)))
 
     assert sorted(results) == [200, 409]
+
+
+def test_super_admin_can_list_and_replay_dead_letter() -> None:
+    from app import main
+    from app.dead_letters import DeadLetterStore
+    from app.events import EventEnvelope
+    from datetime import UTC, datetime
+
+    main.dead_letter_store = DeadLetterStore(main.event_bus)
+    main.dead_letter_store.record(
+        EventEnvelope(
+            event_id="dead-1", tenant_id="t-1", aggregate_type="task", aggregate_id="task-1",
+            version=1, sequence=999, dedupe_key="task-1:failed:1", action="task.failed",
+            occurred_at=datetime.now(UTC), payload={"reason": "timeout"},
+        ),
+        "timeout",
+    )
+
+    listed = client.get("/api/v1/dead-letters", headers=headers(role="super_admin", user_id="admin"))
+    assert listed.status_code == 200
+    assert listed.json()[0]["event_id"] == "dead-1"
+
+    replay = client.post("/api/v1/dead-letters/dead-1/replay", headers=headers(role="super_admin", user_id="admin"))
+    assert replay.status_code == 200
+    assert replay.json() == {"status": "replayed", "event_id": "dead-1"}
+
+
+def test_employee_cannot_list_dead_letters() -> None:
+    response = client.get("/api/v1/dead-letters", headers=headers())
+
+    assert response.status_code == 403

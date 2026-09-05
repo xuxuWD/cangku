@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from .bootstrap import build_task_repository
+from .dead_letters import DeadLetterStore
 from .events import EventEnvelope, InMemoryEventBus
 from .domain import (
     AuditEvent,
@@ -31,6 +32,7 @@ settings = get_settings()
 validate_runtime_settings(settings)
 store = build_task_repository(settings)
 event_bus = InMemoryEventBus()
+dead_letter_store = DeadLetterStore(event_bus)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
@@ -75,6 +77,18 @@ class TaskView(BaseModel):
     audit_count: int
 
 
+class DeadLetterView(BaseModel):
+    event_id: str
+    tenant_id: str
+    action: str
+    aggregate_id: str
+    attempts: int
+    error: str
+    recorded_at: datetime
+    replayed_at: datetime | None
+    replayed_by: str | None
+
+
 def current_user(
     tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
     user_id: str | None = Header(default=None, alias="X-User-Id"),
@@ -112,6 +126,39 @@ def to_view(task: Task) -> TaskView:
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "company-workbench"}
+
+
+@app.get("/api/v1/dead-letters", response_model=list[DeadLetterView])
+def list_dead_letters(context: UserContext = Depends(current_user)) -> list[DeadLetterView]:
+    try:
+        items = dead_letter_store.list(context)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return [
+        DeadLetterView(
+            event_id=item.event_id,
+            tenant_id=item.event.tenant_id,
+            action=item.event.action,
+            aggregate_id=item.event.aggregate_id,
+            attempts=item.attempts,
+            error=item.error,
+            recorded_at=item.recorded_at,
+            replayed_at=item.replayed_at,
+            replayed_by=item.replayed_by,
+        )
+        for item in items
+    ]
+
+
+@app.post("/api/v1/dead-letters/{event_id}/replay")
+def replay_dead_letter(event_id: str, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    try:
+        result = dead_letter_store.replay(context, event_id)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="死信事件不存在") from exc
+    return {"status": result, "event_id": event_id}
 
 
 @app.post("/api/v1/tasks", response_model=TaskView, status_code=status.HTTP_201_CREATED)
