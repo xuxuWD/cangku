@@ -339,3 +339,14 @@ def test_non_super_admin_cannot_configure_knowledge_access() -> None:
     )
 
     assert response.status_code == 403
+
+
+def test_super_admin_can_read_knowledge_access_audits() -> None:
+    response = client.get(
+        "/api/v1/knowledge-access/audits?limit=10",
+        headers=headers(role="super_admin", user_id="admin-knowledge"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["binding_key"] == "content-operator"
+    assert response.json()[0]["actor_id"] == "admin-knowledge"

@@ -240,6 +240,29 @@ def get_agent_knowledge_access(agent_key: str, context: UserContext = Depends(cu
     return _knowledge_access_view("agent", agent_key, knowledge_access_registry.resolve(context, agent_key, agent_key))
 
 
+@app.get("/api/v1/knowledge-access/audits")
+def list_knowledge_access_audits(
+    context: UserContext = Depends(current_user),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[dict[str, object]]:
+    try:
+        _ensure_knowledge_admin(context)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return [
+        {
+            "tenant_id": audit.tenant_id,
+            "binding_type": audit.binding_type,
+            "binding_key": audit.binding_key,
+            "old_knowledge_base_ids": audit.old_knowledge_base_ids,
+            "new_knowledge_base_ids": audit.new_knowledge_base_ids,
+            "actor_id": audit.actor_id,
+            "occurred_at": audit.occurred_at,
+        }
+        for audit in knowledge_access_registry.list_audits(context, limit=limit)
+    ]
+
+
 @app.get("/api/v1/collaboration-dynamics", response_model=list[CollaborationDynamicView])
 def collaboration_dynamics(
     context: UserContext = Depends(current_user),

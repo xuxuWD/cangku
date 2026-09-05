@@ -28,6 +28,19 @@ def test_scope_changes_are_tenant_scoped_and_default_to_empty() -> None:
         registry.bind_role(UserContext("t-1", "lead", "department_lead"), "content-operator", {"kb-other"})
 
 
+def test_memory_registry_exposes_audit_history_only_to_super_admin() -> None:
+    registry = KnowledgeAccessRegistry()
+    admin = UserContext("t-1", "admin", "super_admin")
+    registry.bind_role(admin, "content-operator", {"kb-content"})
+
+    audits = registry.list_audits(admin)
+    assert audits[0].binding_key == "content-operator"
+    assert audits[0].new_knowledge_base_ids == ["kb-content"]
+
+    with pytest.raises(PolicyError):
+        registry.list_audits(UserContext("t-1", "u-1", "employee"))
+
+
 class Cursor:
     def __init__(self, rows):
         self.rows = list(rows)
