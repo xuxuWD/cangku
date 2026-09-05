@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bootstrap import build_dead_letter_store, build_task_repository
-from .events import EventEnvelope, InMemoryEventBus
+from .bootstrap import build_dead_letter_store, build_event_bus, build_task_repository
+from .events import EventEnvelope
 from .domain import (
     AuditEvent,
     IdempotencyConflict,
@@ -29,12 +29,14 @@ from .settings import get_settings, validate_runtime_settings
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
 settings = get_settings()
 validate_runtime_settings(settings)
-event_bus = InMemoryEventBus()
 store = build_task_repository(settings)
+event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
+    if settings.storage_backend == "postgres":
+        return
     event_bus.publish(
         EventEnvelope(
             event_id=f"{task.id}:{action}:1",

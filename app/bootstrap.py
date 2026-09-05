@@ -4,11 +4,29 @@ from pathlib import Path
 
 from .domain import TaskStore
 from .dead_letters import DeadLetterStore, PostgresDeadLetterStore
-from .events import RedisStreamEventBus
+from .events import InMemoryEventBus, RedisStreamEventBus
 from .migrations import apply_migrations
 from .outbox import OutboxPublisher
 from .repository import PostgresTaskRepository, TaskRepository
 from .settings import Settings, validate_runtime_settings
+
+
+def build_event_bus(settings: Settings, *, redis_client=None):
+    """Select the local development bus or the Redis Streams production bus."""
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存事件总线")
+        return InMemoryEventBus()
+    if settings.storage_backend == "postgres":
+        if redis_client is None:
+            from redis import Redis
+
+            redis_client = Redis.from_url(settings.redis_url, decode_responses=False)
+        if redis_client is None:
+            raise ValueError("生产事件总线需要 Redis")
+        return RedisStreamEventBus(redis_client)
+    raise ValueError("不支持的事件总线类型")
 
 
 def build_task_repository(settings: Settings, *, connection=None, migrate: bool = True) -> TaskRepository:

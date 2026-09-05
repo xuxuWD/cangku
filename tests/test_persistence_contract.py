@@ -234,6 +234,28 @@ def test_dead_letter_store_factory_selects_memory_or_postgres() -> None:
     assert isinstance(postgres_store, PostgresDeadLetterStore)
 
 
+def test_event_bus_factory_uses_memory_only_for_development() -> None:
+    from app.bootstrap import build_event_bus
+    from app.events import InMemoryEventBus, RedisStreamEventBus
+
+    memory_bus = build_event_bus(Settings(env="development", storage_backend="memory"))
+    assert isinstance(memory_bus, InMemoryEventBus)
+
+    class Redis:
+        pass
+
+    postgres_bus = build_event_bus(
+        Settings(env="development", storage_backend="postgres", database_url="postgresql://localhost/workbench"),
+        redis_client=Redis(),
+    )
+    assert isinstance(postgres_bus, RedisStreamEventBus)
+
+    auto_bus = build_event_bus(
+        Settings(env="development", storage_backend="postgres", database_url="postgresql://localhost/workbench")
+    )
+    assert isinstance(auto_bus, RedisStreamEventBus)
+
+
 def test_dead_letter_migration_has_tenant_unique_and_replay_audit_fields() -> None:
     from pathlib import Path
 
