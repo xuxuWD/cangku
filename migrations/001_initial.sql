@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS workbench_tasks (
     status TEXT NOT NULL CHECK (status IN ('queued', 'pending_approval', 'cancelled')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (id, tenant_id),
     UNIQUE (tenant_id, created_by, idempotency_key)
 );
 
@@ -27,7 +28,8 @@ CREATE TABLE IF NOT EXISTS workbench_audit_events (
     action TEXT NOT NULL,
     actor_id TEXT NOT NULL,
     actor_role TEXT NOT NULL,
-    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    FOREIGN KEY (id, tenant_id) REFERENCES workbench_tasks(id, tenant_id) ON DELETE CASCADE
 );
 
 -- Approval must be a single conditional update inside the caller's transaction.

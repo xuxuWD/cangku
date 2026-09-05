@@ -16,10 +16,10 @@ def build_task_repository(settings: Settings, *, connection=None, migrate: bool 
         return TaskStore()
     if settings.storage_backend == "postgres":
         if connection is None:
-            import psycopg
+            from psycopg_pool import ConnectionPool
 
             database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
-            connection = psycopg.connect(database_url)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
         if migrate:
             apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
         return PostgresTaskRepository(connection)

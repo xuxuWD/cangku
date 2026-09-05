@@ -4,7 +4,7 @@ import pytest
 
 from app.settings import Settings, validate_runtime_settings
 from app.bootstrap import build_task_repository
-from app.domain import TaskStore
+from app.domain import TaskNotFound, TaskStore
 from app.domain import RiskLevel, Task, TaskStatus, UserContext
 from app.repository import PostgresTaskRepository
 from app.migrations import apply_migrations
@@ -32,6 +32,7 @@ def test_initial_migration_has_tenant_scoped_idempotency_and_atomic_approval_con
 
     assert "CREATE TABLE IF NOT EXISTS workbench_tasks" in migration
     assert "UNIQUE (tenant_id, created_by, idempotency_key)" in migration
+    assert "FOREIGN KEY (id, tenant_id) REFERENCES workbench_tasks(id, tenant_id)" in migration
     assert "CHECK (status IN ('queued', 'pending_approval', 'cancelled'))" in migration
     assert "UPDATE workbench_tasks" in migration
     assert "WHERE id = %s AND tenant_id = %s AND status = 'pending_approval'" in migration
@@ -52,6 +53,9 @@ class RecordingCursor:
         self.statements.append((statement, params))
 
     def fetchone(self):
+        return self.rows.pop(0)
+
+    def fetchall(self):
         return self.rows.pop(0)
 
 
@@ -107,6 +111,27 @@ def test_postgres_create_runs_in_transaction_and_writes_audit() -> None:
     assert any("INSERT INTO workbench_audit_events" in sql for sql, _ in connection.cursor_instance.statements)
 
 
+def test_postgres_approval_writes_audit_and_hydrates_history() -> None:
+    queued = ("task-1", "t-1", "p-1", "u-1", "content-operator", "日报", "high", 1, "id-1", "fingerprint", "queued")
+    audits = [("task.created", "u-1", "employee", None), ("task.approved", "ceo-1", "ceo", None)]
+    connection = RecordingConnection([queued, queued, audits])
+    repository = PostgresTaskRepository(connection)
+
+    approved = repository.approve(UserContext("t-1", "ceo-1", "ceo"), "task-1")
+
+    assert approved.status == TaskStatus.QUEUED
+    assert [event.action for event in approved.audits] == ["task.created", "task.approved"]
+    assert any("INSERT INTO workbench_audit_events" in sql and "task.approved" in params for sql, params in connection.cursor_instance.statements)
+
+
+def test_postgres_approval_missing_task_is_not_found() -> None:
+    connection = RecordingConnection([None, None])
+    repository = PostgresTaskRepository(connection)
+
+    with pytest.raises(TaskNotFound):
+        repository.approve(UserContext("t-1", "ceo-1", "ceo"), "missing")
+
+
 def test_migration_runner_applies_new_sql_once() -> None:
     migration_sql = "CREATE TABLE example (id TEXT);"
 
@@ -133,6 +158,7 @@ def test_migration_runner_applies_new_sql_once() -> None:
 
     assert applied == ["001_example"]
     assert any(migration_sql in sql for sql, _ in connection.cursor_instance.statements)
+    assert any("pg_advisory_xact_lock" in sql for sql, _ in connection.cursor_instance.statements)
 
 
 def test_development_bootstrap_uses_memory_store() -> None:
