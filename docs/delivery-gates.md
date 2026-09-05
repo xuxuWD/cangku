@@ -15,6 +15,7 @@
 - [x] Redis Streams/Celery 事件总线、Outbox 事务写入与幂等消费者骨架
 - [x] 按存储模式选择事件总线，生产 API 不重复直发 Outbox 事件
 - [x] 高风险能力策略目录（第三方 Skill、Shell、特权沙箱、知识/提示词/流程变更）
+- [x] WeKnora 只读检索适配器（租户与知识库白名单）
 - [x] Celery Worker/Outbox 的可注入运行骨架、死信登记与人工重放接口（开发期）
 - [x] Worker 启动命令与生产模式自动绑定 Outbox 发布器
 - [ ] Celery Worker 实跑、Outbox 生产连接池、死信通知渠道和 staging 验收
