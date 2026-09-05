@@ -85,6 +85,12 @@ class WeKnoraKnowledgeAdapter:
             for item in payload.get("data", [])
         ]
 
+    def search_for_role(self, context: UserContext, role_key: str, query: str, registry) -> list[KnowledgeCitation]:
+        knowledge_base_ids = registry.resolve(context, role_key)
+        if not knowledge_base_ids:
+            return []
+        return self.search(context, query, sorted(knowledge_base_ids))
+
     def read_document(self, context: UserContext, knowledge_id: str) -> KnowledgeDocument:
         if context.tenant_id != self.tenant_id:
             raise PolicyError("知识库租户范围不匹配")

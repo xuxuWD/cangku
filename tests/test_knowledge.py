@@ -4,6 +4,7 @@ import json
 
 from app.domain import PolicyError, UserContext
 from app.knowledge import WeKnoraKnowledgeAdapter
+from app.knowledge_policy import KnowledgeAccessRegistry
 
 
 def test_weknora_adapter_returns_citations_for_allowed_knowledge_bases() -> None:
@@ -91,3 +92,28 @@ def test_weknora_adapter_reads_document_metadata_with_scope_validation() -> None
     assert document.knowledge_base_id == "kb-1"
     assert document.title == "财务制度"
     assert document.parse_status == "completed"
+
+
+def test_weknora_adapter_resolves_scope_from_role_registry() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert json.loads(request.read())["knowledge_base_ids"] == ["kb-1"]
+        return httpx.Response(200, json={"success": True, "data": []})
+
+    adapter = WeKnoraKnowledgeAdapter(
+        tenant_id="t-1",
+        api_key="scoped-key",
+        knowledge_base_ids={"kb-1"},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        base_url="https://weknora.internal",
+    )
+    registry = KnowledgeAccessRegistry()
+    registry.bind_role(UserContext("t-1", "admin", "super_admin"), "content-operator", {"kb-1"})
+
+    assert adapter.search_for_role(UserContext("t-1", "u-1", "employee"), "content-operator", "问题", registry) == []
+    assert calls == 1
+    assert adapter.search_for_role(UserContext("t-1", "u-1", "employee"), "unknown-role", "问题", registry) == []
+    assert calls == 1
