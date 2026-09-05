@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .domain import TaskStore
+from .dead_letters import DeadLetterStore, PostgresDeadLetterStore
 from .events import RedisStreamEventBus
 from .migrations import apply_migrations
 from .outbox import OutboxPublisher
@@ -43,3 +44,20 @@ def build_outbox_publisher(settings: Settings, *, connection=None, redis_client=
 
         redis_client = Redis.from_url(settings.redis_url, decode_responses=False)
     return OutboxPublisher(connection, RedisStreamEventBus(redis_client))
+
+
+def build_dead_letter_store(settings: Settings, *, event_bus, connection=None):
+    """Select a development or durable dead-letter repository."""
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存死信仓储")
+        return DeadLetterStore(event_bus)
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        return PostgresDeadLetterStore(connection, event_bus)
+    raise ValueError("不支持的死信仓储类型")

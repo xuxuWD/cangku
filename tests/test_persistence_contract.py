@@ -211,6 +211,29 @@ def test_outbox_publisher_factory_requires_postgres_and_accepts_injected_clients
         )
 
 
+def test_dead_letter_store_factory_selects_memory_or_postgres() -> None:
+    from app.bootstrap import build_dead_letter_store
+    from app.dead_letters import DeadLetterStore, PostgresDeadLetterStore
+    from app.events import InMemoryEventBus, RedisStreamEventBus
+
+    memory_bus = InMemoryEventBus()
+    memory_store = build_dead_letter_store(Settings(env="development", storage_backend="memory"), event_bus=memory_bus)
+    assert isinstance(memory_store, DeadLetterStore)
+
+    class Connection:
+        pass
+
+    class Redis:
+        pass
+
+    postgres_store = build_dead_letter_store(
+        Settings(env="development", storage_backend="postgres", database_url="postgresql://localhost/workbench"),
+        event_bus=RedisStreamEventBus(Redis()),
+        connection=Connection(),
+    )
+    assert isinstance(postgres_store, PostgresDeadLetterStore)
+
+
 def test_dead_letter_migration_has_tenant_unique_and_replay_audit_fields() -> None:
     from pathlib import Path
 
@@ -221,4 +244,7 @@ def test_dead_letter_migration_has_tenant_unique_and_replay_audit_fields() -> No
     assert "tenant_id TEXT NOT NULL" in migration
     assert "replayed_at TIMESTAMPTZ" in migration
     assert "replayed_by TEXT" in migration
+    assert "version INTEGER NOT NULL" in migration
+    assert "sequence BIGINT NOT NULL" in migration
+    assert "occurred_at TIMESTAMPTZ NOT NULL" in migration
     assert "UNIQUE (tenant_id, dedupe_key)" in migration

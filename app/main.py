@@ -7,8 +7,7 @@ from datetime import UTC, datetime
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bootstrap import build_task_repository
-from .dead_letters import DeadLetterStore
+from .bootstrap import build_dead_letter_store, build_task_repository
 from .events import EventEnvelope, InMemoryEventBus
 from .domain import (
     AuditEvent,
@@ -30,9 +29,9 @@ from .settings import get_settings, validate_runtime_settings
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
 settings = get_settings()
 validate_runtime_settings(settings)
-store = build_task_repository(settings)
 event_bus = InMemoryEventBus()
-dead_letter_store = DeadLetterStore(event_bus)
+store = build_task_repository(settings)
+dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
