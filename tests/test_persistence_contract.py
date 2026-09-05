@@ -256,6 +256,16 @@ def test_event_bus_factory_uses_memory_only_for_development() -> None:
     assert isinstance(auto_bus, RedisStreamEventBus)
 
 
+def test_knowledge_access_migration_has_scoped_unique_binding() -> None:
+    migration = Path("migrations/004_knowledge_access_bindings.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS workbench_knowledge_access_bindings" in migration
+    assert "tenant_id TEXT NOT NULL" in migration
+    assert "binding_type TEXT NOT NULL" in migration
+    assert "knowledge_base_id TEXT NOT NULL" in migration
+    assert "UNIQUE (tenant_id, binding_type, binding_key, knowledge_base_id)" in migration
+
+
 def test_dead_letter_migration_has_tenant_unique_and_replay_audit_fields() -> None:
     from pathlib import Path
 
