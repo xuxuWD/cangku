@@ -181,3 +181,31 @@ def test_production_bootstrap_requires_postgres_repository() -> None:
     repository = build_task_repository(settings, connection=object(), migrate=False)
 
     assert isinstance(repository, PostgresTaskRepository)
+
+
+def test_outbox_publisher_factory_requires_postgres_and_accepts_injected_clients() -> None:
+    from app.bootstrap import build_outbox_publisher
+    from app.events import RedisStreamEventBus
+    from app.outbox import OutboxPublisher
+
+    class Connection:
+        pass
+
+    class Redis:
+        pass
+
+    settings = Settings(
+        env="development",
+        storage_backend="postgres",
+        database_url="postgresql://workbench:test@localhost/workbench",
+    )
+    publisher = build_outbox_publisher(settings, connection=Connection(), redis_client=Redis())
+    assert isinstance(publisher, OutboxPublisher)
+    assert isinstance(publisher.event_bus, RedisStreamEventBus)
+
+    with pytest.raises(ValueError, match="需要 PostgreSQL"):
+        build_outbox_publisher(
+            Settings(env="development", storage_backend="memory"),
+            connection=Connection(),
+            redis_client=Redis(),
+        )
