@@ -307,3 +307,35 @@ def test_collaboration_dynamics_are_filtered_by_task_access() -> None:
     )
     assert ceo_view.status_code == 200
     assert other.json()["id"] in {item["aggregate_id"] for item in ceo_view.json()}
+
+
+def test_super_admin_can_configure_role_knowledge_access() -> None:
+    response = client.put(
+        "/api/v1/knowledge-access/roles/content-operator",
+        headers=headers(role="super_admin", user_id="admin-knowledge"),
+        json={"knowledge_base_ids": ["kb-content", "kb-brand", "kb-content"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "binding_type": "role",
+        "binding_key": "content-operator",
+        "knowledge_base_ids": ["kb-brand", "kb-content"],
+    }
+
+    listed = client.get(
+        "/api/v1/knowledge-access/roles/content-operator",
+        headers=headers(role="super_admin", user_id="admin-knowledge"),
+    )
+    assert listed.status_code == 200
+    assert listed.json()["knowledge_base_ids"] == ["kb-brand", "kb-content"]
+
+
+def test_non_super_admin_cannot_configure_knowledge_access() -> None:
+    response = client.put(
+        "/api/v1/knowledge-access/agents/content-writer",
+        headers=headers(role="ceo", user_id="ceo-knowledge"),
+        json={"knowledge_base_ids": ["kb-content"]},
+    )
+
+    assert response.status_code == 403

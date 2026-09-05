@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bootstrap import build_dead_letter_store, build_event_bus, build_task_repository
+from .bootstrap import build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -32,6 +32,7 @@ validate_runtime_settings(settings)
 store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
+knowledge_access_registry = build_knowledge_access_registry(settings)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
@@ -98,6 +99,12 @@ class CollaborationDynamicView(BaseModel):
     employee_key: str
     status: TaskStatus
     occurred_at: datetime
+
+
+class KnowledgeAccessUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge_base_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
 def current_user(
@@ -170,6 +177,67 @@ def replay_dead_letter(event_id: str, context: UserContext = Depends(current_use
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="死信事件不存在") from exc
     return {"status": result, "event_id": event_id}
+
+
+def _ensure_knowledge_admin(context: UserContext) -> None:
+    if context.role != "super_admin":
+        raise PolicyError("只有超级管理员可以调整知识库范围")
+
+
+def _knowledge_access_view(binding_type: str, binding_key: str, knowledge_base_ids: set[str]) -> dict[str, object]:
+    return {
+        "binding_type": binding_type,
+        "binding_key": binding_key,
+        "knowledge_base_ids": sorted(knowledge_base_ids),
+    }
+
+
+@app.put("/api/v1/knowledge-access/roles/{role_key}")
+def bind_role_knowledge_access(
+    role_key: str,
+    payload: KnowledgeAccessUpdate,
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    try:
+        _ensure_knowledge_admin(context)
+        knowledge_access_registry.bind_role(context, role_key, set(payload.knowledge_base_ids))
+        ids = knowledge_access_registry.resolve(context, role_key)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _knowledge_access_view("role", role_key, ids)
+
+
+@app.get("/api/v1/knowledge-access/roles/{role_key}")
+def get_role_knowledge_access(role_key: str, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        _ensure_knowledge_admin(context)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _knowledge_access_view("role", role_key, knowledge_access_registry.resolve(context, role_key))
+
+
+@app.put("/api/v1/knowledge-access/agents/{agent_key}")
+def bind_agent_knowledge_access(
+    agent_key: str,
+    payload: KnowledgeAccessUpdate,
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    try:
+        _ensure_knowledge_admin(context)
+        knowledge_access_registry.bind_agent(context, agent_key, set(payload.knowledge_base_ids))
+        ids = knowledge_access_registry.resolve(context, agent_key, agent_key)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _knowledge_access_view("agent", agent_key, ids)
+
+
+@app.get("/api/v1/knowledge-access/agents/{agent_key}")
+def get_agent_knowledge_access(agent_key: str, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        _ensure_knowledge_admin(context)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _knowledge_access_view("agent", agent_key, knowledge_access_registry.resolve(context, agent_key, agent_key))
 
 
 @app.get("/api/v1/collaboration-dynamics", response_model=list[CollaborationDynamicView])

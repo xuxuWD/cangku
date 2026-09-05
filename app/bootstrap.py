@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .domain import TaskStore
 from .dead_letters import DeadLetterStore, PostgresDeadLetterStore
+from .knowledge_policy import KnowledgeAccessRegistry, PostgresKnowledgeAccessRegistry
 from .events import InMemoryEventBus, RedisStreamEventBus
 from .migrations import apply_migrations
 from .outbox import OutboxPublisher
@@ -79,3 +80,20 @@ def build_dead_letter_store(settings: Settings, *, event_bus, connection=None):
             connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
         return PostgresDeadLetterStore(connection, event_bus)
     raise ValueError("不支持的死信仓储类型")
+
+
+def build_knowledge_access_registry(settings: Settings, *, connection=None):
+    """Select the tenant-scoped knowledge access repository."""
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存知识范围仓储")
+        return KnowledgeAccessRegistry()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        return PostgresKnowledgeAccessRegistry(connection)
+    raise ValueError("不支持的知识范围仓储类型")
