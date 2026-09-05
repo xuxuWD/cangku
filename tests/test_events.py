@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from app.events import EventEnvelope, InMemoryEventBus, IdempotentEventConsumer
+from app.events import EventEnvelope, InMemoryEventBus, IdempotentEventConsumer, RedisStreamEventBus
 
 
 def envelope(event_id: str = "event-1") -> EventEnvelope:
@@ -66,3 +66,41 @@ def test_dead_letter_callback_is_called_once() -> None:
     assert consumer.handle(event, failing_handler) == "dead_letter"
     assert alerted == ["event-1"]
     assert consumer.dead_letters == [event]
+
+
+class GroupRedis:
+    def __init__(self, event: EventEnvelope) -> None:
+        self.event = event
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    def xgroup_create(self, *args, **kwargs):
+        self.calls.append(("xgroup_create", args, kwargs))
+
+    def xreadgroup(self, *args, **kwargs):
+        self.calls.append(("xreadgroup", args, kwargs))
+        return [(b"workbench:events", [(b"12-0", {b"event": self.event.to_json().encode()})])]
+
+    def xack(self, *args, **kwargs):
+        self.calls.append(("xack", args, kwargs))
+        return 1
+
+    def xautoclaim(self, *args, **kwargs):
+        self.calls.append(("xautoclaim", args, kwargs))
+        return (b"0-0", [(b"13-0", {b"event": self.event.to_json().encode()})], [])
+
+
+def test_redis_stream_supports_consumer_group_read_ack_and_reclaim() -> None:
+    event = envelope()
+    client = GroupRedis(event)
+    bus = RedisStreamEventBus(client)
+
+    bus.ensure_group("tasks")
+    messages = bus.read_group("tasks", "worker-1", count=5, block_ms=250)
+    assert messages[0][0] == "12-0"
+    assert messages[0][1] == event
+    assert bus.ack("tasks", "12-0") == 1
+
+    reclaimed = bus.claim_pending("tasks", "worker-1", min_idle_ms=60_000, count=2)
+    assert reclaimed[0][0] == "13-0"
+    assert reclaimed[0][1] == event
+    assert [name for name, _, _ in client.calls] == ["xgroup_create", "xreadgroup", "xack", "xautoclaim"]

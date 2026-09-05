@@ -37,6 +37,30 @@ class EventEnvelope:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
 
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "EventEnvelope":
+        occurred_at = value["occurred_at"]
+        if not isinstance(occurred_at, datetime):
+            occurred_at = datetime.fromisoformat(str(occurred_at))
+        return cls(
+            event_id=str(value["event_id"]),
+            tenant_id=str(value["tenant_id"]),
+            aggregate_type=str(value["aggregate_type"]),
+            aggregate_id=str(value["aggregate_id"]),
+            version=int(value["version"]),
+            sequence=int(value["sequence"]),
+            dedupe_key=str(value["dedupe_key"]),
+            action=str(value["action"]),
+            occurred_at=occurred_at,
+            payload=dict(value.get("payload") or {}),
+        )
+
+    @classmethod
+    def from_json(cls, value: str | bytes) -> "EventEnvelope":
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
+        return cls.from_dict(json.loads(value))
+
 
 class InMemoryEventBus:
     def __init__(self) -> None:
@@ -63,6 +87,70 @@ class RedisStreamEventBus:
 
     def publish(self, event: EventEnvelope) -> str:
         return str(self.client.xadd(self.stream, {"event": event.to_json()}, id="*"))
+
+    def ensure_group(self, group: str, *, start_id: str = "0-0") -> None:
+        try:
+            self.client.xgroup_create(self.stream, group, id=start_id, mkstream=True)
+        except Exception as exc:
+            if "BUSYGROUP" not in str(exc).upper():
+                raise
+
+    def read_group(
+        self,
+        group: str,
+        consumer: str,
+        *,
+        count: int = 10,
+        block_ms: int = 1000,
+        message_id: str = ">",
+    ) -> list[tuple[str, EventEnvelope]]:
+        rows = self.client.xreadgroup(
+            groupname=group,
+            consumername=consumer,
+            streams={self.stream: message_id},
+            count=count,
+            block=block_ms,
+        )
+        return self._decode_messages(rows)
+
+    def ack(self, group: str, *message_ids: str) -> int:
+        if not message_ids:
+            return 0
+        return int(self.client.xack(self.stream, group, *message_ids))
+
+    def claim_pending(
+        self,
+        group: str,
+        consumer: str,
+        *,
+        min_idle_ms: int = 60_000,
+        count: int = 100,
+        start_id: str = "0-0",
+    ) -> list[tuple[str, EventEnvelope]]:
+        result = self.client.xautoclaim(
+            self.stream,
+            group,
+            consumer,
+            min_idle_ms,
+            start_id,
+            count=count,
+        )
+        messages = result[1] if isinstance(result, (list, tuple)) and len(result) > 1 else []
+        return self._decode_messages([(self.stream, messages)])
+
+    @staticmethod
+    def _decode_messages(rows) -> list[tuple[str, EventEnvelope]]:
+        decoded: list[tuple[str, EventEnvelope]] = []
+        for _stream_name, messages in rows or []:
+            for message_id, fields in messages:
+                event_json = fields.get("event") or fields.get(b"event")
+                if event_json is None:
+                    raise ValueError("Redis Stream message missing event field")
+                decoded.append((
+                    message_id.decode("utf-8") if isinstance(message_id, bytes) else str(message_id),
+                    EventEnvelope.from_json(event_json),
+                ))
+        return decoded
 
 
 class IdempotentEventConsumer:
