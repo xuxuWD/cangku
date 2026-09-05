@@ -66,10 +66,17 @@ class RedisStreamEventBus:
 
 
 class IdempotentEventConsumer:
-    def __init__(self, *, max_attempts: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        max_attempts: int = 3,
+        on_dead_letter: Callable[[EventEnvelope], None] | None = None,
+    ) -> None:
         self.max_attempts = max_attempts
+        self.on_dead_letter = on_dead_letter
         self._attempts: dict[str, int] = {}
         self._processed: set[str] = set()
+        self._dead_lettered: set[str] = set()
         self.dead_letters: list[EventEnvelope] = []
         self._lock = RLock()
 
@@ -81,13 +88,18 @@ class IdempotentEventConsumer:
         with self._lock:
             if event.dedupe_key in self._processed:
                 return "duplicate"
+            if event.dedupe_key in self._dead_lettered:
+                return "dead_letter"
             try:
                 handler(event)
             except Exception:
                 attempts = self._attempts.get(event.dedupe_key, 0) + 1
                 self._attempts[event.dedupe_key] = attempts
                 if attempts >= self.max_attempts:
+                    self._dead_lettered.add(event.dedupe_key)
                     self.dead_letters.append(event)
+                    if self.on_dead_letter:
+                        self.on_dead_letter(event)
                     return "dead_letter"
                 return "retry"
             self._processed.add(event.dedupe_key)

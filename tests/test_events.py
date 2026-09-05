@@ -53,3 +53,16 @@ def test_failed_event_is_retried_then_moved_to_dead_letter() -> None:
     assert consumer.handle(event, lambda _: (_ for _ in ()).throw(RuntimeError("temporary"))) == "retry"
     assert consumer.handle(event, lambda _: (_ for _ in ()).throw(RuntimeError("permanent"))) == "dead_letter"
     assert consumer.dead_letters == [event]
+
+
+def test_dead_letter_callback_is_called_once() -> None:
+    alerted: list[str] = []
+    consumer = IdempotentEventConsumer(max_attempts=1, on_dead_letter=lambda item: alerted.append(item.event_id))
+
+    event = envelope()
+    failing_handler = lambda _: (_ for _ in ()).throw(RuntimeError("permanent"))
+
+    assert consumer.handle(event, failing_handler) == "dead_letter"
+    assert consumer.handle(event, failing_handler) == "dead_letter"
+    assert alerted == ["event-1"]
+    assert consumer.dead_letters == [event]
