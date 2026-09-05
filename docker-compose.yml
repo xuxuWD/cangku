@@ -6,14 +6,14 @@ services:
       POSTGRES_USER: workbench
       POSTGRES_PASSWORD: ${WORKBENCH_DB_PASSWORD:?set WORKBENCH_DB_PASSWORD in .env}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${WORKBENCH_POSTGRES_PORT:-5432}:5432"
     volumes:
       - workbench-postgres:/var/lib/postgresql/data
 
   redis:
     image: redis:7.4-alpine
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${WORKBENCH_REDIS_PORT:-6379}:6379"
     volumes:
       - workbench-redis:/data
 
@@ -24,8 +24,8 @@ services:
       MINIO_ROOT_USER: ${WORKBENCH_MINIO_USER:?set WORKBENCH_MINIO_USER in .env}
       MINIO_ROOT_PASSWORD: ${WORKBENCH_MINIO_PASSWORD:?set WORKBENCH_MINIO_PASSWORD in .env}
     ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
+      - "127.0.0.1:${WORKBENCH_MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${WORKBENCH_MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - workbench-minio:/data
 
