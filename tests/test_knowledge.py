@@ -56,3 +56,38 @@ def test_weknora_adapter_rejects_cross_tenant_or_unknown_knowledge_base() -> Non
         adapter.search(UserContext("t-2", "u-1", "employee"), "问题", ["kb-1"])
     with pytest.raises(PolicyError):
         adapter.search(UserContext("t-1", "u-1", "employee"), "问题", ["kb-other"])
+
+
+def test_weknora_adapter_reads_document_metadata_with_scope_validation() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/knowledge/doc-1"
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "id": "doc-1",
+                    "tenant_id": "t-1",
+                    "knowledge_base_id": "kb-1",
+                    "title": "财务制度",
+                    "parse_status": "completed",
+                    "enable_status": "enabled",
+                    "updated_at": "2026-09-05T10:00:00+08:00",
+                },
+            },
+        )
+
+    adapter = WeKnoraKnowledgeAdapter(
+        tenant_id="t-1",
+        api_key="scoped-key",
+        knowledge_base_ids={"kb-1"},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        base_url="https://weknora.internal",
+    )
+
+    document = adapter.read_document(UserContext("t-1", "u-1", "employee"), "doc-1")
+
+    assert document.document_id == "doc-1"
+    assert document.knowledge_base_id == "kb-1"
+    assert document.title == "财务制度"
+    assert document.parse_status == "completed"

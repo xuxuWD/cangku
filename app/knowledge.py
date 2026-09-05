@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable
 
 import httpx
@@ -15,6 +16,16 @@ class KnowledgeCitation:
     source_title: str
     knowledge_id: str
     score: float | None = None
+
+
+@dataclass(frozen=True)
+class KnowledgeDocument:
+    document_id: str
+    knowledge_base_id: str
+    title: str
+    parse_status: str
+    enable_status: str
+    updated_at: datetime | None
 
 
 class WeKnoraKnowledgeAdapter:
@@ -73,3 +84,35 @@ class WeKnoraKnowledgeAdapter:
             )
             for item in payload.get("data", [])
         ]
+
+    def read_document(self, context: UserContext, knowledge_id: str) -> KnowledgeDocument:
+        if context.tenant_id != self.tenant_id:
+            raise PolicyError("知识库租户范围不匹配")
+        if not knowledge_id.strip():
+            raise PolicyError("文档标识不能为空")
+        response = self.client.get(
+            f"{self.base_url}/api/v1/knowledge/{knowledge_id}",
+            headers={"X-API-Key": self.api_key, "Accept": "application/json"},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        item = payload.get("data") or {}
+        if payload.get("success") is False:
+            raise RuntimeError("WeKnora 文档读取未完成")
+        if str(item.get("tenant_id")) != self.tenant_id:
+            raise PolicyError("文档租户范围不匹配")
+        knowledge_base_id = str(item.get("knowledge_base_id") or "")
+        if knowledge_base_id not in self.knowledge_base_ids:
+            raise PolicyError("文档所属知识库不在当前岗位授权范围内")
+        updated_at = item.get("updated_at")
+        if updated_at is not None and not isinstance(updated_at, datetime):
+            updated_at = datetime.fromisoformat(str(updated_at))
+        return KnowledgeDocument(
+            document_id=str(item.get("id") or knowledge_id),
+            knowledge_base_id=knowledge_base_id,
+            title=str(item.get("title") or item.get("file_name") or "未命名文档"),
+            parse_status=str(item.get("parse_status") or "unknown"),
+            enable_status=str(item.get("enable_status") or "unknown"),
+            updated_at=updated_at,
+        )
