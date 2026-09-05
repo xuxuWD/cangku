@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+import json
 from threading import RLock
 
 from .domain import PolicyError, UserContext
@@ -72,6 +73,11 @@ class PostgresKnowledgeAccessRegistry:
             with connection.transaction():
                 with connection.cursor() as cursor:
                     cursor.execute(
+                        "SELECT knowledge_base_id FROM workbench_knowledge_access_bindings WHERE tenant_id = %s AND binding_type = %s AND binding_key = %s",
+                        (context.tenant_id, binding_type, binding_key),
+                    )
+                    old_ids = sorted(str(row[0]) for row in cursor.fetchall())
+                    cursor.execute(
                         "DELETE FROM workbench_knowledge_access_bindings WHERE tenant_id = %s AND binding_type = %s AND binding_key = %s",
                         (context.tenant_id, binding_type, binding_key),
                     )
@@ -85,6 +91,18 @@ class PostgresKnowledgeAccessRegistry:
                             """,
                             (context.tenant_id, binding_type, binding_key, knowledge_base_id, context.user_id),
                         )
+                    cursor.execute(
+                        """
+                        INSERT INTO workbench_knowledge_access_audits
+                            (tenant_id, binding_type, binding_key, old_knowledge_base_ids,
+                             new_knowledge_base_ids, actor_id)
+                        VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                        """,
+                        (
+                            context.tenant_id, binding_type, binding_key,
+                            json.dumps(old_ids), json.dumps(sorted(normalized)), context.user_id,
+                        ),
+                    )
 
     def resolve(self, context: UserContext, role_key: str, agent_key: str | None = None) -> set[str]:
         binding_type = "agent" if agent_key is not None else "role"

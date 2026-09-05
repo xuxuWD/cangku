@@ -266,6 +266,15 @@ def test_knowledge_access_migration_has_scoped_unique_binding() -> None:
     assert "UNIQUE (tenant_id, binding_type, binding_key, knowledge_base_id)" in migration
 
 
+def test_knowledge_access_audit_migration_records_before_after_ranges() -> None:
+    migration = Path("migrations/005_knowledge_access_audit.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS workbench_knowledge_access_audits" in migration
+    assert "old_knowledge_base_ids JSONB NOT NULL" in migration
+    assert "new_knowledge_base_ids JSONB NOT NULL" in migration
+    assert "actor_id TEXT NOT NULL" in migration
+
+
 def test_dead_letter_migration_has_tenant_unique_and_replay_audit_fields() -> None:
     from pathlib import Path
 

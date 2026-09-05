@@ -54,7 +54,7 @@ class Connection:
 
 
 def test_postgres_registry_replaces_role_bindings_transactionally() -> None:
-    connection = Connection([[('kb-content',), ('kb-brand',)]])
+    connection = Connection([[('kb-old',)], [('kb-content',), ('kb-brand',)]])
     registry = PostgresKnowledgeAccessRegistry(connection)
     admin = UserContext("t-1", "admin", "super_admin")
 
@@ -62,3 +62,4 @@ def test_postgres_registry_replaces_role_bindings_transactionally() -> None:
     assert registry.resolve(UserContext("t-1", "u-1", "employee"), "content-operator") == {"kb-content", "kb-brand"}
     assert connection.transactions == 1
     assert any("DELETE FROM workbench_knowledge_access_bindings" in sql for sql, _ in connection.cursor_value.statements)
+    assert any("workbench_knowledge_access_audits" in sql for sql, _ in connection.cursor_value.statements)
