@@ -209,3 +209,16 @@ def test_outbox_publisher_factory_requires_postgres_and_accepts_injected_clients
             connection=Connection(),
             redis_client=Redis(),
         )
+
+
+def test_dead_letter_migration_has_tenant_unique_and_replay_audit_fields() -> None:
+    from pathlib import Path
+
+    migration = Path(__file__).parents[1].joinpath("migrations", "003_dead_letters.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS workbench_dead_letters" in migration
+    assert "event_id TEXT PRIMARY KEY" in migration
+    assert "tenant_id TEXT NOT NULL" in migration
+    assert "replayed_at TIMESTAMPTZ" in migration
+    assert "replayed_by TEXT" in migration
+    assert "UNIQUE (tenant_id, dedupe_key)" in migration
