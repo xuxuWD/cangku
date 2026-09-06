@@ -59,3 +59,7 @@ class InMemoryUsageLedger:
     def total(self, tenant_id: str) -> int:
         with self._lock:
             return sum(item.units for item in self._entries.values() if item.tenant_id == tenant_id)
+
+    def total_cost_cents(self, tenant_id: str) -> int:
+        with self._lock:
+            return sum(item.cost_cents for item in self._entries.values() if item.tenant_id == tenant_id)

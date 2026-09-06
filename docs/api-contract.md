@@ -12,6 +12,30 @@
 
 返回服务状态和服务名，不包含密钥、数据库连接串或内部堆栈。
 
+## 私有部署商业化 G0
+
+商业化接口面向内部版和客户私有部署版，当前不包含在线支付、自动开通或 SaaS 计费。租户始终从认证上下文的 `X-Tenant-Id`（正式环境为统一登录会话）派生；客户端传入的 `tenant_id` 查询参数不会改变数据范围。
+
+`GET /api/v1/commercial/tenant`
+
+客户管理员或超级管理员查看当前租户摘要，包括租户状态、负责人和创建时间。
+
+`GET /api/v1/commercial/usage`
+
+客户管理员或超级管理员查看当前租户服务端汇总的用量和成本（分）。用量记录由服务端追加，客户端不能提交额度结果、成本或套餐判断。
+
+`POST /api/v1/commercial/exports`
+
+客户管理员或超级管理员申请租户数据导出，接口只创建异步作业并返回 `202`。导出内容经过脱敏，不包含密码、Cookie、验证码、令牌、原始 API 密钥或客户原文。
+
+`POST /api/v1/commercial/deletion-requests`
+
+客户管理员或超级管理员申请删除当前租户，接口返回带冷静期的异步生命周期作业。冷静期结束前必须完成最终导出，删除执行不在请求线程完成。
+
+`GET /api/v1/commercial/lifecycle/{job_id}`
+
+只允许查看当前租户的生命周期作业；跨租户或不存在的作业统一返回 `404`。普通员工不能查看或发起商业化管理操作。
+
 ## 任务
 
 `POST /api/v1/tasks`
@@ -83,3 +107,18 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 ## 错误
 
 业务人员界面只展示中文原因和下一步建议。服务端日志保留内部诊断编号，但不返回堆栈、凭据、Cookie、验证码或原始 API 密钥。
+
+## Agent Runtime 运行
+
+运行时只是任务执行器，不是权限或任务最终状态事实源。所有动作仍由工作台策略中心检查，计划阶段不执行写入、发布、删除、权限或生产工作流动作。
+
+- POST /api/v1/tasks/{task_id}/runs：在指定任务下创建运行。请求可指定 runtime_key、mode 和步骤计划；服务端从任务快照重建租户、用户、岗位、项目、预算、知识/文件范围和策略版本，客户端不能覆盖这些字段。
+- GET /api/v1/runs/{run_id}/events?cursor=...：返回脱敏事件摘要，支持断点读取；内部 Harness session、凭据和原始敏感载荷不返回。
+- POST /api/v1/runs/{run_id}/pause、resume、cancel：任务创建人、CEO 或超级管理员可操作；跨租户运行统一返回 404。
+- POST /api/v1/runs/{run_id}/approvals：登记高风险动作审批请求，返回审批号和 pending 状态，不代表已执行。
+
+开发环境默认注册 mock Runtime。DeerFlow、Codex Worker、Hermes 只能作为独立外部适配器接入，不能直连工作台数据库、Redis、GEO 或生产账号；Hermes 的成长结果只能进入待审核提案。
+
+GET /api/v1/runtimes/health
+
+仅 CEO 和超级管理员可查看 Runtime 健康摘要。返回运行时状态、版本、能力和沙箱状态；未配置或未启用的外部 Runtime 不会被自动调用，响应不包含认证头、内部会话或原始异常。

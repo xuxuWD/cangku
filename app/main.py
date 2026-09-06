@@ -24,6 +24,12 @@ from .domain import (
 )
 from .auth import verify_access_token
 from .settings import get_settings, validate_runtime_settings
+from .runtime.policy import ApprovalRequired, PolicyDenied
+from .runtime.service import RunAccessDenied, RuntimeService
+from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
+from .commercial.repository import InMemoryCommercialRepository, ResourceNotFound
+from .commercial.tenant import Actor, CommercialPolicyError
+from .commercial.usage import InMemoryUsageLedger
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
@@ -33,6 +39,10 @@ store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
 knowledge_access_registry = build_knowledge_access_registry(settings)
+runtime_service = RuntimeService(store)
+commercial_repository = InMemoryCommercialRepository()
+commercial_usage = InMemoryUsageLedger()
+commercial_lifecycle = CommercialLifecycleService(commercial_repository)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
@@ -107,6 +117,55 @@ class KnowledgeAccessUpdate(BaseModel):
     knowledge_base_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
+class RuntimeRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    runtime_key: str = Field(default="mock", min_length=1, max_length=80)
+    mode: str = Field(default="product_manager", pattern="^(product_manager|fde)$")
+    steps: list[dict[str, object]] = Field(default_factory=list, max_length=50)
+
+
+class RuntimeAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class RuntimeRunView(BaseModel):
+    run_id: str
+    runtime_key: str
+    policy_version: str
+    status: str
+
+
+class RuntimeApprovalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: dict[str, object]
+
+
+class CommercialTenantView(BaseModel):
+    tenant_id: str
+    name: str
+    owner_id: str
+    status: str
+    created_at: datetime
+
+
+class CommercialUsageView(BaseModel):
+    tenant_id: str
+    units: int
+    cost_cents: int
+
+
+class LifecycleJobView(BaseModel):
+    job_id: str
+    tenant_id: str
+    kind: str
+    status: str
+    requested_by: str
+    requested_at: datetime
+    execute_after: datetime | None = None
+    final_exported: bool = False
+
+
 def current_user(
     tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
     user_id: str | None = Header(default=None, alias="X-User-Id"),
@@ -123,6 +182,27 @@ def current_user(
     if not tenant_id or not user_id or not role:
         raise HTTPException(status_code=401, detail="缺少登录身份信息")
     return UserContext(tenant_id=tenant_id, user_id=user_id, role=role)
+
+
+def _ensure_commercial_admin(context: UserContext) -> None:
+    if context.role == "super_admin":
+        return
+    if context.role == "customer_admin" and commercial_repository.is_customer_admin(context.tenant_id, context.user_id):
+        return
+    raise CommercialPolicyError("只有客户管理员或超级管理员可以管理租户商业化设置")
+
+
+def _lifecycle_view(job: LifecycleJob) -> LifecycleJobView:
+    return LifecycleJobView(
+        job_id=job.id,
+        tenant_id=job.tenant_id,
+        kind=job.kind,
+        status=job.status,
+        requested_by=job.requested_by,
+        requested_at=job.requested_at,
+        execute_after=job.execute_after,
+        final_exported=job.final_exported,
+    )
 
 
 def to_view(task: Task) -> TaskView:
@@ -144,6 +224,83 @@ def to_view(task: Task) -> TaskView:
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "company-workbench"}
+
+
+@app.get("/api/v1/commercial/tenant", response_model=CommercialTenantView)
+def get_commercial_tenant(context: UserContext = Depends(current_user)) -> CommercialTenantView:
+    try:
+        _ensure_commercial_admin(context)
+        tenant = commercial_repository.get_tenant(context.tenant_id)
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="租户不存在") from exc
+    return CommercialTenantView(
+        tenant_id=tenant.id,
+        name=tenant.name,
+        owner_id=tenant.owner_id,
+        status=tenant.status.value,
+        created_at=tenant.created_at,
+    )
+
+
+@app.get("/api/v1/commercial/usage", response_model=CommercialUsageView)
+def get_commercial_usage(context: UserContext = Depends(current_user)) -> CommercialUsageView:
+    try:
+        _ensure_commercial_admin(context)
+        commercial_repository.get_tenant(context.tenant_id)
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="租户不存在") from exc
+    return CommercialUsageView(
+        tenant_id=context.tenant_id,
+        units=commercial_usage.total(context.tenant_id),
+        cost_cents=commercial_usage.total_cost_cents(context.tenant_id),
+    )
+
+
+@app.post("/api/v1/commercial/exports", response_model=LifecycleJobView, status_code=status.HTTP_202_ACCEPTED)
+def request_commercial_export(context: UserContext = Depends(current_user)) -> LifecycleJobView:
+    try:
+        job = commercial_lifecycle.request_export(Actor(context.user_id, context.role), context.tenant_id)
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="租户不存在") from exc
+    return _lifecycle_view(job)
+
+
+@app.post("/api/v1/commercial/deletion-requests", response_model=LifecycleJobView, status_code=status.HTTP_202_ACCEPTED)
+def request_commercial_deletion(context: UserContext = Depends(current_user)) -> LifecycleJobView:
+    try:
+        job = commercial_lifecycle.request_delete(Actor(context.user_id, context.role), context.tenant_id)
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="租户不存在") from exc
+    return _lifecycle_view(job)
+
+
+@app.get("/api/v1/commercial/lifecycle/{job_id}", response_model=LifecycleJobView)
+def get_commercial_lifecycle(job_id: str, context: UserContext = Depends(current_user)) -> LifecycleJobView:
+    try:
+        _ensure_commercial_admin(context)
+        job = commercial_lifecycle.get_job(job_id)
+        if job.tenant_id != context.tenant_id:
+            raise ResourceNotFound(job_id)
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="生命周期任务不存在") from exc
+    return _lifecycle_view(job)
+
+
+@app.get("/api/v1/runtimes/health")
+def runtime_health(context: UserContext = Depends(current_user)) -> dict[str, dict[str, object]]:
+    if context.role not in {"ceo", "super_admin"}:
+        raise HTTPException(status_code=403, detail="只有 CEO 或超级管理员可以查看运行时状态")
+    return runtime_service.registry.health()
 
 
 @app.get("/api/v1/dead-letters", response_model=list[DeadLetterView])
@@ -352,3 +509,67 @@ def approve_task(task_id: str, context: UserContext = Depends(current_user)) -> 
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     publish_task_event(task, "task.approved", context)
     return to_view(task)
+
+
+@app.post("/api/v1/tasks/{task_id}/runs", response_model=RuntimeRunView, status_code=status.HTTP_201_CREATED)
+def start_runtime_run(task_id: str, payload: RuntimeRunCreate, context: UserContext = Depends(current_user)) -> RuntimeRunView:
+    try:
+        run_id, runtime_key, policy_version = runtime_service.start(context, task_id, payload.runtime_key, payload.steps, payload.mode)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except (PolicyDenied, ApprovalRequired) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail="运行时不可用") from exc
+    return RuntimeRunView(run_id=run_id, runtime_key=runtime_key, policy_version=policy_version, status="running")
+
+
+@app.get("/api/v1/runs/{run_id}/events")
+def stream_runtime_events(run_id: str, cursor: str | None = None, context: UserContext = Depends(current_user)) -> list[dict[str, object]]:
+    try:
+        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
+        events = adapter.stream_events(run_id, cursor)
+    except RunAccessDenied as exc:
+        detail = str(exc)
+        raise HTTPException(status_code=404 if detail == "运行不存在" else 403, detail=detail) from exc
+    return [event.to_public_dict() for event in events]
+
+
+@app.post("/api/v1/runs/{run_id}/pause")
+def pause_runtime_run(run_id: str, payload: RuntimeAction, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    try:
+        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
+        adapter.pause_run(run_id, payload.reason)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    return {"run_id": run_id, "status": "paused"}
+
+
+@app.post("/api/v1/runs/{run_id}/resume")
+def resume_runtime_run(run_id: str, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    try:
+        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
+        adapter.resume_run(run_id)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    return {"run_id": run_id, "status": "running"}
+
+
+@app.post("/api/v1/runs/{run_id}/cancel")
+def cancel_runtime_run(run_id: str, payload: RuntimeAction, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    try:
+        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
+        adapter.cancel_run(run_id, payload.reason)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    return {"run_id": run_id, "status": "cancelled"}
+
+
+@app.post("/api/v1/runs/{run_id}/approvals", status_code=status.HTTP_202_ACCEPTED)
+def request_runtime_approval(run_id: str, payload: RuntimeApprovalCreate, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    try:
+        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
+        approval_id = adapter.request_approval(run_id, payload.action)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    return {"run_id": run_id, "approval_id": approval_id, "status": "pending"}

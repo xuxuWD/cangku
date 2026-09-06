@@ -1,0 +1,23 @@
+# 外部 Runtime POC 配置示例
+runtimes:
+  deerflow:
+    transport: http
+    endpoint: http://127.0.0.1:9101
+    version: pinned
+    timeout_seconds: 30
+    capabilities: [research, content_plan]
+  codex_worker:
+    transport: http
+    endpoint: http://127.0.0.1:9102
+    version: pinned
+    timeout_seconds: 30
+    capabilities: [fde_file_read, sandbox_check]
+  hermes:
+    transport: http
+    endpoint: http://127.0.0.1:9103
+    version: pinned
+    timeout_seconds: 30
+    capabilities: [memory_proposal, skill_proposal]
+
+# 密钥必须通过部署环境注入，不写入此文件。
+# 所有运行时只接收脱敏 RuntimeContext 和短期运行授权。
