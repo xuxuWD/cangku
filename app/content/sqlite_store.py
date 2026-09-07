@@ -141,7 +141,7 @@ class SQLiteContentStore:
             brief=SQLiteContentStore._brief(row["brief_json"]),
             run_ids=list(json.loads(row["run_ids_json"])),
             drafts=[SQLiteContentStore._draft(item) for item in drafts],
-            audits=[ContentAudit(item["action"], item["actor_id"], _parse_timestamp(item["created_at"])) for item in audits],
+            audits=[ContentAudit(item["action"], item["actor_id"], _parse_timestamp(item["created_at"]), json.loads(item["detail_json"])) for item in audits],
         )
 
     def _load(self, task_id: str) -> ContentRecord | None:
@@ -202,7 +202,7 @@ class SQLiteContentStore:
         )
         self._connection.executemany(
             "INSERT INTO content_audits(task_id, tenant_id, actor_id, action, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            [(record.task_id, record.tenant_id, audit.actor_id, audit.action, "{}", _timestamp(audit.occurred_at)) for audit in record.audits],
+            [(record.task_id, record.tenant_id, audit.actor_id, audit.action, _json(audit.detail), _timestamp(audit.occurred_at)) for audit in record.audits],
         )
 
     def get(self, tenant_id: str, user_id: str, task_id: str, *, elevated: bool = False) -> ContentRecord:

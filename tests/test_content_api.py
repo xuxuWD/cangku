@@ -73,3 +73,22 @@ def test_development_frontend_origin_can_preflight_content_requests():
     )
     assert second_port.status_code == 200
     assert second_port.headers["access-control-allow-origin"] == "http://127.0.0.1:5174"
+
+
+def test_content_api_regenerates_with_same_task_and_new_run():
+    created = create_content_task(user="regenerate")
+    task_id = created.json()["task_id"]
+    original_run = created.json()["run_id"]
+    regenerated = client.post(
+        f"/api/v1/content-tasks/{task_id}/regenerations", headers=h(user="regenerate"),
+        json={"idempotency_key": "regen-key-1"},
+    )
+    assert regenerated.status_code == 200
+    assert regenerated.json()["task_id"] == task_id
+    assert regenerated.json()["run_id"] != original_run
+    replay = client.post(
+        f"/api/v1/content-tasks/{task_id}/regenerations", headers=h(user="regenerate"),
+        json={"idempotency_key": "regen-key-1"},
+    )
+    assert replay.status_code == 200
+    assert replay.json()["run_id"] == regenerated.json()["run_id"]

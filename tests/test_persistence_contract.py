@@ -326,3 +326,34 @@ def test_build_content_store_resolves_relative_path_from_project_root():
     store = build_content_store(Settings(content_store_backend="sqlite", content_store_path="tmp/relative.db"))
     assert store.path == Path(__file__).resolve().parents[1] / "tmp/relative.db"
     store.close()
+
+
+def test_content_generation_settings_default_to_mock_and_accept_openai_config(monkeypatch):
+    from app.settings import Settings
+
+    assert Settings(_env_file=None).content_generation_backend == "mock"
+    monkeypatch.setenv("CONTENT_GENERATION_BACKEND", "openai_compatible")
+    monkeypatch.setenv("CONTENT_MODEL_BASE_URL", "https://model.internal/v1")
+    monkeypatch.setenv("CONTENT_MODEL_NAME", "company-text")
+    monkeypatch.setenv("CONTENT_MODEL_API_KEY", "secret-value")
+    settings = Settings()
+    assert settings.content_generation_backend == "openai_compatible"
+    assert settings.content_model_base_url == "https://model.internal/v1"
+    assert settings.content_model_name == "company-text"
+    assert settings.content_model_api_key == "secret-value"
+
+
+def test_build_content_generator_selects_mock_or_openai():
+    from app.bootstrap import build_content_generator
+    from app.content.generator import MockContentGenerator
+    from app.content.openai_compatible import OpenAICompatibleContentGenerator
+    from app.settings import Settings
+
+    assert isinstance(build_content_generator(Settings()), MockContentGenerator)
+    settings = Settings(
+        content_generation_backend="openai_compatible",
+        content_model_base_url="http://localhost:9999/v1",
+        content_model_name="local",
+        content_model_api_key="test-key",
+    )
+    assert isinstance(build_content_generator(settings), OpenAICompatibleContentGenerator)

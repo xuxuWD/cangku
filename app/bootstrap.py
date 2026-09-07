@@ -66,6 +66,27 @@ def build_content_store(settings: Settings):
     raise ValueError("不支持的内容仓储类型")
 
 
+def build_content_generator(settings: Settings):
+    validate_runtime_settings(settings)
+    from .content.generator import MockContentGenerator
+
+    if settings.content_generation_backend == "mock":
+        return MockContentGenerator()
+    if settings.content_generation_backend == "openai_compatible":
+        if not settings.content_model_base_url or not settings.content_model_name or not settings.content_model_api_key:
+            raise ValueError("真实内容模型需要配置地址、模型名和 API Key")
+        from .content.openai_compatible import OpenAICompatibleContentGenerator
+
+        return OpenAICompatibleContentGenerator(
+            base_url=settings.content_model_base_url,
+            model_name=settings.content_model_name,
+            api_key=settings.content_model_api_key,
+            timeout_seconds=settings.content_model_timeout_seconds,
+            max_retries=settings.content_model_max_retries,
+        )
+    raise ValueError("不支持的内容生成后端")
+
+
 def build_outbox_publisher(settings: Settings, *, connection=None, redis_client=None) -> OutboxPublisher:
     """Build the production Outbox publisher from deployment-owned clients."""
     validate_runtime_settings(settings)

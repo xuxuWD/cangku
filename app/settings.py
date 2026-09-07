@@ -24,6 +24,30 @@ class Settings(BaseSettings):
         default="data/content-workbench.sqlite3",
         validation_alias=AliasChoices("CONTENT_STORE_PATH", "WORKBENCH_CONTENT_STORE_PATH"),
     )
+    content_generation_backend: str = Field(
+        default="mock",
+        validation_alias=AliasChoices("CONTENT_GENERATION_BACKEND", "WORKBENCH_CONTENT_GENERATION_BACKEND"),
+    )
+    content_model_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONTENT_MODEL_BASE_URL", "WORKBENCH_CONTENT_MODEL_BASE_URL"),
+    )
+    content_model_name: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONTENT_MODEL_NAME", "WORKBENCH_CONTENT_MODEL_NAME"),
+    )
+    content_model_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONTENT_MODEL_API_KEY", "WORKBENCH_CONTENT_MODEL_API_KEY"),
+    )
+    content_model_timeout_seconds: float = Field(
+        default=30.0, ge=1, le=120,
+        validation_alias=AliasChoices("CONTENT_MODEL_TIMEOUT_SECONDS", "WORKBENCH_CONTENT_MODEL_TIMEOUT_SECONDS"),
+    )
+    content_model_max_retries: int = Field(
+        default=2, ge=0, le=5,
+        validation_alias=AliasChoices("CONTENT_MODEL_MAX_RETRIES", "WORKBENCH_CONTENT_MODEL_MAX_RETRIES"),
+    )
 
 
 @lru_cache
@@ -34,6 +58,8 @@ def get_settings() -> Settings:
 def validate_runtime_settings(settings: Settings) -> None:
     if settings.content_store_backend not in {"memory", "sqlite"}:
         raise ValueError("不支持的内容仓储类型")
+    if settings.content_generation_backend not in {"mock", "openai_compatible"}:
+        raise ValueError("不支持的内容生成后端")
     if settings.env == "development":
         return
     if settings.storage_backend != "postgres":

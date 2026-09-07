@@ -15,14 +15,16 @@ def brief(topic: str) -> ContentBriefInput:
     return ContentBriefInput(topic=topic, sources=[SourceInput(url="https://example.com/a", excerpt="参考摘录")], knowledge_references=[])
 
 
-def make_content_service(content_store=None):
+def make_content_service(content_store=None, content_generator=None):
     from app.content.service import ContentService
     from app.content.store import ContentStore
     from app.domain import TaskStore
     from app.runtime.service import RuntimeService
 
     task_store = TaskStore()
-    return ContentService(task_store, RuntimeService(task_store), content_store or ContentStore())
+    return ContentService(
+        task_store, RuntimeService(task_store), content_store or ContentStore(), content_generator=content_generator,
+    )
 
 
 def test_normalize_brief_requires_topic_and_one_material():
@@ -122,6 +124,55 @@ def test_sqlite_content_service_mutations_survive_store_reopen(tmp_path):
     assert restored.draft.status == ContentStatus.CONFIRMED
     assert restored.draft.title == "已编辑"
     assert [audit.action for audit in restored.audits] == [
-        "content.created", "draft.updated", "draft.confirmed", "draft.exported",
+        "content.created", "content.generation.started", "content.generation.completed",
+        "draft.updated", "draft.confirmed", "draft.exported",
     ]
     reopened.close()
+
+
+class FailingGenerator:
+    def __init__(self, message):
+        self.message = message
+
+    def generate(self, value):
+        from app.content.generator import ContentGenerationError
+
+        raise ContentGenerationError(self.message)
+
+
+class SequenceGenerator:
+    def __init__(self, titles):
+        self.titles = iter(titles)
+
+    def generate(self, value):
+        from app.content.generator import GeneratedContentDraft
+
+        title = next(self.titles)
+        return GeneratedContentDraft(
+            title=title, summary="摘要", body_markdown="正文", image_suggestions=(),
+            provider="test", model_name="test-model", template_version=value.template_version,
+        )
+
+
+def test_generation_failure_is_audited_and_not_exportable():
+    from app.content.service import ExportNotAllowed
+
+    service = make_content_service(content_generator=FailingGenerator("模型不可用"))
+    created = service.create(actor=employee("tenant-a", "u1"), payload=brief("失败用例"), idempotency_key="k1")
+    assert created.draft.status == ContentStatus.FAILED
+    assert created.audits[-1].action == "content.generation.failed"
+    assert "模型不可用" in created.audits[-1].detail["reason"]
+    with pytest.raises(ExportNotAllowed):
+        service.export_markdown(actor=employee("tenant-a", "u1"), task_id=created.task_id)
+
+
+def test_regenerate_reuses_task_and_creates_new_run_and_draft():
+    generator = SequenceGenerator(["first", "second"])
+    service = make_content_service(content_generator=generator)
+    created = service.create(actor=employee("tenant-a", "u1"), payload=brief("重试"), idempotency_key="k1")
+    original_run_id = created.run_id
+    regenerated = service.regenerate(actor=employee("tenant-a", "u1"), task_id=created.task_id, idempotency_key="regen-1")
+    assert regenerated.task_id == created.task_id
+    assert regenerated.run_id != original_run_id
+    assert regenerated.draft.title == "second"
+    assert len(regenerated.drafts) == 2

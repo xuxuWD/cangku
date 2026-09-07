@@ -10,6 +10,7 @@ from app.knowledge_policy import KnowledgeAccessRegistry
 from app.runtime.service import RuntimeService
 
 from .export import MarkdownExporter
+from .generator import ContentGenerationError, ContentGenerationInput, ContentGenerator, MockContentGenerator
 from .models import ContentAudit, ContentBriefInput, ContentDraft, ContentStatus, NormalizedBrief, normalize_brief
 from .store import ContentRecord, ContentStore, ContentStoreConflict
 
@@ -32,11 +33,15 @@ def _fingerprint(brief: NormalizedBrief) -> str:
 
 
 class ContentService:
-    def __init__(self, task_store: Any, runtime_service: RuntimeService, content_store: ContentStore, knowledge_registry: KnowledgeAccessRegistry | None = None) -> None:
+    def __init__(
+        self, task_store: Any, runtime_service: RuntimeService, content_store: ContentStore,
+        knowledge_registry: KnowledgeAccessRegistry | None = None, content_generator: ContentGenerator | None = None,
+    ) -> None:
         self.task_store = task_store
         self.runtime_service = runtime_service
         self.content_store = content_store
         self.knowledge_registry = knowledge_registry
+        self.content_generator = content_generator or MockContentGenerator()
 
     def _record(self, actor: UserContext, task_id: str) -> ContentRecord:
         try:
@@ -44,23 +49,35 @@ class ContentService:
         except KeyError as exc:
             raise ContentNotFound(task_id) from exc
 
-    def _draft(self, record: ContentRecord, run_id: str) -> ContentDraft:
-        digest = _fingerprint(record.brief)[:12]
-        topic = record.brief.topic
-        citations = list(record.brief.sources)
-        title = f"{topic}：从素材到行动的实践指南"
-        summary = f"围绕“{topic}”整理的公众号图文草稿，包含关键观察、实践建议与来源引用。"
-        body = "\n\n".join([
-            f"## 为什么值得关注\n\n本篇围绕“{topic}”提炼可复用的信息，帮助读者快速理解背景与重点。",
-            f"## 核心内容\n\n结合已提供素材，建议从问题现状、关键判断和落地动作三个层次展开，形成清晰的阅读路径。",
-            f"## 可以怎么做\n\n先确认目标，再按优先级验证小范围方案，最后用实际反馈迭代。素材指纹：`{digest}`。",
-        ])
+    def _draft(self, record: ContentRecord, run_id: str, generated) -> ContentDraft:
         return ContentDraft(
             draft_id=f"draft-{run_id}", task_id=record.task_id, run_id=run_id, tenant_id=record.tenant_id,
-            title=title, summary=summary, body_markdown=body,
-            image_suggestions=[f"围绕“{topic}”的主视觉，突出一个明确观点"], citations=citations,
-            template_version="mock-content-v1", status=ContentStatus.REVIEWING,
+            title=generated.title, summary=generated.summary, body_markdown=generated.body_markdown,
+            image_suggestions=list(generated.image_suggestions), citations=list(record.brief.sources),
+            template_version=generated.template_version, status=ContentStatus.REVIEWING,
         )
+
+    def _generate_draft(self, record: ContentRecord, run_id: str) -> tuple[ContentDraft, ContentAudit]:
+        started = ContentAudit("content.generation.started", record.created_by)
+        record.audits.append(started)
+        try:
+            generated = self.content_generator.generate(ContentGenerationInput(
+                topic=record.brief.topic, sources=record.brief.sources,
+                knowledge_references=record.brief.knowledge_references,
+            ))
+        except ContentGenerationError as exc:
+            failed = ContentDraft(
+                draft_id=f"draft-{run_id}", task_id=record.task_id, run_id=run_id, tenant_id=record.tenant_id,
+                title=record.brief.topic, summary="模型生成失败，请检查配置后重新生成。", body_markdown="",
+                image_suggestions=[], citations=list(record.brief.sources), template_version="generation-failed",
+                status=ContentStatus.FAILED,
+            )
+            return failed, ContentAudit("content.generation.failed", record.created_by, detail={"reason": str(exc)[:200]})
+        completed = ContentAudit(
+            "content.generation.completed", record.created_by,
+            detail={"provider": generated.provider, "model": generated.model_name},
+        )
+        return self._draft(record, run_id, generated), completed
 
     def create(self, *, actor: UserContext, payload: ContentBriefInput, idempotency_key: str):
         normalized = normalize_brief(payload)
@@ -83,9 +100,27 @@ class ContentService:
         stored, _ = self.task_store.create(actor, task)
         run_id, _, _ = self.runtime_service.start(actor, stored.id, "mock", [{"step_id": "content.generate", "kind": "read", "tool": "content.generate"}], "product_manager")
         record = ContentRecord(stored.id, actor.tenant_id, actor.user_id, idempotency_key, fingerprint, normalized, [run_id])
-        record.drafts.append(self._draft(record, run_id))
         record.audits.append(ContentAudit("content.created", actor.user_id))
+        draft, generation_audit = self._generate_draft(record, run_id)
+        record.drafts.append(draft)
+        record.audits.append(generation_audit)
         self.content_store.add(record)
+        return record
+
+    def regenerate(self, *, actor: UserContext, task_id: str, idempotency_key: str) -> ContentRecord:
+        record = self._record(actor, task_id)
+        for audit in record.audits:
+            if audit.action == "content.regeneration.created" and audit.detail.get("idempotency_key") == idempotency_key:
+                return record
+        run_id, _, _ = self.runtime_service.start(
+            actor, record.task_id, "mock", [{"step_id": "content.generate", "kind": "read", "tool": "content.generate"}], "product_manager"
+        )
+        record.run_ids.append(run_id)
+        record.audits.append(ContentAudit("content.regeneration.created", actor.user_id, detail={"idempotency_key": idempotency_key}))
+        draft, generation_audit = self._generate_draft(record, run_id)
+        record.drafts.append(draft)
+        record.audits.append(generation_audit)
+        self.content_store.save(record)
         return record
 
     def get(self, *, actor: UserContext, task_id: str) -> ContentRecord:

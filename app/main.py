@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, st
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bootstrap import build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
+from .bootstrap import build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -57,6 +57,7 @@ content_service = ContentService(
     runtime_service=runtime_service,
     content_store=build_content_store(settings),
     knowledge_registry=knowledge_access_registry,
+    content_generator=build_content_generator(settings),
 )
 commercial_repository = InMemoryCommercialRepository()
 commercial_usage = InMemoryUsageLedger()
@@ -185,6 +186,12 @@ class ContentDraftUpdate(BaseModel):
 class ContentConfirmation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision: int = Field(ge=1)
+
+
+class ContentRegeneration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=200)
 
 
 def _content_view(record) -> dict[str, object]:
@@ -323,6 +330,16 @@ def get_content_task(task_id: str, context: UserContext = Depends(current_user))
         return _content_view(content_service.get(actor=context, task_id=task_id))
     except ContentNotFound as exc:
         raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+
+
+@app.post("/api/v1/content-tasks/{task_id}/regenerations")
+def regenerate_content_task(task_id: str, payload: ContentRegeneration, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        return _content_view(content_service.regenerate(actor=context, task_id=task_id, idempotency_key=payload.idempotency_key))
+    except ContentNotFound as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.put("/api/v1/content-tasks/{task_id}/draft")

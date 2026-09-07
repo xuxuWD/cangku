@@ -64,6 +64,7 @@ class ContentAudit:
     action: str
     actor_id: str
     occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    detail: dict[str, str] = field(default_factory=dict)
 
 
 def normalize_brief(value: ContentBriefInput) -> NormalizedBrief:

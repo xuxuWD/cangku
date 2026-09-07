@@ -50,6 +50,10 @@
 
 返回素材、当前运行号、草稿、revision、状态和内容审计。状态为 `generating`、`reviewing`、`confirmed` 或 `failed`。普通员工只能访问自己创建的内容任务；跨租户或无权资源统一返回 `404`。
 
+`POST /api/v1/content-tasks/{task_id}/regenerations`
+
+使用新的幂等键重新生成当前任务草稿，不创建第二个业务任务；旧运行、草稿和生成审计保留。生成后端由 `CONTENT_GENERATION_BACKEND` 选择，默认 `mock`；真实模型使用 `CONTENT_MODEL_BASE_URL`、`CONTENT_MODEL_NAME`、`CONTENT_MODEL_API_KEY`、`CONTENT_MODEL_TIMEOUT_SECONDS` 和 `CONTENT_MODEL_MAX_RETRIES`。真实模型失败时任务进入 `failed`，不会静默降级为 Mock。
+
 `PUT /api/v1/content-tasks/{task_id}/draft`
 
 员工在 `reviewing` 状态下编辑标题、摘要、正文和配图建议。请求必须携带当前 `revision`，版本不匹配返回 `409`，服务端不会静默覆盖其他修改。
