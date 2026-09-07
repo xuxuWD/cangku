@@ -1,0 +1,1 @@
+export function SaveButton({ saving, disabled, onClick }: { saving: boolean; disabled?: boolean; onClick: () => void }) { return <button className="button primary" disabled={saving || disabled} onClick={onClick}>{saving ? '正在保存' : '保存调整'}</button> }
