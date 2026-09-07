@@ -9,11 +9,20 @@ from app.domain import AuditEvent, IdempotencyConflict, RiskLevel, Task, TaskNot
 from app.knowledge_policy import KnowledgeAccessRegistry
 from app.runtime.service import RuntimeService
 
+from .export import MarkdownExporter
 from .models import ContentAudit, ContentBriefInput, ContentDraft, ContentStatus, NormalizedBrief, normalize_brief
 from .store import ContentRecord, ContentStore
 
 
 class ContentNotFound(LookupError):
+    pass
+
+
+class RevisionConflict(ValueError):
+    pass
+
+
+class ExportNotAllowed(ValueError):
     pass
 
 
@@ -85,3 +94,53 @@ class ContentService:
     def runtime_side_effects(self, run_id: str) -> list[dict[str, object]]:
         return []
 
+    def update_draft(
+        self, *, actor: UserContext, task_id: str, revision: int, title: str, summary: str,
+        body_markdown: str, image_suggestions: list[str],
+    ) -> ContentDraft:
+        record = self._record(actor, task_id)
+        draft = record.draft
+        if draft.revision != revision:
+            raise RevisionConflict("草稿已被其他页面修改，请重新读取")
+        if draft.status != ContentStatus.REVIEWING:
+            raise RevisionConflict("当前草稿状态不允许编辑")
+        draft.title, draft.summary, draft.body_markdown = title.strip(), summary.strip(), body_markdown.strip()
+        draft.image_suggestions = [item.strip() for item in image_suggestions if item.strip()]
+        draft.revision += 1
+        draft.updated_at = datetime.now(UTC)
+        record.audits.append(ContentAudit("draft.updated", actor.user_id))
+        return draft
+
+    def confirm(self, *, actor: UserContext, task_id: str, revision: int) -> ContentDraft:
+        record = self._record(actor, task_id)
+        draft = record.draft
+        if draft.revision != revision:
+            raise RevisionConflict("草稿已被其他页面修改，请重新读取")
+        if draft.status != ContentStatus.REVIEWING:
+            raise RevisionConflict("当前草稿状态不允许确认")
+        draft.status = ContentStatus.CONFIRMED
+        draft.confirmed_by = actor.user_id
+        draft.confirmed_at = datetime.now(UTC)
+        draft.updated_at = draft.confirmed_at
+        record.audits.append(ContentAudit("draft.confirmed", actor.user_id, draft.confirmed_at))
+        return draft
+
+    def revoke_confirmation(self, *, actor: UserContext, task_id: str) -> ContentDraft:
+        record = self._record(actor, task_id)
+        draft = record.draft
+        if draft.status != ContentStatus.CONFIRMED:
+            raise RevisionConflict("当前草稿尚未确认")
+        draft.status = ContentStatus.REVIEWING
+        draft.revision += 1
+        draft.confirmed_by = None
+        draft.confirmed_at = None
+        draft.updated_at = datetime.now(UTC)
+        record.audits.append(ContentAudit("draft.confirmation_revoked", actor.user_id))
+        return draft
+
+    def export_markdown(self, *, actor: UserContext, task_id: str) -> bytes:
+        record = self._record(actor, task_id)
+        if record.draft.status != ContentStatus.CONFIRMED:
+            raise ExportNotAllowed("内容确认后才能导出")
+        record.audits.append(ContentAudit("draft.exported", actor.user_id))
+        return MarkdownExporter().render(record.draft)

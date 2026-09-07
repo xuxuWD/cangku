@@ -77,3 +77,26 @@ def test_same_idempotency_key_with_different_input_conflicts_and_other_user_is_h
         service.get(actor=employee("tenant-a", "u2"), task_id=created.task_id)
     with pytest.raises(ContentNotFound):
         service.get(actor=employee("tenant-b", "u1"), task_id=created.task_id)
+
+
+def test_draft_edit_uses_optimistic_revision_and_only_confirmed_draft_exports():
+    from app.content.service import ExportNotAllowed, RevisionConflict
+
+    service = make_content_service()
+    item = service.create(actor=employee("tenant-a", "u1"), payload=brief("选题"), idempotency_key="k1")
+    with pytest.raises(ExportNotAllowed):
+        service.export_markdown(actor=employee("tenant-a", "u1"), task_id=item.task_id)
+    updated = service.update_draft(
+        actor=employee("tenant-a", "u1"), task_id=item.task_id, revision=1,
+        title="新标题", summary="摘要", body_markdown="正文", image_suggestions=["配图"],
+    )
+    with pytest.raises(RevisionConflict):
+        service.update_draft(
+            actor=employee("tenant-a", "u1"), task_id=item.task_id, revision=1,
+            title="旧版本", summary="摘要", body_markdown="正文", image_suggestions=[],
+        )
+    service.confirm(actor=employee("tenant-a", "u1"), task_id=item.task_id, revision=updated.revision)
+    markdown = service.export_markdown(actor=employee("tenant-a", "u1"), task_id=item.task_id).decode("utf-8")
+    assert "# 新标题" in markdown
+    assert "tenant-a" not in markdown
+    assert "token" not in markdown.lower()
