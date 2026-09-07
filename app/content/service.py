@@ -126,6 +126,37 @@ class ContentService:
     def get(self, *, actor: UserContext, task_id: str) -> ContentRecord:
         return self._record(actor, task_id)
 
+    def list(
+        self,
+        *,
+        actor: UserContext,
+        status: ContentStatus | None,
+        page: int,
+        page_size: int,
+    ) -> dict[str, object]:
+        if page < 1:
+            raise ValueError("页码必须是正整数")
+        if page_size < 1 or page_size > 100:
+            raise ValueError("每页数量必须在 1 到 100 之间")
+        allowed_statuses = {ContentStatus.REVIEWING, ContentStatus.FAILED, ContentStatus.CONFIRMED}
+        if status is not None and status not in allowed_statuses:
+            raise ValueError("不支持的内容任务状态")
+        user_id = None if actor.role in {"ceo", "super_admin"} else actor.user_id
+        summaries, total = self.content_store.list_summaries(
+            actor.tenant_id,
+            user_id=user_id,
+            status=status,
+            offset=(page - 1) * page_size,
+            limit=page_size,
+        )
+        return {
+            "items": summaries,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_next": page * page_size < total,
+        }
+
     def runtime_side_effects(self, run_id: str) -> list[dict[str, object]]:
         return []
 

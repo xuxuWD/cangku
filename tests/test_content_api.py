@@ -92,3 +92,63 @@ def test_content_api_regenerates_with_same_task_and_new_run():
     )
     assert replay.status_code == 200
     assert replay.json()["run_id"] == regenerated.json()["run_id"]
+
+
+def test_content_api_lists_scoped_paginated_summaries():
+    tenant = "history-api-tenant"
+    create_content_task(user="owner-a", tenant=tenant)
+    create_content_task(user="owner-b", tenant=tenant)
+    create_content_task(user="other-tenant", tenant="history-api-other")
+
+    employee = client.get(
+        "/api/v1/content-tasks?page=1&page_size=1", headers=h(user="owner-a", tenant=tenant)
+    )
+    assert employee.status_code == 200
+    employee_payload = employee.json()
+    assert employee_payload["total"] == 1
+    assert employee_payload["items"][0]["created_by"] == "owner-a"
+    assert "draft" not in employee_payload["items"][0]
+    assert employee_payload["items"][0]["topic"] == "本周选题"
+    assert employee_payload["has_next"] is False
+
+    admin = client.get(
+        "/api/v1/content-tasks?page=1&page_size=20", headers=h(role="super_admin", user="admin", tenant=tenant)
+    )
+    assert admin.status_code == 200
+    assert admin.json()["total"] == 2
+    assert {item["created_by"] for item in admin.json()["items"]} == {"owner-a", "owner-b"}
+
+    assert client.get(
+        "/api/v1/content-tasks?status=bad", headers=h(user="owner-a", tenant=tenant)
+    ).status_code == 400
+    assert client.get(
+        "/api/v1/content-tasks?page=0", headers=h(user="owner-a", tenant=tenant)
+    ).status_code == 400
+    assert client.get(
+        "/api/v1/content-tasks?page_size=101", headers=h(user="owner-a", tenant=tenant)
+    ).status_code == 400
+
+
+def test_content_api_lists_status_filtered_history():
+    tenant = "history-status-tenant"
+    created = create_content_task(user="status-owner", tenant=tenant)
+    task_id = created.json()["task_id"]
+    confirmed = client.post(
+        f"/api/v1/content-tasks/{task_id}/confirmation",
+        headers=h(user="status-owner", tenant=tenant),
+        json={"revision": 1},
+    )
+    assert confirmed.status_code == 200
+
+    reviewing = client.get(
+        "/api/v1/content-tasks?status=reviewing", headers=h(user="status-owner", tenant=tenant)
+    )
+    assert reviewing.status_code == 200
+    assert reviewing.json()["total"] == 0
+
+    confirmed_list = client.get(
+        "/api/v1/content-tasks?status=confirmed", headers=h(user="status-owner", tenant=tenant)
+    )
+    assert confirmed_list.status_code == 200
+    assert confirmed_list.json()["total"] == 1
+    assert confirmed_list.json()["items"][0]["status"] == "confirmed"

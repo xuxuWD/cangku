@@ -11,6 +11,12 @@ def employee(tenant: str, user: str):
     return UserContext(tenant_id=tenant, user_id=user, role="employee")
 
 
+def admin(tenant: str, user: str = "admin"):
+    from app.domain import UserContext
+
+    return UserContext(tenant_id=tenant, user_id=user, role="super_admin")
+
+
 def brief(topic: str) -> ContentBriefInput:
     return ContentBriefInput(topic=topic, sources=[SourceInput(url="https://example.com/a", excerpt="参考摘录")], knowledge_references=[])
 
@@ -176,3 +182,35 @@ def test_regenerate_reuses_task_and_creates_new_run_and_draft():
     assert regenerated.run_id != original_run_id
     assert regenerated.draft.title == "second"
     assert len(regenerated.drafts) == 2
+
+
+def test_content_service_lists_scoped_paginated_summaries_without_drafts():
+    service = make_content_service()
+    owner = service.create(actor=employee("tenant-history", "owner"), payload=brief("我的任务"), idempotency_key="owner-key")
+    service.create(actor=employee("tenant-history", "other"), payload=brief("同租户任务"), idempotency_key="other-key")
+    service.create(actor=employee("tenant-other", "owner"), payload=brief("其他租户任务"), idempotency_key="tenant-key")
+    service.confirm(actor=employee("tenant-history", "owner"), task_id=owner.task_id, revision=1)
+
+    own_page = service.list(actor=employee("tenant-history", "owner"), status=ContentStatus.CONFIRMED, page=1, page_size=20)
+    assert own_page["total"] == 1
+    assert own_page["items"][0].task_id == owner.task_id
+    assert own_page["items"][0].status is ContentStatus.CONFIRMED
+    assert not hasattr(own_page["items"][0], "draft")
+
+    admin_page = service.list(actor=admin("tenant-history"), status=None, page=1, page_size=1)
+    assert admin_page["total"] == 2
+    assert len(admin_page["items"]) == 1
+    assert admin_page["has_next"] is True
+
+    from app.domain import UserContext
+
+    ceo_page = service.list(
+        actor=UserContext(tenant_id="tenant-history", user_id="ceo", role="ceo"),
+        status=None,
+        page=1,
+        page_size=20,
+    )
+    assert ceo_page["total"] == 2
+
+    other_tenant_page = service.list(actor=admin("tenant-other"), status=None, page=1, page_size=20)
+    assert other_tenant_page["total"] == 1

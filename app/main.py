@@ -324,6 +324,44 @@ def create_content_task(payload: ContentCreate, response: Response, context: Use
     return _content_view(record)
 
 
+@app.get("/api/v1/content-tasks")
+def list_content_tasks(
+    status_filter: str | None = Query(default=None, alias="status"),
+    page: int = Query(default=1),
+    page_size: int = Query(default=20),
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    allowed_statuses = {ContentStatus.REVIEWING, ContentStatus.FAILED, ContentStatus.CONFIRMED}
+    if status_filter is not None:
+        try:
+            requested_status = ContentStatus(status_filter)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="不支持的内容任务状态") from exc
+        if requested_status not in allowed_statuses:
+            raise HTTPException(status_code=400, detail="不支持的内容任务状态")
+    else:
+        requested_status = None
+    try:
+        result = content_service.list(
+            actor=context, status=requested_status, page=page, page_size=page_size,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result["items"] = [
+        {
+            "task_id": item.task_id,
+            "topic": item.topic,
+            "status": item.status.value,
+            "created_by": item.created_by,
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+            "run_id": item.run_id,
+        }
+        for item in result["items"]
+    ]
+    return result
+
+
 @app.get("/api/v1/content-tasks/{task_id}")
 def get_content_task(task_id: str, context: UserContext = Depends(current_user)) -> dict[str, object]:
     try:
