@@ -1,0 +1,154 @@
+# `/api/v1` 接口契约（第一阶段）
+
+## 身份
+
+开发环境暂时使用 `X-Tenant-Id`、`X-User-Id`、`X-User-Role` 请求头验证流程。正式环境必须替换为统一登录、短期会话和设备绑定，客户端提供的角色不能作为安全依据。
+
+角色标识：`employee`、`department_lead`、`ceo`、`super_admin`、`customer_admin`。CEO 与超级管理员的权限分开审计。
+
+## 健康检查
+
+`GET /api/v1/health`
+
+返回服务状态和服务名，不包含密钥、数据库连接串或内部堆栈。
+
+## 私有部署商业化 G0
+
+商业化接口面向内部版和客户私有部署版，当前不包含在线支付、自动开通或 SaaS 计费。租户始终从认证上下文的 `X-Tenant-Id`（正式环境为统一登录会话）派生；客户端传入的 `tenant_id` 查询参数不会改变数据范围。
+
+`GET /api/v1/commercial/tenant`
+
+客户管理员或超级管理员查看当前租户摘要，包括租户状态、负责人和创建时间。
+
+`GET /api/v1/commercial/usage`
+
+客户管理员或超级管理员查看当前租户服务端汇总的用量和成本（分）。用量记录由服务端追加，客户端不能提交额度结果、成本或套餐判断。
+
+`POST /api/v1/commercial/exports`
+
+客户管理员或超级管理员申请租户数据导出，接口只创建异步作业并返回 `202`。导出内容经过脱敏，不包含密码、Cookie、验证码、令牌、原始 API 密钥或客户原文。
+
+`POST /api/v1/commercial/deletion-requests`
+
+客户管理员或超级管理员申请删除当前租户，接口返回带冷静期的异步生命周期作业。冷静期结束前必须完成最终导出，删除执行不在请求线程完成。
+
+`GET /api/v1/commercial/lifecycle/{job_id}`
+
+只允许查看当前租户的生命周期作业；跨租户或不存在的作业统一返回 `404`。普通员工不能查看或发起商业化管理操作。
+
+## 任务
+
+## 公众号内容工作台 Alpha
+
+内容工作台面向内部内容运营员工，使用现有任务和 Runtime 作为事实源，首期只生成微信公众号图文草稿，不抓取网页、不调用真实模型、不自动发布。
+
+`POST /api/v1/content-tasks`
+
+请求体包含 `topic`、`sources`、`knowledge_references` 和 `idempotency_key`。来源中的正文摘录由员工粘贴，链接只保存为引用元数据，服务端不会访问链接。服务端固定创建低风险 `content-writer` 任务并启动 Mock Runtime；相同租户、用户和幂等键重放返回原任务，输入不同返回 `409`。
+
+`GET /api/v1/content-tasks/{task_id}`
+
+返回素材、当前运行号、草稿、revision、状态和内容审计。状态为 `generating`、`reviewing`、`confirmed` 或 `failed`。普通员工只能访问自己创建的内容任务；跨租户或无权资源统一返回 `404`。
+
+`PUT /api/v1/content-tasks/{task_id}/draft`
+
+员工在 `reviewing` 状态下编辑标题、摘要、正文和配图建议。请求必须携带当前 `revision`，版本不匹配返回 `409`，服务端不会静默覆盖其他修改。
+
+`POST /api/v1/content-tasks/{task_id}/confirmation`
+
+员工确认当前 revision，写入确认操作者和时间。该确认是内容交付确认，不是管理审批，也不代表已发布。
+
+`DELETE /api/v1/content-tasks/{task_id}/confirmation`
+
+撤销已确认状态并增加 revision，撤销动作可审计。
+
+`GET /api/v1/content-tasks/{task_id}/export.md`
+
+仅允许导出已确认草稿，未确认返回 `409`。响应为 UTF-8 Markdown，包含标题、摘要、正文、配图建议、来源和公开任务号；不包含租户 ID、角色、Token、Cookie、API Key、Runtime 内部会话或原始事件载荷。
+
+Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入摘录中的指令性文字不会改变权限、策略或任务状态。内容 API 不提供网页抓取、外部发布或知识库写入能力。
+
+`POST /api/v1/tasks`
+
+创建任务。必填信息为标题、数字员工标识、风险等级、预算和幂等键，可选项目标识。高风险任务创建后状态为 `pending_approval`，其他任务状态为 `queued`。首次创建返回 `201`，相同租户、用户和幂等键重放返回同一任务并返回 `200`。
+
+`GET /api/v1/tasks/{task_id}`
+
+只允许读取当前租户的任务。不存在或属于其他租户时统一返回 `404`，不泄露任务是否存在。
+
+`POST /api/v1/tasks/{task_id}/approve`
+
+仅 CEO 或超级管理员可调用。只允许审批 `pending_approval` 状态；重复审批返回冲突，不重复写入审计。
+
+## 死信处理
+
+`GET /api/v1/dead-letters`
+
+仅 CEO 或超级管理员可查看当前租户的死信事件，返回失败原因、尝试次数和重放审计状态。
+
+`POST /api/v1/dead-letters/{event_id}/replay`
+
+仅 CEO 或超级管理员可发起重放。重放会将原事件重新投递到事件总线，重复重放返回 `already_replayed`，不会绕过消费端幂等校验。开发环境使用内存登记；生产环境必须接入 `003_dead_letters.sql` 对应的持久化仓储并完成 staging 验收。
+
+## 协同动态
+
+`GET /api/v1/collaboration-dynamics?limit=50`
+
+返回当前用户有权限查看的近期任务事件摘要，供桌面端、网页端和未来动画表现层使用。接口只读，不接受动作指令；任务标题、数字员工、状态和发生时间均来自服务端真实任务记录。普通员工只能看到自己有权限读取的任务，CEO 和超级管理员可按当前租户权限查看汇总。
+
+## 企业知识检索
+
+工作台通过 WeKnora 适配器调用官方 `POST /api/v1/knowledge-search`。适配器固定绑定租户、受限 API Key 和知识库白名单，只返回检索片段及来源引用，不把 WeKnora 内部表结构暴露给客户端。知识库写入、Skill 安装、Shell、沙箱和提示词变更不属于该只读接口范围。
+
+适配器同时支持只读文档详情查询（对应 WeKnora `GET /api/v1/knowledge/:id`），用于获取文档标题、所属知识库、解析状态、启用状态和更新时间。工作台只保存文档 ID、知识库 ID、版本/更新时间和引用关系，不复制 WeKnora 原文；返回的租户或知识库范围不匹配时立即拒绝。
+
+岗位和数字员工的知识库范围由超级管理员在工作台策略中心绑定。检索入口按当前租户、岗位和数字员工自动解析允许的知识库 ID；未配置范围返回空结果，不接受客户端自行扩大范围。
+
+范围绑定的持久化记录包含租户、绑定类型、岗位/数字员工标识、知识库 ID、授权人和授权时间；同一租户内重复绑定不会产生重复记录，替换范围在单一事务中完成。
+
+范围替换会在同一事务写入审计记录（旧范围、新范围、操作者、时间），用于权限变更追溯；客户端不能修改或删除审计记录。
+
+`PUT /api/v1/knowledge-access/roles/{role_key}` / `GET /api/v1/knowledge-access/roles/{role_key}`
+
+超级管理员设置或查看岗位的知识库范围。请求体为 `{ "knowledge_base_ids": ["kb-1", "kb-2"] }`，空数组表示清空范围。
+
+`PUT /api/v1/knowledge-access/agents/{agent_key}` / `GET /api/v1/knowledge-access/agents/{agent_key}`
+
+超级管理员设置或查看数字员工的知识库范围。接口按租户隔离并自动去重排序；其他角色返回 403。
+
+`GET /api/v1/knowledge-access/audits?limit=100`
+
+超级管理员查看当前租户的知识范围变更记录，包含岗位/数字员工标识、修改前后知识库列表、操作者和时间。审计记录只读，其他角色返回 403。
+
+任务视图至少包含：任务号、租户、项目、发起人、数字员工、标题、风险等级、预算、幂等键、状态和审计数量。真实运行阶段还需增加步骤、产物、证据、回滚和失败原因。
+
+## 统一事件
+
+后续任务、模型、审批、通知和移动端均使用统一事件封装：事件号、租户、聚合类型、聚合号、版本、顺序号、去重键、发生时间、动作和脱敏载荷。消费端必须幂等，支持断线重放。
+
+任务创建和审批成功后会发布 `task.created` 与 `task.approved` 事件。相同幂等键的重放请求不会再次发布事件。开发环境使用内存总线验证顺序和重放；生产环境使用 PostgreSQL Outbox + Redis Streams + Celery，事件先在任务事务内写入 Outbox，再异步投递。
+
+Redis Streams 生产适配器使用消费组读取事件，处理成功后显式确认消息，并可接管超过空闲阈值的挂起消息。事件消费者以 `dedupe_key` 去重。处理失败按有限次数重试，超过上限进入死信队列并通知人工处理，不把失败事件标记为已完成。真实 Redis/Celery Worker、告警渠道和 staging 联调仍需单独验收。
+
+## 持久化启动
+
+开发环境默认使用进程内仓储，仅用于本地接口验证。`WORKBENCH_ENV` 为非开发值时，启动会强制要求 `WORKBENCH_STORAGE_BACKEND=postgres`、PostgreSQL 地址和不少于 32 位的认证密钥，并按 `migrations/` 文件名顺序执行未应用迁移。生产环境不会静默回退到内存仓储。
+
+## 错误
+
+业务人员界面只展示中文原因和下一步建议。服务端日志保留内部诊断编号，但不返回堆栈、凭据、Cookie、验证码或原始 API 密钥。
+
+## Agent Runtime 运行
+
+运行时只是任务执行器，不是权限或任务最终状态事实源。所有动作仍由工作台策略中心检查，计划阶段不执行写入、发布、删除、权限或生产工作流动作。
+
+- POST /api/v1/tasks/{task_id}/runs：在指定任务下创建运行。请求可指定 runtime_key、mode 和步骤计划；服务端从任务快照重建租户、用户、岗位、项目、预算、知识/文件范围和策略版本，客户端不能覆盖这些字段。
+- GET /api/v1/runs/{run_id}/events?cursor=...：返回脱敏事件摘要，支持断点读取；内部 Harness session、凭据和原始敏感载荷不返回。
+- POST /api/v1/runs/{run_id}/pause、resume、cancel：任务创建人、CEO 或超级管理员可操作；跨租户运行统一返回 404。
+- POST /api/v1/runs/{run_id}/approvals：登记高风险动作审批请求，返回审批号和 pending 状态，不代表已执行。
+
+开发环境默认注册 mock Runtime。DeerFlow、Codex Worker、Hermes 只能作为独立外部适配器接入，不能直连工作台数据库、Redis、GEO 或生产账号；Hermes 的成长结果只能进入待审核提案。
+
+GET /api/v1/runtimes/health
+
+仅 CEO 和超级管理员可查看 Runtime 健康摘要。返回运行时状态、版本、能力和沙箱状态；未配置或未启用的外部 Runtime 不会被自动调用，响应不包含认证头、内部会话或原始异常。

@@ -1,0 +1,15 @@
+import type { IconName } from '../components/FilledIcon'
+import { FilledIcon } from '../components/FilledIcon'
+
+const navigation: Array<{ icon: IconName; label: string; active?: boolean }> = [
+  { icon: 'home', label: '内容工作台', active: true },
+  { icon: 'user', label: '员工与岗位' },
+  { icon: 'access', label: '知识权限管理', active: true },
+  { icon: 'agent', label: '数字员工设置' },
+  { icon: 'model', label: '模型与费用' },
+  { icon: 'history', label: '安全与操作记录' },
+]
+
+export function AppShell({ children }: { children: React.ReactNode }) {
+  return <div className="app-shell"><header className="topbar"><div style={{ display: 'flex', alignItems: 'center' }}><div className="brand"><div className="brand-mark">智</div>公司数字员工工作台</div><span className="breadcrumb">知识权限</span></div><div className="top-actions"><span className="service-status">服务正常</span><div className="profile"><div className="avatar">超</div>超级管理员</div></div></header><div className="body-layout"><aside className="sidebar"><div className="side-label">管理中心</div>{navigation.map((item) => <div className={`nav-item ${item.active ? 'active' : ''}`} key={item.label}><FilledIcon name={item.icon} label={item.label} />{item.label}</div>)}<div className="side-summary"><h4>本月授权概况</h4><p>已配置 18 个岗位<br />42 个数字员工</p><div className="stat"><span>授权覆盖</span><b>68%</b></div><div className="meter"><span /></div></div></aside>{children}</div></div>
+}

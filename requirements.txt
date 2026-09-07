@@ -1,1 +1,10 @@
 pypdf>=5,<6
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+pydantic-settings>=2.7,<3
+pytest>=8,<9
+httpx>=0.28,<1
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
+redis>=5.2,<6
+celery>=5.4,<6
