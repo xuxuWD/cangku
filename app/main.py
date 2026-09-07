@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from .bootstrap import build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
@@ -38,6 +39,15 @@ from .commercial.usage import InMemoryUsageLedger
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
 settings = get_settings()
 validate_runtime_settings(settings)
+if settings.env == "development":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[],
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1):\d+",
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type", "X-Tenant-Id", "X-User-Id", "X-User-Role", "Idempotency-Key"],
+    )
 store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)

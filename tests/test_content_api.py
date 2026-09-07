@@ -58,3 +58,18 @@ def test_content_api_validates_input_and_idempotency_conflicts():
         json={"topic": "", "sources": [], "knowledge_references": [], "idempotency_key": "invalid"},
     )
     assert invalid.status_code == 422
+
+
+def test_development_frontend_origin_can_preflight_content_requests():
+    response = client.options(
+        "/api/v1/content-tasks",
+        headers={"Origin": "http://127.0.0.1:5173", "Access-Control-Request-Method": "POST"},
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+    second_port = client.options(
+        "/api/v1/content-tasks",
+        headers={"Origin": "http://127.0.0.1:5174", "Access-Control-Request-Method": "POST"},
+    )
+    assert second_port.status_code == 200
+    assert second_port.headers["access-control-allow-origin"] == "http://127.0.0.1:5174"
