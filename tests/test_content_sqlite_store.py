@@ -95,7 +95,8 @@ def test_sqlite_store_lists_scoped_summaries_in_draft_updated_order(tmp_path):
     assert total == 4
     assert [item.task_id for item in summaries] == ["task-b", "task-a"]
     assert summaries[0].topic == "持久化选题"
-    assert summaries[0].updated_at == newer.draft.updated_at
+    assert summaries[0].updated_at != newer.draft.updated_at
+    assert summaries[0].created_at <= summaries[0].updated_at
     assert not hasattr(summaries[0], "draft")
 
     user_summaries, user_total = store.list_summaries("tenant-a", user_id="user-a", status=None, offset=0, limit=20)
@@ -110,7 +111,7 @@ def test_sqlite_store_lists_scoped_summaries_in_draft_updated_order(tmp_path):
 
     tied_summaries, tied_total = store.list_summaries("tenant-a", user_id=None, status=None, offset=0, limit=2)
     assert tied_total == 4
-    assert [item.task_id for item in tied_summaries] == ["task-d", "task-z"]
+    assert [item.task_id for item in tied_summaries] == ["task-z", "task-d"]
     store.close()
 
 
@@ -129,3 +130,41 @@ def test_memory_store_lists_summaries_with_same_scope_and_status_semantics():
     assert total == 1
     assert summaries[0].task_id == "task-2"
     assert summaries[0].status is ContentStatus.FAILED
+
+
+def test_sqlite_store_summary_uses_task_timestamps_for_order_and_dates(tmp_path):
+    store = SQLiteContentStore(tmp_path / "content.sqlite3")
+    first = make_record("task-a", "tenant-a", "user-a", "key-a")
+    second = make_record("task-b", "tenant-a", "user-a", "key-b")
+    store.add(first)
+    store.add(second)
+
+    first_created = datetime(2026, 9, 7, 8, tzinfo=UTC)
+    first_updated = datetime(2026, 9, 7, 10, tzinfo=UTC)
+    second_created = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    second_updated = datetime(2026, 9, 7, 11, tzinfo=UTC)
+    with store._connection:
+        store._connection.execute(
+            "UPDATE content_tasks SET created_at = ?, updated_at = ? WHERE task_id = ?",
+            (first_created.isoformat(), first_updated.isoformat(), "task-a"),
+        )
+        store._connection.execute(
+            "UPDATE content_tasks SET created_at = ?, updated_at = ? WHERE task_id = ?",
+            (second_created.isoformat(), second_updated.isoformat(), "task-b"),
+        )
+        store._connection.execute(
+            "UPDATE content_drafts SET updated_at = ? WHERE task_id = ?",
+            (datetime(2026, 9, 7, 20, tzinfo=UTC).isoformat(), "task-a"),
+        )
+        store._connection.execute(
+            "UPDATE content_drafts SET updated_at = ? WHERE task_id = ?",
+            (datetime(2026, 9, 7, 19, tzinfo=UTC).isoformat(), "task-b"),
+        )
+
+    summaries, total = store.list_summaries("tenant-a", user_id=None, status=None, offset=0, limit=20)
+
+    assert total == 2
+    assert [item.task_id for item in summaries] == ["task-b", "task-a"]
+    assert summaries[0].created_at == second_created
+    assert summaries[0].updated_at == second_updated
+    store.close()

@@ -244,10 +244,10 @@ class SQLiteContentStore:
             rows = self._connection.execute(
                 f"""
                     SELECT tasks.task_id, tasks.tenant_id, tasks.created_by, tasks.brief_json,
-                           drafts.status, drafts.run_id, drafts.created_at, drafts.updated_at
+                           drafts.status, drafts.run_id, tasks.created_at, tasks.updated_at
                     {query_from}
                     WHERE {where}
-                    ORDER BY drafts.updated_at DESC, tasks.task_id DESC
+                    ORDER BY tasks.updated_at DESC, tasks.task_id DESC
                     LIMIT ? OFFSET ?
                 """,
                 [*parameters, limit, offset],
