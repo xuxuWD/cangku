@@ -23,6 +23,7 @@ def test_production_requires_postgres_and_a_real_auth_secret() -> None:
                 storage_backend="postgres",
                 database_url="postgresql://localhost/workbench",
                 auth_secret="short",
+                content_store_backend="sqlite",
             )
         )
 
@@ -177,6 +178,7 @@ def test_production_bootstrap_requires_postgres_repository() -> None:
         storage_backend="postgres",
         database_url="postgresql://localhost/workbench",
         auth_secret="x" * 32,
+        content_store_backend="sqlite",
     )
     repository = build_task_repository(settings, connection=object(), migrate=False)
 
@@ -289,3 +291,38 @@ def test_dead_letter_migration_has_tenant_unique_and_replay_audit_fields() -> No
     assert "sequence BIGINT NOT NULL" in migration
     assert "occurred_at TIMESTAMPTZ NOT NULL" in migration
     assert "UNIQUE (tenant_id, dedupe_key)" in migration
+
+
+def test_content_store_settings_default_to_sqlite_and_accept_path_override(monkeypatch):
+    from app.settings import Settings
+
+    monkeypatch.delenv("WORKBENCH_CONTENT_STORE_BACKEND", raising=False)
+    monkeypatch.setenv("CONTENT_STORE_PATH", "tmp/custom-content.sqlite3")
+    settings = Settings()
+    assert settings.content_store_backend == "sqlite"
+    assert settings.content_store_path == "tmp/custom-content.sqlite3"
+
+
+def test_build_content_store_selects_explicit_memory_or_sqlite(tmp_path):
+    from app.bootstrap import build_content_store
+    from app.content.store import ContentStore
+    from app.content.sqlite_store import SQLiteContentStore
+    from app.settings import Settings
+
+    assert isinstance(build_content_store(Settings(content_store_backend="memory")), ContentStore)
+    store = build_content_store(
+        Settings(content_store_backend="sqlite", content_store_path=str(tmp_path / "content.db"))
+    )
+    assert isinstance(store, SQLiteContentStore)
+    store.close()
+
+
+def test_build_content_store_resolves_relative_path_from_project_root():
+    from pathlib import Path
+
+    from app.bootstrap import build_content_store
+    from app.settings import Settings
+
+    store = build_content_store(Settings(content_store_backend="sqlite", content_store_path="tmp/relative.db"))
+    assert store.path == Path(__file__).resolve().parents[1] / "tmp/relative.db"
+    store.close()

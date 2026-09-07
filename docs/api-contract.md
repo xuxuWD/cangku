@@ -132,7 +132,9 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 ## 持久化启动
 
-开发环境默认使用进程内仓储，仅用于本地接口验证。`WORKBENCH_ENV` 为非开发值时，启动会强制要求 `WORKBENCH_STORAGE_BACKEND=postgres`、PostgreSQL 地址和不少于 32 位的认证密钥，并按 `migrations/` 文件名顺序执行未应用迁移。生产环境不会静默回退到内存仓储。
+开发环境的内容工作台默认使用项目根目录 `data/content-workbench.sqlite3` 保存任务、草稿和审计，服务重启后可恢复。可用 `CONTENT_STORE_PATH` 或 `WORKBENCH_CONTENT_STORE_PATH` 覆盖 SQLite 文件路径；测试和临时场景可显式设置 `WORKBENCH_CONTENT_STORE_BACKEND=memory`。其他控制平面仓储仍遵循 `WORKBENCH_STORAGE_BACKEND` 配置。
+
+`WORKBENCH_ENV` 为非开发值时，启动会强制要求 `WORKBENCH_STORAGE_BACKEND=postgres`、PostgreSQL 地址和不少于 32 位的认证密钥，并按 `migrations/` 文件名顺序执行未应用迁移。生产环境不会静默回退到内存仓储，内容工作台也不允许使用内存仓储。
 
 ## 错误
 

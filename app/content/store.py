@@ -6,6 +6,10 @@ from threading import RLock
 from .models import ContentAudit, ContentDraft, NormalizedBrief
 
 
+class ContentStoreConflict(RuntimeError):
+    """Raised when a persisted content record was changed concurrently."""
+
+
 @dataclass
 class ContentRecord:
     task_id: str
@@ -42,6 +46,16 @@ class ContentStore:
         with self._lock:
             self._records[record.task_id] = record
             self._idempotency[(record.tenant_id, record.created_by, record.idempotency_key)] = record.task_id
+            return record
+
+    def save(self, record: ContentRecord, *, expected_revision: int | None = None) -> ContentRecord:
+        with self._lock:
+            current = self._records.get(record.task_id)
+            if current is None:
+                raise KeyError(record.task_id)
+            if expected_revision is not None and current is not record and current.draft.revision != expected_revision:
+                raise ContentStoreConflict(record.task_id)
+            self._records[record.task_id] = record
             return record
 
     def get(self, tenant_id: str, user_id: str, task_id: str, *, elevated: bool = False) -> ContentRecord:

@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, st
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bootstrap import build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
+from .bootstrap import build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -29,7 +29,6 @@ from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.service import RunAccessDenied, RuntimeService
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
 from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict
-from .content.store import ContentStore
 from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
 from .commercial.repository import InMemoryCommercialRepository, ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
@@ -53,7 +52,12 @@ event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
 knowledge_access_registry = build_knowledge_access_registry(settings)
 runtime_service = RuntimeService(store)
-content_service = ContentService(task_store=store, runtime_service=runtime_service, content_store=ContentStore(), knowledge_registry=knowledge_access_registry)
+content_service = ContentService(
+    task_store=store,
+    runtime_service=runtime_service,
+    content_store=build_content_store(settings),
+    knowledge_registry=knowledge_access_registry,
+)
 commercial_repository = InMemoryCommercialRepository()
 commercial_usage = InMemoryUsageLedger()
 commercial_lifecycle = CommercialLifecycleService(commercial_repository)

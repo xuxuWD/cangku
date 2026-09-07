@@ -27,3 +27,7 @@ vite.config.d.ts
 .idea/
 .vscode/
 *.log
+
+# 内容工作台本地 SQLite 数据
+data/
+*.sqlite3

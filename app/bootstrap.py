@@ -48,6 +48,24 @@ def build_task_repository(settings: Settings, *, connection=None, migrate: bool 
     raise ValueError("不支持的任务仓储类型")
 
 
+def build_content_store(settings: Settings):
+    validate_runtime_settings(settings)
+    if settings.content_store_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存内容仓储")
+        from .content.store import ContentStore
+
+        return ContentStore()
+    if settings.content_store_backend == "sqlite":
+        from .content.sqlite_store import SQLiteContentStore
+
+        path = Path(settings.content_store_path)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[1] / path
+        return SQLiteContentStore(path)
+    raise ValueError("不支持的内容仓储类型")
+
+
 def build_outbox_publisher(settings: Settings, *, connection=None, redis_client=None) -> OutboxPublisher:
     """Build the production Outbox publisher from deployment-owned clients."""
     validate_runtime_settings(settings)

@@ -15,14 +15,14 @@ def brief(topic: str) -> ContentBriefInput:
     return ContentBriefInput(topic=topic, sources=[SourceInput(url="https://example.com/a", excerpt="参考摘录")], knowledge_references=[])
 
 
-def make_content_service():
+def make_content_service(content_store=None):
     from app.content.service import ContentService
     from app.content.store import ContentStore
     from app.domain import TaskStore
     from app.runtime.service import RuntimeService
 
     task_store = TaskStore()
-    return ContentService(task_store, RuntimeService(task_store), ContentStore())
+    return ContentService(task_store, RuntimeService(task_store), content_store or ContentStore())
 
 
 def test_normalize_brief_requires_topic_and_one_material():
@@ -100,3 +100,28 @@ def test_draft_edit_uses_optimistic_revision_and_only_confirmed_draft_exports():
     assert "# 新标题" in markdown
     assert "tenant-a" not in markdown
     assert "token" not in markdown.lower()
+
+
+def test_sqlite_content_service_mutations_survive_store_reopen(tmp_path):
+    from app.content.sqlite_store import SQLiteContentStore
+
+    path = tmp_path / "content.sqlite3"
+    store = SQLiteContentStore(path)
+    service = make_content_service(content_store=store)
+    created = service.create(actor=employee("tenant-a", "user-a"), payload=brief("持久化"), idempotency_key="key-1")
+    updated = service.update_draft(
+        actor=employee("tenant-a", "user-a"), task_id=created.task_id, revision=1,
+        title="已编辑", summary="摘要", body_markdown="正文", image_suggestions=["配图"],
+    )
+    service.confirm(actor=employee("tenant-a", "user-a"), task_id=created.task_id, revision=updated.revision)
+    service.export_markdown(actor=employee("tenant-a", "user-a"), task_id=created.task_id)
+    store.close()
+
+    reopened = SQLiteContentStore(path)
+    restored = reopened.get("tenant-a", "user-a", created.task_id)
+    assert restored.draft.status == ContentStatus.CONFIRMED
+    assert restored.draft.title == "已编辑"
+    assert [audit.action for audit in restored.audits] == [
+        "content.created", "draft.updated", "draft.confirmed", "draft.exported",
+    ]
+    reopened.close()
