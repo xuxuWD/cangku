@@ -38,6 +38,36 @@
 
 ## 任务
 
+## 公众号内容工作台 Alpha
+
+内容工作台面向内部内容运营员工，使用现有任务和 Runtime 作为事实源，首期只生成微信公众号图文草稿，不抓取网页、不调用真实模型、不自动发布。
+
+`POST /api/v1/content-tasks`
+
+请求体包含 `topic`、`sources`、`knowledge_references` 和 `idempotency_key`。来源中的正文摘录由员工粘贴，链接只保存为引用元数据，服务端不会访问链接。服务端固定创建低风险 `content-writer` 任务并启动 Mock Runtime；相同租户、用户和幂等键重放返回原任务，输入不同返回 `409`。
+
+`GET /api/v1/content-tasks/{task_id}`
+
+返回素材、当前运行号、草稿、revision、状态和内容审计。状态为 `generating`、`reviewing`、`confirmed` 或 `failed`。普通员工只能访问自己创建的内容任务；跨租户或无权资源统一返回 `404`。
+
+`PUT /api/v1/content-tasks/{task_id}/draft`
+
+员工在 `reviewing` 状态下编辑标题、摘要、正文和配图建议。请求必须携带当前 `revision`，版本不匹配返回 `409`，服务端不会静默覆盖其他修改。
+
+`POST /api/v1/content-tasks/{task_id}/confirmation`
+
+员工确认当前 revision，写入确认操作者和时间。该确认是内容交付确认，不是管理审批，也不代表已发布。
+
+`DELETE /api/v1/content-tasks/{task_id}/confirmation`
+
+撤销已确认状态并增加 revision，撤销动作可审计。
+
+`GET /api/v1/content-tasks/{task_id}/export.md`
+
+仅允许导出已确认草稿，未确认返回 `409`。响应为 UTF-8 Markdown，包含标题、摘要、正文、配图建议、来源和公开任务号；不包含租户 ID、角色、Token、Cookie、API Key、Runtime 内部会话或原始事件载荷。
+
+Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入摘录中的指令性文字不会改变权限、策略或任务状态。内容 API 不提供网页抓取、外部发布或知识库写入能力。
+
 `POST /api/v1/tasks`
 
 创建任务。必填信息为标题、数字员工标识、风险等级、预算和幂等键，可选项目标识。高风险任务创建后状态为 `pending_approval`，其他任务状态为 `queued`。首次创建返回 `201`，相同租户、用户和幂等键重放返回同一任务并返回 `200`。

@@ -26,6 +26,9 @@ from .auth import verify_access_token
 from .settings import get_settings, validate_runtime_settings
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.service import RunAccessDenied, RuntimeService
+from .content.models import ContentBriefInput, ContentStatus, SourceInput
+from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict
+from .content.store import ContentStore
 from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
 from .commercial.repository import InMemoryCommercialRepository, ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
@@ -40,6 +43,7 @@ event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
 knowledge_access_registry = build_knowledge_access_registry(settings)
 runtime_service = RuntimeService(store)
+content_service = ContentService(task_store=store, runtime_service=runtime_service, content_store=ContentStore(), knowledge_registry=knowledge_access_registry)
 commercial_repository = InMemoryCommercialRepository()
 commercial_usage = InMemoryUsageLedger()
 commercial_lifecycle = CommercialLifecycleService(commercial_repository)
@@ -141,6 +145,55 @@ class RuntimeApprovalCreate(BaseModel):
     action: dict[str, object]
 
 
+class ContentSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(default="", max_length=2048)
+    excerpt: str = Field(min_length=1, max_length=20_000)
+
+
+class ContentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    topic: str = Field(min_length=1, max_length=200)
+    sources: list[ContentSource] = Field(default_factory=list, max_length=20)
+    knowledge_references: list[str] = Field(default_factory=list, max_length=100)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class ContentDraftUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=300)
+    summary: str = Field(min_length=1, max_length=2_000)
+    body_markdown: str = Field(min_length=1, max_length=50_000)
+    image_suggestions: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ContentConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=1)
+
+
+def _content_view(record) -> dict[str, object]:
+    draft = record.draft
+    return {
+        "task_id": record.task_id,
+        "run_id": record.run_id,
+        "status": draft.status.value,
+        "revision": draft.revision,
+        "topic": record.brief.topic,
+        "sources": [{"url": item.url, "excerpt": item.excerpt} for item in record.brief.sources],
+        "knowledge_references": list(record.brief.knowledge_references),
+        "draft": {
+            "draft_id": draft.draft_id, "title": draft.title, "summary": draft.summary,
+            "body_markdown": draft.body_markdown, "image_suggestions": draft.image_suggestions,
+            "citations": [{"url": item.url} for item in draft.citations],
+            "template_version": draft.template_version,
+            "confirmed_by": draft.confirmed_by, "confirmed_at": draft.confirmed_at,
+        },
+        "audits": [{"action": item.action, "actor_id": item.actor_id, "occurred_at": item.occurred_at} for item in record.audits],
+    }
+
+
 class CommercialTenantView(BaseModel):
     tenant_id: str
     name: str
@@ -224,6 +277,90 @@ def to_view(task: Task) -> TaskView:
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "company-workbench"}
+
+
+@app.post("/api/v1/content-tasks", status_code=status.HTTP_201_CREATED)
+def create_content_task(payload: ContentCreate, response: Response, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    existing = content_service.content_store.find_by_idempotency(context.tenant_id, context.user_id, payload.idempotency_key)
+    try:
+        record = content_service.create(
+            actor=context,
+            payload=ContentBriefInput(
+                topic=payload.topic,
+                sources=[SourceInput(url=item.url, excerpt=item.excerpt) for item in payload.sources],
+                knowledge_references=payload.knowledge_references,
+            ),
+            idempotency_key=payload.idempotency_key,
+        )
+    except IdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ContentNotFound as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if existing is not None:
+        response.status_code = status.HTTP_200_OK
+    return _content_view(record)
+
+
+@app.get("/api/v1/content-tasks/{task_id}")
+def get_content_task(task_id: str, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        return _content_view(content_service.get(actor=context, task_id=task_id))
+    except ContentNotFound as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+
+
+@app.put("/api/v1/content-tasks/{task_id}/draft")
+def update_content_draft(task_id: str, payload: ContentDraftUpdate, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        content_service.update_draft(
+            actor=context, task_id=task_id, revision=payload.revision, title=payload.title,
+            summary=payload.summary, body_markdown=payload.body_markdown,
+            image_suggestions=payload.image_suggestions,
+        )
+        return _content_view(content_service.get(actor=context, task_id=task_id))
+    except ContentNotFound as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/content-tasks/{task_id}/confirmation")
+def confirm_content_task(task_id: str, payload: ContentConfirmation, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        content_service.confirm(actor=context, task_id=task_id, revision=payload.revision)
+        return _content_view(content_service.get(actor=context, task_id=task_id))
+    except ContentNotFound as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/v1/content-tasks/{task_id}/confirmation")
+def revoke_content_confirmation(task_id: str, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        content_service.revoke_confirmation(actor=context, task_id=task_id)
+        return _content_view(content_service.get(actor=context, task_id=task_id))
+    except ContentNotFound as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/content-tasks/{task_id}/export.md")
+def export_content_task(task_id: str, context: UserContext = Depends(current_user)) -> Response:
+    try:
+        content = content_service.export_markdown(actor=context, task_id=task_id)
+    except ContentNotFound as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+    except ExportNotAllowed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(
+        content=content,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="content-{task_id}.md"'},
+    )
 
 
 @app.get("/api/v1/commercial/tenant", response_model=CommercialTenantView)
