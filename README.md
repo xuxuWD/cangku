@@ -88,3 +88,9 @@ python extract_pdf.py --input "资料路径.pdf" --output pdf_text.txt
 - `feature/<主题>`：独立功能开发分支。
 - 每个提交只解决一个清晰的问题，并在提交前附上对应测试或资料依据。
 - 未完成真实环境验收的功能，不标记为已上线或已验收。
+
+## 管理台前端
+
+首个 React 管理台位于 `admin-web/`，当前提供中文“知识权限管理”页面。运行 `cd admin-web; npm install; npm run dev` 可启动本地管理台；具体 API 和开发身份配置见 `admin-web/README.md`。
+
+当前内部 Alpha 另提供“公众号内容工作台”页面：员工可提交主题与正文摘录，使用 Mock Runtime 生成可编辑草稿，自行确认后下载 Markdown 内容包。该流程不抓取网页、不调用真实模型，也不会自动发布；真实模型、平台接入和生产验收仍未完成。
