@@ -1,10 +1,10 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app.content.models import ContentAudit, ContentDraft, ContentStatus, NormalizedBrief, NormalizedSource
 from app.content.sqlite_store import ContentStoreConflict, SQLiteContentStore
-from app.content.store import ContentRecord
+from app.content.store import ContentRecord, ContentStore
 
 
 def make_record(task_id: str, tenant_id: str, user_id: str, key: str) -> ContentRecord:
@@ -68,3 +68,64 @@ def test_sqlite_store_save_rejects_stale_revision_without_overwriting(tmp_path):
         first.save(stale, expected_revision=1)
     assert first.get("tenant-a", "user-a", "task-1").draft.title == "新标题"
     first.close()
+
+
+def test_sqlite_store_lists_scoped_summaries_in_draft_updated_order(tmp_path):
+    store = SQLiteContentStore(tmp_path / "content.sqlite3")
+    older = make_record("task-a", "tenant-a", "user-a", "key-a")
+    newer = make_record("task-b", "tenant-a", "user-b", "key-b")
+    other_tenant = make_record("task-c", "tenant-b", "user-a", "key-c")
+    failed = make_record("task-d", "tenant-a", "user-a", "key-d")
+    timestamp = datetime(2026, 9, 7, 8, tzinfo=UTC)
+    older.draft.updated_at = timestamp
+    newer.draft.updated_at = timestamp + timedelta(minutes=1)
+    other_tenant.draft.updated_at = timestamp + timedelta(minutes=2)
+    failed.draft.updated_at = timestamp + timedelta(minutes=3)
+    same_time = make_record("task-z", "tenant-a", "user-b", "key-z")
+    same_time.draft.updated_at = timestamp + timedelta(minutes=1)
+    failed.draft.status = ContentStatus.FAILED
+    store.add(older)
+    store.add(newer)
+    store.add(other_tenant)
+    store.add(failed)
+    store.add(same_time)
+
+    summaries, total = store.list_summaries("tenant-a", user_id=None, status=None, offset=2, limit=2)
+
+    assert total == 4
+    assert [item.task_id for item in summaries] == ["task-b", "task-a"]
+    assert summaries[0].topic == "持久化选题"
+    assert summaries[0].updated_at == newer.draft.updated_at
+    assert not hasattr(summaries[0], "draft")
+
+    user_summaries, user_total = store.list_summaries("tenant-a", user_id="user-a", status=None, offset=0, limit=20)
+    assert user_total == 2
+    assert [item.task_id for item in user_summaries] == ["task-d", "task-a"]
+
+    failed_summaries, failed_total = store.list_summaries(
+        "tenant-a", user_id=None, status=ContentStatus.FAILED, offset=0, limit=20
+    )
+    assert failed_total == 1
+    assert [item.task_id for item in failed_summaries] == ["task-d"]
+
+    tied_summaries, tied_total = store.list_summaries("tenant-a", user_id=None, status=None, offset=0, limit=2)
+    assert tied_total == 4
+    assert [item.task_id for item in tied_summaries] == ["task-d", "task-z"]
+    store.close()
+
+
+def test_memory_store_lists_summaries_with_same_scope_and_status_semantics():
+    store = ContentStore()
+    first = make_record("task-1", "tenant-a", "user-a", "key-1")
+    second = make_record("task-2", "tenant-a", "user-b", "key-2")
+    first.draft.updated_at = datetime(2026, 9, 7, 8, tzinfo=UTC)
+    second.draft.updated_at = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    second.draft.status = ContentStatus.FAILED
+    store.add(first)
+    store.add(second)
+
+    summaries, total = store.list_summaries("tenant-a", user_id=None, status=ContentStatus.FAILED, offset=0, limit=20)
+
+    assert total == 1
+    assert summaries[0].task_id == "task-2"
+    assert summaries[0].status is ContentStatus.FAILED

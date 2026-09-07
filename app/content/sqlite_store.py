@@ -7,7 +7,7 @@ from threading import RLock
 from typing import Any
 
 from .models import ContentAudit, ContentDraft, ContentStatus, NormalizedBrief, NormalizedSource
-from .store import ContentRecord, ContentStoreConflict
+from .store import ContentRecord, ContentStoreConflict, ContentTaskSummary
 
 __all__ = ["ContentStoreConflict", "SQLiteContentStore"]
 
@@ -211,6 +211,60 @@ class SQLiteContentStore:
             if record is None or record.tenant_id != tenant_id or (record.created_by != user_id and not elevated):
                 raise KeyError(task_id)
             return record
+
+    def list_summaries(
+        self,
+        tenant_id: str,
+        *,
+        user_id: str | None,
+        status: ContentStatus | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[ContentTaskSummary], int]:
+        clauses = ["tasks.tenant_id = ?"]
+        parameters: list[Any] = [tenant_id]
+        if user_id is not None:
+            clauses.append("tasks.created_by = ?")
+            parameters.append(user_id)
+        if status is not None:
+            clauses.append("drafts.status = ?")
+            parameters.append(status.value)
+        where = " AND ".join(clauses)
+        query_from = """
+            FROM content_tasks AS tasks
+            JOIN content_drafts AS drafts ON drafts.task_id = tasks.task_id
+                AND drafts.revision = (
+                    SELECT MAX(revision) FROM content_drafts WHERE task_id = tasks.task_id
+                )
+        """
+        with self._lock:
+            total = self._connection.execute(
+                f"SELECT COUNT(*) {query_from} WHERE {where}", parameters
+            ).fetchone()[0]
+            rows = self._connection.execute(
+                f"""
+                    SELECT tasks.task_id, tasks.tenant_id, tasks.created_by, tasks.brief_json,
+                           drafts.status, drafts.run_id, drafts.created_at, drafts.updated_at
+                    {query_from}
+                    WHERE {where}
+                    ORDER BY drafts.updated_at DESC, tasks.task_id DESC
+                    LIMIT ? OFFSET ?
+                """,
+                [*parameters, limit, offset],
+            ).fetchall()
+        return [
+            ContentTaskSummary(
+                task_id=row["task_id"],
+                tenant_id=row["tenant_id"],
+                created_by=row["created_by"],
+                topic=json.loads(row["brief_json"])["topic"],
+                status=ContentStatus(row["status"]),
+                run_id=row["run_id"],
+                created_at=_parse_timestamp(row["created_at"]),
+                updated_at=_parse_timestamp(row["updated_at"]),
+            )
+            for row in rows
+        ], total
 
     def close(self) -> None:
         with self._lock:

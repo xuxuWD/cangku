@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from threading import RLock
 
-from .models import ContentAudit, ContentDraft, NormalizedBrief
+from .models import ContentAudit, ContentDraft, ContentStatus, NormalizedBrief
 
 
 class ContentStoreConflict(RuntimeError):
@@ -29,6 +30,18 @@ class ContentRecord:
     @property
     def run_id(self) -> str:
         return self.run_ids[-1]
+
+
+@dataclass(frozen=True)
+class ContentTaskSummary:
+    task_id: str
+    tenant_id: str
+    created_by: str
+    topic: str
+    status: ContentStatus
+    run_id: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class ContentStore:
@@ -64,3 +77,38 @@ class ContentStore:
             if record is None or record.tenant_id != tenant_id or (record.created_by != user_id and not elevated):
                 raise KeyError(task_id)
             return record
+
+    @staticmethod
+    def _summary(record: ContentRecord) -> ContentTaskSummary:
+        draft = record.draft
+        return ContentTaskSummary(
+            task_id=record.task_id,
+            tenant_id=record.tenant_id,
+            created_by=record.created_by,
+            topic=record.brief.topic,
+            status=draft.status,
+            run_id=draft.run_id,
+            created_at=draft.created_at,
+            updated_at=draft.updated_at,
+        )
+
+    def list_summaries(
+        self,
+        tenant_id: str,
+        *,
+        user_id: str | None,
+        status: ContentStatus | None,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[ContentTaskSummary], int]:
+        with self._lock:
+            records = [
+                record
+                for record in self._records.values()
+                if record.tenant_id == tenant_id
+                and (user_id is None or record.created_by == user_id)
+                and (status is None or record.draft.status == status)
+            ]
+            records.sort(key=lambda record: (record.draft.updated_at, record.task_id), reverse=True)
+            total = len(records)
+            return [self._summary(record) for record in records[offset:offset + limit]], total
