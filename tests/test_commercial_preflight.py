@@ -1,4 +1,4 @@
-from scripts.commercial_g0_preflight import run_preflight
+from scripts.commercial_g0_preflight import _as_mapping, run_preflight
 
 
 def valid_config() -> dict[str, object]:
@@ -40,3 +40,11 @@ def test_preflight_blocks_migration_drift_retention_gap_and_unpinned_runtime():
     assert "迁移" in report.to_text()
     assert "保留策略" in report.to_text()
     assert "Runtime" in report.to_text()
+
+
+def test_default_preflight_migration_inventory_includes_all_repository_migrations(monkeypatch):
+    monkeypatch.delenv("WORKBENCH_APPLIED_MIGRATIONS", raising=False)
+    values = _as_mapping(None)
+
+    expected = set(values["expected_migrations"])
+    assert {"001_initial", "006_commercial_g0", "007_commercial_retention"}.issubset(expected)

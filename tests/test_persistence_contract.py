@@ -202,6 +202,18 @@ def test_commercial_bootstrap_uses_postgres_components_in_production() -> None:
     assert isinstance(lifecycle.job_store, PostgresLifecycleJobStore)
 
 
+def test_commercial_bootstrap_rejects_memory_components_in_production() -> None:
+    with pytest.raises(ValueError, match="生产环境必须使用 PostgreSQL"):
+        build_commercial_components(
+            Settings(
+                env="production",
+                storage_backend="memory",
+                auth_secret="x" * 32,
+                content_store_backend="sqlite",
+            )
+        )
+
+
 def test_production_bootstrap_requires_postgres_repository() -> None:
     from app.repository import PostgresTaskRepository
 
