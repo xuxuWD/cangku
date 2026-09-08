@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AppShell } from '../../app/AppShell'
+import { AppShell, type AppView } from '../../app/AppShell'
 import { FilledIcon } from '../../components/FilledIcon'
 import { NoticeBanner } from '../../components/NoticeBanner'
 import { ObjectSelect } from '../../components/ObjectSelect'
@@ -27,7 +27,7 @@ function asApiError(error: unknown): ApiErrorShape {
   return { status: 0, message: '服务暂时不可用，请检查网络后重新尝试。', retryable: true, unauthorized: false }
 }
 
-export function KnowledgeAccessPage() {
+export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppView) => void } = {}) {
   const [state, setState] = useState<KnowledgeState>(initialKnowledgeState)
   const [sound, setSound] = useState(true)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -123,9 +123,9 @@ export function KnowledgeAccessPage() {
     return <NoticeBanner tone="error" title={state.error.unauthorized ? '暂时无法配置知识权限' : '知识权限读取失败'}>{state.error.message} {state.error.retryable && <button className="text-action" type="button" onClick={retryLoad}>重新尝试</button>}</NoticeBanner>
   }, [retryLoad, save, state.error, state.saveError])
 
-  if (state.loading) return <AppShell><main className="main-content"><div className="loading-state" aria-live="polite"><span className="loading-dot" />正在读取知识权限...</div></main></AppShell>
+  if (state.loading) return <AppShell activeView="knowledge" onNavigate={onNavigate}><main className="main-content"><div className="loading-state" aria-live="polite"><span className="loading-dot" />正在读取知识权限...</div></main></AppShell>
 
-  return <AppShell>
+  return <AppShell activeView="knowledge" onNavigate={onNavigate}>
     <main className="main-content">
       <div className="page-head"><div><div className="eyebrow">资料访问范围</div><h1 className="page-title">知识权限管理</h1><p className="page-desc">选择这个岗位和它的数字员工可以使用的资料。未授权的内容不会被读取。</p></div><div className="actions"><button className="button" type="button" disabled={!canEdit} onClick={clear}>清空选择</button><SaveButton saving={state.saving} disabled={!canSave || isUnauthorized || !state.bindingLoaded} onClick={() => void save()} /></div></div>
       <div className="controls"><SegmentedControl value={state.subjectType} onChange={(value) => void load(value, subjects[value][0].key)} /><ObjectSelect value={state.subjectKey} options={options} onChange={(key) => void load(state.subjectType, key)} /><span className="role-note">{state.subjectType === 'role' ? '内容中心 · 6 名员工' : `所属岗位：${currentSubject.label}`}</span></div>
