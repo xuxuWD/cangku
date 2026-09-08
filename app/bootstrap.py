@@ -12,6 +12,49 @@ from .repository import PostgresTaskRepository, TaskRepository
 from .settings import Settings, validate_runtime_settings
 
 
+def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True):
+    """Build tenant, usage, and lifecycle persistence as one coordinated unit."""
+    validate_runtime_settings(settings)
+    from .commercial.lifecycle import (
+        CommercialLifecycleService,
+        InMemoryLifecycleJobStore,
+        InMemoryRetentionPolicyStore,
+        PostgresLifecycleJobStore,
+        PostgresRetentionPolicyStore,
+    )
+    from .commercial.repository import InMemoryCommercialRepository, PostgresCommercialRepository
+    from .commercial.usage import InMemoryUsageLedger, PostgresUsageLedger
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存商业化仓储")
+        repository = InMemoryCommercialRepository()
+        usage = InMemoryUsageLedger()
+        lifecycle = CommercialLifecycleService(
+            repository,
+            job_store=InMemoryLifecycleJobStore(),
+            retention_store=InMemoryRetentionPolicyStore(),
+        )
+        return repository, usage, lifecycle
+    if settings.storage_backend != "postgres":
+        raise ValueError("不支持的商业化存储类型")
+    if connection is None:
+        from psycopg_pool import ConnectionPool
+
+        database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+    if migrate:
+        apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+    repository = PostgresCommercialRepository(connection)
+    usage = PostgresUsageLedger(connection)
+    lifecycle = CommercialLifecycleService(
+        repository,
+        job_store=PostgresLifecycleJobStore(connection),
+        retention_store=PostgresRetentionPolicyStore(connection),
+    )
+    return repository, usage, lifecycle
+
+
 def build_event_bus(settings: Settings, *, redis_client=None):
     """Select the local development bus or the Redis Streams production bus."""
     validate_runtime_settings(settings)

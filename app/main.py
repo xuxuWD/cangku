@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, st
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bootstrap import build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
+from .bootstrap import build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -30,9 +30,8 @@ from .runtime.service import RunAccessDenied, RuntimeService
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
 from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict
 from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
-from .commercial.repository import InMemoryCommercialRepository, ResourceNotFound
+from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
-from .commercial.usage import InMemoryUsageLedger
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
@@ -59,9 +58,7 @@ content_service = ContentService(
     knowledge_registry=knowledge_access_registry,
     content_generator=build_content_generator(settings),
 )
-commercial_repository = InMemoryCommercialRepository()
-commercial_usage = InMemoryUsageLedger()
-commercial_lifecycle = CommercialLifecycleService(commercial_repository)
+commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:

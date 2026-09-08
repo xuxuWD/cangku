@@ -172,3 +172,56 @@ class CommercialLifecycleService:
 
     def get_job(self, job_id: str) -> LifecycleJob:
         return self.job_store.get(job_id)
+
+
+class PostgresLifecycleJobStore:
+    def __init__(self, connection_or_pool) -> None: self.connection = connection_or_pool
+    def _connection(self):
+        from contextlib import nullcontext
+        return self.connection.connection() if hasattr(self.connection, "connection") and callable(self.connection.connection) else nullcontext(self.connection)
+    def create(self, job: LifecycleJob) -> LifecycleJob:
+        with self._connection() as c:
+            with c.transaction():
+                with c.cursor() as cur:
+                    cur.execute("INSERT INTO workbench_lifecycle_jobs (id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)", (job.id,job.tenant_id,job.kind,job.status,job.execute_after,job.requested_by,job.requested_at,job.final_exported))
+        return job
+    def get(self, job_id: str, *, tenant_id: str | None = None) -> LifecycleJob:
+        with self._connection() as c:
+            with c.cursor() as cur:
+                sql="SELECT id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported FROM workbench_lifecycle_jobs WHERE id = %s"; params=[job_id]
+                if tenant_id is not None: sql += " AND tenant_id = %s"; params.append(tenant_id)
+                cur.execute(sql, tuple(params)); row=cur.fetchone()
+        if row is None: raise ResourceNotFound(job_id)
+        return LifecycleJob(tenant_id=str(row[1]), kind=str(row[2]), status=str(row[3]), requested_by=str(row[5]), execute_after=row[4], id=str(row[0]), requested_at=row[6] if isinstance(row[6], datetime) else datetime.now(UTC), final_exported=bool(row[7]))
+    def save(self, job: LifecycleJob) -> LifecycleJob:
+        with self._connection() as c:
+            with c.transaction():
+                with c.cursor() as cur:
+                    cur.execute("UPDATE workbench_lifecycle_jobs SET status = %s, execute_after = %s, final_exported = %s WHERE id = %s AND tenant_id = %s", (job.status,job.execute_after,job.final_exported,job.id,job.tenant_id))
+        return job
+    def list_for_tenant(self, tenant_id: str, *, kind: str | None = None) -> list[LifecycleJob]:
+        with self._connection() as c:
+            with c.cursor() as cur:
+                sql="SELECT id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported FROM workbench_lifecycle_jobs WHERE tenant_id = %s"; params=[tenant_id]
+                if kind is not None: sql += " AND kind = %s"; params.append(kind)
+                cur.execute(sql, tuple(params)); rows=cur.fetchall()
+        return [LifecycleJob(tenant_id=str(r[1]), kind=str(r[2]), status=str(r[3]), requested_by=str(r[5]), execute_after=r[4], id=str(r[0]), requested_at=r[6] if isinstance(r[6], datetime) else datetime.now(UTC), final_exported=bool(r[7])) for r in rows]
+
+class PostgresRetentionPolicyStore:
+    def __init__(self, connection_or_pool) -> None: self.connection = connection_or_pool
+    def _connection(self):
+        from contextlib import nullcontext
+        return self.connection.connection() if hasattr(self.connection, "connection") and callable(self.connection.connection) else nullcontext(self.connection)
+    def set(self, tenant_id: str, policy: dict[str,int], *, actor_id: str) -> None:
+        import json
+        with self._connection() as c:
+            with c.transaction():
+                with c.cursor() as cur:
+                    cur.execute("INSERT INTO workbench_retention_policies (tenant_id, policy, updated_by) VALUES (%s,%s,%s) ON CONFLICT (tenant_id) DO UPDATE SET policy = EXCLUDED.policy, updated_by = EXCLUDED.updated_by", (tenant_id, json.dumps(policy), actor_id))
+    def get(self, tenant_id: str) -> dict[str,int] | None:
+        import json
+        with self._connection() as c:
+            with c.cursor() as cur:
+                cur.execute("SELECT policy FROM workbench_retention_policies WHERE tenant_id = %s", (tenant_id,)); row=cur.fetchone()
+        if row is None: return None
+        return dict(json.loads(row[0]) if isinstance(row[0], str) else row[0])
