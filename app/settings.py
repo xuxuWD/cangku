@@ -21,6 +21,12 @@ class Settings(BaseSettings):
             "BACKUP_ENCRYPTION_KEY", "WORKBENCH_BACKUP_ENCRYPTION_KEY"
         ),
     )
+    outbox_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        validation_alias=AliasChoices("OUTBOX_MAX_ATTEMPTS", "WORKBENCH_OUTBOX_MAX_ATTEMPTS"),
+    )
     storage_backend: str = "memory"
     content_store_backend: str = Field(
         default="sqlite",

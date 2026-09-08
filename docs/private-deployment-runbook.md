@@ -10,7 +10,8 @@
 2. 配置 `WORKBENCH_ENV` 为非 `development`，并使用 PostgreSQL 持久化仓储；不能回退到内存模式。
 3. 将 Runtime 记录为固定版本或不可变镜像摘要。禁止使用 `latest`、`main` 或未固定版本。
 4. 配置数据保留策略。任务与审计保留天数必须是正整数，并写入客户交付记录。
-5. 运行 `python scripts/commercial_g0_preflight.py`。预检会校验非开发环境、PostgreSQL 存储、认证密钥、备份密钥及两者隔离；输出不得包含数据库密码、备份密钥、Cookie、令牌或原始 API 密钥。
+5. 配置 `WORKBENCH_OUTBOX_MAX_ATTEMPTS`，取值为 1 到 20 的正整数，并写入交付记录。
+6. 运行 `python scripts/commercial_g0_preflight.py`。预检会校验非开发环境、PostgreSQL 存储、认证密钥、备份密钥及两者隔离；输出不得包含数据库密码、备份密钥、Cookie、令牌或原始 API 密钥。
 
 Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-checklist.md) 执行；缺少任一前置条件时停止，不以本地演练替代。
 

@@ -36,7 +36,7 @@ docker compose up -d
 
 基础设施包含 PostgreSQL + pgvector、Redis 和 MinIO。复制 `.env.example` 为 `.env` 并替换所有随机密钥后再启动；Compose 端口只绑定本机，不能直接当作生产编排文件。
 
-生产启动必须设置 `WORKBENCH_ENV=production`、`WORKBENCH_STORAGE_BACKEND=postgres`、可访问的 PostgreSQL 地址、长度不少于 32 位的 `WORKBENCH_AUTH_SECRET` 和不同值的 `WORKBENCH_BACKUP_ENCRYPTION_KEY`。缺少任一项时服务会拒绝启动，不会悄悄回退到内存数据。
+生产启动必须设置 `WORKBENCH_ENV=production`、`WORKBENCH_STORAGE_BACKEND=postgres`、可访问的 PostgreSQL 地址、长度不少于 32 位的 `WORKBENCH_AUTH_SECRET`、不同值的 `WORKBENCH_BACKUP_ENCRYPTION_KEY` 和 1 到 20 的 `WORKBENCH_OUTBOX_MAX_ATTEMPTS`。缺少任一项时服务会拒绝启动，不会悄悄回退到内存数据。
 
 ## Worker 启动
 

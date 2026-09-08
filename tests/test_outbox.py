@@ -194,3 +194,26 @@ def test_worker_runtime_requires_postgres_and_wires_injected_clients() -> None:
 
     with pytest.raises(ValueError, match="Worker 必须使用 PostgreSQL"):
         configure_runtime(settings=Settings(env="development", storage_backend="memory"))
+
+
+def test_worker_runtime_uses_configured_outbox_max_attempts() -> None:
+    class Connection:
+        pass
+
+    class Redis:
+        pass
+
+    publisher = configure_runtime(
+        settings=Settings(
+            env="development",
+            storage_backend="postgres",
+            database_url="postgresql://localhost/workbench",
+            outbox_max_attempts=5,
+        ),
+        connection=Connection(),
+        redis_client=Redis(),
+    )
+    try:
+        assert publisher.max_attempts == 5
+    finally:
+        configure_outbox_publisher(None)
