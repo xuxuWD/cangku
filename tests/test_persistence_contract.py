@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.settings import Settings, validate_runtime_settings
-from app.bootstrap import build_task_repository
+from app.bootstrap import build_commercial_components, build_task_repository
 from app.domain import TaskNotFound, TaskStore
 from app.domain import RiskLevel, Task, TaskStatus, UserContext
 from app.repository import PostgresTaskRepository
@@ -168,6 +168,37 @@ def test_development_bootstrap_uses_memory_store() -> None:
     repository = build_task_repository(Settings(env="development", storage_backend="memory"))
 
     assert isinstance(repository, TaskStore)
+
+
+def test_commercial_bootstrap_uses_memory_components_in_development() -> None:
+    from app.commercial.lifecycle import CommercialLifecycleService
+    from app.commercial.repository import InMemoryCommercialRepository
+    from app.commercial.usage import InMemoryUsageLedger
+
+    repository, usage, lifecycle = build_commercial_components(Settings(env="development", storage_backend="memory"))
+
+    assert isinstance(repository, InMemoryCommercialRepository)
+    assert isinstance(usage, InMemoryUsageLedger)
+    assert isinstance(lifecycle, CommercialLifecycleService)
+
+
+def test_commercial_bootstrap_uses_postgres_components_in_production() -> None:
+    from app.commercial.lifecycle import PostgresLifecycleJobStore
+    from app.commercial.repository import PostgresCommercialRepository
+    from app.commercial.usage import PostgresUsageLedger
+
+    settings = Settings(
+        env="production",
+        storage_backend="postgres",
+        database_url="postgresql://localhost/workbench",
+        auth_secret="x" * 32,
+        content_store_backend="sqlite",
+    )
+    repository, usage, lifecycle = build_commercial_components(settings, connection=object(), migrate=False)
+
+    assert isinstance(repository, PostgresCommercialRepository)
+    assert isinstance(usage, PostgresUsageLedger)
+    assert isinstance(lifecycle.job_store, PostgresLifecycleJobStore)
 
 
 def test_production_bootstrap_requires_postgres_repository() -> None:

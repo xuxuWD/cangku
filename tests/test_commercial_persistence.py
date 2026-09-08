@@ -1,5 +1,7 @@
 from pathlib import Path
+from datetime import UTC, datetime
 
+from app.commercial.lifecycle import LifecycleJob, PostgresLifecycleJobStore, PostgresRetentionPolicyStore
 from app.commercial.repository import PostgresCommercialRepository
 from app.commercial.tenant import TenantStatus
 from app.commercial.usage import PostgresUsageLedger, UsageEntry
@@ -104,3 +106,39 @@ def test_postgres_usage_ledger_totals_are_tenant_scoped():
     assert ledger.total("tenant-1") == 12
     assert ledger.total_cost_cents("tenant-1") == 345
     assert all("WHERE tenant_id = %s" in sql for sql, _ in connection.cursor_instance.statements)
+
+
+def test_postgres_lifecycle_store_scopes_reads_and_updates_by_tenant():
+    created_at = datetime.now(UTC)
+    row = ("job-1", "tenant-1", "delete", "cooling_down", created_at, "admin-1", created_at, False)
+    connection = Connection([row, [row]])
+    store = PostgresLifecycleJobStore(connection)
+    job = store.get("job-1", tenant_id="tenant-1")
+
+    assert job.tenant_id == "tenant-1"
+    job.final_exported = True
+    store.save(job)
+    listed = store.list_for_tenant("tenant-1", kind="delete")
+
+    assert listed[0].id == "job-1"
+    statements = connection.cursor_instance.statements
+    assert any("WHERE id = %s AND tenant_id = %s" in sql for sql, _ in statements)
+    assert any("WHERE tenant_id = %s AND kind = %s" in sql for sql, _ in statements)
+    assert any("WHERE id = %s AND tenant_id = %s" in sql for sql, _ in statements if sql.startswith("UPDATE"))
+
+
+def test_postgres_retention_store_persists_tenant_scoped_policy():
+    connection = Connection([({"tasks": 90},)])
+    store = PostgresRetentionPolicyStore(connection)
+
+    store.set("tenant-1", {"tasks": 90}, actor_id="admin-1")
+    assert store.get("tenant-1") == {"tasks": 90}
+    assert connection.transactions == 1
+    assert any("WHERE tenant_id = %s" in sql for sql, _ in connection.cursor_instance.statements)
+    assert any("(tenant_id, policy, updated_by)" in sql for sql, _ in connection.cursor_instance.statements)
+
+
+def test_commercial_retention_migration_adds_persistent_policy_and_export_marker():
+    migration = Path("migrations/007_commercial_retention.sql").read_text(encoding="utf-8")
+    assert "workbench_retention_policies" in migration
+    assert "ADD COLUMN IF NOT EXISTS final_exported" in migration
