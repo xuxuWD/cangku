@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS workbench_audit_events (
     actor_id TEXT NOT NULL,
     actor_role TEXT NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    FOREIGN KEY (id, tenant_id) REFERENCES workbench_tasks(id, tenant_id) ON DELETE CASCADE
+    FOREIGN KEY (task_id, tenant_id) REFERENCES workbench_tasks(id, tenant_id) ON DELETE CASCADE
 );
 
 -- Approval must be a single conditional update inside the caller's transaction.

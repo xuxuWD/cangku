@@ -33,7 +33,8 @@ def test_initial_migration_has_tenant_scoped_idempotency_and_atomic_approval_con
 
     assert "CREATE TABLE IF NOT EXISTS workbench_tasks" in migration
     assert "UNIQUE (tenant_id, created_by, idempotency_key)" in migration
-    assert "FOREIGN KEY (id, tenant_id) REFERENCES workbench_tasks(id, tenant_id)" in migration
+    assert "FOREIGN KEY (task_id, tenant_id) REFERENCES workbench_tasks(id, tenant_id)" in migration
+    assert "FOREIGN KEY (id, tenant_id) REFERENCES workbench_tasks(id, tenant_id)" not in migration
     assert "CHECK (status IN ('queued', 'pending_approval', 'cancelled'))" in migration
     assert "UPDATE workbench_tasks" in migration
     assert "WHERE id = %s AND tenant_id = %s AND status = 'pending_approval'" in migration
