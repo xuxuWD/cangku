@@ -118,8 +118,28 @@ class PostgresCommercialRepository:
         with self._connection() as connection:
             with connection.transaction():
                 with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM workbench_tenants WHERE id = %s", (tenant_id,))
+                    if cursor.fetchone() is None:
+                        raise ResourceNotFound(tenant_id)
                     cursor.execute("INSERT INTO workbench_customer_admins (tenant_id, user_id) VALUES (%s, %s) ON CONFLICT (tenant_id, user_id) DO NOTHING", (tenant_id, user_id))
         return CustomerAdmin(tenant_id=tenant_id, user_id=user_id)
+
+    def set_tenant_status(self, tenant_id: str, status: TenantStatus) -> Tenant:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE workbench_tenants SET status = %s, updated_at = now() WHERE id = %s RETURNING id, name, owner_id, status, created_at",
+                        (status.value, tenant_id),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise ResourceNotFound(tenant_id)
+        return Tenant(
+            id=str(row[0]), name=str(row[1]), owner_id=str(row[2]),
+            status=TenantStatus(str(row[3])),
+            created_at=row[4] if isinstance(row[4], datetime) else datetime.now(UTC),
+        )
 
     def create_tenant(self, name: str, *, owner_id: str) -> Tenant:
         tenant_id = f"tenant-{uuid4().hex[:12]}"
@@ -135,6 +155,10 @@ class PostgresCommercialRepository:
                         (tenant_id, name, owner_id),
                     )
                     row = cursor.fetchone()
+                    cursor.execute(
+                        "INSERT INTO workbench_customer_admins (tenant_id, user_id) VALUES (%s, %s) ON CONFLICT (tenant_id, user_id) DO NOTHING",
+                        (tenant_id, owner_id),
+                    )
         if row is None:
             raise ResourceNotFound(tenant_id)
         return Tenant(

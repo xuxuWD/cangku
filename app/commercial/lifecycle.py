@@ -122,7 +122,10 @@ class CommercialLifecycleService:
         tenant = self.repository.get_tenant(tenant_id)
         if tenant.status == TenantStatus.DELETED:
             raise CommercialPolicyError("租户已经删除")
-        tenant.status = TenantStatus.DELETING
+        if hasattr(self.repository, "set_tenant_status"):
+            tenant = self.repository.set_tenant_status(tenant_id, TenantStatus.DELETING)
+        else:
+            tenant.status = TenantStatus.DELETING
         job = LifecycleJob(
             tenant_id=tenant_id,
             kind="delete",
@@ -153,7 +156,10 @@ class CommercialLifecycleService:
         if not job.final_exported:
             raise CommercialPolicyError("删除前必须完成最终导出")
         tenant = self.repository.get_tenant(tenant_id)
-        tenant.status = TenantStatus.DELETED
+        if hasattr(self.repository, "set_tenant_status"):
+            self.repository.set_tenant_status(tenant_id, TenantStatus.DELETED)
+        else:
+            tenant.status = TenantStatus.DELETED
         job.status = "completed"
         self.job_store.save(job)
 

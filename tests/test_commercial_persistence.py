@@ -67,6 +67,7 @@ def test_postgres_repository_creates_tenant_in_transaction():
     assert tenant.status == TenantStatus.TRIAL
     assert connection.transactions == 1
     assert any("INSERT INTO workbench_tenants" in sql for sql, _ in connection.cursor_instance.statements)
+    assert any("workbench_customer_admins" in sql for sql, _ in connection.cursor_instance.statements)
 
 
 def test_postgres_usage_append_uses_tenant_idempotency_and_reversal_insert():
