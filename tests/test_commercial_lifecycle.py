@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.commercial.lifecycle import CommercialLifecycleService
+from app.commercial.lifecycle import CommercialLifecycleService, InMemoryLifecycleJobStore
 from app.commercial.repository import InMemoryCommercialRepository
 from app.commercial.tenant import Actor, CommercialPolicyError, TenantStatus
 
@@ -42,3 +42,16 @@ def test_retention_policy_has_positive_days_and_is_audited():
     assert service.retention(tenant.id)["tasks"] == 180
     with pytest.raises(CommercialPolicyError):
         service.set_retention(tenant.id, {"tasks": 0}, Actor("admin-1", "customer_admin"))
+
+
+def test_lifecycle_service_uses_injected_job_store():
+    repository = InMemoryCommercialRepository()
+    tenant = repository.create_tenant("客户 A", owner_id="owner-1")
+    repository.add_customer_admin(tenant.id, "admin-1")
+    jobs = InMemoryLifecycleJobStore()
+    service = CommercialLifecycleService(repository, job_store=jobs)
+
+    job = service.request_delete(Actor("admin-1", "customer_admin"), tenant.id)
+
+    assert jobs.get(job.id).id == job.id
+    assert service.get_job(job.id).tenant_id == tenant.id
