@@ -12,6 +12,8 @@
 4. 配置数据保留策略。任务与审计保留天数必须是正整数，并写入客户交付记录。
 5. 运行 `python scripts/commercial_g0_preflight.py`。输出不得包含数据库密码、备份密钥、Cookie、令牌或原始 API 密钥。
 
+Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-checklist.md) 执行；缺少任一前置条件时停止，不以本地演练替代。
+
 ## 迁移与备份
 
 1. 迁移前暂停写入任务，记录当前应用版本、数据库迁移清单和 Runtime 固定版本。
