@@ -193,6 +193,7 @@ def test_commercial_bootstrap_uses_postgres_components_in_production() -> None:
         storage_backend="postgres",
         database_url="postgresql://localhost/workbench",
         auth_secret="x" * 32,
+        backup_encryption_key="y" * 32,
         content_store_backend="sqlite",
     )
     repository, usage, lifecycle = build_commercial_components(settings, connection=object(), migrate=False)
@@ -214,6 +215,22 @@ def test_commercial_bootstrap_rejects_memory_components_in_production() -> None:
         )
 
 
+def test_production_requires_a_separate_backup_encryption_key() -> None:
+    base = dict(
+        env="production",
+        storage_backend="postgres",
+        database_url="postgresql://localhost/workbench",
+        auth_secret="a" * 32,
+        content_store_backend="sqlite",
+    )
+
+    with pytest.raises(ValueError, match="备份加密密钥至少需要 32 个字符"):
+        validate_runtime_settings(Settings(**base))
+
+    with pytest.raises(ValueError, match="认证密钥和备份加密密钥必须不同"):
+        validate_runtime_settings(Settings(**base, backup_encryption_key="a" * 32))
+
+
 def test_production_bootstrap_requires_postgres_repository() -> None:
     from app.repository import PostgresTaskRepository
 
@@ -222,6 +239,7 @@ def test_production_bootstrap_requires_postgres_repository() -> None:
         storage_backend="postgres",
         database_url="postgresql://localhost/workbench",
         auth_secret="x" * 32,
+        backup_encryption_key="y" * 32,
         content_store_backend="sqlite",
     )
     repository = build_task_repository(settings, connection=object(), migrate=False)

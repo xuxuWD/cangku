@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     object_storage_url: str = "http://localhost:9000"
     log_level: str = "INFO"
     auth_secret: str = ""
+    backup_encryption_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "BACKUP_ENCRYPTION_KEY", "WORKBENCH_BACKUP_ENCRYPTION_KEY"
+        ),
+    )
     storage_backend: str = "memory"
     content_store_backend: str = Field(
         default="sqlite",
@@ -70,3 +76,7 @@ def validate_runtime_settings(settings: Settings) -> None:
         raise ValueError("生产环境数据库地址必须是 PostgreSQL")
     if len(settings.auth_secret) < 32:
         raise ValueError("认证密钥至少需要 32 个字符")
+    if len(settings.backup_encryption_key) < 32:
+        raise ValueError("备份加密密钥至少需要 32 个字符")
+    if settings.auth_secret == settings.backup_encryption_key:
+        raise ValueError("认证密钥和备份加密密钥必须不同")
