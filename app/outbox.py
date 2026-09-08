@@ -10,9 +10,13 @@ from .events import EventEnvelope
 class OutboxPublisher:
     """Publishes committed Outbox rows and marks only successful deliveries."""
 
-    def __init__(self, connection_or_pool, event_bus) -> None:
+    def __init__(self, connection_or_pool, event_bus, *, max_attempts: int = 3, dead_letter_store=None) -> None:
         self.connection = connection_or_pool
         self.event_bus = event_bus
+        if max_attempts < 1:
+            raise ValueError("Outbox 最大尝试次数必须为正整数")
+        self.max_attempts = max_attempts
+        self.dead_letter_store = dead_letter_store
 
     @contextmanager
     def _connection(self):
@@ -31,7 +35,7 @@ class OutboxPublisher:
                     cursor.execute(
                         """
                         SELECT event_id, tenant_id, aggregate_type, aggregate_id, version,
-                               sequence, dedupe_key, action, payload, occurred_at
+                               sequence, dedupe_key, action, payload, occurred_at, attempts
                         FROM workbench_event_outbox
                         WHERE published_at IS NULL
                         ORDER BY occurred_at, event_id
@@ -46,6 +50,7 @@ class OutboxPublisher:
                         try:
                             self.event_bus.publish(event)
                         except Exception as exc:
+                            attempts = int(row[10]) + 1
                             cursor.execute(
                                 """
                                 UPDATE workbench_event_outbox
@@ -54,6 +59,8 @@ class OutboxPublisher:
                                 """,
                                 (str(exc)[:500], row[0]),
                             )
+                            if attempts >= self.max_attempts and self.dead_letter_store is not None:
+                                self.dead_letter_store.record(event, str(exc), attempts=attempts)
                             continue
                         cursor.execute(
                             """

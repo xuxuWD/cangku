@@ -60,6 +60,7 @@ def row():
         "task.created",
         {"status": "queued"},
         datetime.now(UTC),
+        0,
     )
 
 
@@ -88,6 +89,58 @@ def test_outbox_publisher_does_not_mark_a_failed_publish() -> None:
     assert publisher.publish_pending(limit=10) == 0
     assert any("attempts = attempts + 1" in sql for sql, _ in connection.cursor_value.statements)
     assert not any("published_at = now()" in sql for sql, _ in connection.cursor_value.statements)
+
+
+def test_outbox_publisher_records_dead_letter_after_max_attempts() -> None:
+    failed_row = (*row()[:-1], 1)
+
+    class FailingBus:
+        def publish(self, _event):
+            raise RuntimeError("redis unavailable")
+
+    class DeadLetters:
+        def __init__(self):
+            self.calls = []
+
+        def record(self, event, error, *, attempts):
+            self.calls.append((event, error, attempts))
+
+    dead_letters = DeadLetters()
+    publisher = OutboxPublisher(
+        Connection([failed_row]),
+        FailingBus(),
+        max_attempts=2,
+        dead_letter_store=dead_letters,
+    )
+
+    assert publisher.publish_pending(limit=10) == 0
+    assert len(dead_letters.calls) == 1
+    assert dead_letters.calls[0][0].event_id == "event-1"
+    assert dead_letters.calls[0][2] == 2
+
+
+def test_outbox_publisher_keeps_retryable_failure_out_of_dead_letters() -> None:
+    class FailingBus:
+        def publish(self, _event):
+            raise RuntimeError("temporary")
+
+    class DeadLetters:
+        def __init__(self):
+            self.calls = []
+
+        def record(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+
+    dead_letters = DeadLetters()
+    publisher = OutboxPublisher(
+        Connection([row()]),
+        FailingBus(),
+        max_attempts=2,
+        dead_letter_store=dead_letters,
+    )
+
+    assert publisher.publish_pending(limit=10) == 0
+    assert dead_letters.calls == []
 
 
 def test_celery_worker_has_periodic_outbox_schedule_and_late_ack() -> None:
@@ -133,6 +186,7 @@ def test_worker_runtime_requires_postgres_and_wires_injected_clients() -> None:
     try:
         assert publisher is not None
         assert publisher.event_bus.client.__class__.__name__ == "Redis"
+        assert publisher.dead_letter_store.__class__.__name__ == "PostgresDeadLetterStore"
     finally:
         configure_outbox_publisher(None)
 

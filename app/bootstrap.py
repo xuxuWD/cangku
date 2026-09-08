@@ -144,7 +144,9 @@ def build_outbox_publisher(settings: Settings, *, connection=None, redis_client=
         from redis import Redis
 
         redis_client = Redis.from_url(settings.redis_url, decode_responses=False)
-    return OutboxPublisher(connection, RedisStreamEventBus(redis_client))
+    event_bus = RedisStreamEventBus(redis_client)
+    dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, connection=connection)
+    return OutboxPublisher(connection, event_bus, dead_letter_store=dead_letter_store)
 
 
 def build_dead_letter_store(settings: Settings, *, event_bus, connection=None):
