@@ -92,6 +92,35 @@ class PostgresCommercialRepository:
             with nullcontext(self.connection) as connection:
                 yield connection
 
+    def get_tenant(self, tenant_id: str) -> Tenant:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id, name, owner_id, status, created_at FROM workbench_tenants WHERE id = %s", (tenant_id,))
+                row = cursor.fetchone()
+        if row is None: raise ResourceNotFound(tenant_id)
+        return Tenant(id=str(row[0]), name=str(row[1]), owner_id=str(row[2]), status=TenantStatus(str(row[3])), created_at=row[4] if isinstance(row[4], datetime) else datetime.now(UTC))
+
+    def is_customer_admin(self, tenant_id: str, user_id: str) -> bool:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM workbench_customer_admins WHERE tenant_id = %s AND user_id = %s", (tenant_id, user_id))
+                return cursor.fetchone() is not None
+
+    def get_workspace(self, tenant_id: str, workspace_id: str) -> Workspace:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id, tenant_id, name, created_at FROM workbench_workspaces WHERE tenant_id = %s AND id = %s", (tenant_id, workspace_id))
+                row = cursor.fetchone()
+        if row is None: raise ResourceNotFound(workspace_id)
+        return Workspace(id=str(row[0]), tenant_id=str(row[1]), name=str(row[2]), created_at=row[3] if isinstance(row[3], datetime) else datetime.now(UTC))
+
+    def add_customer_admin(self, tenant_id: str, user_id: str) -> CustomerAdmin:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute("INSERT INTO workbench_customer_admins (tenant_id, user_id) VALUES (%s, %s) ON CONFLICT (tenant_id, user_id) DO NOTHING", (tenant_id, user_id))
+        return CustomerAdmin(tenant_id=tenant_id, user_id=user_id)
+
     def create_tenant(self, name: str, *, owner_id: str) -> Tenant:
         tenant_id = f"tenant-{uuid4().hex[:12]}"
         with self._connection() as connection:
