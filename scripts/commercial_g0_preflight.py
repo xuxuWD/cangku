@@ -44,7 +44,10 @@ def _as_mapping(config: Mapping[str, object] | None) -> dict[str, object]:
     expected = sorted(path.stem for path in migration_dir.glob("*.sql"))
     applied = [item.strip() for item in os.getenv("WORKBENCH_APPLIED_MIGRATIONS", "").split(",") if item.strip()]
     return {
+        "environment": os.getenv("WORKBENCH_ENV", ""),
+        "storage_backend": os.getenv("WORKBENCH_STORAGE_BACKEND", ""),
         "database_url": os.getenv("WORKBENCH_DATABASE_URL", ""),
+        "auth_secret": os.getenv("WORKBENCH_AUTH_SECRET", ""),
         "backup_key": os.getenv("WORKBENCH_BACKUP_ENCRYPTION_KEY", ""),
         "applied_migrations": applied,
         "expected_migrations": expected,
@@ -57,6 +60,18 @@ def run_preflight(config: Mapping[str, object] | None = None) -> PreflightReport
     values = _as_mapping(config)
     checks: list[PreflightCheck] = []
 
+    environment = values.get("environment")
+    if not isinstance(environment, str) or not environment.strip() or environment.lower() == "development":
+        checks.append(PreflightCheck("运行环境", "fail", "必须设置为非 development 环境"))
+    else:
+        checks.append(PreflightCheck("运行环境", "pass", "已设置为部署环境"))
+
+    storage_backend = values.get("storage_backend")
+    if storage_backend != "postgres":
+        checks.append(PreflightCheck("存储模式", "fail", "必须使用 PostgreSQL 持久化"))
+    else:
+        checks.append(PreflightCheck("存储模式", "pass", "已配置 PostgreSQL 持久化"))
+
     database_url = values.get("database_url")
     if not isinstance(database_url, str) or not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
         checks.append(PreflightCheck("数据库地址", "fail", "缺少有效的 PostgreSQL 地址"))
@@ -68,6 +83,17 @@ def run_preflight(config: Mapping[str, object] | None = None) -> PreflightReport
         checks.append(PreflightCheck("备份加密密钥", "fail", "必须配置至少 32 个字符的密钥"))
     else:
         checks.append(PreflightCheck("备份加密密钥", "pass", "已配置（值不会显示）"))
+
+    auth_secret = values.get("auth_secret")
+    if not isinstance(auth_secret, str) or len(auth_secret) < 32:
+        checks.append(PreflightCheck("认证密钥", "fail", "必须配置至少 32 个字符的密钥"))
+    else:
+        checks.append(PreflightCheck("认证密钥", "pass", "已配置（值不会显示）"))
+
+    if isinstance(auth_secret, str) and isinstance(backup_key, str) and auth_secret and auth_secret == backup_key:
+        checks.append(PreflightCheck("密钥隔离", "fail", "认证密钥和备份加密密钥必须使用不同值"))
+    else:
+        checks.append(PreflightCheck("密钥隔离", "pass", "认证密钥与备份密钥已分离"))
 
     expected = {str(item) for item in values.get("expected_migrations", []) or []}
     applied = {str(item) for item in values.get("applied_migrations", []) or []}
