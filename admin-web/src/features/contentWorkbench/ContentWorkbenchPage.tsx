@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AppShell } from '../../app/AppShell'
+import { AppShell, type AppView } from '../../app/AppShell'
 import { createContentTask, confirmContentTask, downloadMarkdown, getContentTask, regenerateContentTask, updateDraft } from './api'
 import { createIdempotencyKey, createRegenerationIdempotencyKey } from './state'
 import type { ContentDraft, ContentSource, ContentTask, ContentStatus } from './types'
 
 const labels: Record<ContentStatus, string> = { generating: '生成中', reviewing: '待自检', confirmed: '已确认', failed: '失败' }
 
-export function ContentWorkbenchPage({ taskId, onNavigate }: { taskId?: string; onNavigate?: (view: 'workbench' | 'history') => void } = {}) {
+export function ContentWorkbenchPage({ taskId, onNavigate }: { taskId?: string; onNavigate?: (view: AppView) => void } = {}) {
   const [topic, setTopic] = useState(''); const [sources, setSources] = useState<ContentSource[]>([{ url: '', excerpt: '' }]); const [task, setTask] = useState<ContentTask | null>(null); const [draft, setDraft] = useState<ContentDraft | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const canGenerate = topic.trim().length > 0 && sources.some((item) => item.excerpt.trim().length > 0) && !busy
   const key = useMemo(() => createIdempotencyKey(topic, sources, []), [topic, sources])

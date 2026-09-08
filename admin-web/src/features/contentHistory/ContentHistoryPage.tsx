@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AppShell } from '../../app/AppShell'
+import { AppShell, type AppView } from '../../app/AppShell'
 import { listContentTasks } from '../contentWorkbench/api'
 import type { ContentStatus, ContentTaskSummary } from '../contentWorkbench/types'
 
@@ -16,7 +16,7 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
 
-export function ContentHistoryPage({ onOpenTask, onNavigate }: { onOpenTask: (taskId: string) => void; onNavigate?: (view: 'workbench' | 'history') => void }) {
+export function ContentHistoryPage({ onOpenTask, onNavigate }: { onOpenTask: (taskId: string) => void; onNavigate?: (view: AppView) => void }) {
   const [status, setStatus] = useState<ContentStatus | ''>('')
   const [page, setPage] = useState(1)
   const [items, setItems] = useState<ContentTaskSummary[]>([])
