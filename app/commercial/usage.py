@@ -63,3 +63,62 @@ class InMemoryUsageLedger:
     def total_cost_cents(self, tenant_id: str) -> int:
         with self._lock:
             return sum(item.cost_cents for item in self._entries.values() if item.tenant_id == tenant_id)
+
+
+class PostgresUsageLedger:
+    def __init__(self, connection_or_pool) -> None:
+        self.connection = connection_or_pool
+
+    def _connection(self):
+        from contextlib import nullcontext
+        if hasattr(self.connection, "connection") and callable(self.connection.connection):
+            return self.connection.connection()
+        return nullcontext(self.connection)
+
+    def append(self, entry: UsageEntry) -> UsageEntry:
+        if entry.units < 0 or entry.cost_cents < 0:
+            raise UsageLedgerError("用量和成本不能小于 0")
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "INSERT INTO workbench_usage_ledger (id, tenant_id, idempotency_key, units, cost_cents, reversal_of, occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (tenant_id, idempotency_key) DO NOTHING RETURNING id, occurred_at",
+                        (entry.id, entry.tenant_id, entry.idempotency_key, entry.units, entry.cost_cents, entry.reversal_of, entry.occurred_at),
+                    )
+                    row = cursor.fetchone()
+                    if row is not None:
+                        return entry
+                    cursor.execute("SELECT id, units, cost_cents, reversal_of, occurred_at FROM workbench_usage_ledger WHERE tenant_id = %s AND idempotency_key = %s", (entry.tenant_id, entry.idempotency_key))
+                    existing = cursor.fetchone()
+        if existing is None:
+            raise UsageLedgerError("用量记录写入失败")
+        return UsageEntry(idempotency_key=entry.idempotency_key, tenant_id=entry.tenant_id, units=int(existing[1]), cost_cents=int(existing[2]), id=str(existing[0]), reversal_of=existing[3], occurred_at=existing[4] if isinstance(existing[4], datetime) else entry.occurred_at)
+
+    def total(self, tenant_id: str) -> int:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT COALESCE(SUM(units), 0) FROM workbench_usage_ledger WHERE tenant_id = %s", (tenant_id,))
+                row = cursor.fetchone()
+        return int(row[0] if row else 0)
+
+    def total_cost_cents(self, tenant_id: str) -> int:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT COALESCE(SUM(cost_cents), 0) FROM workbench_usage_ledger WHERE tenant_id = %s", (tenant_id,))
+                row = cursor.fetchone()
+        return int(row[0] if row else 0)
+
+    def reverse(self, entry_id: str, *, reason: str, actor_id: str) -> UsageEntry:
+        reversal_id = f"usage-{uuid4().hex[:12]}"
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT tenant_id, units, cost_cents FROM workbench_usage_ledger WHERE id = %s AND reversal_of IS NULL", (entry_id,))
+                    original = cursor.fetchone()
+                    if original is None:
+                        raise UsageLedgerError("原用量记录不存在")
+                    cursor.execute("INSERT INTO workbench_usage_ledger (id, tenant_id, idempotency_key, units, cost_cents, reversal_of, reason, actor_id) SELECT %s, tenant_id, %s, -units, -cost_cents, id, %s, %s FROM workbench_usage_ledger WHERE id = %s AND reversal_of IS NULL RETURNING id, tenant_id, units, cost_cents, reversal_of, occurred_at", (reversal_id, f"reversal:{entry_id}", reason, actor_id, entry_id))
+                    row = cursor.fetchone()
+        if row is None:
+            raise UsageLedgerError("冲正失败")
+        return UsageEntry(idempotency_key=f"reversal:{entry_id}", tenant_id=str(row[1]), units=int(row[2]), cost_cents=int(row[3]), id=str(row[0]), reversal_of=row[4], occurred_at=row[5] if isinstance(row[5], datetime) else datetime.now(UTC))

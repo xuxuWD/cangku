@@ -2,7 +2,7 @@ from pathlib import Path
 
 from app.commercial.repository import PostgresCommercialRepository
 from app.commercial.tenant import TenantStatus
-from app.commercial.usage import UsageEntry
+from app.commercial.usage import PostgresUsageLedger, UsageEntry
 
 
 class Cursor:
@@ -79,3 +79,27 @@ def test_postgres_usage_append_uses_tenant_idempotency_and_reversal_insert():
 
     repository.reverse_usage("tenant-1", "usage-1", reason="重复", actor_id="admin-1")
     assert any("INSERT INTO workbench_usage_ledger" in sql and "reversal_of" in sql for sql, _ in connection.cursor_instance.statements)
+
+
+def test_postgres_repository_reads_tenant_and_customer_admin_with_scope():
+    connection = Connection([
+        ("tenant-1", "客户 A", "owner-1", "active", None),
+        ("tenant-1", "admin-1"),
+    ])
+    repository = PostgresCommercialRepository(connection)
+
+    tenant = repository.get_tenant("tenant-1")
+
+    assert tenant.id == "tenant-1"
+    assert tenant.status == TenantStatus.ACTIVE
+    assert repository.is_customer_admin("tenant-1", "admin-1") is True
+    assert any("WHERE tenant_id = %s" in sql for sql, _ in connection.cursor_instance.statements)
+
+
+def test_postgres_usage_ledger_totals_are_tenant_scoped():
+    connection = Connection([(12,), (345,)])
+    ledger = PostgresUsageLedger(connection)
+
+    assert ledger.total("tenant-1") == 12
+    assert ledger.total_cost_cents("tenant-1") == 345
+    assert all("WHERE tenant_id = %s" in sql for sql, _ in connection.cursor_instance.statements)
