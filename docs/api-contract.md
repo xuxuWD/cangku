@@ -158,3 +158,11 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 GET /api/v1/runtimes/health
 
 仅 CEO 和超级管理员可查看 Runtime 健康摘要。返回运行时状态、版本、能力和沙箱状态；未配置或未启用的外部 Runtime 不会被自动调用，响应不包含认证头、内部会话或原始异常。
+
+### RAGFlow 与 AgentScope 外部协议
+
+RAGFlow 适配器只提供租户内的只读知识检索。请求为 `POST {endpoint}/knowledge-search`，知识库范围必须由服务端从当前 `RuntimeContext` 解析并传入；客户端不能扩大、替换或自行指定知识库范围。响应只允许返回经过范围校验的检索片段和引用，不提供知识库写入、删除或索引操作。
+
+AgentScope 适配器只承接受控执行，以下均为外部服务协议：`POST /runs` 创建运行，`GET /runs/{id}/events` 读取事件，`POST /runs/{id}/pause`、`resume`、`cancel`、`approvals`、`replay` 和 `usage` 执行生命周期、审批、重放及用量命令，另有 `GET /health` 健康检查。外部服务不能覆盖工作台从任务快照重建的租户、用户、岗位、项目、预算、知识/文件范围、策略版本、审批结果或最终任务状态。
+
+外部事件只能映射到统一事件类型；未知事件统一映射为 `run.failed`，并仅保留脱敏后的失败原因和外部类型。RAGFlow 与 AgentScope 的认证头、API Key 和 Cookie 由部署环境注入传输层，不进入任务载荷、事件或日志。开发期使用 `FakeTransport` 只验证适配器契约，不等于真实 RAGFlow/AgentScope staging 验收；真实外部服务、密钥注入、跨租户实测、并发压测和沙箱验证仍需单独完成。
