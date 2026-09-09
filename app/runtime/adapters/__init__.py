@@ -2,6 +2,7 @@ from .common import ExternalAdapter, FakeTransport, HttpRuntimeTransport, Transp
 from .codex_worker import CodexWorkerAdapter
 from .deerflow import DeerFlowAdapter
 from .hermes import HermesAdapter
+from .ragflow import RAGFlowAdapter
 
 __all__ = [
     "FakeTransport",
@@ -11,4 +12,5 @@ __all__ = [
     "CodexWorkerAdapter",
     "DeerFlowAdapter",
     "HermesAdapter",
+    "RAGFlowAdapter",
 ]
