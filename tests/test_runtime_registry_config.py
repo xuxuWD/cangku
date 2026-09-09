@@ -159,6 +159,29 @@ def test_ragflow_is_visible_as_unavailable_and_not_an_execution_runtime() -> Non
     assert "知识检索" in health["ragflow"]["reason"]
 
 
+def test_runtime_health_keeps_only_safe_summary_fields() -> None:
+    class LeakyAdapter:
+        def health(self):
+            return {
+                "status": "ok",
+                "runtime": "agentscope",
+                "version": "v1.0.0",
+                "token": "secret",
+                "session": {"cookie": "secret"},
+            }
+
+    from app.runtime.registry import RuntimeRegistry
+
+    registry = RuntimeRegistry()
+    registry.register("leaky", LeakyAdapter())
+
+    assert registry.health()["leaky"] == {
+        "status": "ok",
+        "runtime": "agentscope",
+        "version": "v1.0.0",
+    }
+
+
 def test_runtime_service_returns_controlled_unavailable_for_ragflow_execution() -> None:
     task = _runtime_task()
     actor = UserContext(tenant_id="tenant-1", user_id="user-1", role="employee")
@@ -200,3 +223,28 @@ def test_runtime_service_adapter_lookup_skips_knowledge_only_ragflow() -> None:
 
     with pytest.raises(RunAccessDenied, match="运行不存在"):
         service.adapter_for(actor, "missing-run")
+
+
+def test_external_runtime_run_is_registered_for_control_plane_lookup() -> None:
+    task = _runtime_task()
+    actor = UserContext(tenant_id="tenant-1", user_id="user-1", role="employee")
+    registry = build_runtime_registry(
+        {
+            "agentscope": {
+                "enabled": True,
+                "endpoint": "https://agentscope.example",
+                "capabilities": ["run"],
+                "version": "v1.0.0",
+            }
+        },
+        transport_factory=lambda _key, _config: FakeTransport(),
+    )
+    service = RuntimeService(
+        type("TaskStoreStub", (), {"get": lambda _self, _context, _task_id: task})(),
+        registry=registry,
+    )
+
+    run_id, runtime_key, _policy = service.start(actor, task.id, "agentscope", [], "product_manager")
+
+    key, _adapter, state = service.adapter_for_task(actor, run_id)
+    assert (key, runtime_key, state.run_id) == ("agentscope", "agentscope", run_id)

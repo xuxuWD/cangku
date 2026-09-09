@@ -25,8 +25,14 @@ class RuntimeStateStore:
         self._states: dict[str, RuntimeState] = {}
         self._lock = RLock()
 
-    def create(self, context: RuntimeContext, plan: AgentPlan) -> RuntimeState:
-        state = RuntimeState(run_id=f"run-{uuid4().hex[:12]}", context=context, plan=plan)
+    def create(
+        self,
+        context: RuntimeContext,
+        plan: AgentPlan,
+        *,
+        run_id: str | None = None,
+    ) -> RuntimeState:
+        state = RuntimeState(run_id=run_id or f"run-{uuid4().hex[:12]}", context=context, plan=plan)
         with self._lock:
             self._states[state.run_id] = state
         return state

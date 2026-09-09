@@ -107,12 +107,22 @@ class ExternalAdapter(AgentRuntimeAdapter):
         self.endpoint = endpoint
         self.runtime_key = runtime_key
         self._runs: dict[str, tuple[str, RuntimeContext]] = {}
+        self._state_store: Any | None = None
+
+    def bind_state_store(self, state_store: Any) -> None:
+        """让服务层控制面能够按外部运行号执行租户校验。"""
+        self._state_store = state_store
 
     def _payload(self, context: RuntimeContext, plan: AgentPlan) -> dict[str, Any]:
         return {"context": {"tenant_id": context.tenant_id, "task_id": context.task_id, "role_key": context.role_key, "mode": context.mode, "project_id": context.project_id, "device_id": context.device_id, "knowledge_scope": list(context.knowledge_scope), "file_scope": list(context.file_scope), "budget_cents": context.budget_cents, "risk_level": context.risk_level, "policy_version": context.policy_version, "expires_at": context.expires_at.isoformat()}, "plan": [{"step_id": step.step_id, "kind": step.kind, "tool": step.tool, "requires_approval": step.requires_approval} for step in plan.steps]}
 
     def start_run(self, context: RuntimeContext, plan: AgentPlan) -> str:
-        run_id=f"run-{uuid4().hex[:12]}"; remote=self.transport.start(self.endpoint, self._payload(context, plan)); self._runs[run_id]=(remote, context); return run_id
+        run_id = f"run-{uuid4().hex[:12]}"
+        remote = self.transport.start(self.endpoint, self._payload(context, plan))
+        self._runs[run_id] = (remote, context)
+        if self._state_store is not None:
+            self._state_store.create(context, plan, run_id=run_id)
+        return run_id
 
     def stream_events(self, run_id: str, cursor: str | None = None) -> list[RuntimeEvent]:
         remote, _context = self._runs[run_id]; raw=self.transport.events_for(self.endpoint, remote) or [{"type":"plan.created","payload":{}}]; result=[]
@@ -157,4 +167,20 @@ class ExternalAdapter(AgentRuntimeAdapter):
         return self.transport.command(self.endpoint, remote, "usage", {})
 
     def health(self) -> dict[str, Any]:
-        return self.transport.health(self.endpoint)
+        raw = self.transport.health(self.endpoint)
+        if not isinstance(raw, dict):
+            raise TransportError("Runtime 健康检查响应格式无效")
+        summary: dict[str, Any] = {
+            "runtime": self.endpoint,
+            "status": "ok",
+        }
+        if isinstance(raw.get("version"), str):
+            summary["version"] = raw["version"]
+        capabilities = raw.get("capabilities")
+        if isinstance(capabilities, (list, tuple)) and all(isinstance(item, str) for item in capabilities):
+            summary["capabilities"] = list(capabilities)
+        if isinstance(raw.get("sandbox"), str):
+            summary["sandbox"] = raw["sandbox"]
+        if isinstance(raw.get("reason"), str):
+            summary["reason"] = raw["reason"]
+        return summary

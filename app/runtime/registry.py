@@ -55,7 +55,21 @@ class RuntimeRegistry:
         for key in self.keys():
             adapter = self._items[key]
             try:
-                result[key] = {"status": "ok", **adapter.health()}
+                raw = adapter.health()
+                if not isinstance(raw, dict):
+                    raise TypeError("invalid health response")
+                allowed = {"runtime", "version", "capabilities", "sandbox", "reason"}
+                summary: dict[str, Any] = {}
+                for name in allowed:
+                    value = raw.get(name)
+                    if name == "capabilities":
+                        if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+                            summary[name] = list(value)
+                    elif isinstance(value, str):
+                        summary[name] = value
+                status = raw.get("status")
+                summary["status"] = status if status in {"ok", "unavailable", "error"} else "ok"
+                result[key] = summary
             except Exception as exc:  # 外部健康检查失败也要返回可读摘要
                 result[key] = {"status": "error", "reason": "Runtime 健康检查失败"}
         return result

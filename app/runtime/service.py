@@ -50,6 +50,9 @@ class RuntimeService:
         plan = AgentPlan.from_steps(steps)
         if not plan.steps:
             plan = AgentPlan.from_steps([{'step_id': 'plan', 'kind': 'read', 'tool': 'plan.create'}])
+        bind_state_store = getattr(adapter, "bind_state_store", None)
+        if callable(bind_state_store):
+            bind_state_store(self.state_store)
         run_id = adapter.start_run(context, plan)
         return run_id, runtime_key, context.policy_version
 
@@ -66,7 +69,10 @@ class RuntimeService:
 
     def adapter_for_task(self, actor: UserContext, run_id: str):
         key, adapter = self.adapter_for(actor, run_id)
-        state = self.state_store.get(run_id)
+        try:
+            state = self.state_store.get(run_id)
+        except KeyError as exc:
+            raise RunAccessDenied('运行不存在') from exc
         if state.context.tenant_id != actor.tenant_id:
             raise RunAccessDenied('运行不存在')
         if actor.user_id != state.context.user_id and actor.role not in {'ceo', 'super_admin'}:

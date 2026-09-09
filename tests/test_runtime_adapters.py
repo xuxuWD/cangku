@@ -3,6 +3,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.runtime.adapters import AgentScopeAdapter, FakeTransport
+from app.runtime.registry import RuntimeRegistry
+from app.runtime.service import RuntimeService
+from app.runtime.state import RuntimeStateStore
+from app.domain import RiskLevel, Task, TaskStatus, UserContext
 from app.runtime.adapters.codex_worker import CodexWorkerAdapter
 from app.runtime.adapters.deerflow import DeerFlowAdapter
 from app.runtime.adapters.hermes import HermesAdapter
@@ -73,6 +77,29 @@ def test_agentscope_maps_known_events_and_unknown_events_to_failure():
     assert events[-1].to_public_dict()["payload"] == events[-1].payload
 
 
+def test_known_event_payload_redacts_authorization_tokens_and_sessions():
+    transport = FakeTransport(events=[{
+        "type": "tool.call",
+        "payload": {
+            "authorization": "Bearer secret",
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "session": "session",
+            "nested": {"Authorization": "nested-secret"},
+        },
+    }])
+    adapter = AgentScopeAdapter(transport, "https://agentscope")
+    run = adapter.start_run(context(), AgentPlan.from_steps([]))
+
+    public_payload = adapter.stream_events(run)[0].to_public_dict()["payload"]
+
+    assert public_payload["authorization"] == "[已隐藏]"
+    assert public_payload["access_token"] == "[已隐藏]"
+    assert public_payload["refresh_token"] == "[已隐藏]"
+    assert public_payload["session"] == "[已隐藏]"
+    assert public_payload["nested"]["Authorization"] == "[已隐藏]"
+
+
 def test_unknown_remote_event_uses_safe_remote_type():
     transport = FakeTransport(events=[
         {"type": {"api_key": "hidden"}, "payload": {"cookie": "hidden"}},
@@ -102,3 +129,81 @@ def test_agentscope_reuses_lifecycle_commands_without_automatic_retry():
     assert [request["action"] for request in transport.requests[1:]] == [
         "pause", "resume", "cancel", "approvals", "replay",
     ]
+
+
+def test_external_run_is_registered_in_service_state_store_for_control_plane():
+    task = Task(
+        tenant_id="t1", project_id="p1", created_by="u1", employee_key="role",
+        title="external", risk_level=RiskLevel.LOW, budget=10,
+        idempotency_key="external-1", request_fingerprint="fp-1", status=TaskStatus.QUEUED,
+    )
+    actor = UserContext(tenant_id="t1", user_id="u1", role="employee")
+    store = RuntimeStateStore()
+    adapter = AgentScopeAdapter(FakeTransport(), "https://agentscope")
+    registry = RuntimeRegistry()
+    registry.register("agentscope", adapter)
+    service = RuntimeService(type("TaskStore", (), {"get": lambda _self, _ctx, _id: task})(), registry=registry, state_store=store)
+
+    run_id, _, _ = service.start(actor, task.id, "agentscope", [], "product_manager")
+    key, selected, state = service.adapter_for_task(actor, run_id)
+
+    assert key == "agentscope"
+    assert selected is adapter
+    assert state.run_id == run_id
+    adapter.pause_run(run_id, "检查")
+    adapter.resume_run(run_id)
+    adapter.cancel_run(run_id, "结束")
+    adapter.request_approval(run_id, {"tool": "x"})
+    adapter.replay_run(run_id, "plan")
+
+
+def test_external_health_is_reduced_to_safe_summary():
+    class LeakyTransport(FakeTransport):
+        def health(self, endpoint):
+            return {
+                "runtime": endpoint,
+                "status": "compromised",
+                "version": "v2",
+                "capabilities": ["run"],
+                "sandbox": "isolated",
+                "reason": "ok",
+                "authorization": "Bearer secret",
+                "session": "session-secret",
+                "cookie": "cookie-secret",
+                "api_key": "api-secret",
+                "extra": "drop",
+            }
+
+    health = AgentScopeAdapter(LeakyTransport(), "https://agentscope").health()
+
+    assert health == {
+        "runtime": "https://agentscope",
+        "status": "ok",
+        "version": "v2",
+        "capabilities": ["run"],
+        "sandbox": "isolated",
+        "reason": "ok",
+    }
+
+
+def test_runtime_registry_health_filters_untrusted_adapter_summary():
+    class UntrustedAdapter:
+        def health(self):
+            return {
+                "runtime": "https://runtime",
+                "status": "compromised",
+                "version": {"token": "secret"},
+                "capabilities": ["run", {"session": "secret"}],
+                "reason": {"authorization": "secret"},
+                "authorization": "Bearer secret",
+            }
+
+    registry = RuntimeRegistry()
+    registry.register("external", UntrustedAdapter())
+
+    assert registry.health() == {
+        "external": {
+            "runtime": "https://runtime",
+            "status": "ok",
+        }
+    }

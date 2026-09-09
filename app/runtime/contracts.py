@@ -80,7 +80,18 @@ class RuntimeEvent:
     payload: dict[str, Any] = field(default_factory=dict)
 
     def to_public_dict(self) -> dict[str, Any]:
-        sensitive_keys = {"password", "cookie", "api_key", "secret", "token", "验证码"}
+        sensitive_keys = {
+            "password",
+            "cookie",
+            "api_key",
+            "secret",
+            "token",
+            "authorization",
+            "access_token",
+            "refresh_token",
+            "session",
+            "验证码",
+        }
 
         def redact(value: Any) -> Any:
             if isinstance(value, dict):

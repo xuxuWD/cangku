@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import math
 
 import pytest
 
@@ -155,6 +156,24 @@ def test_search_rejects_invalid_response_shape_and_score() -> None:
             context=make_context(), query="查询"
         )
 
+@pytest.mark.parametrize("score", [math.nan, math.inf, -math.inf])
+def test_search_rejects_non_finite_scores(score: float) -> None:
+    transport = FakeTransport(
+        knowledge_items=[
+            {
+                "document_id": "doc-1",
+                "knowledge_base_id": "kb-1",
+                "title": "手册",
+                "snippet": "内容",
+                "score": score,
+            }
+        ]
+    )
+
+    with pytest.raises(TransportError, match="分数"):
+        RAGFlowAdapter(transport, "https://ragflow").search(
+            context=make_context(), query="查询"
+        )
 
 def test_ragflow_adapter_exposes_read_only_search_only() -> None:
     adapter = RAGFlowAdapter(FakeTransport(), "https://ragflow")

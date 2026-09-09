@@ -69,6 +69,30 @@ def test_event_serialization_keeps_cursor_and_redacts_secrets() -> None:
     assert data["payload"]["cookie"] == "[已隐藏]"
 
 
+def test_event_serialization_redacts_common_credentials_case_insensitively_and_recursively() -> None:
+    event = RuntimeEvent(
+        run_id="run-1",
+        sequence=4,
+        event_type=RuntimeEventType.TOOL_RESULT,
+        payload={
+            "Authorization": "Bearer secret",
+            "nested": {
+                "ACCESS_TOKEN": "access-secret",
+                "refresh_token": "refresh-secret",
+                "Session": {"value": "session-secret"},
+                "safe": "ok",
+            },
+        },
+    )
+
+    payload = event.to_public_dict()["payload"]
+    assert payload["Authorization"] == "[已隐藏]"
+    assert payload["nested"]["ACCESS_TOKEN"] == "[已隐藏]"
+    assert payload["nested"]["refresh_token"] == "[已隐藏]"
+    assert payload["nested"]["Session"] == "[已隐藏]"
+    assert payload["nested"]["safe"] == "ok"
+
+
 def test_adapter_protocol_exposes_lifecycle_methods() -> None:
     methods = {name for name in dir(AgentRuntimeAdapter) if not name.startswith("_")}
     assert {

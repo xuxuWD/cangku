@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from ..contracts import AgentPlan, KnowledgeCitation, RuntimeContext
@@ -98,7 +99,9 @@ class RAGFlowAdapter:
 
             score = item.get("score")
             if score is not None and (
-                isinstance(score, bool) or not isinstance(score, (int, float))
+                isinstance(score, bool)
+                or not isinstance(score, (int, float))
+                or not math.isfinite(score)
             ):
                 raise TransportError("RAGFlow 引用分数格式无效")
             citations.append(
