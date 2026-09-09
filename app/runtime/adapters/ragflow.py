@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..contracts import KnowledgeCitation, RuntimeContext
-from .common import TransportError
+from ..contracts import AgentPlan, KnowledgeCitation, RuntimeContext
+from .common import RuntimeUnavailable, TransportError
 
 
 class RAGFlowAdapter:
@@ -12,6 +12,43 @@ class RAGFlowAdapter:
     def __init__(self, transport: Any, endpoint: str) -> None:
         self.transport = transport
         self.endpoint = endpoint
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "runtime": self.endpoint,
+            "status": "unavailable",
+            "reason": "RAGFlow 仅支持知识检索，不能执行 Agent Runtime",
+        }
+
+    def get_checkpoint(self, run_id: str) -> None:
+        return None
+
+    def _raise_execution_unavailable(self) -> None:
+        raise RuntimeUnavailable("RAGFlow Runtime 不可用：仅支持知识检索")
+
+    def start_run(self, context: RuntimeContext, plan: AgentPlan) -> str:
+        self._raise_execution_unavailable()
+
+    def stream_events(self, run_id: str, cursor: str | None = None) -> list[Any]:
+        self._raise_execution_unavailable()
+
+    def pause_run(self, run_id: str, reason: str) -> None:
+        self._raise_execution_unavailable()
+
+    def resume_run(self, run_id: str) -> None:
+        self._raise_execution_unavailable()
+
+    def cancel_run(self, run_id: str, reason: str) -> None:
+        self._raise_execution_unavailable()
+
+    def request_approval(self, run_id: str, action: dict[str, Any]) -> str:
+        self._raise_execution_unavailable()
+
+    def replay_run(self, run_id: str, from_step: str | None = None) -> str:
+        self._raise_execution_unavailable()
+
+    def get_usage(self, run_id: str) -> dict[str, Any]:
+        self._raise_execution_unavailable()
 
     def search(
         self,

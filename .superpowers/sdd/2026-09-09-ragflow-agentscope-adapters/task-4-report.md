@@ -40,3 +40,18 @@ Result:
 ## Commit
 
 `feat: 注册 RAGFlow 与 AgentScope 并校验版本`
+
+## Review Fixes
+
+- Added a management health response for the knowledge-only RAGFlow adapter with explicit `unavailable` status.
+- Added `RuntimeUnavailable` for RAGFlow execution operations so `RuntimeService.start` returns a controlled lookup-style failure instead of `AttributeError`.
+- Added a no-op checkpoint lookup so `RuntimeService.adapter_for` can safely skip RAGFlow when resolving executable runs.
+- Normalized Runtime versions with `strip()` before reserved-value checks and storage.
+- Rejected malformed capability values unless they are a non-empty list/tuple of non-empty strings.
+
+## Review Verification
+
+```text
+python -m pytest -q
+191 passed
+```

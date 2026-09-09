@@ -12,6 +12,10 @@ class TransportError(RuntimeError):
     """外部运行时传输失败，禁止把失败伪装成成功。"""
 
 
+class RuntimeUnavailable(LookupError):
+    """已注册但当前不支持该类运行时操作。"""
+
+
 class FakeTransport:
     def __init__(
         self,

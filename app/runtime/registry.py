@@ -80,13 +80,14 @@ def _validate_timeout(key: str, value: Any) -> float:
 
 
 def _validate_version(key: str, value: Any) -> str:
+    normalized = value.strip() if isinstance(value, str) else value
     if (
-        not isinstance(value, str)
-        or not value.strip()
-        or value.lower() in {"latest", "main", "head"}
+        not isinstance(normalized, str)
+        or not normalized
+        or normalized.lower() in {"latest", "main", "head"}
     ):
         raise RuntimeConfigError(f"{key} Runtime 需要固定版本")
-    return value
+    return normalized
 
 
 def build_runtime_registry(
@@ -114,9 +115,14 @@ def build_runtime_registry(
         if constructor is None:
             raise RuntimeConfigError(f"未知 Runtime: {key}")
         endpoint = _validate_endpoint(key, raw.get("endpoint"))
-        capabilities = tuple(str(item) for item in raw.get("capabilities", ()))
-        if not capabilities:
+        raw_capabilities = raw.get("capabilities")
+        if (
+            not isinstance(raw_capabilities, (list, tuple))
+            or not raw_capabilities
+            or any(not isinstance(item, str) or not item.strip() for item in raw_capabilities)
+        ):
             raise RuntimeConfigError(f"{key} Runtime 未配置能力白名单")
+        capabilities = tuple(item.strip() for item in raw_capabilities)
         timeout_seconds = _validate_timeout(key, raw.get("timeout_seconds", 30.0))
         version = _validate_version(key, raw.get("version"))
         item = RuntimeEndpointConfig(
