@@ -67,8 +67,7 @@ class RuntimeRegistry:
                             summary[name] = list(value)
                     elif isinstance(value, str):
                         summary[name] = value
-                status = raw.get("status")
-                summary["status"] = status if status in {"ok", "unavailable", "error"} else "ok"
+                summary["status"] = "unavailable" if key == "ragflow" and raw.get("status") == "unavailable" else "ok"
                 result[key] = summary
             except Exception as exc:  # 外部健康检查失败也要返回可读摘要
                 result[key] = {"status": "error", "reason": "Runtime 健康检查失败"}

@@ -162,7 +162,7 @@ def test_external_health_is_reduced_to_safe_summary():
         def health(self, endpoint):
             return {
                 "runtime": endpoint,
-                "status": "compromised",
+                "status": "unavailable",
                 "version": "v2",
                 "capabilities": ["run"],
                 "sandbox": "isolated",
@@ -191,7 +191,7 @@ def test_runtime_registry_health_filters_untrusted_adapter_summary():
         def health(self):
             return {
                 "runtime": "https://runtime",
-                "status": "compromised",
+                "status": "unavailable",
                 "version": {"token": "secret"},
                 "capabilities": ["run", {"session": "secret"}],
                 "reason": {"authorization": "secret"},
