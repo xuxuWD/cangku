@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Callable
 
 from .contracts import AgentRuntimeAdapter
-from .adapters import CodexWorkerAdapter, DeerFlowAdapter, HermesAdapter, HttpRuntimeTransport
+from .adapters import (
+    AgentScopeAdapter,
+    CodexWorkerAdapter,
+    DeerFlowAdapter,
+    HermesAdapter,
+    HttpRuntimeTransport,
+    RAGFlowAdapter,
+)
 from .mock import MockRuntime
 from .state import RuntimeStateStore
 
@@ -23,6 +31,7 @@ class RuntimeEndpointConfig:
     endpoint: str
     timeout_seconds: float
     capabilities: tuple[str, ...]
+    version: str
 
 
 class RuntimeRegistry:
@@ -60,6 +69,26 @@ def _validate_endpoint(key: str, value: Any) -> str:
     return value
 
 
+def _validate_timeout(key: str, value: Any) -> float:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeConfigError(f"{key} Runtime 超时时间无效") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise RuntimeConfigError(f"{key} Runtime 超时时间无效")
+    return timeout
+
+
+def _validate_version(key: str, value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value.lower() in {"latest", "main", "head"}
+    ):
+        raise RuntimeConfigError(f"{key} Runtime 需要固定版本")
+    return value
+
+
 def build_runtime_registry(
     config: dict[str, dict[str, Any]],
     *,
@@ -75,6 +104,8 @@ def build_runtime_registry(
         "deerflow": DeerFlowAdapter,
         "codex_worker": CodexWorkerAdapter,
         "hermes": HermesAdapter,
+        "ragflow": RAGFlowAdapter,
+        "agentscope": AgentScopeAdapter,
     }
     for key, raw in config.items():
         if key == "mock" or not raw.get("enabled", False):
@@ -86,11 +117,14 @@ def build_runtime_registry(
         capabilities = tuple(str(item) for item in raw.get("capabilities", ()))
         if not capabilities:
             raise RuntimeConfigError(f"{key} Runtime 未配置能力白名单")
+        timeout_seconds = _validate_timeout(key, raw.get("timeout_seconds", 30.0))
+        version = _validate_version(key, raw.get("version"))
         item = RuntimeEndpointConfig(
             key=key,
             endpoint=endpoint,
-            timeout_seconds=float(raw.get("timeout_seconds", 30.0)),
+            timeout_seconds=timeout_seconds,
             capabilities=capabilities,
+            version=version,
         )
         registry.register(key, constructor(transport_factory(key, item), endpoint))
     return registry
