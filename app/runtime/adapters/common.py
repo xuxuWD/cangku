@@ -13,9 +13,14 @@ class TransportError(RuntimeError):
 
 
 class FakeTransport:
-    def __init__(self, events: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        events: list[dict[str, Any]] | None = None,
+        knowledge_items: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.requests: list[dict[str, Any]] = []
         self.events = events or []
+        self.knowledge_items = knowledge_items or []
 
     def start(self, endpoint: str, payload: dict[str, Any]) -> str:
         self.requests.append(payload)
@@ -23,6 +28,10 @@ class FakeTransport:
 
     def events_for(self, endpoint: str, remote_run_id: str) -> list[dict[str, Any]]:
         return list(self.events)
+
+    def knowledge_search(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.requests.append({"endpoint": endpoint, "action": "knowledge_search", **payload})
+        return {"items": list(self.knowledge_items)}
 
     def command(self, endpoint: str, remote_run_id: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         self.requests.append({"endpoint": endpoint, "remote_run_id": remote_run_id, "action": action, **payload})
@@ -66,6 +75,9 @@ class HttpRuntimeTransport:
         if not isinstance(events, list) or not all(isinstance(item, dict) for item in events):
             raise TransportError("Runtime 事件格式无效")
         return events
+
+    def knowledge_search(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"{self._base(endpoint)}/knowledge-search", json=payload)
 
     def command(self, endpoint: str, remote_run_id: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", f"{self._base(endpoint)}/runs/{remote_run_id}/{action}", json=payload)

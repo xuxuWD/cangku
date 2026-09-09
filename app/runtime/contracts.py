@@ -19,6 +19,15 @@ class RuntimeEventType(StrEnum):
 
 
 @dataclass(frozen=True)
+class KnowledgeCitation:
+    document_id: str
+    knowledge_base_id: str
+    title: str
+    snippet: str
+    score: float | None = None
+
+
+@dataclass(frozen=True)
 class RuntimeContext:
     tenant_id: str
     user_id: str

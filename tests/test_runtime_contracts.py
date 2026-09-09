@@ -3,10 +3,25 @@ from datetime import UTC, datetime, timedelta
 from app.runtime.contracts import (
     AgentPlan,
     AgentRuntimeAdapter,
+    KnowledgeCitation,
     RuntimeContext,
     RuntimeEvent,
     RuntimeEventType,
 )
+
+
+def test_knowledge_citation_requires_the_public_reference_fields() -> None:
+    citation = KnowledgeCitation(
+        document_id="doc-1",
+        knowledge_base_id="kb-1",
+        title="设备维护手册",
+        snippet="检查电源和散热。",
+        score=0.92,
+    )
+
+    assert citation.document_id == "doc-1"
+    assert citation.knowledge_base_id == "kb-1"
+    assert citation.score == 0.92
 
 
 def test_runtime_context_requires_scope_and_expiry() -> None:

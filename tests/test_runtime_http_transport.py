@@ -24,6 +24,26 @@ def test_http_transport_starts_run_and_reads_events() -> None:
     assert requests[0].url.path == "/api/runs"
 
 
+def test_http_transport_searches_knowledge_without_exposing_internal_fields() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"items": [{"document_id": "doc-1"}]})
+
+    transport = HttpRuntimeTransport(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    data = transport.knowledge_search(
+        "https://ragflow.example/api",
+        {"tenant_id": "tenant-1", "knowledge_base_ids": ["kb-1"], "query": "故障", "limit": 1},
+    )
+
+    assert data["items"][0]["document_id"] == "doc-1"
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/api/knowledge-search"
+
+
 def test_http_transport_rejects_error_and_malformed_responses() -> None:
     def error_handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, json={"message": "unavailable"})
