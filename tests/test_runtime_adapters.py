@@ -38,11 +38,12 @@ def test_hermes_only_returns_pending_review_proposal():
 
 
 def test_unknown_remote_event_becomes_failure_and_secrets_are_redacted():
-    transport=FakeTransport(events=[{'type':'mystery','payload':{'cookie':'x'}}]); adapter=DeerFlowAdapter(transport, 'http://deerflow')
+    transport=FakeTransport(events=[{'type':'mystery','payload':{'cookie':'x','api_key':'y','extra':'z'}}]); adapter=DeerFlowAdapter(transport, 'http://deerflow')
     run=adapter.start_run(context(), AgentPlan.from_steps([]))
     event=adapter.stream_events(run)[0]
     assert event.event_type.value == 'run.failed'
-    assert event.to_public_dict()['payload']['cookie'] == '[已隐藏]'
+    assert event.payload == {'reason': '外部运行时返回未知事件', 'remote_type': 'mystery'}
+    assert event.to_public_dict()['payload'] == event.payload
 
 
 def test_agentscope_adds_fixed_runtime_key_and_preserves_approval_flags():
@@ -62,13 +63,30 @@ def test_agentscope_maps_known_events_and_unknown_events_to_failure():
     transport = FakeTransport(events=[
         {"type": "step.started", "payload": {"step_id": "s1"}},
         {"type": "checkpoint.saved", "payload": {"token": "hidden"}},
-        {"type": "vendor.new_event", "payload": {"cookie": "hidden"}},
+        {"type": "vendor.new_event", "payload": {"cookie": "hidden", "api_key": "hidden", "arbitrary": "hidden"}},
     ])
     adapter = AgentScopeAdapter(transport, "https://agentscope")
     run = adapter.start_run(context(), AgentPlan.from_steps([]))
     events = adapter.stream_events(run)
     assert [event.event_type.value for event in events] == ["step.started", "checkpoint.saved", "run.failed"]
-    assert events[-1].to_public_dict()["payload"]["cookie"] == "[已隐藏]"
+    assert events[-1].payload == {"reason": "外部运行时返回未知事件", "remote_type": "vendor.new_event"}
+    assert events[-1].to_public_dict()["payload"] == events[-1].payload
+
+
+def test_unknown_remote_event_uses_safe_remote_type():
+    transport = FakeTransport(events=[
+        {"type": {"api_key": "hidden"}, "payload": {"cookie": "hidden"}},
+        {"type": "bad type with spaces", "payload": {"token": "hidden"}},
+    ])
+    adapter = DeerFlowAdapter(transport, "http://deerflow")
+    run = adapter.start_run(context(), AgentPlan.from_steps([]))
+
+    events = adapter.stream_events(run)
+
+    assert [event.payload for event in events] == [
+        {"reason": "外部运行时返回未知事件", "remote_type": "unknown"},
+        {"reason": "外部运行时返回未知事件", "remote_type": "unknown"},
+    ]
 
 
 def test_agentscope_reuses_lifecycle_commands_without_automatic_retry():

@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import uuid4
 
 import httpx
 
 from ..contracts import AgentPlan, AgentRuntimeAdapter, RuntimeContext, RuntimeEvent, RuntimeEventType
+
+
+_SAFE_REMOTE_TYPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+
+
+def _safe_remote_type(value: Any) -> str:
+    if not isinstance(value, str):
+        return "unknown"
+    candidate = value.strip()
+    return candidate if _SAFE_REMOTE_TYPE.fullmatch(candidate) else "unknown"
 
 
 class TransportError(RuntimeError):
@@ -107,8 +118,11 @@ class ExternalAdapter(AgentRuntimeAdapter):
         remote, _context = self._runs[run_id]; raw=self.transport.events_for(self.endpoint, remote) or [{"type":"plan.created","payload":{}}]; result=[]
         for index,item in enumerate(raw,1):
             mapping={"plan.created":RuntimeEventType.PLAN_CREATED,"step.started":RuntimeEventType.STEP_STARTED,"tool.call":RuntimeEventType.TOOL_CALL,"tool.result":RuntimeEventType.TOOL_RESULT,"approval.requested":RuntimeEventType.APPROVAL_REQUESTED,"checkpoint.saved":RuntimeEventType.CHECKPOINT_SAVED,"run.paused":RuntimeEventType.RUN_PAUSED,"run.completed":RuntimeEventType.RUN_COMPLETED,"run.failed":RuntimeEventType.RUN_FAILED}
-            event_type=mapping.get(item.get("type"), RuntimeEventType.RUN_FAILED); payload=item.get("payload",{})
-            if item.get("type") not in mapping: payload={"reason":"外部运行时返回未知事件","remote_type":item.get("type"), **item.get("payload", {})}
+            remote_type = item.get("type")
+            event_type=mapping.get(remote_type, RuntimeEventType.RUN_FAILED) if isinstance(remote_type, str) else RuntimeEventType.RUN_FAILED
+            payload=item.get("payload",{})
+            if not isinstance(remote_type, str) or remote_type not in mapping:
+                payload={"reason":"外部运行时返回未知事件","remote_type":_safe_remote_type(remote_type)}
             event=RuntimeEvent(run_id,index,event_type,payload)
             if not cursor or index > int(cursor.rsplit(":",1)[1]): result.append(event)
         return result
