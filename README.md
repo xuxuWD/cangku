@@ -28,6 +28,8 @@ python -m uvicorn app.main:app --reload
 
 服务启动后访问 `http://127.0.0.1:8000/docs` 查看中文 API 交互文档。开发接口使用 `X-Tenant-Id`、`X-User-Id` 和 `X-User-Role` 表示当前身份；正式环境必须替换为统一登录和短期会话，不能信任客户端自行填写的角色。
 
+开源企业智能体平台选型记录见 [`docs/open-source-agent-platform-research.md`](docs/open-source-agent-platform-research.md)，其中包含 RAGFlow、AgentScope、BISHENG、Coze Studio、Dify、FastGPT 等候选的能力与许可证边界。
+
 启动基础设施：
 
 ```powershell
