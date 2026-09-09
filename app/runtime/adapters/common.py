@@ -34,7 +34,7 @@ class FakeTransport:
         return {"items": list(self.knowledge_items)}
 
     def command(self, endpoint: str, remote_run_id: str, action: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self.requests.append({"endpoint": endpoint, "remote_run_id": remote_run_id, "action": action, **payload})
+        self.requests.append({"endpoint": endpoint, "remote_run_id": remote_run_id, **payload, "action": action})
         return {"status": "accepted", "approval_id": f"approval-{uuid4().hex[:8]}"}
 
     def health(self, endpoint: str) -> dict[str, Any]:
@@ -102,7 +102,7 @@ class ExternalAdapter(AgentRuntimeAdapter):
     def stream_events(self, run_id: str, cursor: str | None = None) -> list[RuntimeEvent]:
         remote, _context = self._runs[run_id]; raw=self.transport.events_for(self.endpoint, remote) or [{"type":"plan.created","payload":{}}]; result=[]
         for index,item in enumerate(raw,1):
-            mapping={"plan.created":RuntimeEventType.PLAN_CREATED,"step.started":RuntimeEventType.STEP_STARTED,"tool.result":RuntimeEventType.TOOL_RESULT,"approval.requested":RuntimeEventType.APPROVAL_REQUESTED,"run.completed":RuntimeEventType.RUN_COMPLETED,"run.failed":RuntimeEventType.RUN_FAILED}
+            mapping={"plan.created":RuntimeEventType.PLAN_CREATED,"step.started":RuntimeEventType.STEP_STARTED,"tool.call":RuntimeEventType.TOOL_CALL,"tool.result":RuntimeEventType.TOOL_RESULT,"approval.requested":RuntimeEventType.APPROVAL_REQUESTED,"checkpoint.saved":RuntimeEventType.CHECKPOINT_SAVED,"run.paused":RuntimeEventType.RUN_PAUSED,"run.completed":RuntimeEventType.RUN_COMPLETED,"run.failed":RuntimeEventType.RUN_FAILED}
             event_type=mapping.get(item.get("type"), RuntimeEventType.RUN_FAILED); payload=item.get("payload",{})
             if item.get("type") not in mapping: payload={"reason":"外部运行时返回未知事件","remote_type":item.get("type"), **item.get("payload", {})}
             event=RuntimeEvent(run_id,index,event_type,payload)

@@ -3,6 +3,7 @@ from .codex_worker import CodexWorkerAdapter
 from .deerflow import DeerFlowAdapter
 from .hermes import HermesAdapter
 from .ragflow import RAGFlowAdapter
+from .agentscope import AgentScopeAdapter
 
 __all__ = [
     "FakeTransport",
@@ -13,4 +14,5 @@ __all__ = [
     "DeerFlowAdapter",
     "HermesAdapter",
     "RAGFlowAdapter",
+    "AgentScopeAdapter",
 ]
