@@ -23,6 +23,8 @@
 - [x] 知识范围变更审计（旧范围/新范围/操作者/时间）
 - [x] 超级管理员知识范围审计查询接口
 - [x] 开发期 RAGFlow/AgentScope 适配器契约与受控注册表
+- [x] RAGFlow/AgentScope staging 前置预检脚本与验收证据要求（不替代真实联调）
+- [x] staging 独立主机部署模板与统一前置预检（基础设施隔离 + 商业化 G0 + 外部 Runtime）
 - [x] Celery Worker/Outbox 的可注入运行骨架、死信登记与人工重放接口（开发期）
 - [x] Worker 启动命令与生产模式自动绑定 Outbox 发布器
 - [ ] Celery Worker 实跑、Outbox 生产连接池、死信通知渠道和 staging 验收
