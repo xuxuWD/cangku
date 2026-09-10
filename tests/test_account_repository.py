@@ -106,3 +106,38 @@ def test_list_by_status_filters() -> None:
     repository.add(make_account("13800000002", status=AccountStatus.REJECTED))
 
     assert [item.phone for item in repository.list_by_status(AccountStatus.PENDING)] == ["13800000001"]
+
+
+def test_concurrent_approval_only_succeeds_once() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    repository = InMemoryAccountRepository()
+    account = repository.add(make_account())
+    reviewer = "acct-admin"
+
+    def attempt(index: int) -> str:
+        try:
+            repository.mark_approved(
+                account.account_id, role="employee", tenant_id="t-1", reviewed_by=f"{reviewer}-{index}"
+            )
+            return "approved"
+        except AccountStateConflict:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(attempt, range(20)))
+
+    assert results.count("approved") == 1
+    assert results.count("conflict") == 19
+    assert repository.get(account.account_id).status == AccountStatus.APPROVED
+
+
+def test_approved_account_cannot_be_rejected() -> None:
+    repository = InMemoryAccountRepository()
+    account = repository.add(make_account())
+    repository.mark_approved(account.account_id, role="employee", tenant_id="t-1", reviewed_by="acct-admin")
+
+    with pytest.raises(AccountStateConflict):
+        repository.mark_rejected(account.account_id, reason="反悔", reviewed_by="acct-admin")
+
+    assert repository.get(account.account_id).status == AccountStatus.APPROVED

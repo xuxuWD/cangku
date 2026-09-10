@@ -55,12 +55,12 @@ class InMemoryAccountRepository:
 
     def list_by_status(self, status: AccountStatus) -> list[Account]:
         with self._lock:
-            return [item for item in self._accounts.values() if item.status is status]
+            return [item for item in self._accounts.values() if item.status == status]
 
     def mark_approved(self, account_id: str, *, role: str, tenant_id: str, reviewed_by: str) -> Account:
         with self._lock:
             account = self._require(account_id)
-            if account.status is not AccountStatus.PENDING:
+            if account.status != AccountStatus.PENDING:
                 raise AccountStateConflict("该申请当前状态不允许审批")
             account.status = AccountStatus.APPROVED
             account.role = role
@@ -73,7 +73,7 @@ class InMemoryAccountRepository:
     def mark_rejected(self, account_id: str, *, reason: str, reviewed_by: str) -> Account:
         with self._lock:
             account = self._require(account_id)
-            if account.status is not AccountStatus.PENDING:
+            if account.status != AccountStatus.PENDING:
                 raise AccountStateConflict("该申请当前状态不允许审批")
             account.status = AccountStatus.REJECTED
             account.reviewed_at = datetime.now(UTC)
@@ -90,7 +90,7 @@ class InMemoryAccountRepository:
     def has_approved_admin(self) -> bool:
         with self._lock:
             return any(
-                item.status is AccountStatus.APPROVED and item.role == SUPER_ADMIN_ROLE
+                item.status == AccountStatus.APPROVED and item.role == SUPER_ADMIN_ROLE
                 for item in self._accounts.values()
             )
 
