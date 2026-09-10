@@ -1,23 +1,8 @@
-import logging
-
 import pytest
 
-from app.audit.logging import AUDIT_LOGGER_NAME
 from app.audit.models import AuditAction, build_record
 from app.audit.service import AuditService
 from app.audit.store import InMemoryAuditStore
-
-
-@pytest.fixture(autouse=True)
-def _audit_logger_propagates():
-    """隔离其他测试对审计 logger 的全局配置，保证 caplog 能经 root handler 捕获记录。"""
-    logger = logging.getLogger(AUDIT_LOGGER_NAME)
-    original_propagate = logger.propagate
-    logger.propagate = True
-    try:
-        yield
-    finally:
-        logger.propagate = original_propagate
 
 
 def record(tenant_id: str | None = "t-1", action: AuditAction = AuditAction.ACCOUNT_LOGIN_SUCCEEDED):
