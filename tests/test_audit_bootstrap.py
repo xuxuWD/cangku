@@ -63,3 +63,23 @@ def test_unsupported_storage_backend_is_rejected() -> None:
 
     with pytest.raises(ValueError):
         build_login_rate_limiter(memory_settings(storage_backend="sqlite"))
+
+
+def test_postgres_backend_uses_injected_connection() -> None:
+    from app.audit.store import PostgresAuditStore
+    from app.accounts.rate_limit import PostgresLoginAttemptStore
+
+    settings = Settings(
+        env="production",
+        storage_backend="postgres",
+        database_url="postgresql://workbench:pw@pg.internal:5432/workbench",
+        auth_secret="a" * 32,
+        backup_encryption_key="b" * 32,
+        content_store_backend="sqlite",
+    )
+
+    audit = build_audit_service(settings, connection=object(), migrate=False)
+    limiter = build_login_rate_limiter(settings, connection=object(), migrate=False)
+
+    assert isinstance(audit.store, PostgresAuditStore)
+    assert isinstance(limiter.store, PostgresLoginAttemptStore)

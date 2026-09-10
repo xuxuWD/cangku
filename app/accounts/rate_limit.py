@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from threading import RLock
@@ -116,3 +117,99 @@ class LoginRateLimiter:
 
     def register_success(self, phone: str) -> None:
         self.store.clear(self.phone_hash(phone))
+
+
+class PostgresLoginAttemptStore:
+    """登录尝试持久化；record_failure 用单条 upsert 原子完成窗口判断、计数与锁定。"""
+
+    _COLUMNS = "phone_hash, failure_count, window_started_at, locked_until"
+
+    def __init__(self, connection_or_pool) -> None:
+        self.connection = connection_or_pool
+
+    @contextmanager
+    def _connection(self):
+        if hasattr(self.connection, "connection") and callable(self.connection.connection):
+            with self.connection.connection() as connection:
+                yield connection
+        else:
+            with nullcontext(self.connection) as connection:
+                yield connection
+
+    @staticmethod
+    def _hydrate(row: tuple) -> LoginAttemptState:
+        return LoginAttemptState(
+            phone_hash=str(row[0]),
+            failure_count=int(row[1]),
+            window_started_at=row[2],
+            locked_until=row[3],
+        )
+
+    def load(self, phone_hash: str) -> LoginAttemptState | None:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._COLUMNS} FROM workbench_login_attempts WHERE phone_hash = %s",
+                    (phone_hash,),
+                )
+                row = cursor.fetchone()
+        return self._hydrate(row) if row is not None else None
+
+    def record_failure(
+        self,
+        phone_hash: str,
+        *,
+        now: datetime,
+        window_seconds: int,
+        max_failures: int,
+        lock_seconds: int,
+    ) -> LoginAttemptState:
+        window_cutoff = now - timedelta(seconds=window_seconds)
+        lock_until = now + timedelta(seconds=lock_seconds)
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        INSERT INTO workbench_login_attempts
+                            (phone_hash, failure_count, window_started_at, locked_until, updated_at)
+                        VALUES (%s, 1, %s, NULL, now())
+                        ON CONFLICT (phone_hash) DO UPDATE SET
+                            failure_count = CASE
+                                WHEN workbench_login_attempts.window_started_at <= %s THEN 1
+                                ELSE workbench_login_attempts.failure_count + 1 END,
+                            window_started_at = CASE
+                                WHEN workbench_login_attempts.window_started_at <= %s THEN %s
+                                ELSE workbench_login_attempts.window_started_at END,
+                            locked_until = CASE
+                                WHEN (CASE
+                                        WHEN workbench_login_attempts.window_started_at <= %s THEN 1
+                                        ELSE workbench_login_attempts.failure_count + 1 END) >= %s
+                                    THEN %s
+                                ELSE NULL END,
+                            updated_at = now()
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (
+                            phone_hash,
+                            now,
+                            window_cutoff,
+                            window_cutoff,
+                            now,
+                            window_cutoff,
+                            max_failures,
+                            lock_until,
+                        ),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("登录尝试写入失败")
+        return self._hydrate(row)
+
+    def clear(self, phone_hash: str) -> None:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_login_attempts WHERE phone_hash = %s", (phone_hash,)
+                    )
