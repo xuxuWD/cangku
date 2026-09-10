@@ -226,7 +226,11 @@ def build_account_service(
         raise ValueError("不支持的账号存储类型")
     return (
         AccountService(
-            repository, bootstrap_token=settings.bootstrap_token, audit=audit, login_limiter=login_limiter
+            repository,
+            bootstrap_token=settings.bootstrap_token,
+            audit=audit,
+            login_limiter=login_limiter,
+            require_admin_totp=settings.require_admin_totp,
         ),
         repository,
     )

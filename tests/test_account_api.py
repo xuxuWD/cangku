@@ -30,6 +30,7 @@ def accounts(monkeypatch) -> AccountService:
             window_seconds=300,
             lock_seconds=900,
         ),
+        require_admin_totp=False,
     )
     monkeypatch.setattr(main, "account_service", service)
     monkeypatch.setattr(main.settings, "auth_secret", SECRET)

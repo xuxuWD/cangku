@@ -23,7 +23,12 @@ def _login_limiter() -> LoginRateLimiter:
 
 
 def test_memory_backend_returns_in_memory_repository() -> None:
-    settings = Settings(env="development", storage_backend="memory", bootstrap_token="boot-secret")
+    settings = Settings(
+        env="development",
+        storage_backend="memory",
+        bootstrap_token="boot-secret",
+        require_admin_totp=False,
+    )
 
     service, repository = build_account_service(
         settings, audit=_audit(), login_limiter=_login_limiter()

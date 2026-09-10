@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,10 +33,13 @@ from .accounts.models import (
     BootstrapDenied,
     LoginFailed,
     RegistrationRequest,
+    TotpInvalid,
+    TotpNotEnrolled,
+    TotpRequired,
 )
 from .accounts.passwords import PasswordPolicyError
 from .accounts.rate_limit import LoginRateLimited
-from .auth import create_access_token, verify_access_token
+from .auth import TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
 from .settings import get_settings, validate_runtime_settings
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.service import RunAccessDenied, RuntimeService
@@ -267,27 +270,42 @@ class LifecycleJobView(BaseModel):
     final_exported: bool = False
 
 
+TOTP_ENROLLMENT_ALLOWED: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/api/v1/auth/me/totp"),
+        ("POST", "/api/v1/auth/me/totp/confirmation"),
+        ("GET", "/api/v1/health"),
+    }
+)
+
+
 def current_user(
+    request: Request,
     tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
     user_id: str | None = Header(default=None, alias="X-User-Id"),
     role: str | None = Header(default=None, alias="X-User-Role"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> UserContext:
+    context: UserContext | None = None
     if settings.env != "development":
         if not settings.auth_secret or not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="请使用有效的登录凭证")
         try:
-            return verify_access_token(authorization.removeprefix("Bearer "), settings.auth_secret)
+            context = verify_access_token(authorization.removeprefix("Bearer "), settings.auth_secret)
         except ValueError as exc:
             raise HTTPException(status_code=401, detail="登录凭证无效") from exc
-    if authorization and authorization.startswith("Bearer ") and settings.auth_secret:
+    elif authorization and authorization.startswith("Bearer ") and settings.auth_secret:
         try:
-            return verify_access_token(authorization.removeprefix("Bearer "), settings.auth_secret)
+            context = verify_access_token(authorization.removeprefix("Bearer "), settings.auth_secret)
         except ValueError as exc:
             raise HTTPException(status_code=401, detail="登录凭证无效") from exc
-    if not tenant_id or not user_id or not role:
-        raise HTTPException(status_code=401, detail="缺少登录身份信息")
-    return UserContext(tenant_id=tenant_id, user_id=user_id, role=role)
+    if context is None:
+        if not tenant_id or not user_id or not role:
+            raise HTTPException(status_code=401, detail="缺少登录身份信息")
+        context = UserContext(tenant_id=tenant_id, user_id=user_id, role=role)
+    if context.scope == TOTP_ENROLLMENT_SCOPE and (request.method, request.url.path) not in TOTP_ENROLLMENT_ALLOWED:
+        raise HTTPException(status_code=403, detail="账号需要先完成动态口令绑定")
+    return context
 
 
 def _ensure_commercial_admin(context: UserContext) -> None:
@@ -843,6 +861,13 @@ class SessionCreate(BaseModel):
 
     phone: str = Field(min_length=1, max_length=20)
     password: str = Field(min_length=1, max_length=128)
+    totp_code: str | None = Field(default=None, max_length=20)
+
+
+class TotpConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    totp_code: str = Field(min_length=1, max_length=20)
 
 
 class PasswordChange(BaseModel):
@@ -955,20 +980,70 @@ def create_session(payload: SessionCreate) -> dict[str, object]:
     if not settings.auth_secret:
         raise HTTPException(status_code=503, detail="会话密钥未配置，请先设置 WORKBENCH_AUTH_SECRET")
     try:
-        context = account_service.login(payload.phone, payload.password)
+        context = account_service.login(
+            payload.phone, payload.password, totp_code=payload.totp_code
+        )
     except LoginRateLimited as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except TotpRequired as exc:
+        raise HTTPException(status_code=401, detail="需要动态验证码") from exc
+    except TotpInvalid as exc:
+        raise HTTPException(status_code=401, detail="动态验证码不正确") from exc
     except LoginFailed as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
-    token = create_access_token(context, settings.auth_secret, ttl_seconds=settings.session_ttl_seconds)
+    full_ttl = settings.session_ttl_seconds
+    if context.scope == TOTP_ENROLLMENT_SCOPE:
+        ttl = min(full_ttl, settings.totp_enrollment_ttl_seconds)
+    else:
+        ttl = full_ttl
+    token = create_access_token(context, settings.auth_secret, ttl_seconds=ttl)
     return {
         "access_token": token,
         "token_type": "Bearer",
-        "expires_in": settings.session_ttl_seconds,
+        "expires_in": ttl,
         "tenant_id": context.tenant_id,
         "user_id": context.user_id,
         "role": context.role,
+        "scope": context.scope,
     }
+
+
+@app.post("/api/v1/auth/me/totp")
+def start_totp_enrollment(context: UserContext = Depends(current_user)) -> dict[str, str]:
+    secret, uri = account_service.start_totp_enrollment(context)
+    return {
+        "secret": secret,
+        "otpauth_uri": uri,
+        "digest": "SHA1",
+        "digits": "6",
+        "period": "30",
+    }
+
+
+@app.post("/api/v1/auth/me/totp/confirmation")
+def confirm_totp(
+    payload: TotpConfirmation, context: UserContext = Depends(current_user)
+) -> dict[str, str]:
+    try:
+        account_service.confirm_totp_enrollment(context, payload.totp_code)
+    except TotpNotEnrolled as exc:
+        raise HTTPException(status_code=409, detail="请先开始绑定动态口令") from exc
+    except TotpInvalid as exc:
+        raise HTTPException(status_code=401, detail="动态验证码不正确") from exc
+    return {"status": "confirmed"}
+
+
+@app.post("/api/v1/auth/accounts/{account_id}/totp-reset")
+def reset_account_totp(
+    account_id: str, context: UserContext = Depends(current_user)
+) -> dict[str, str]:
+    try:
+        account_service.reset_totp(context, account_id)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except AccountNotFound as exc:
+        raise HTTPException(status_code=404, detail="账号不存在") from exc
+    return {"status": "reset"}
 
 
 @app.put("/api/v1/auth/me/password")

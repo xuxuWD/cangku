@@ -29,6 +29,7 @@ class Harness:
             bootstrap_token=BOOTSTRAP,
             audit=self.audit,
             login_limiter=self.limiter,
+            require_admin_totp=False,
         )
 
     def actions(self) -> list[str]:

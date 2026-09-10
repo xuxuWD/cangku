@@ -120,6 +120,18 @@ class Settings(BaseSettings):
         le=86400,
         validation_alias=AliasChoices("LOGIN_LOCK_SECONDS", "WORKBENCH_LOGIN_LOCK_SECONDS"),
     )
+    require_admin_totp: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("REQUIRE_ADMIN_TOTP", "WORKBENCH_REQUIRE_ADMIN_TOTP"),
+    )
+    totp_enrollment_ttl_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=900,
+        validation_alias=AliasChoices(
+            "TOTP_ENROLLMENT_TTL_SECONDS", "WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS"
+        ),
+    )
 
 
 @lru_cache

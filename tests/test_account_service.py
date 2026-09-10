@@ -33,6 +33,7 @@ def service(*, bootstrap_token: str = BOOTSTRAP) -> AccountService:
             window_seconds=300,
             lock_seconds=900,
         ),
+        require_admin_totp=False,
     )
 
 

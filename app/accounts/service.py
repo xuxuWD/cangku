@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from app.audit.models import AuditAction
 from app.audit.redaction import mask_phone
 from app.audit.service import AuditService
+from app.auth import FULL_SCOPE, TOTP_ENROLLMENT_SCOPE
 from app.domain import PolicyError, UserContext
 
 from .models import (
@@ -18,10 +19,14 @@ from .models import (
     BootstrapDenied,
     LoginFailed,
     RegistrationRequest,
+    TotpInvalid,
+    TotpNotEnrolled,
+    TotpRequired,
 )
 from .passwords import hash_password, verify_password
 from .rate_limit import LoginRateLimited, LoginRateLimiter
 from .repository import AccountRepository
+from .totp import generate_secret, normalize_code, provisioning_uri, verify_code
 
 
 _PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
@@ -66,11 +71,13 @@ class AccountService:
         bootstrap_token: str = "",
         audit: AuditService,
         login_limiter: LoginRateLimiter,
+        require_admin_totp: bool,
     ) -> None:
         self.repository = repository
         self.bootstrap_token = bootstrap_token
         self.audit = audit
         self.login_limiter = login_limiter
+        self.require_admin_totp = require_admin_totp
 
     def request_registration(self, request: RegistrationRequest) -> Account:
         phone = _normalized_phone(request.phone)
@@ -200,8 +207,11 @@ class AccountService:
             )
         return LoginFailed("手机号或密码不正确")
 
-    def login(self, phone: str, password: str) -> UserContext:
+    def login(
+        self, phone: str, password: str, *, totp_code: object = None, now=None
+    ) -> UserContext:
         normalized_phone = phone.strip() if isinstance(phone, str) else ""
+        moment = now or datetime.now(UTC)
         account = self.repository.find_by_phone(normalized_phone)
         # 登录是匿名入口：账号不存在或尚未分配租户时，审计记录不写租户，但必须写脱敏手机号。
         audit_tenant = str(account.tenant_id) if account is not None and account.tenant_id else None
@@ -219,6 +229,43 @@ class AccountService:
             raise self._fail_login(normalized_phone, audit_tenant)
         if not verify_password(password, account.password_hash):
             raise self._fail_login(normalized_phone, audit_tenant)
+        if account.totp_confirmed_at is not None:
+            if normalize_code(totp_code) is None:
+                # 用户还没开始猜码，只提示需要验证码，不计入登录限流。
+                self.audit.record(
+                    AuditAction.ACCOUNT_LOGIN_FAILED,
+                    tenant_id=audit_tenant,
+                    target_type="account",
+                    phone_masked=mask_phone(normalized_phone),
+                    detail={"reason": "totp_required"},
+                )
+                raise TotpRequired("请输入动态验证码")
+            step = verify_code(account.totp_secret, totp_code, at=moment)
+            if step is None:
+                # 先按统一失败处理计数与审计（否则 6 位码可暴力破解），
+                # 再抛出可区分的验证码错误，供接口层返回固定文案。
+                self._fail_login(normalized_phone, audit_tenant)
+                raise TotpInvalid("动态验证码不正确")
+            try:
+                self.repository.record_totp_step(account.account_id, step)
+            except TotpInvalid:
+                raise self._fail_login(normalized_phone, audit_tenant)
+        elif self.require_admin_totp and account.role in {"super_admin", "ceo"}:
+            self.audit.record(
+                AuditAction.ACCOUNT_TOTP_ENROLLMENT_REQUIRED,
+                tenant_id=audit_tenant,
+                actor_id=account.account_id,
+                target_type="account",
+                target_id=account.account_id,
+                phone_masked=mask_phone(normalized_phone),
+                detail={"role": account.role},
+            )
+            return UserContext(
+                tenant_id=str(account.tenant_id),
+                user_id=account.account_id,
+                role=str(account.role),
+                scope=TOTP_ENROLLMENT_SCOPE,
+            )
         self.login_limiter.register_success(normalized_phone)
         self.audit.record(
             AuditAction.ACCOUNT_LOGIN_SUCCEEDED,
@@ -229,7 +276,10 @@ class AccountService:
             phone_masked=mask_phone(normalized_phone),
         )
         return UserContext(
-            tenant_id=str(account.tenant_id), user_id=account.account_id, role=str(account.role)
+            tenant_id=str(account.tenant_id),
+            user_id=account.account_id,
+            role=str(account.role),
+            scope=FULL_SCOPE,
         )
 
     def change_password(self, actor: UserContext, *, old_password: str, new_password: str) -> None:
@@ -254,6 +304,51 @@ class AccountService:
         account = self.repository.update_password(account_id, hash_password(new_password))
         self.audit.record(
             AuditAction.ACCOUNT_PASSWORD_RESET,
+            tenant_id=actor.tenant_id,
+            actor_id=actor.user_id,
+            target_type="account",
+            target_id=account.account_id,
+            phone_masked=mask_phone(account.phone),
+        )
+
+    def start_totp_enrollment(self, actor: UserContext) -> tuple[str, str]:
+        """生成本人的新种子并返回 (secret, otpauth_uri)。此时尚未确认启用。"""
+        account = self.repository.get(actor.user_id)
+        secret = generate_secret()
+        uri = provisioning_uri(secret, account_name=mask_phone(account.phone))
+        self.repository.set_totp(account.account_id, secret)
+        self.audit.record(
+            AuditAction.ACCOUNT_TOTP_ENROLLED,
+            tenant_id=actor.tenant_id,
+            actor_id=actor.user_id,
+            target_type="account",
+            target_id=account.account_id,
+            phone_masked=mask_phone(account.phone),
+        )
+        return secret, uri
+
+    def confirm_totp_enrollment(self, actor: UserContext, code: object, *, now=None) -> None:
+        account = self.repository.get(actor.user_id)
+        if not account.totp_secret:
+            raise TotpNotEnrolled("尚未开始绑定动态口令")
+        step = verify_code(account.totp_secret, code, at=now or datetime.now(UTC))
+        if step is None:
+            raise TotpInvalid("动态验证码不正确")
+        self.repository.confirm_totp(account.account_id, step=step)
+        self.audit.record(
+            AuditAction.ACCOUNT_TOTP_CONFIRMED,
+            tenant_id=actor.tenant_id,
+            actor_id=actor.user_id,
+            target_type="account",
+            target_id=account.account_id,
+            phone_masked=mask_phone(account.phone),
+        )
+
+    def reset_totp(self, actor: UserContext, account_id: str) -> None:
+        self._ensure_super_admin(actor)
+        account = self.repository.clear_totp(account_id)
+        self.audit.record(
+            AuditAction.ACCOUNT_TOTP_RESET,
             tenant_id=actor.tenant_id,
             actor_id=actor.user_id,
             target_type="account",
