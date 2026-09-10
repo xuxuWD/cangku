@@ -197,7 +197,14 @@ def build_knowledge_access_registry(settings: Settings, *, connection=None):
     raise ValueError("不支持的知识范围仓储类型")
 
 
-def build_account_service(settings: Settings, *, connection=None, migrate: bool = True) -> tuple[AccountService, object]:
+def build_account_service(
+    settings: Settings,
+    *,
+    audit: AuditService,
+    login_limiter: LoginRateLimiter,
+    connection=None,
+    migrate: bool = True,
+) -> tuple[AccountService, object]:
     """按存储模式装配账号仓储与服务。"""
     validate_runtime_settings(settings)
     if settings.storage_backend == "memory":
@@ -217,7 +224,12 @@ def build_account_service(settings: Settings, *, connection=None, migrate: bool 
         repository = PostgresAccountRepository(connection)
     else:
         raise ValueError("不支持的账号存储类型")
-    return AccountService(repository, bootstrap_token=settings.bootstrap_token), repository
+    return (
+        AccountService(
+            repository, bootstrap_token=settings.bootstrap_token, audit=audit, login_limiter=login_limiter
+        ),
+        repository,
+    )
 
 
 def build_planner_service(settings: Settings, *, task_store=None, runtime_service=None, connection=None, migrate: bool = True):

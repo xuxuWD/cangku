@@ -9,9 +9,26 @@ from app.accounts.models import (
     AccountStateConflict,
     AccountStatus,
 )
+from app.accounts.rate_limit import InMemoryLoginAttemptStore, LoginRateLimiter
 from app.accounts.repository import PostgresAccountRepository
+from app.audit.service import AuditService
+from app.audit.store import InMemoryAuditStore
 from app.bootstrap import build_account_service
 from app.settings import Settings
+
+
+def _audit() -> AuditService:
+    return AuditService(InMemoryAuditStore())
+
+
+def _login_limiter() -> LoginRateLimiter:
+    return LoginRateLimiter(
+        InMemoryLoginAttemptStore(),
+        secret="s" * 40,
+        max_failures=5,
+        window_seconds=300,
+        lock_seconds=900,
+    )
 
 
 def postgres_settings() -> Settings:
@@ -26,14 +43,18 @@ def postgres_settings() -> Settings:
 
 
 def test_postgres_backend_uses_injected_connection() -> None:
-    service, repository = build_account_service(postgres_settings(), connection=object(), migrate=False)
+    service, repository = build_account_service(
+        postgres_settings(), audit=_audit(), login_limiter=_login_limiter(), connection=object(), migrate=False
+    )
 
     assert isinstance(repository, PostgresAccountRepository)
     assert service.repository is repository
 
 
 def test_postgres_backend_exposes_account_repository_contract() -> None:
-    _service, repository = build_account_service(postgres_settings(), connection=object(), migrate=False)
+    _service, repository = build_account_service(
+        postgres_settings(), audit=_audit(), login_limiter=_login_limiter(), connection=object(), migrate=False
+    )
 
     for name in (
         "add",

@@ -47,22 +47,29 @@ def test_service_writes_to_store_and_emits_log(caplog) -> None:
 
     from app.audit.logging import AUDIT_LOGGER_NAME
 
-    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
-    store = InMemoryAuditStore()
-    service = AuditService(store)
+    logger = logging.getLogger(AUDIT_LOGGER_NAME)
+    # 应用启动会调用 configure_audit_logging 并把 propagate 关闭；caplog 依赖向 root 传播。
+    previous_propagate = logger.propagate
+    logger.propagate = True
+    try:
+        caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+        store = InMemoryAuditStore()
+        service = AuditService(store)
 
-    saved = service.record(
-        AuditAction.PLAN_PROPOSED,
-        tenant_id="t-1",
-        actor_id="u-1",
-        target_type="task",
-        target_id="task-1",
-        detail={"step_count": 2},
-    )
+        saved = service.record(
+            AuditAction.PLAN_PROPOSED,
+            tenant_id="t-1",
+            actor_id="u-1",
+            target_type="task",
+            target_id="task-1",
+            detail={"step_count": 2},
+        )
 
-    assert store.list_recent("t-1", limit=10) == [saved]
-    assert saved.action is AuditAction.PLAN_PROPOSED
-    assert caplog.records[-1].getMessage().find('"action": "plan.proposed"') >= 0
+        assert store.list_recent("t-1", limit=10) == [saved]
+        assert saved.action is AuditAction.PLAN_PROPOSED
+        assert caplog.records[-1].getMessage().find('"action": "plan.proposed"') >= 0
+    finally:
+        logger.propagate = previous_propagate
 
 
 def test_service_rejects_undeclared_detail() -> None:

@@ -8,8 +8,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, st
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
+from .audit.logging import configure_audit_logging
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_planner_service, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_planner_service, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -34,6 +35,7 @@ from .accounts.models import (
     RegistrationRequest,
 )
 from .accounts.passwords import PasswordPolicyError
+from .accounts.rate_limit import LoginRateLimited
 from .auth import create_access_token, verify_access_token
 from .settings import get_settings, validate_runtime_settings
 from .runtime.policy import ApprovalRequired, PolicyDenied
@@ -78,9 +80,14 @@ content_service = ContentService(
     content_generator=build_content_generator(settings),
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
-account_service, _ = build_account_service(settings)
 planner_service, planner_store = build_planner_service(
     settings, task_store=store, runtime_service=runtime_service
+)
+configure_audit_logging(settings.log_level)
+audit_service = build_audit_service(settings)
+login_rate_limiter = build_login_rate_limiter(settings)
+account_service, _ = build_account_service(
+    settings, audit=audit_service, login_limiter=login_rate_limiter
 )
 
 
@@ -949,6 +956,8 @@ def create_session(payload: SessionCreate) -> dict[str, object]:
         raise HTTPException(status_code=503, detail="会话密钥未配置，请先设置 WORKBENCH_AUTH_SECRET")
     try:
         context = account_service.login(payload.phone, payload.password)
+    except LoginRateLimited as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except LoginFailed as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     token = create_access_token(context, settings.auth_secret, ttl_seconds=settings.session_ttl_seconds)

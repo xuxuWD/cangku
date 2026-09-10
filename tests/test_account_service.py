@@ -10,8 +10,11 @@ from app.accounts.models import (
     LoginFailed,
     RegistrationRequest,
 )
+from app.accounts.rate_limit import InMemoryLoginAttemptStore, LoginRateLimiter
 from app.accounts.repository import InMemoryAccountRepository
 from app.accounts.service import AccountService
+from app.audit.service import AuditService
+from app.audit.store import InMemoryAuditStore
 from app.domain import PolicyError, UserContext
 
 BOOTSTRAP = "bootstrap-secret-value"
@@ -19,7 +22,18 @@ PASSWORD = "correct-horse-battery"
 
 
 def service(*, bootstrap_token: str = BOOTSTRAP) -> AccountService:
-    return AccountService(InMemoryAccountRepository(), bootstrap_token=bootstrap_token)
+    return AccountService(
+        InMemoryAccountRepository(),
+        bootstrap_token=bootstrap_token,
+        audit=AuditService(InMemoryAuditStore()),
+        login_limiter=LoginRateLimiter(
+            InMemoryLoginAttemptStore(),
+            secret="s" * 40,
+            max_failures=5,
+            window_seconds=300,
+            lock_seconds=900,
+        ),
+    )
 
 
 def valid_request(**overrides) -> RegistrationRequest:

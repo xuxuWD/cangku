@@ -13,6 +13,9 @@ def _restore_audit_logger():
 
     logger = logging.getLogger(AUDIT_LOGGER_NAME)
     snapshot = (list(logger.handlers), logger.level, logger.propagate, module._configured)
+    # 应用启动会调用 configure_audit_logging 并把 propagate 关闭；caplog 依赖向 root 传播，
+    # 因此测试期间强制打开传播，结束后按快照复原。
+    logger.propagate = True
     try:
         yield
     finally:

@@ -3,8 +3,11 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.accounts.models import SUPER_ADMIN_ROLE
+from app.accounts.rate_limit import InMemoryLoginAttemptStore, LoginRateLimiter
 from app.accounts.repository import InMemoryAccountRepository
 from app.accounts.service import AccountService
+from app.audit.service import AuditService
+from app.audit.store import InMemoryAuditStore
 from app.main import app
 
 client = TestClient(app)
@@ -16,7 +19,18 @@ SECRET = "s" * 40
 
 @pytest.fixture
 def accounts(monkeypatch) -> AccountService:
-    service = AccountService(InMemoryAccountRepository(), bootstrap_token=BOOTSTRAP)
+    service = AccountService(
+        InMemoryAccountRepository(),
+        bootstrap_token=BOOTSTRAP,
+        audit=AuditService(InMemoryAuditStore()),
+        login_limiter=LoginRateLimiter(
+            InMemoryLoginAttemptStore(),
+            secret="s" * 40,
+            max_failures=5,
+            window_seconds=300,
+            lock_seconds=900,
+        ),
+    )
     monkeypatch.setattr(main, "account_service", service)
     monkeypatch.setattr(main.settings, "auth_secret", SECRET)
     monkeypatch.setattr(main.settings, "session_ttl_seconds", 900)
