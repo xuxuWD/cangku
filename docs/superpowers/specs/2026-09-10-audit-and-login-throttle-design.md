@@ -73,13 +73,13 @@ plan.rejected
 plan.run_started
 ```
 
-`AuditRecord` 字段：`action`、`actor_id`（可空，匿名注册时为空）、`tenant_id`、`target_type`、`target_id`、`phone_masked`（可空）、`detail`（JSON 对象）、`occurred_at`（UTC）。
+`AuditRecord` 字段：`action`、`actor_id`（可空，匿名注册与登录失败时为空）、`tenant_id`（**可空**：匿名注册在审批前没有租户归属）、`target_type`、`target_id`、`phone_masked`（可空）、`detail`（JSON 对象）、`occurred_at`（UTC）。
 
 `detail` 只允许出现服务端明确写入的结构化值（例如驳回原因、生成器标识、步骤数、运行时标识）；**不允许**写入请求体原文、模型原始响应、口令、哈希、令牌或密钥。
 
 ### 审计仓储
 
-`AuditStore` 协议：`append(record) -> AuditRecord`、`list_recent(tenant_id, limit) -> list[AuditRecord]`。
+`AuditStore` 协议：`append(record) -> AuditRecord`、`list_recent(tenant_id=None, limit) -> list[AuditRecord]`（`tenant_id` 为 `None` 时返回全部）。
 
 > `list_recent` 供测试与后续管理端使用；**本轮不提供任何读取审计的 HTTP 接口**，审计表只写不读。
 
@@ -95,7 +95,7 @@ PostgreSQL 实现使用迁移 `010_audit_log.sql` 建表；写入在事务内完
 
 规则：
 
-- `register_failure(phone)`：若 `window_started_at` 已超出窗口则把窗口重置为当前时间、计数置 1；否则计数加一。若计数达到阈值则 `locked_until = now + 锁定时长`。
+- `register_failure(phone)`：若 `window_started_at` 已超出窗口则把窗口重置为当前时间、计数置 1；否则计数加一。若计数达到阈值则 `locked_until = now + 锁定时长`。**计数与窗口推进必须由仓储的单个原子操作完成**（内存实现持锁、PostgreSQL 实现用单条 upsert 语句），避免并发下丢计数。
 - `register_success(phone)`：清除计数与锁定。
 - `is_locked(phone)`：`locked_until` 存在且尚未到期即视为锁定。
 
