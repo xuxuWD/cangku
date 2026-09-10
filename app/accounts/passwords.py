@@ -48,15 +48,20 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, encoded: str) -> bool:
-    """恒定时间校验口令；任何解析失败都返回 False，不抛异常。"""
+    """恒定时间校验口令；参数被篡改或解析失败一律返回 False，不抛异常。
+
+    本函数不做长度策略校验，由调用方在注册/改密时负责。
+    """
     try:
         scheme, n, r, p, salt_b64, hash_b64 = encoded.split("$")
         if scheme != "scrypt":
             return False
+        if (int(n), int(r), int(p)) != (_SCRYPT_N, _SCRYPT_R, _SCRYPT_P):
+            return False
         salt = _b64decode(salt_b64)
         expected = _b64decode(hash_b64)
         derived = hashlib.scrypt(
-            password.encode(), salt=salt, n=int(n), r=int(r), p=int(p), dklen=len(expected)
+            password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=len(expected)
         )
         return hmac.compare_digest(derived, expected)
     except (AttributeError, TypeError, ValueError):
