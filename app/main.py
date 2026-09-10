@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, st
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bootstrap import build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
+from .bootstrap import build_account_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -23,7 +23,17 @@ from .domain import (
     ensure_can_approve,
     ensure_can_create,
 )
-from .auth import verify_access_token
+from .accounts.models import (
+    AccountConflict,
+    AccountNotFound,
+    AccountStateConflict,
+    AccountStatus,
+    BootstrapDenied,
+    LoginFailed,
+    RegistrationRequest,
+)
+from .accounts.passwords import PasswordPolicyError
+from .auth import create_access_token, verify_access_token
 from .settings import get_settings, validate_runtime_settings
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.service import RunAccessDenied, RuntimeService
@@ -59,6 +69,7 @@ content_service = ContentService(
     content_generator=build_content_generator(settings),
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
+account_service, account_repository = build_account_service(settings)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
@@ -246,6 +257,11 @@ def current_user(
     if settings.env != "development":
         if not settings.auth_secret or not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="请使用有效的登录凭证")
+        try:
+            return verify_access_token(authorization.removeprefix("Bearer "), settings.auth_secret)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail="登录凭证无效") from exc
+    if authorization and authorization.startswith("Bearer ") and settings.auth_secret:
         try:
             return verify_access_token(authorization.removeprefix("Bearer "), settings.auth_secret)
         except ValueError as exc:
@@ -776,3 +792,193 @@ def request_runtime_approval(run_id: str, payload: RuntimeApprovalCreate, contex
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
     return {"run_id": run_id, "approval_id": approval_id, "status": "pending"}
+
+
+class RegistrationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=1, max_length=20)
+    password: str = Field(min_length=10, max_length=128)
+    position: str = Field(min_length=1, max_length=100)
+    full_name: str = Field(min_length=1, max_length=100)
+    email: str | None = Field(default=None, max_length=200)
+    tenant_id: str | None = Field(default=None, max_length=64)
+    bootstrap_token: str | None = Field(default=None, max_length=200)
+
+
+class RegistrationApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = Field(min_length=1, max_length=40)
+    tenant_id: str = Field(min_length=1, max_length=64)
+
+
+class RegistrationRejection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class SessionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=1, max_length=20)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class PasswordChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    old_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+class PasswordReset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+def _mask_phone(phone: str) -> str:
+    if len(phone) < 7:
+        return "*" * len(phone)
+    return f"{phone[:3]}{'*' * (len(phone) - 7)}{phone[-4:]}"
+
+
+def _account_view(account) -> dict[str, object]:
+    return {
+        "account_id": account.account_id,
+        "phone": _mask_phone(account.phone),
+        "position": account.position,
+        "full_name": account.full_name,
+        "email": account.email,
+        "role": account.role,
+        "tenant_id": account.tenant_id,
+        "status": account.status.value,
+        "requested_at": account.requested_at,
+        "reviewed_at": account.reviewed_at,
+    }
+
+
+@app.post("/api/v1/auth/registrations", status_code=status.HTTP_201_CREATED)
+def submit_registration(payload: RegistrationCreate) -> dict[str, object]:
+    try:
+        account = account_service.request_registration(
+            RegistrationRequest(
+                phone=payload.phone,
+                password=payload.password,
+                position=payload.position,
+                full_name=payload.full_name,
+                email=payload.email,
+                tenant_id=payload.tenant_id,
+                bootstrap_token=payload.bootstrap_token,
+            )
+        )
+    except AccountConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except BootstrapDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except PasswordPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _account_view(account)
+
+
+@app.get("/api/v1/auth/registrations")
+def list_registrations(
+    status_filter: str = Query(default="pending", alias="status"),
+    context: UserContext = Depends(current_user),
+) -> list[dict[str, object]]:
+    try:
+        requested_status = AccountStatus(status_filter)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="不支持的账号状态") from exc
+    try:
+        items = account_service.list_requests(context, requested_status)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return [_account_view(item) for item in items]
+
+
+@app.post("/api/v1/auth/registrations/{account_id}/approval")
+def approve_registration(
+    account_id: str, payload: RegistrationApproval, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    try:
+        account = account_service.approve(
+            context, account_id, role=payload.role, tenant_id=payload.tenant_id
+        )
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except AccountStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except AccountNotFound as exc:
+        raise HTTPException(status_code=404, detail="账号申请不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _account_view(account)
+
+
+@app.post("/api/v1/auth/registrations/{account_id}/rejection")
+def reject_registration(
+    account_id: str, payload: RegistrationRejection, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    try:
+        account = account_service.reject(context, account_id, reason=payload.reason)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except AccountStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except AccountNotFound as exc:
+        raise HTTPException(status_code=404, detail="账号申请不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _account_view(account)
+
+
+@app.post("/api/v1/auth/sessions")
+def create_session(payload: SessionCreate) -> dict[str, object]:
+    if not settings.auth_secret:
+        raise HTTPException(status_code=503, detail="会话密钥未配置，请先设置 WORKBENCH_AUTH_SECRET")
+    try:
+        context = account_service.login(payload.phone, payload.password)
+    except LoginFailed as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    token = create_access_token(context, settings.auth_secret, ttl_seconds=settings.session_ttl_seconds)
+    return {
+        "access_token": token,
+        "token_type": "Bearer",
+        "expires_in": settings.session_ttl_seconds,
+        "tenant_id": context.tenant_id,
+        "user_id": context.user_id,
+        "role": context.role,
+    }
+
+
+@app.put("/api/v1/auth/me/password")
+def change_own_password(payload: PasswordChange, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    try:
+        account_service.change_password(
+            context, old_password=payload.old_password, new_password=payload.new_password
+        )
+    except LoginFailed as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except PasswordPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "updated"}
+
+
+@app.post("/api/v1/auth/accounts/{account_id}/password")
+def reset_account_password(
+    account_id: str, payload: PasswordReset, context: UserContext = Depends(current_user)
+) -> dict[str, str]:
+    try:
+        account_service.reset_password(context, account_id, new_password=payload.new_password)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except AccountNotFound as exc:
+        raise HTTPException(status_code=404, detail="账号不存在") from exc
+    except PasswordPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "reset"}
