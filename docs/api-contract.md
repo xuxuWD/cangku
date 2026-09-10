@@ -36,7 +36,7 @@
 
 `POST /api/v1/auth/sessions`
 
-用 `phone` 与 `password` 换取会话令牌。手机号不存在、口令错误或账号未通过审批一律返回 `401` 且不区分原因。成功返回 `access_token`、`token_type`、`expires_in`、`tenant_id`、`user_id` 和 `role`。会话密钥未配置时返回 `503`。
+用 `phone` 与 `password` 换取会话令牌。手机号不存在、口令错误或账号未通过审批一律返回 `401` 且不区分原因。账号被锁定（同一手机号在 5 分钟窗口内失败达阈值）时返回 `429`，文案为「登录尝试过于频繁，请稍后再试」。由于计数按手机号统一执行，已存在与不存在的手机号达到阈值后表现一致，不泄露账号是否存在。成功返回 `access_token`、`token_type`、`expires_in`、`tenant_id`、`user_id` 和 `role`。会话密钥未配置时返回 `503`。
 
 `PUT /api/v1/auth/me/password`
 
@@ -47,6 +47,14 @@
 仅超级管理员可调用，用于忘记密码后的重置。请求体为 `{ "new_password": "..." }`；账号不存在返回 `404`，其他角色返回 `403`。
 
 会话令牌使用 HMAC-SHA256 签名，载荷包含租户、用户、角色、签发时间、过期时间和唯一号；过期或签名错误一律返回 `401`。有效期由 `WORKBENCH_SESSION_TTL_SECONDS` 控制，默认 900 秒，范围 60–3600。本轮不提供服务端会话撤销，登出由客户端丢弃令牌并由短期有效期兜底。
+
+### 关键操作审计
+
+账号与计划模块的关键操作会写入通用安全审计表 `workbench_audit_log`，并同时输出单行 JSON 结构化日志（logger 名 `company_workbench.audit`，写入标准输出，级别取 `WORKBENCH_LOG_LEVEL`）。
+
+覆盖动作：`account.registration.requested`、`account.registration.approved`、`account.registration.rejected`、`account.login.succeeded`、`account.login.failed`、`account.login.locked`、`account.password.changed`、`account.password.reset`、`plan.proposed`、`plan.approved`、`plan.rejected`、`plan.run_started`。
+
+审计记录包含动作、操作者、租户、目标、脱敏手机号与结构化明细（明细字段由服务端白名单限定）；**不包含**口令、口令哈希、令牌、Cookie、密钥或模型原始响应。本轮不提供读取审计的接口。
 
 ## 私有部署商业化 G0
 
