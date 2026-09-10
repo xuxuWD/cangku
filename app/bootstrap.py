@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .accounts.repository import InMemoryAccountRepository
+from .accounts.service import AccountService
 from .domain import TaskStore
 from .dead_letters import DeadLetterStore, PostgresDeadLetterStore
 from .knowledge_policy import KnowledgeAccessRegistry, PostgresKnowledgeAccessRegistry
@@ -186,3 +188,26 @@ def build_knowledge_access_registry(settings: Settings, *, connection=None):
             connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
         return PostgresKnowledgeAccessRegistry(connection)
     raise ValueError("不支持的知识范围仓储类型")
+
+
+def build_account_service(settings: Settings, *, connection=None, migrate: bool = True) -> tuple[AccountService, object]:
+    """按存储模式装配账号仓储与服务。"""
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存账号仓储")
+        repository = InMemoryAccountRepository()
+    elif settings.storage_backend == "postgres":
+        from .accounts.repository import PostgresAccountRepository
+
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        repository = PostgresAccountRepository(connection)
+    else:
+        raise ValueError("不支持的账号存储类型")
+    return AccountService(repository, bootstrap_token=settings.bootstrap_token), repository
