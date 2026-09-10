@@ -102,6 +102,24 @@ class Settings(BaseSettings):
         le=120,
         validation_alias=AliasChoices("PLANNER_MODEL_TIMEOUT_SECONDS", "WORKBENCH_PLANNER_MODEL_TIMEOUT_SECONDS"),
     )
+    login_max_failures: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        validation_alias=AliasChoices("LOGIN_MAX_FAILURES", "WORKBENCH_LOGIN_MAX_FAILURES"),
+    )
+    login_window_seconds: int = Field(
+        default=300,
+        ge=30,
+        le=3600,
+        validation_alias=AliasChoices("LOGIN_WINDOW_SECONDS", "WORKBENCH_LOGIN_WINDOW_SECONDS"),
+    )
+    login_lock_seconds: int = Field(
+        default=900,
+        ge=30,
+        le=86400,
+        validation_alias=AliasChoices("LOGIN_LOCK_SECONDS", "WORKBENCH_LOGIN_LOCK_SECONDS"),
+    )
 
 
 @lru_cache

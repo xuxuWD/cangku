@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .accounts.rate_limit import InMemoryLoginAttemptStore, LoginRateLimiter
 from .accounts.repository import InMemoryAccountRepository
 from .accounts.service import AccountService
+from .audit.service import AuditService
+from .audit.store import InMemoryAuditStore
 from .domain import TaskStore
 from .dead_letters import DeadLetterStore, PostgresDeadLetterStore
 from .knowledge_policy import KnowledgeAccessRegistry, PostgresKnowledgeAccessRegistry
@@ -262,3 +265,53 @@ def build_planner_service(settings: Settings, *, task_store=None, runtime_servic
         max_steps=settings.planner_max_steps,
     )
     return service, store
+
+
+def build_audit_service(settings: Settings, *, connection=None, migrate: bool = True) -> AuditService:
+    """按存储模式装配审计仓储。"""
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存审计仓储")
+        return AuditService(InMemoryAuditStore())
+    if settings.storage_backend == "postgres":
+        from .audit.store import PostgresAuditStore
+
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return AuditService(PostgresAuditStore(connection))
+    raise ValueError("不支持的审计存储类型")
+
+
+def build_login_rate_limiter(settings: Settings, *, connection=None, migrate: bool = True) -> LoginRateLimiter:
+    """按存储模式装配登录限流。"""
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存登录限流仓储")
+        store = InMemoryLoginAttemptStore()
+    elif settings.storage_backend == "postgres":
+        from .accounts.rate_limit import PostgresLoginAttemptStore
+
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        store = PostgresLoginAttemptStore(connection)
+    else:
+        raise ValueError("不支持的登录限流存储类型")
+    return LoginRateLimiter(
+        store,
+        secret=settings.auth_secret,
+        max_failures=settings.login_max_failures,
+        window_seconds=settings.login_window_seconds,
+        lock_seconds=settings.login_lock_seconds,
+    )
