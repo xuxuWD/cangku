@@ -526,7 +526,7 @@ class InMemoryAccountRepository:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_repository.py -q`
-Expected: PASS（9 passed）
+Expected: PASS（8 passed）
 
 - [ ] **Step 5: 提交**
 
