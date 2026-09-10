@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
+from uuid import uuid4
+
+
+class AuditAction(StrEnum):
+    ACCOUNT_REGISTRATION_REQUESTED = "account.registration.requested"
+    ACCOUNT_REGISTRATION_APPROVED = "account.registration.approved"
+    ACCOUNT_REGISTRATION_REJECTED = "account.registration.rejected"
+    ACCOUNT_LOGIN_SUCCEEDED = "account.login.succeeded"
+    ACCOUNT_LOGIN_FAILED = "account.login.failed"
+    ACCOUNT_LOGIN_LOCKED = "account.login.locked"
+    ACCOUNT_PASSWORD_CHANGED = "account.password.changed"
+    ACCOUNT_PASSWORD_RESET = "account.password.reset"
+    PLAN_PROPOSED = "plan.proposed"
+    PLAN_APPROVED = "plan.approved"
+    PLAN_REJECTED = "plan.rejected"
+    PLAN_RUN_STARTED = "plan.run_started"
+
+
+class AuditDetailNotAllowed(ValueError):
+    """审计明细包含敏感字段，已拒绝写入。"""
+
+
+ALLOWED_DETAIL_KEYS = frozenset(
+    {
+        "reason",
+        "role",
+        "step_count",
+        "generator",
+        "runtime_key",
+        "failure_count",
+        "bootstrap",
+        "tenant_assigned_at_approval",
+    }
+)
+
+
+@dataclass(frozen=True)
+class AuditRecord:
+    action: AuditAction
+    tenant_id: str | None = None
+    actor_id: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    phone_masked: str | None = None
+    detail: dict[str, object] = field(default_factory=dict)
+    record_id: str = field(default_factory=lambda: f"audit-{uuid4().hex[:12]}")
+    occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+def build_record(
+    action: AuditAction,
+    *,
+    tenant_id: str | None = None,
+    actor_id: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    phone_masked: str | None = None,
+    detail: dict[str, object] | None = None,
+) -> AuditRecord:
+    """构造审计记录；明细采用白名单，只允许服务端声明的字段，未知字段一律拒绝。"""
+    payload = dict(detail or {})
+    undeclared = {str(key) for key in payload if key not in ALLOWED_DETAIL_KEYS}
+    if undeclared:
+        raise AuditDetailNotAllowed("审计明细包含未声明的字段")
+    return AuditRecord(
+        action=action,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        target_type=target_type,
+        target_id=target_id,
+        phone_masked=phone_masked,
+        detail=payload,
+    )

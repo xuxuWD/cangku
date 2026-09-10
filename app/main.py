@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, st
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
+from .audit.redaction import mask_phone
 from .bootstrap import build_account_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_planner_service, build_task_repository
 from .events import EventEnvelope
 from .domain import (
@@ -850,16 +851,10 @@ class PasswordReset(BaseModel):
     new_password: str = Field(min_length=10, max_length=128)
 
 
-def _mask_phone(phone: str) -> str:
-    if len(phone) < 11:
-        return "*" * len(phone)
-    return f"{phone[:3]}{'*' * (len(phone) - 7)}{phone[-4:]}"
-
-
 def _account_view(account) -> dict[str, object]:
     return {
         "account_id": account.account_id,
-        "phone": _mask_phone(account.phone),
+        "phone": mask_phone(account.phone),
         "position": account.position,
         "full_name": account.full_name,
         "email": account.email,
