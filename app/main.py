@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, st
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bootstrap import build_account_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_task_repository
+from .bootstrap import build_account_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_planner_service, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -42,6 +42,14 @@ from .content.service import ContentNotFound, ContentService, ExportNotAllowed, 
 from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
 from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
+from .planner.models import (
+    PlanGenerationError,
+    PlanProposalNotFound,
+    PlanProposalStateConflict,
+    PlannerAccessDenied,
+    PlannerNotConfigured,
+    UnknownTool,
+)
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
@@ -70,6 +78,9 @@ content_service = ContentService(
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 account_service, _ = build_account_service(settings)
+planner_service, planner_store = build_planner_service(
+    settings, task_store=store, runtime_service=runtime_service
+)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
@@ -982,3 +993,132 @@ def reset_account_password(
     except PasswordPolicyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"status": "reset"}
+
+
+class PlanProposalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str = Field(min_length=1, max_length=2_000)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class PlanProposalRejection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class PlanRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    runtime_key: str = Field(default="mock", min_length=1, max_length=80)
+    mode: str = Field(default="product_manager", pattern="^(product_manager|fde)$")
+
+
+def _plan_view(proposal) -> dict[str, object]:
+    return {
+        "proposal_id": proposal.proposal_id,
+        "task_id": proposal.task_id,
+        "goal": proposal.goal,
+        "status": proposal.status.value,
+        "steps": [
+            {
+                "step_id": step.step_id,
+                "tool": step.tool,
+                "kind": step.kind,
+                "requires_approval": step.requires_approval,
+            }
+            for step in proposal.steps
+        ],
+        "generator": {
+            "key": proposal.generator_key,
+            "model": proposal.generator_model,
+        },
+        "created_by": proposal.created_by,
+        "created_at": proposal.created_at,
+        "reviewed_by": proposal.reviewed_by,
+        "reviewed_at": proposal.reviewed_at,
+        "rejection_reason": proposal.rejection_reason,
+    }
+
+
+@app.post("/api/v1/tasks/{task_id}/plan-proposals", status_code=status.HTTP_201_CREATED)
+def create_plan_proposal(
+    task_id: str, payload: PlanProposalCreate, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    try:
+        proposal = planner_service.propose(context, task_id, payload.goal, payload.idempotency_key)
+    except TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except PlannerNotConfigured as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (UnknownTool, PlanGenerationError) as exc:
+        raise HTTPException(status_code=422, detail="计划生成失败，请调整目标后重试") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _plan_view(proposal)
+
+
+@app.get("/api/v1/plan-proposals/{proposal_id}")
+def get_plan_proposal(proposal_id: str, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        proposal = planner_service.get(context, proposal_id)
+    except (PlanProposalNotFound, PlannerAccessDenied) as exc:
+        raise HTTPException(status_code=404, detail="计划提案不存在") from exc
+    return _plan_view(proposal)
+
+
+@app.post("/api/v1/plan-proposals/{proposal_id}/approval")
+def approve_plan_proposal(proposal_id: str, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        proposal = planner_service.approve(context, proposal_id)
+    except PlanProposalNotFound as exc:
+        raise HTTPException(status_code=404, detail="计划提案不存在") from exc
+    except PlanProposalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _plan_view(proposal)
+
+
+@app.post("/api/v1/plan-proposals/{proposal_id}/rejection")
+def reject_plan_proposal(
+    proposal_id: str, payload: PlanProposalRejection, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    try:
+        proposal = planner_service.reject(context, proposal_id, payload.reason)
+    except PlanProposalNotFound as exc:
+        raise HTTPException(status_code=404, detail="计划提案不存在") from exc
+    except PlanProposalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _plan_view(proposal)
+
+
+@app.post("/api/v1/plan-proposals/{proposal_id}/runs", status_code=status.HTTP_201_CREATED)
+def start_plan_run(
+    proposal_id: str, payload: PlanRunCreate, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    try:
+        run_id, runtime_key, policy_version = planner_service.start_run(
+            context, proposal_id, payload.runtime_key, payload.mode
+        )
+    except (PlanProposalNotFound, PlannerAccessDenied) as exc:
+        raise HTTPException(status_code=404, detail="计划提案不存在") from exc
+    except PlanProposalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except (PolicyDenied, ApprovalRequired) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail="运行时不可用") from exc
+    return {
+        "run_id": run_id,
+        "runtime_key": runtime_key,
+        "policy_version": policy_version,
+        "status": "running",
+    }
