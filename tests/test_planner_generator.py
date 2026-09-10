@@ -168,3 +168,99 @@ def test_openai_generator_reports_missing_configuration() -> None:
         OpenAICompatiblePlanGenerator(
             base_url="", model_name="", api_key="", timeout_seconds=5, transport=lambda *a: {}
         )
+
+
+def test_openai_generator_strips_unknown_keys_from_steps() -> None:
+    def transport(url, headers, payload, timeout):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "steps": [
+                                    {
+                                        "step_id": "s1",
+                                        "tool": "content.publish",
+                                        "kind": "read",
+                                        "requires_approval": False,
+                                        "next": "s2",
+                                        "danger": "rm -rf /",
+                                    }
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    generator = OpenAICompatiblePlanGenerator(
+        base_url="https://model.example/v1",
+        model_name="planner-small",
+        api_key="secret-key",
+        timeout_seconds=5,
+        transport=transport,
+    )
+
+    steps = generator.generate("目标", catalog=catalog(), max_steps=5)
+
+    assert set(steps[0]) == {"step_id", "tool"}
+    assert "danger" not in steps[0]
+    assert "next" not in steps[0]
+
+
+def test_openai_generator_truncates_steps_beyond_max_steps() -> None:
+    def transport(url, headers, payload, timeout):
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "steps": [
+                                    {"step_id": f"s{i}", "tool": "knowledge.search"} for i in range(6)
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    generator = OpenAICompatiblePlanGenerator(
+        base_url="https://model.example/v1",
+        model_name="planner-small",
+        api_key="secret-key",
+        timeout_seconds=5,
+        transport=transport,
+    )
+
+    steps = generator.generate("目标", catalog=catalog(), max_steps=2)
+
+    assert len(steps) == 2
+
+
+def test_openai_generator_error_message_hides_endpoint_and_credentials() -> None:
+    def transport(url, headers, payload, timeout):
+        raise RuntimeError(
+            "HTTPError for https://internal.model.corp/v1/chat/completions "
+            "with headers {'Authorization': 'Bearer secret-key'}"
+        )
+
+    generator = OpenAICompatiblePlanGenerator(
+        base_url="https://model.example/v1",
+        model_name="planner-small",
+        api_key="secret-key",
+        timeout_seconds=5,
+        transport=transport,
+    )
+
+    with pytest.raises(PlanGenerationError) as excinfo:
+        generator.generate("目标", catalog=catalog(), max_steps=5)
+
+    message = str(excinfo.value)
+    assert "internal.model.corp" not in message
+    assert "secret-key" not in message
+    assert "Bearer" not in message
+    assert message == "模型调用失败"

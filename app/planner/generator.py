@@ -91,8 +91,8 @@ class OpenAICompatiblePlanGenerator:
                 self.timeout_seconds,
             )
         except Exception as exc:  # 网络、超时、HTTP 状态异常统一收敛
-            raise PlanGenerationError(f"模型调用失败：{exc}") from exc
-        return self._parse(response)
+            raise PlanGenerationError("模型调用失败") from exc
+        return self._parse(response)[:max_steps]
 
     @staticmethod
     def _http_transport(
