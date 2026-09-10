@@ -85,3 +85,46 @@ def test_list_for_task_is_tenant_scoped() -> None:
 
     assert len(store.list_for_task("t-1", "task-1")) == 2
     assert store.list_for_task("t-other", "task-1") == []
+
+
+def test_add_is_idempotent_for_same_key_and_returns_existing() -> None:
+    store = InMemoryPlanProposalStore()
+    first = store.add(proposal())
+    second = store.add(proposal())
+
+    assert second is first
+    assert len(store.list_for_task("t-1", "task-1")) == 1
+
+
+def test_concurrent_add_with_same_key_creates_only_one_proposal() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = InMemoryPlanProposalStore()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _index: store.add(proposal()), range(20)))
+
+    ids = {item.proposal_id for item in results}
+    assert len(ids) == 1
+    assert len(store.list_for_task("t-1", "task-1")) == 1
+
+
+def test_concurrent_approval_only_succeeds_once() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = InMemoryPlanProposalStore()
+    saved = store.add(proposal())
+
+    def attempt(_index: int) -> str:
+        try:
+            store.mark_approved(saved.proposal_id, reviewer="ceo-1")
+            return "approved"
+        except PlanProposalStateConflict:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(attempt, range(20)))
+
+    assert results.count("approved") == 1
+    assert results.count("conflict") == 19
+    assert store.get("t-1", saved.proposal_id).status is PlanStatus.APPROVED

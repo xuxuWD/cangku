@@ -26,11 +26,18 @@ class InMemoryPlanProposalStore:
 
     def __init__(self) -> None:
         self._items: dict[str, PlanProposal] = {}
+        self._idempotency: dict[tuple[str, str, str], str] = {}
         self._lock = RLock()
 
     def add(self, proposal: PlanProposal) -> PlanProposal:
+        """写入提案；同一租户、任务与幂等键已存在时返回既有提案，不重复写入。"""
+        key = (proposal.tenant_id, proposal.task_id, proposal.idempotency_key)
         with self._lock:
+            existing_id = self._idempotency.get(key)
+            if existing_id is not None:
+                return self._items[existing_id]
             self._items[proposal.proposal_id] = proposal
+            self._idempotency[key] = proposal.proposal_id
             return proposal
 
     def get(self, tenant_id: str, proposal_id: str) -> PlanProposal:
