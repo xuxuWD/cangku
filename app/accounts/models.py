@@ -35,6 +35,18 @@ class LoginFailed(ValueError):
     """登录或口令校验失败，详情不对外区分。"""
 
 
+class TotpRequired(ValueError):
+    """账号已绑定动态口令，本次登录必须提供验证码。"""
+
+
+class TotpInvalid(ValueError):
+    """动态口令验证码错误，或命中了已使用过的步号（重放）。"""
+
+
+class TotpNotEnrolled(ValueError):
+    """目标账号尚未绑定动态口令。"""
+
+
 @dataclass(frozen=True)
 class RegistrationRequest:
     phone: str
@@ -61,3 +73,8 @@ class Account:
     reviewed_at: datetime | None = None
     reviewed_by: str | None = None
     rejection_reason: str | None = None
+    # 动态口令（TOTP）：密钥为 base32 文本；confirmed_at 非空表示已启用；
+    # last_step 记录最近一次成功校验的步号，用于拒绝同一窗口内的重放。
+    totp_secret: str | None = None
+    totp_confirmed_at: datetime | None = None
+    totp_last_step: int | None = None
