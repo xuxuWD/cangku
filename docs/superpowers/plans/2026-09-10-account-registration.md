@@ -53,6 +53,9 @@ from app.accounts.passwords import (
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
     PasswordPolicyError,
+    _SCRYPT_N,
+    _SCRYPT_P,
+    _SCRYPT_R,
     hash_password,
     verify_password,
 )
@@ -91,6 +94,30 @@ def test_verify_returns_false_for_damaged_encoding() -> None:
 def test_minimum_length_constant_matches_policy() -> None:
     with pytest.raises(PasswordPolicyError):
         hash_password("x" * (MIN_PASSWORD_LENGTH - 1))
+
+
+def test_verify_rejects_tampered_parameters_without_hanging() -> None:
+    import base64 as _base64
+
+    salt = _base64.urlsafe_b64encode(b"0123456789abcdef").decode().rstrip("=")
+    digest = _base64.urlsafe_b64encode(b"s" * 32).decode().rstrip("=")
+
+    assert verify_password("correct-horse-battery", f"scrypt${_SCRYPT_N}${_SCRYPT_R}$1000${salt}${digest}") is False
+    assert verify_password("correct-horse-battery", f"scrypt$1024${_SCRYPT_R}${_SCRYPT_P}${salt}${digest}") is False
+    assert verify_password("correct-horse-battery", f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt}${digest}") is False
+
+
+def test_verify_rejects_valid_format_with_changed_hash() -> None:
+    encoded = hash_password("correct-horse-battery")
+    scheme, n, r, p, salt, digest = encoded.split("$")
+    flipped = ("A" if digest[0] != "A" else "B") + digest[1:]
+
+    assert verify_password("correct-horse-battery", "$".join([scheme, n, r, p, salt, flipped])) is False
+
+
+def test_hash_password_rejects_non_string() -> None:
+    with pytest.raises(PasswordPolicyError, match="必须是文本"):
+        hash_password(12345)
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -159,25 +186,32 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, encoded: str) -> bool:
-    """恒定时间校验口令；任何解析失败都返回 False，不抛异常。"""
+    """恒定时间校验口令；参数被篡改或解析失败一律返回 False，不抛异常。
+
+    本函数不做长度策略校验，由调用方在注册/改密时负责。
+    """
     try:
         scheme, n, r, p, salt_b64, hash_b64 = encoded.split("$")
         if scheme != "scrypt":
             return False
+        if (int(n), int(r), int(p)) != (_SCRYPT_N, _SCRYPT_R, _SCRYPT_P):
+            return False
         salt = _b64decode(salt_b64)
         expected = _b64decode(hash_b64)
         derived = hashlib.scrypt(
-            password.encode(), salt=salt, n=int(n), r=int(r), p=int(p), dklen=len(expected)
+            password.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=len(expected)
         )
         return hmac.compare_digest(derived, expected)
     except (AttributeError, TypeError, ValueError):
         return False
 ```
 
+> 实现说明：`verify_password` 必须对 `encoded` 中解析出的 `n/r/p` 做白名单校验后才重算，且重算一律使用模块常量。否则被篡改的 `p`（例如 `p=1000`）会让校验阻塞数十秒，构成 CPU 耗尽型拒绝服务。
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_passwords.py -q`
-Expected: PASS（6 passed）
+Expected: PASS（9 passed）
 
 - [ ] **Step 5: 提交**
 
