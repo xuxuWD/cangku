@@ -8,6 +8,8 @@ from app.accounts.models import (
     AccountNotFound,
     AccountStateConflict,
     AccountStatus,
+    TotpInvalid,
+    TotpNotEnrolled,
 )
 from app.accounts.rate_limit import InMemoryLoginAttemptStore, LoginRateLimiter
 from app.accounts.repository import PostgresAccountRepository
@@ -65,6 +67,10 @@ def test_postgres_backend_exposes_account_repository_contract() -> None:
         "mark_rejected",
         "update_password",
         "has_approved_admin",
+        "set_totp",
+        "confirm_totp",
+        "clear_totp",
+        "record_totp_step",
     ):
         assert callable(getattr(repository, name))
 
@@ -118,6 +124,21 @@ def account_row(status: str = "pending") -> tuple:
     return (
         "acct-1", "13800000001", "scrypt$hash", "内容运营", "张三", None,
         None, None, status, datetime(2026, 9, 10, tzinfo=UTC), None, None, None,
+        None, None, None,
+    )
+
+
+def totp_row(
+    *,
+    secret: str | None = "JBSWY3DPEHPK3PXP",
+    confirmed_at: datetime | None = None,
+    last_step: int | None = None,
+    status: str = "approved",
+) -> tuple:
+    return (
+        "acct-1", "13800000001", "scrypt$hash", "内容运营", "张三", None,
+        None, None, status, datetime(2026, 9, 10, tzinfo=UTC), None, None, None,
+        secret, confirmed_at, last_step,
     )
 
 
@@ -205,6 +226,7 @@ def full_account_row() -> tuple:
         "acct-9", "13800000009", "scrypt$full", "技术", "王五", "w@example.com",
         "employee", "t-9", "approved", datetime(2026, 9, 10, tzinfo=UTC),
         datetime(2026, 9, 11, tzinfo=UTC), "acct-admin", None,
+        "JBSWY3DPEHPK3PXP", datetime(2026, 9, 12, tzinfo=UTC), 4242,
     )
 
 
@@ -227,6 +249,9 @@ def test_postgres_hydrate_maps_every_column() -> None:
     assert account.reviewed_at == datetime(2026, 9, 11, tzinfo=UTC)
     assert account.reviewed_by == "acct-admin"
     assert account.rejection_reason is None
+    assert account.totp_secret == "JBSWY3DPEHPK3PXP"
+    assert account.totp_confirmed_at == datetime(2026, 9, 12, tzinfo=UTC)
+    assert account.totp_last_step == 4242
 
 
 def test_postgres_add_passes_all_columns_in_order() -> None:
@@ -239,13 +264,16 @@ def test_postgres_add_passes_all_columns_in_order() -> None:
     repository.add(draft)
 
     _statement, params = connection.cursor_instance.statements[0]
-    assert len(params) == 13
+    assert len(params) == 16
     assert params[0] == draft.account_id
     assert params[1] == "13800000001"
     assert params[2] == "scrypt$hash"
     assert params[3] == "内容运营"
     assert params[4] == "张三"
     assert params[8] == "pending"
+    assert params[13] is None
+    assert params[14] is None
+    assert params[15] is None
 
 
 def test_postgres_mark_approved_passes_parameters_in_order() -> None:
@@ -321,4 +349,114 @@ def test_columns_constant_matches_hydrate_order() -> None:
         "reviewed_at",
         "reviewed_by",
         "rejection_reason",
+        "totp_secret",
+        "totp_confirmed_at",
+        "totp_last_step",
     ]
+
+
+def test_postgres_set_totp_resets_confirmation_columns() -> None:
+    connection = RecordingConnection([totp_row()])
+    repository = PostgresAccountRepository(connection)
+
+    account = repository.set_totp("acct-1", "JBSWY3DPEHPK3PXP")
+
+    assert account.totp_secret == "JBSWY3DPEHPK3PXP"
+    statement, params = connection.cursor_instance.statements[0]
+    assert "UPDATE workbench_accounts" in statement
+    assert "RETURNING account_id, phone" in statement
+    assert "totp_confirmed_at = NULL" in statement
+    assert "totp_last_step = NULL" in statement
+    assert params == ("JBSWY3DPEHPK3PXP", "acct-1")
+    assert connection.transaction_count == 1
+
+
+def test_postgres_set_totp_raises_when_account_missing() -> None:
+    connection = RecordingConnection([None])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(AccountNotFound):
+        repository.set_totp("acct-missing", "JBSWY3DPEHPK3PXP")
+
+
+def test_postgres_confirm_totp_guards_enrolment_and_passes_step() -> None:
+    connection = RecordingConnection(
+        [totp_row(confirmed_at=datetime(2026, 9, 11, tzinfo=UTC), last_step=42)]
+    )
+    repository = PostgresAccountRepository(connection)
+
+    account = repository.confirm_totp("acct-1", step=42)
+
+    assert account.totp_confirmed_at == datetime(2026, 9, 11, tzinfo=UTC)
+    assert account.totp_last_step == 42
+    statement, params = connection.cursor_instance.statements[0]
+    assert "WHERE account_id = %s AND totp_secret IS NOT NULL" in statement
+    assert params == (42, "acct-1")
+
+
+def test_postgres_confirm_totp_raises_not_enrolled_when_secret_missing() -> None:
+    connection = RecordingConnection([None, ("acct-1",)])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(TotpNotEnrolled):
+        repository.confirm_totp("acct-1", step=42)
+
+
+def test_postgres_confirm_totp_raises_not_found_when_account_missing() -> None:
+    connection = RecordingConnection([None, None])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(AccountNotFound):
+        repository.confirm_totp("acct-1", step=42)
+
+
+def test_postgres_clear_totp_nulls_all_columns() -> None:
+    connection = RecordingConnection([account_row("approved")])
+    repository = PostgresAccountRepository(connection)
+
+    account = repository.clear_totp("acct-1")
+
+    assert account.totp_secret is None
+    statement, params = connection.cursor_instance.statements[0]
+    assert "UPDATE workbench_accounts" in statement
+    assert "totp_secret = NULL" in statement
+    assert "totp_confirmed_at = NULL" in statement
+    assert "totp_last_step = NULL" in statement
+    assert params == ("acct-1",)
+
+
+def test_postgres_clear_totp_raises_when_account_missing() -> None:
+    connection = RecordingConnection([None])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(AccountNotFound):
+        repository.clear_totp("acct-missing")
+
+
+def test_postgres_record_totp_step_guards_replay_with_ordered_params() -> None:
+    connection = RecordingConnection([totp_row(last_step=100)])
+    repository = PostgresAccountRepository(connection)
+
+    account = repository.record_totp_step("acct-1", 100)
+
+    assert account.totp_last_step == 100
+    statement, params = connection.cursor_instance.statements[0]
+    assert "UPDATE workbench_accounts" in statement
+    assert "totp_last_step IS NULL OR totp_last_step < %s" in statement
+    assert params == (100, "acct-1", 100)
+
+
+def test_postgres_record_totp_step_rejects_replay() -> None:
+    connection = RecordingConnection([None, ("acct-1",)])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(TotpInvalid):
+        repository.record_totp_step("acct-1", 100)
+
+
+def test_postgres_record_totp_step_raises_not_found_when_account_missing() -> None:
+    connection = RecordingConnection([None, None])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(AccountNotFound):
+        repository.record_totp_step("acct-1", 100)

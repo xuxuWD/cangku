@@ -12,6 +12,8 @@ from .models import (
     AccountNotFound,
     AccountStateConflict,
     AccountStatus,
+    TotpInvalid,
+    TotpNotEnrolled,
 )
 
 
@@ -24,6 +26,10 @@ class AccountRepository(Protocol):
     def mark_rejected(self, account_id: str, *, reason: str, reviewed_by: str) -> Account: ...
     def update_password(self, account_id: str, password_hash: str) -> Account: ...
     def has_approved_admin(self) -> bool: ...
+    def set_totp(self, account_id: str, secret: str) -> Account: ...
+    def confirm_totp(self, account_id: str, *, step: int) -> Account: ...
+    def clear_totp(self, account_id: str) -> Account: ...
+    def record_totp_step(self, account_id: str, step: int) -> Account: ...
 
 
 class InMemoryAccountRepository:
@@ -95,6 +101,39 @@ class InMemoryAccountRepository:
                 for item in self._accounts.values()
             )
 
+    def set_totp(self, account_id: str, secret: str) -> Account:
+        with self._lock:
+            account = self._require(account_id)
+            account.totp_secret = secret
+            account.totp_confirmed_at = None
+            account.totp_last_step = None
+            return account
+
+    def confirm_totp(self, account_id: str, *, step: int) -> Account:
+        with self._lock:
+            account = self._require(account_id)
+            if not account.totp_secret:
+                raise TotpNotEnrolled(account_id)
+            account.totp_confirmed_at = datetime.now(UTC)
+            account.totp_last_step = step
+            return account
+
+    def clear_totp(self, account_id: str) -> Account:
+        with self._lock:
+            account = self._require(account_id)
+            account.totp_secret = None
+            account.totp_confirmed_at = None
+            account.totp_last_step = None
+            return account
+
+    def record_totp_step(self, account_id: str, step: int) -> Account:
+        with self._lock:
+            account = self._require(account_id)
+            if account.totp_last_step is not None and account.totp_last_step >= step:
+                raise TotpInvalid("动态口令步号未推进")
+            account.totp_last_step = step
+            return account
+
     def _require(self, account_id: str) -> Account:
         account = self._accounts.get(account_id)
         if account is None:
@@ -107,7 +146,8 @@ class PostgresAccountRepository:
 
     _COLUMNS = (
         "account_id, phone, password_hash, position, full_name, email, role, tenant_id, "
-        "status, requested_at, reviewed_at, reviewed_by, rejection_reason"
+        "status, requested_at, reviewed_at, reviewed_by, rejection_reason, "
+        "totp_secret, totp_confirmed_at, totp_last_step"
     )
 
     def __init__(self, connection_or_pool) -> None:
@@ -138,6 +178,9 @@ class PostgresAccountRepository:
             reviewed_at=row[10],
             reviewed_by=row[11],
             rejection_reason=row[12],
+            totp_secret=row[13],
+            totp_confirmed_at=row[14],
+            totp_last_step=row[15],
         )
 
     def add(self, account: Account) -> Account:
@@ -147,7 +190,7 @@ class PostgresAccountRepository:
                     cursor.execute(
                         f"""
                         INSERT INTO workbench_accounts ({self._COLUMNS})
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (phone) DO NOTHING
                         RETURNING {self._COLUMNS}
                         """,
@@ -156,6 +199,7 @@ class PostgresAccountRepository:
                             account.full_name, account.email, account.role, account.tenant_id,
                             account.status.value, account.requested_at, account.reviewed_at,
                             account.reviewed_by, account.rejection_reason,
+                            account.totp_secret, account.totp_confirmed_at, account.totp_last_step,
                         ),
                     )
                     row = cursor.fetchone()
@@ -261,6 +305,90 @@ class PostgresAccountRepository:
                     row = cursor.fetchone()
         if row is None:
             raise AccountNotFound(account_id)
+        return self._hydrate(row)
+
+    def set_totp(self, account_id: str, secret: str) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_accounts
+                        SET totp_secret = %s, totp_confirmed_at = NULL, totp_last_step = NULL
+                        WHERE account_id = %s
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (secret, account_id),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise AccountNotFound(account_id)
+        return self._hydrate(row)
+
+    def confirm_totp(self, account_id: str, *, step: int) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_accounts
+                        SET totp_confirmed_at = now(), totp_last_step = %s
+                        WHERE account_id = %s AND totp_secret IS NOT NULL
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (step, account_id),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        cursor.execute(
+                            "SELECT account_id FROM workbench_accounts WHERE account_id = %s",
+                            (account_id,),
+                        )
+                        if cursor.fetchone() is None:
+                            raise AccountNotFound(account_id)
+                        raise TotpNotEnrolled(account_id)
+        return self._hydrate(row)
+
+    def clear_totp(self, account_id: str) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_accounts
+                        SET totp_secret = NULL, totp_confirmed_at = NULL, totp_last_step = NULL
+                        WHERE account_id = %s
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (account_id,),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise AccountNotFound(account_id)
+        return self._hydrate(row)
+
+    def record_totp_step(self, account_id: str, step: int) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_accounts
+                        SET totp_last_step = %s
+                        WHERE account_id = %s AND (totp_last_step IS NULL OR totp_last_step < %s)
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (step, account_id, step),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        cursor.execute(
+                            "SELECT account_id FROM workbench_accounts WHERE account_id = %s",
+                            (account_id,),
+                        )
+                        if cursor.fetchone() is None:
+                            raise AccountNotFound(account_id)
+                        raise TotpInvalid("动态口令步号未推进")
         return self._hydrate(row)
 
     def has_approved_admin(self) -> bool:
