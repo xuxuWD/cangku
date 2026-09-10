@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 
 from .models import AuditRecord
 
@@ -18,7 +19,7 @@ def configure_audit_logging(level: str) -> None:
     logger.setLevel(resolved if isinstance(resolved, int) else logging.INFO)
     if _configured:
         return
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
     logger.propagate = False

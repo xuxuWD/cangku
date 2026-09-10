@@ -289,3 +289,17 @@ def test_approval_of_unknown_account_returns_not_found(accounts: AccountService)
     )
 
     assert response.status_code == 404
+
+
+def test_locked_account_returns_429_on_login(accounts: AccountService) -> None:
+    # 调低阈值，避免与既有用例的失败次数叠加造成干扰
+    accounts.login_limiter.max_failures = 3
+    register_admin(accounts)
+
+    for _index in range(3):
+        assert login("13800000001", "wrong-horse-battery").status_code == 401
+
+    locked = login("13800000001", PASSWORD)
+
+    assert locked.status_code == 429
+    assert "稍后再试" in locked.json()["detail"]
