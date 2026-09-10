@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from typing import Any
+
+from app.domain import PolicyError, Task, UserContext, ensure_can_approve
+
+from .generator import PlanGenerator
+from .models import (
+    PlanProposal,
+    PlanProposalNotFound,
+    PlanProposalStateConflict,
+    PlanStatus,
+    PlannerAccessDenied,
+    ToolCatalog,
+    normalize_steps,
+)
+from .store import PlanProposalStore
+
+
+_ELEVATED_ROLES = {"ceo", "super_admin"}
+
+
+class PlannerService:
+    def __init__(
+        self,
+        *,
+        task_store: Any,
+        store: PlanProposalStore,
+        generator: PlanGenerator,
+        catalog: ToolCatalog,
+        runtime_service: Any,
+        max_steps: int,
+    ) -> None:
+        self.task_store = task_store
+        self.store = store
+        self.generator = generator
+        self.catalog = catalog
+        self.runtime_service = runtime_service
+        self.max_steps = max_steps
+
+    def propose(
+        self, actor: UserContext, task_id: str, goal: str, idempotency_key: str
+    ) -> PlanProposal:
+        task = self._task(actor, task_id)
+        normalized_goal = goal.strip() if isinstance(goal, str) else ""
+        if not normalized_goal:
+            raise ValueError("目标不能为空")
+
+        existing = self.store.find_by_idempotency(actor.tenant_id, task.id, idempotency_key)
+        if existing is not None:
+            return existing
+
+        self.catalog.require_configured()
+        raw_steps = self.generator.generate(normalized_goal, catalog=self.catalog, max_steps=self.max_steps)
+        steps = normalize_steps(raw_steps, self.catalog, max_steps=self.max_steps)
+        proposal = PlanProposal(
+            task_id=task.id,
+            tenant_id=actor.tenant_id,
+            goal=normalized_goal,
+            steps=steps,
+            generator_key=self.generator.key,
+            generator_model=self.generator.model_name,
+            created_by=actor.user_id,
+            idempotency_key=idempotency_key,
+        )
+        return self.store.add(proposal)
+
+    def get(self, actor: UserContext, proposal_id: str) -> PlanProposal:
+        proposal = self.store.get(actor.tenant_id, proposal_id)
+        self._ensure_can_view(actor, proposal)
+        return proposal
+
+    def approve(self, actor: UserContext, proposal_id: str) -> PlanProposal:
+        proposal = self.store.get(actor.tenant_id, proposal_id)
+        self._ensure_approver(actor, proposal)
+        return self.store.mark_approved(proposal_id, reviewer=actor.user_id)
+
+    def reject(self, actor: UserContext, proposal_id: str, reason: str) -> PlanProposal:
+        proposal = self.store.get(actor.tenant_id, proposal_id)
+        self._ensure_approver(actor, proposal)
+        normalized_reason = reason.strip() if isinstance(reason, str) else ""
+        if not normalized_reason:
+            raise ValueError("驳回原因不能为空")
+        return self.store.mark_rejected(proposal_id, reason=normalized_reason, reviewer=actor.user_id)
+
+    def start_run(
+        self, actor: UserContext, proposal_id: str, runtime_key: str, mode: str
+    ) -> tuple[str, str, str]:
+        proposal = self.store.get(actor.tenant_id, proposal_id)
+        self._ensure_can_view(actor, proposal)
+        if proposal.status is not PlanStatus.APPROVED:
+            raise PlanProposalStateConflict("计划必须先通过审批才能执行")
+        steps = [step.to_step_dict() for step in proposal.steps]
+        return self.runtime_service.start(actor, proposal.task_id, runtime_key, steps, mode)
+
+    def _task(self, actor: UserContext, task_id: str) -> Task:
+        # 仓储把「不存在」与「同租户不可见」都收敛为 TaskNotFound，故先以同租户视角取任务，
+        # 再在服务层判定放行；跨租户或不存在的任务仍会冒泡 TaskNotFound。
+        probe = UserContext(actor.tenant_id, actor.user_id, "super_admin")
+        task = self.task_store.get(probe, task_id)
+        if actor.user_id != task.created_by and actor.role not in _ELEVATED_ROLES:
+            raise PlannerAccessDenied("当前员工无权操作此任务")
+        return task
+
+    @staticmethod
+    def _ensure_can_view(actor: UserContext, proposal: PlanProposal) -> None:
+        if actor.user_id != proposal.created_by and actor.role not in _ELEVATED_ROLES:
+            raise PlannerAccessDenied("当前员工无权查看此计划")
+
+    @staticmethod
+    def _ensure_approver(actor: UserContext, proposal: PlanProposal) -> None:
+        ensure_can_approve(actor)
+        if actor.user_id == proposal.created_by:
+            raise PolicyError("发起人不能审批自己提交的计划")
