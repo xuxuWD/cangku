@@ -10,6 +10,10 @@ from .knowledge_policy import KnowledgeAccessRegistry, PostgresKnowledgeAccessRe
 from .events import InMemoryEventBus, RedisStreamEventBus
 from .migrations import apply_migrations
 from .outbox import OutboxPublisher
+from .planner.generator import MockPlanGenerator
+from .planner.models import ToolCatalog
+from .planner.service import PlannerService
+from .planner.store import InMemoryPlanProposalStore
 from .repository import PostgresTaskRepository, TaskRepository
 from .settings import Settings, validate_runtime_settings
 
@@ -211,3 +215,50 @@ def build_account_service(settings: Settings, *, connection=None, migrate: bool 
     else:
         raise ValueError("不支持的账号存储类型")
     return AccountService(repository, bootstrap_token=settings.bootstrap_token), repository
+
+
+def build_planner_service(settings: Settings, *, task_store=None, runtime_service=None, connection=None, migrate: bool = True):
+    """按存储模式装配计划生成服务。"""
+    validate_runtime_settings(settings)
+    catalog = ToolCatalog.from_config(settings.planner_tools)
+    if settings.planner_backend == "mock":
+        generator = MockPlanGenerator()
+    elif settings.planner_backend == "openai_compatible":
+        from .planner.generator import OpenAICompatiblePlanGenerator
+
+        generator = OpenAICompatiblePlanGenerator(
+            base_url=settings.planner_model_base_url,
+            model_name=settings.planner_model_name,
+            api_key=settings.planner_model_api_key,
+            timeout_seconds=settings.planner_model_timeout_seconds,
+        )
+    else:
+        raise ValueError("不支持的规划生成后端")
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存计划提案仓储")
+        store = InMemoryPlanProposalStore()
+    elif settings.storage_backend == "postgres":
+        from .planner.store import PostgresPlanProposalStore
+
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        store = PostgresPlanProposalStore(connection)
+    else:
+        raise ValueError("不支持的计划提案存储类型")
+
+    service = PlannerService(
+        task_store=task_store,
+        store=store,
+        generator=generator,
+        catalog=catalog,
+        runtime_service=runtime_service,
+        max_steps=settings.planner_max_steps,
+    )
+    return service, store

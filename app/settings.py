@@ -70,6 +70,38 @@ class Settings(BaseSettings):
         le=3600,
         validation_alias=AliasChoices("SESSION_TTL_SECONDS", "WORKBENCH_SESSION_TTL_SECONDS"),
     )
+    planner_backend: str = Field(
+        default="mock",
+        validation_alias=AliasChoices("PLANNER_BACKEND", "WORKBENCH_PLANNER_BACKEND"),
+    )
+    planner_tools: str = Field(
+        default="[]",
+        validation_alias=AliasChoices("PLANNER_TOOLS", "WORKBENCH_PLANNER_TOOLS"),
+    )
+    planner_max_steps: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        validation_alias=AliasChoices("PLANNER_MAX_STEPS", "WORKBENCH_PLANNER_MAX_STEPS"),
+    )
+    planner_model_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("PLANNER_MODEL_BASE_URL", "WORKBENCH_PLANNER_MODEL_BASE_URL"),
+    )
+    planner_model_name: str = Field(
+        default="",
+        validation_alias=AliasChoices("PLANNER_MODEL_NAME", "WORKBENCH_PLANNER_MODEL_NAME"),
+    )
+    planner_model_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("PLANNER_MODEL_API_KEY", "WORKBENCH_PLANNER_MODEL_API_KEY"),
+    )
+    planner_model_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1,
+        le=120,
+        validation_alias=AliasChoices("PLANNER_MODEL_TIMEOUT_SECONDS", "WORKBENCH_PLANNER_MODEL_TIMEOUT_SECONDS"),
+    )
 
 
 @lru_cache
@@ -82,6 +114,8 @@ def validate_runtime_settings(settings: Settings) -> None:
         raise ValueError("不支持的内容仓储类型")
     if settings.content_generation_backend not in {"mock", "openai_compatible"}:
         raise ValueError("不支持的内容生成后端")
+    if settings.planner_backend not in {"mock", "openai_compatible"}:
+        raise ValueError("不支持的规划生成后端")
     if settings.env == "development":
         return
     if settings.storage_backend != "postgres":
