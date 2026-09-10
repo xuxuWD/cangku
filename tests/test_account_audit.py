@@ -177,3 +177,19 @@ def test_audit_records_carry_masked_phone_only() -> None:
 
     assert "13800000001" not in rendered
     assert "138****0001" in rendered
+
+
+def test_hitting_an_existing_lock_is_audited() -> None:
+    harness = Harness(max_failures=3)
+    bootstrap_admin(harness)
+    for _index in range(3):
+        with pytest.raises(Exception):
+            harness.service.login("13800000001", "wrong-horse-battery")
+    locked_before = harness.actions().count(AuditAction.ACCOUNT_LOGIN_LOCKED.value)
+
+    with pytest.raises(LoginRateLimited):
+        harness.service.login("13800000001", PASSWORD)
+
+    this_time = harness.actions()
+    assert this_time.count(AuditAction.ACCOUNT_LOGIN_LOCKED.value) == locked_before + 1
+    assert AuditAction.ACCOUNT_LOGIN_FAILED.value not in this_time[-1:]

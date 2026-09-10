@@ -20,7 +20,7 @@ from .models import (
     RegistrationRequest,
 )
 from .passwords import hash_password, verify_password
-from .rate_limit import LoginRateLimiter
+from .rate_limit import LoginRateLimited, LoginRateLimiter
 from .repository import AccountRepository
 
 
@@ -194,6 +194,7 @@ class AccountService:
             self.audit.record(
                 AuditAction.ACCOUNT_LOGIN_LOCKED,
                 tenant_id=audit_tenant,
+                target_type="account",
                 phone_masked=mask_phone(phone),
                 detail={"failure_count": state.failure_count},
             )
@@ -201,10 +202,19 @@ class AccountService:
 
     def login(self, phone: str, password: str) -> UserContext:
         normalized_phone = phone.strip() if isinstance(phone, str) else ""
-        self.login_limiter.require_unlocked(normalized_phone)
         account = self.repository.find_by_phone(normalized_phone)
         # 登录是匿名入口：账号不存在或尚未分配租户时，审计记录不写租户，但必须写脱敏手机号。
         audit_tenant = str(account.tenant_id) if account is not None and account.tenant_id else None
+        try:
+            self.login_limiter.require_unlocked(normalized_phone)
+        except LoginRateLimited:
+            self.audit.record(
+                AuditAction.ACCOUNT_LOGIN_LOCKED,
+                tenant_id=audit_tenant,
+                target_type="account",
+                phone_masked=mask_phone(normalized_phone),
+            )
+            raise
         if account is None or account.status is not AccountStatus.APPROVED:
             raise self._fail_login(normalized_phone, audit_tenant)
         if not verify_password(password, account.password_hash):

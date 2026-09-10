@@ -160,6 +160,7 @@ def test_rate_limit_store_record_failure_uses_single_statement() -> None:
     statement = connection.cursor_instance.statements[0][0]
     assert "INSERT INTO workbench_login_attempts" in statement
     assert "ON CONFLICT (phone_hash) DO UPDATE" in statement
+    assert "CASE WHEN 1 >= %s THEN %s ELSE NULL END" in statement
 
 
 def test_rate_limit_store_clear_deletes() -> None:

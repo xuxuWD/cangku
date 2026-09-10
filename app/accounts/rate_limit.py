@@ -173,7 +173,7 @@ class PostgresLoginAttemptStore:
                         f"""
                         INSERT INTO workbench_login_attempts
                             (phone_hash, failure_count, window_started_at, locked_until, updated_at)
-                        VALUES (%s, 1, %s, NULL, now())
+                        VALUES (%s, 1, %s, CASE WHEN 1 >= %s THEN %s ELSE NULL END, now())
                         ON CONFLICT (phone_hash) DO UPDATE SET
                             failure_count = CASE
                                 WHEN workbench_login_attempts.window_started_at <= %s THEN 1
@@ -193,6 +193,8 @@ class PostgresLoginAttemptStore:
                         (
                             phone_hash,
                             now,
+                            max_failures,
+                            lock_until,
                             window_cutoff,
                             window_cutoff,
                             now,
