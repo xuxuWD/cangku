@@ -1401,8 +1401,9 @@ def test_non_admin_cannot_read_registrations(accounts: AccountService) -> None:
 
 
 def test_session_token_authorizes_requests_and_overrides_forged_headers(accounts: AccountService) -> None:
-    admin = register_admin(accounts)
-    token = login(admin["phone"], PASSWORD).json()["access_token"]
+    register_admin(accounts)
+    # 注册响应里的 phone 已脱敏，登录必须使用真实手机号字面量
+    token = login("13800000001", PASSWORD).json()["access_token"]
 
     response = client.get(
         "/api/v1/auth/registrations",
@@ -1440,8 +1441,8 @@ def test_change_own_password_requires_current_password(accounts: AccountService)
         json={"old_password": PASSWORD, "new_password": "brand-new-passphrase"},
     )
     assert updated.status_code == 200
-    assert login(admin["phone"], "brand-new-passphrase").status_code == 200
-    assert login(admin["phone"], PASSWORD).status_code == 401
+    assert login("13800000001", "brand-new-passphrase").status_code == 200
+    assert login("13800000001", PASSWORD).status_code == 401
 
 
 def test_admin_can_reset_password_and_employee_cannot(accounts: AccountService) -> None:
@@ -1736,12 +1737,12 @@ def reset_account_password(
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_api.py -q`
-Expected: PASS（13 passed）
+Expected: PASS（14 passed）
 
 - [ ] **Step 5: 跑全量测试确认无回归**
 
 Run: `py -m pytest -q`
-Expected: PASS（全部通过）
+Expected: PASS（全部通过，258 + 14 = 272）
 
 - [ ] **Step 6: 提交**
 
