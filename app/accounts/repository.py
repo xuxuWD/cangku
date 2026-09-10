@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from threading import RLock
 from typing import Protocol
@@ -99,3 +100,176 @@ class InMemoryAccountRepository:
         if account is None:
             raise AccountNotFound(account_id)
         return account
+
+
+class PostgresAccountRepository:
+    """账号持久化适配器；审批使用条件更新保证并发安全。"""
+
+    _COLUMNS = (
+        "account_id, phone, password_hash, position, full_name, email, role, tenant_id, "
+        "status, requested_at, reviewed_at, reviewed_by, rejection_reason"
+    )
+
+    def __init__(self, connection_or_pool) -> None:
+        self.connection = connection_or_pool
+
+    @contextmanager
+    def _connection(self):
+        if hasattr(self.connection, "connection") and callable(self.connection.connection):
+            with self.connection.connection() as connection:
+                yield connection
+        else:
+            with nullcontext(self.connection) as connection:
+                yield connection
+
+    @staticmethod
+    def _hydrate(row: tuple) -> Account:
+        return Account(
+            account_id=str(row[0]),
+            phone=str(row[1]),
+            password_hash=str(row[2]),
+            position=str(row[3]),
+            full_name=str(row[4]),
+            email=row[5],
+            role=row[6],
+            tenant_id=row[7],
+            status=AccountStatus(str(row[8])),
+            requested_at=row[9] if isinstance(row[9], datetime) else datetime.now(UTC),
+            reviewed_at=row[10],
+            reviewed_by=row[11],
+            rejection_reason=row[12],
+        )
+
+    def add(self, account: Account) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        INSERT INTO workbench_accounts ({self._COLUMNS})
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (phone) DO NOTHING
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (
+                            account.account_id, account.phone, account.password_hash, account.position,
+                            account.full_name, account.email, account.role, account.tenant_id,
+                            account.status.value, account.requested_at, account.reviewed_at,
+                            account.reviewed_by, account.rejection_reason,
+                        ),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise AccountConflict("该手机号已提交申请或已注册")
+        return self._hydrate(row)
+
+    def find_by_phone(self, phone: str) -> Account | None:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._COLUMNS} FROM workbench_accounts WHERE phone = %s", (phone,)
+                )
+                row = cursor.fetchone()
+        return self._hydrate(row) if row is not None else None
+
+    def get(self, account_id: str) -> Account:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._COLUMNS} FROM workbench_accounts WHERE account_id = %s",
+                    (account_id,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            raise AccountNotFound(account_id)
+        return self._hydrate(row)
+
+    def list_by_status(self, status: AccountStatus) -> list[Account]:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT {self._COLUMNS} FROM workbench_accounts
+                    WHERE status = %s ORDER BY requested_at
+                    """,
+                    (status.value,),
+                )
+                rows = cursor.fetchall()
+        return [self._hydrate(row) for row in rows]
+
+    def mark_approved(self, account_id: str, *, role: str, tenant_id: str, reviewed_by: str) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_accounts
+                        SET status = 'approved', role = %s, tenant_id = %s,
+                            reviewed_at = now(), reviewed_by = %s, rejection_reason = NULL
+                        WHERE account_id = %s AND status = 'pending'
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (role, tenant_id, reviewed_by, account_id),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        cursor.execute(
+                            "SELECT account_id FROM workbench_accounts WHERE account_id = %s",
+                            (account_id,),
+                        )
+                        if cursor.fetchone() is None:
+                            raise AccountNotFound(account_id)
+                        raise AccountStateConflict("该申请当前状态不允许审批")
+        return self._hydrate(row)
+
+    def mark_rejected(self, account_id: str, *, reason: str, reviewed_by: str) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_accounts
+                        SET status = 'rejected', reviewed_at = now(), reviewed_by = %s,
+                            rejection_reason = %s
+                        WHERE account_id = %s AND status = 'pending'
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (reviewed_by, reason, account_id),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        cursor.execute(
+                            "SELECT account_id FROM workbench_accounts WHERE account_id = %s",
+                            (account_id,),
+                        )
+                        if cursor.fetchone() is None:
+                            raise AccountNotFound(account_id)
+                        raise AccountStateConflict("该申请当前状态不允许审批")
+        return self._hydrate(row)
+
+    def update_password(self, account_id: str, password_hash: str) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_accounts SET password_hash = %s
+                        WHERE account_id = %s RETURNING {self._COLUMNS}
+                        """,
+                        (password_hash, account_id),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise AccountNotFound(account_id)
+        return self._hydrate(row)
+
+    def has_approved_admin(self) -> bool:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT 1 FROM workbench_accounts
+                    WHERE status = 'approved' AND role = 'super_admin' LIMIT 1
+                    """
+                )
+                return cursor.fetchone() is not None
