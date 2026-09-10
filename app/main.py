@@ -69,7 +69,7 @@ content_service = ContentService(
     content_generator=build_content_generator(settings),
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
-account_service, account_repository = build_account_service(settings)
+account_service, _ = build_account_service(settings)
 
 
 def publish_task_event(task: Task, action: str, actor: UserContext) -> None:
@@ -840,7 +840,7 @@ class PasswordReset(BaseModel):
 
 
 def _mask_phone(phone: str) -> str:
-    if len(phone) < 7:
+    if len(phone) < 11:
         return "*" * len(phone)
     return f"{phone[:3]}{'*' * (len(phone) - 7)}{phone[-4:]}"
 

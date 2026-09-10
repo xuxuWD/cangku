@@ -166,9 +166,9 @@ def test_session_token_authorizes_requests_and_overrides_forged_headers(accounts
 
 
 def test_login_with_wrong_password_is_unauthorized(accounts: AccountService) -> None:
-    admin = register_admin(accounts)
+    register_admin(accounts)
 
-    assert login(admin["phone"], "wrong-horse-battery").status_code == 401
+    assert login("13800000001", "wrong-horse-battery").status_code == 401
 
 
 def test_change_own_password_requires_current_password(accounts: AccountService) -> None:
@@ -240,3 +240,38 @@ def test_session_endpoint_requires_configured_secret(monkeypatch, accounts: Acco
     monkeypatch.setattr(main.settings, "auth_secret", "")
 
     assert login(admin["phone"]).status_code == 503
+
+
+def test_production_mode_rejects_header_only_identity(monkeypatch, accounts: AccountService) -> None:
+    register_admin(accounts)
+    monkeypatch.setattr(main.settings, "env", "production")
+
+    response = client.get(
+        "/api/v1/auth/registrations",
+        headers={"X-Tenant-Id": "t-1", "X-User-Id": "acct-admin", "X-User-Role": SUPER_ADMIN_ROLE},
+    )
+
+    assert response.status_code == 401
+
+
+def test_invalid_status_filter_is_rejected(accounts: AccountService) -> None:
+    admin = register_admin(accounts)
+
+    response = client.get(
+        "/api/v1/auth/registrations?status=bogus",
+        headers={"X-Tenant-Id": "t-1", "X-User-Id": admin["account_id"], "X-User-Role": SUPER_ADMIN_ROLE},
+    )
+
+    assert response.status_code == 400
+
+
+def test_approval_of_unknown_account_returns_not_found(accounts: AccountService) -> None:
+    admin = register_admin(accounts)
+
+    response = client.post(
+        "/api/v1/auth/registrations/acct-missing/approval",
+        headers={"X-Tenant-Id": "t-1", "X-User-Id": admin["account_id"], "X-User-Role": SUPER_ADMIN_ROLE},
+        json={"role": "employee", "tenant_id": "t-1"},
+    )
+
+    assert response.status_code == 404
