@@ -1,0 +1,35 @@
+# 应用容器编排：与基础设施编排一起使用
+#
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
+#
+# 约定：
+# - 所有密钥只从环境注入；用 `:?` 强制要求，缺失任一项即启动失败（fail-closed）。
+# - 容器内一律使用服务名寻址，不使用宿主回环地址。
+# - 应用以生产模式启动，会自动应用 migrations/ 下的迁移。
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "127.0.0.1:${WORKBENCH_APP_PORT:-8000}:8000"
+    environment:
+      WORKBENCH_ENV: production
+      WORKBENCH_STORAGE_BACKEND: postgres
+      WORKBENCH_DATABASE_URL: postgresql+psycopg://workbench:${WORKBENCH_DB_PASSWORD:?required}@postgres:5432/workbench
+      WORKBENCH_REDIS_URL: redis://redis:6379/0
+      WORKBENCH_OBJECT_STORAGE_URL: http://minio:9000
+      WORKBENCH_AUTH_SECRET: ${WORKBENCH_AUTH_SECRET:?required}
+      WORKBENCH_BACKUP_ENCRYPTION_KEY: ${WORKBENCH_BACKUP_ENCRYPTION_KEY:?required}
+      WORKBENCH_BOOTSTRAP_TOKEN: ${WORKBENCH_BOOTSTRAP_TOKEN:?required}
+      WORKBENCH_LOG_LEVEL: ${WORKBENCH_LOG_LEVEL:-INFO}
+      WORKBENCH_SESSION_TTL_SECONDS: ${WORKBENCH_SESSION_TTL_SECONDS:-900}
+      WORKBENCH_OUTBOX_MAX_ATTEMPTS: ${WORKBENCH_OUTBOX_MAX_ATTEMPTS:-3}
+      WORKBENCH_LOGIN_MAX_FAILURES: ${WORKBENCH_LOGIN_MAX_FAILURES:-5}
+      WORKBENCH_LOGIN_WINDOW_SECONDS: ${WORKBENCH_LOGIN_WINDOW_SECONDS:-300}
+      WORKBENCH_LOGIN_LOCK_SECONDS: ${WORKBENCH_LOGIN_LOCK_SECONDS:-900}
+    restart: unless-stopped

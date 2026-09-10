@@ -16,6 +16,14 @@
 
 Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-checklist.md) 执行；缺少任一前置条件时停止，不以本地演练替代。
 
+## 容器化部署
+
+1. 构建应用镜像：`docker build -t workbench-app .`。
+2. 与基础设施编排一起启动：`docker compose -f docker-compose.yml -f docker-compose.app.yml up -d`。应用容器以生产模式启动时会自动应用 `migrations/` 下的迁移。
+3. 密钥只允许通过环境变量注入。编排文件用 `:?` 强制要求 `WORKBENCH_AUTH_SECRET`、`WORKBENCH_BACKUP_ENCRYPTION_KEY`、`WORKBENCH_BOOTSTRAP_TOKEN` 和数据库口令，缺失任一项即启动失败；`.dockerignore` 排除全部环境文件，镜像内不得存在任何密钥。
+4. 容器以非 root 用户运行，健康检查走 `/api/v1/health`。
+5. 本仓库的容器化资产只完成**静态校验**；真实镜像构建、容器启动与健康检查**尚未在具备 Docker 的环境中验收**，不得据此宣称已容器化交付。
+
 ## 迁移与备份
 
 1. 迁移前暂停写入任务，记录当前应用版本、数据库迁移清单和 Runtime 固定版本。

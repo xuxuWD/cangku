@@ -1,0 +1,23 @@
+# 版本控制与本地环境
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.worktrees
+.superpowers
+.trae
+
+# 测试与前端：运行镜像不需要
+tests
+admin-web
+
+# 本地资料与缓存
+tmp
+pdf_text.txt
+extract_pdf.py
+
+# 环境文件：任何环境文件都不进镜像（密钥只从运行时环境注入）
+.env
+.env.*

@@ -40,6 +40,24 @@ docker compose up -d
 
 生产启动必须设置 `WORKBENCH_ENV=production`、`WORKBENCH_STORAGE_BACKEND=postgres`、可访问的 PostgreSQL 地址、长度不少于 32 位的 `WORKBENCH_AUTH_SECRET`、不同值的 `WORKBENCH_BACKUP_ENCRYPTION_KEY` 和 1 到 20 的 `WORKBENCH_OUTBOX_MAX_ATTEMPTS`。缺少任一项时服务会拒绝启动，不会悄悄回退到内存数据。
 
+## 容器化运行
+
+应用镜像定义在 `Dockerfile`，编排在 `docker-compose.app.yml`（与基础设施编排配合使用）：
+
+```powershell
+docker build -t workbench-app .
+docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
+```
+
+约定与边界：
+
+- 镜像以 `python:3.12-slim` 为基础，**以非 root 用户 `workbench` 运行**，健康检查走 `/api/v1/health`（使用标准库，不依赖 curl）。
+- **所有密钥只从环境注入**：`.dockerignore` 排除了全部环境文件，编排文件用 `:?` 强制要求 `WORKBENCH_AUTH_SECRET`、`WORKBENCH_BACKUP_ENCRYPTION_KEY`、`WORKBENCH_BOOTSTRAP_TOKEN` 与数据库口令，缺失任一项即启动失败。
+- 应用以生产模式启动时会**自动应用 `migrations/` 下的迁移**，无需单独执行迁移步骤。
+- 容器内一律使用服务名寻址（`postgres`、`redis`、`minio`），端口只绑定宿主回环地址。
+
+**当前状态**：容器化资产已完成静态校验（`tests/test_container_assets.py`），但**真实镜像构建与容器运行尚未验收**，不得据此宣称已容器化交付。
+
 ## Worker 启动
 
 生产环境使用独立进程运行 Celery Worker 和定时调度器。启动前必须完成 PostgreSQL、Redis 和迁移配置：
