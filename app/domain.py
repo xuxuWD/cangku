@@ -24,6 +24,7 @@ class UserContext:
     tenant_id: str
     user_id: str
     role: str
+    scope: str = "full"
 
 
 @dataclass
