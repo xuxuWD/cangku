@@ -6,6 +6,11 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 
+READ_KIND = "read"
+SIDE_EFFECT_KINDS = frozenset({"write", "external_send", "publish", "delete", "permission"})
+ALLOWED_PLAN_KINDS = SIDE_EFFECT_KINDS | {READ_KIND}
+
+
 class RuntimeEventType(StrEnum):
     PLAN_CREATED = "plan.created"
     STEP_STARTED = "step.started"
@@ -63,11 +68,10 @@ class AgentPlan:
 
     @classmethod
     def from_steps(cls, values: list[dict[str, Any]]) -> AgentPlan:
-        side_effect_kinds = {"write", "external_send", "publish", "delete", "permission"}
         steps: list[PlanStep] = []
         for value in values:
             item = dict(value)
-            item["requires_approval"] = item.get("requires_approval", item.get("kind") in side_effect_kinds)
+            item["requires_approval"] = item.get("requires_approval", item.get("kind") in SIDE_EFFECT_KINDS)
             steps.append(PlanStep(**item))
         return cls(tuple(steps))
 

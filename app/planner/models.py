@@ -6,23 +6,37 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
+from app.runtime.contracts import ALLOWED_PLAN_KINDS, SIDE_EFFECT_KINDS
 
-READ_KIND = "read"
-SIDE_EFFECT_KINDS = frozenset({"write", "external_send", "publish", "delete", "permission"})
-SENSITIVE_ARG_KEYS = frozenset(
+
+SENSITIVE_KEY_TOKENS = frozenset(
     {
         "password",
+        "passwd",
+        "pwd",
         "token",
-        "api_key",
-        "apikey",
         "secret",
+        "key",
         "cookie",
         "authorization",
-        "access_token",
-        "refresh_token",
+        "credential",
         "session",
+        "bearer",
     }
 )
+
+
+def _has_sensitive_key(value: object) -> bool:
+    """递归检查是否出现敏感键名；按 _ 与 - 切词后比对词元，避免误伤 keyword 之类。"""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            tokens = {part for part in str(key).lower().replace("-", "_").split("_") if part}
+            if tokens & SENSITIVE_KEY_TOKENS or _has_sensitive_key(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_has_sensitive_key(item) for item in value)
+    return False
 
 
 class UnknownTool(ValueError):
@@ -61,6 +75,12 @@ class Tool:
     kind: str
     description: str = ""
 
+    def __post_init__(self) -> None:
+        if self.kind not in ALLOWED_PLAN_KINDS:
+            raise ValueError(f"工具 kind 非法：{self.kind}")
+        if not self.name.strip():
+            raise ValueError("工具名不能为空")
+
     @property
     def requires_approval(self) -> bool:
         return self.kind in SIDE_EFFECT_KINDS
@@ -70,7 +90,12 @@ class ToolCatalog:
     """服务端工具白名单；kind 与审批要求只由此处决定。"""
 
     def __init__(self, tools: tuple[Tool, ...] = ()) -> None:
-        self._tools = {tool.name: tool for tool in tools}
+        mapping: dict[str, Tool] = {}
+        for tool in tools:
+            if tool.name in mapping:
+                raise ValueError(f"工具白名单存在重复工具名：{tool.name}")
+            mapping[tool.name] = tool
+        self._tools = mapping
 
     @classmethod
     def from_config(cls, values: object) -> ToolCatalog:
@@ -182,7 +207,7 @@ def normalize_steps(raw_steps: object, catalog: ToolCatalog, *, max_steps: int) 
         args = item.get("args", {})
         if not isinstance(args, dict):
             raise PlanGenerationError("步骤 args 必须是对象")
-        if {str(key).lower() for key in args} & SENSITIVE_ARG_KEYS:
+        if _has_sensitive_key(args):
             raise PlanGenerationError("步骤参数包含敏感字段")
         normalized.append(
             PlanStepView(

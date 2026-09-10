@@ -141,3 +141,56 @@ def test_proposal_defaults_to_pending_review() -> None:
     assert proposal.status is PlanStatus.PENDING_REVIEW
     assert proposal.proposal_id.startswith("plan-")
     assert proposal.reviewed_by is None
+
+
+def test_catalog_rejects_unknown_or_miscased_kind() -> None:
+    for bad_kind in ("publsh", "READ", "readonly", "admin", "execute"):
+        with pytest.raises(ValueError, match="kind"):
+            ToolCatalog((Tool(name="content.publish", kind=bad_kind),))
+
+
+def test_tool_rejects_unknown_kind_when_constructed_directly() -> None:
+    with pytest.raises(ValueError, match="kind"):
+        Tool(name="content.publish", kind="publsh")
+    with pytest.raises(ValueError, match="工具名"):
+        Tool(name="   ", kind="read")
+
+
+def test_catalog_rejects_duplicate_tool_names() -> None:
+    with pytest.raises(ValueError, match="重复"):
+        ToolCatalog(
+            (
+                Tool(name="content.publish", kind="publish"),
+                Tool(name="content.publish", kind="read"),
+            )
+        )
+
+
+def test_normalize_rejects_compound_and_nested_sensitive_keys() -> None:
+    for sensitive in (
+        {"client_secret": "x"},
+        {"secret_key": "x"},
+        {"private_key": "x"},
+        {"passwd": "x"},
+        {"pwd": "x"},
+        {"x-api-key": "x"},
+        {"bearer": "x"},
+        {"credential": "x"},
+        {"headers": {"Authorization": "SECRET"}},
+    ):
+        with pytest.raises(PlanGenerationError, match="敏感"):
+            normalize_steps(
+                [{"step_id": "s1", "tool": "knowledge.search", "args": sensitive}],
+                catalog(),
+                max_steps=5,
+            )
+
+
+def test_normalize_allows_benign_keys_containing_key_substring() -> None:
+    steps = normalize_steps(
+        [{"step_id": "s1", "tool": "knowledge.search", "args": {"keyword": "选题", "topic": "内容"}}],
+        catalog(),
+        max_steps=5,
+    )
+
+    assert steps[0].args == {"keyword": "选题", "topic": "内容"}
