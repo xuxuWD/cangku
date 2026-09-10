@@ -12,6 +12,42 @@
 
 返回服务状态和服务名，不包含密钥、数据库连接串或内部堆栈。
 
+## 账号注册与登录
+
+账号由工作台自建：员工提交注册申请，超级管理员审批并指定角色与归属租户，审批通过后才能登录。首个管理员凭部署注入的 `WORKBENCH_BOOTSTRAP_TOKEN` 自助申请，角色固定为超级管理员，租户由申请自行声明；普通申请的 `tenant_id` 与 `role` 一律忽略。
+
+登录标识为手机号，在部署内全局唯一。口令只保存 scrypt 哈希，任何响应、事件和日志都不包含口令或口令哈希。
+
+`POST /api/v1/auth/registrations`
+
+提交注册申请。请求体包含 `phone`、`password`、`position`、`full_name`，可选 `email`、`tenant_id`、`bootstrap_token`。首个管理员申请缺少正确初始化口令时返回 `403`；手机号已存在返回 `409`；口令不满足策略返回 `422`；成功返回 `201` 与账号视图，视图中的手机号已脱敏。
+
+`GET /api/v1/auth/registrations?status=pending`
+
+仅超级管理员可调用，按状态查询申请列表，默认 `pending`。其他角色返回 `403`，非法状态返回 `400`。
+
+`POST /api/v1/auth/registrations/{account_id}/approval`
+
+仅超级管理员可调用。请求体为 `{ "role": "...", "tenant_id": "..." }`，只允许审批 `pending` 状态；重复审批返回 `409`，账号不存在返回 `404`。
+
+`POST /api/v1/auth/registrations/{account_id}/rejection`
+
+仅超级管理员可调用。请求体为 `{ "reason": "..." }`，只允许驳回 `pending` 状态。
+
+`POST /api/v1/auth/sessions`
+
+用 `phone` 与 `password` 换取会话令牌。手机号不存在、口令错误或账号未通过审批一律返回 `401` 且不区分原因。成功返回 `access_token`、`token_type`、`expires_in`、`tenant_id`、`user_id` 和 `role`。会话密钥未配置时返回 `503`。
+
+`PUT /api/v1/auth/me/password`
+
+已登录用户修改本人密码。请求体为 `{ "old_password": "...", "new_password": "..." }`；原密码错误返回 `401`，新口令不满足策略返回 `422`。
+
+`POST /api/v1/auth/accounts/{account_id}/password`
+
+仅超级管理员可调用，用于忘记密码后的重置。请求体为 `{ "new_password": "..." }`；账号不存在返回 `404`，其他角色返回 `403`。
+
+会话令牌使用 HMAC-SHA256 签名，载荷包含租户、用户、角色、签发时间、过期时间和唯一号；过期或签名错误一律返回 `401`。有效期由 `WORKBENCH_SESSION_TTL_SECONDS` 控制，默认 900 秒，范围 60–3600。本轮不提供服务端会话撤销，登出由客户端丢弃令牌并由短期有效期兜底。
+
 ## 私有部署商业化 G0
 
 商业化接口面向内部版和客户私有部署版，当前不包含在线支付、自动开通或 SaaS 计费。租户始终从认证上下文的 `X-Tenant-Id`（正式环境为统一登录会话）派生；客户端传入的 `tenant_id` 查询参数不会改变数据范围。
