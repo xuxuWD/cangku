@@ -39,6 +39,14 @@ def _normalized_tenant(tenant_id: object) -> str:
     return value
 
 
+def _normalized_identity(position: object, full_name: object) -> tuple[str, str]:
+    position_text = position.strip() if isinstance(position, str) else ""
+    full_name_text = full_name.strip() if isinstance(full_name, str) else ""
+    if not position_text or not full_name_text:
+        raise ValueError("职位和姓名不能为空")
+    return position_text, full_name_text
+
+
 def _constant_time_equal(left: object, right: object) -> bool:
     """恒定时间比较两个口令字符串；非字符串或非 ASCII 都不会抛异常。"""
     if not isinstance(left, str) or not isinstance(right, str):
@@ -53,6 +61,7 @@ class AccountService:
 
     def request_registration(self, request: RegistrationRequest) -> Account:
         phone = _normalized_phone(request.phone)
+        position, full_name = _normalized_identity(request.position, request.full_name)
         if self.repository.find_by_phone(phone) is not None:
             raise AccountConflict("该手机号已提交申请或已注册")
 
@@ -61,8 +70,8 @@ class AccountService:
                 Account(
                     phone=phone,
                     password_hash=hash_password(request.password),
-                    position=request.position.strip(),
-                    full_name=request.full_name.strip(),
+                    position=position,
+                    full_name=full_name,
                     email=request.email,
                 )
             )
@@ -80,8 +89,8 @@ class AccountService:
             Account(
                 phone=phone,
                 password_hash=hash_password(request.password),
-                position=request.position.strip(),
-                full_name=request.full_name.strip(),
+                position=position,
+                full_name=full_name,
                 email=request.email,
                 role=SUPER_ADMIN_ROLE,
                 tenant_id=tenant_id,

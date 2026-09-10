@@ -281,3 +281,23 @@ def test_postgres_list_by_status_hydrates_all_rows() -> None:
 
     assert [item.account_id for item in accounts] == ["acct-1", "acct-9"]
     assert connection.cursor_instance.statements[0][1] == ("pending",)
+
+
+def test_columns_constant_matches_hydrate_order() -> None:
+    columns = [name.strip() for name in PostgresAccountRepository._COLUMNS.split(",")]
+
+    assert columns == [
+        "account_id",
+        "phone",
+        "password_hash",
+        "position",
+        "full_name",
+        "email",
+        "role",
+        "tenant_id",
+        "status",
+        "requested_at",
+        "reviewed_at",
+        "reviewed_by",
+        "rejection_reason",
+    ]

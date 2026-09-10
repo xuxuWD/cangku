@@ -251,3 +251,12 @@ def test_bootstrap_denial_does_not_hash_password(monkeypatch) -> None:
         )
 
     assert calls["count"] == 0
+
+
+def test_blank_position_or_full_name_is_rejected() -> None:
+    instance = service()
+
+    with pytest.raises(ValueError, match="职位和姓名"):
+        instance.request_registration(valid_request(position="   "))
+    with pytest.raises(ValueError, match="职位和姓名"):
+        instance.request_registration(valid_request(full_name=" "))

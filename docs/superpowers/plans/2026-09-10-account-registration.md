@@ -527,7 +527,7 @@ class InMemoryAccountRepository:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_repository.py -q`
-Expected: PASS（8 passed）
+Expected: PASS（10 passed）
 
 - [ ] **Step 5: 提交**
 
@@ -961,7 +961,7 @@ class AccountService:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_service.py -q`
-Expected: PASS（18 passed）
+Expected: PASS（19 passed）
 
 - [ ] **Step 5: 提交**
 
@@ -2204,7 +2204,7 @@ class PostgresAccountRepository:
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_postgres.py -q`
-Expected: PASS（10 passed：2 个装配用例 + 8 个仓储与迁移用例）
+Expected: PASS（19 passed：2 个装配用例 + 17 个仓储与迁移用例）
 
 - [ ] **Step 6: 跑全量测试与编译检查**
 
