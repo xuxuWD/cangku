@@ -67,6 +67,9 @@ if settings.env == "development":
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Content-Type", "X-Tenant-Id", "X-User-Id", "X-User-Role", "Idempotency-Key"],
     )
+configure_audit_logging(settings.log_level)
+audit_service = build_audit_service(settings)
+login_rate_limiter = build_login_rate_limiter(settings)
 store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
@@ -81,11 +84,8 @@ content_service = ContentService(
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 planner_service, planner_store = build_planner_service(
-    settings, task_store=store, runtime_service=runtime_service
+    settings, task_store=store, runtime_service=runtime_service, audit=audit_service
 )
-configure_audit_logging(settings.log_level)
-audit_service = build_audit_service(settings)
-login_rate_limiter = build_login_rate_limiter(settings)
 account_service, _ = build_account_service(
     settings, audit=audit_service, login_limiter=login_rate_limiter
 )

@@ -1,11 +1,17 @@
 import pytest
 from pydantic import ValidationError
 
+from app.audit.service import AuditService
+from app.audit.store import InMemoryAuditStore
 from app.bootstrap import build_planner_service
 from app.planner.generator import MockPlanGenerator, OpenAICompatiblePlanGenerator
 from app.planner.models import ToolCatalog
 from app.planner.store import InMemoryPlanProposalStore
 from app.settings import Settings
+
+
+def audit() -> AuditService:
+    return AuditService(InMemoryAuditStore())
 
 
 def memory_settings(**overrides) -> Settings:
@@ -21,7 +27,7 @@ def memory_settings(**overrides) -> Settings:
 
 
 def test_memory_backend_builds_mock_planner() -> None:
-    service, store = build_planner_service(memory_settings())
+    service, store = build_planner_service(memory_settings(), audit=audit())
 
     assert isinstance(store, InMemoryPlanProposalStore)
     assert isinstance(service.generator, MockPlanGenerator)
@@ -37,7 +43,8 @@ def test_openai_backend_requires_connection_settings() -> None:
                 planner_model_base_url="",
                 planner_model_name="",
                 planner_model_api_key="",
-            )
+            ),
+            audit=audit(),
         )
 
 
@@ -48,7 +55,8 @@ def test_openai_backend_builds_model_generator() -> None:
             planner_model_base_url="https://model.example/v1",
             planner_model_name="planner-small",
             planner_model_api_key="secret-key",
-        )
+        ),
+        audit=audit(),
     )
 
     assert isinstance(service.generator, OpenAICompatiblePlanGenerator)
@@ -57,15 +65,15 @@ def test_openai_backend_builds_model_generator() -> None:
 
 def test_unsupported_backend_and_bad_tools_are_rejected() -> None:
     with pytest.raises(ValueError, match="规划生成后端"):
-        build_planner_service(memory_settings(planner_backend="other"))
+        build_planner_service(memory_settings(planner_backend="other"), audit=audit())
 
     with pytest.raises(ValueError, match="工具白名单"):
-        build_planner_service(memory_settings(planner_tools="not-json"))
+        build_planner_service(memory_settings(planner_tools="not-json"), audit=audit())
 
 
 def test_postgres_backend_requires_postgres_storage() -> None:
     with pytest.raises(ValueError, match="计划提案存储类型"):
-        build_planner_service(memory_settings(storage_backend="sqlite"))
+        build_planner_service(memory_settings(storage_backend="sqlite"), audit=audit())
 
 
 def test_planner_max_steps_bounds() -> None:

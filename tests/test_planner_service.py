@@ -1,5 +1,7 @@
 import pytest
 
+from app.audit.service import AuditService
+from app.audit.store import InMemoryAuditStore
 from app.domain import PolicyError, RiskLevel, Task, TaskStatus, UserContext
 from app.planner.generator import MockPlanGenerator
 from app.planner.models import (
@@ -61,6 +63,7 @@ def service(task_store, runtime=None, *, tools: ToolCatalog | None = None) -> Pl
         catalog=tools if tools is not None else catalog(),
         runtime_service=runtime or RecordingRuntimeService(),
         max_steps=5,
+        audit=AuditService(InMemoryAuditStore()),
     )
 
 
@@ -222,6 +225,7 @@ def test_generation_failure_does_not_persist_a_proposal() -> None:
         catalog=catalog(),
         runtime_service=RecordingRuntimeService(),
         max_steps=5,
+        audit=AuditService(InMemoryAuditStore()),
     )
 
     with pytest.raises(PlanGenerationError):

@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.audit.service import AuditService
+from app.audit.store import InMemoryAuditStore
 from app.bootstrap import build_planner_service
 from app.planner.models import (
     PlanProposal,
@@ -27,7 +29,12 @@ def postgres_settings() -> Settings:
 
 
 def test_postgres_backend_uses_injected_connection() -> None:
-    service, store = build_planner_service(postgres_settings(), connection=object(), migrate=False)
+    service, store = build_planner_service(
+        postgres_settings(),
+        connection=object(),
+        migrate=False,
+        audit=AuditService(InMemoryAuditStore()),
+    )
 
     assert isinstance(store, PostgresPlanProposalStore)
     assert service.store is store

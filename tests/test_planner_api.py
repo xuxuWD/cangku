@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.audit.service import AuditService
+from app.audit.store import InMemoryAuditStore
 from app.domain import RiskLevel, Task, TaskStatus, TaskStore, UserContext
 from app.main import app
 from app.planner.generator import MockPlanGenerator
@@ -39,6 +41,7 @@ def planner(monkeypatch) -> PlannerService:
         catalog=catalog,
         runtime_service=main.runtime_service,
         max_steps=5,
+        audit=AuditService(InMemoryAuditStore()),
     )
     monkeypatch.setattr(main, "planner_service", service)
     return service

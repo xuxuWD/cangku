@@ -232,7 +232,7 @@ def build_account_service(
     )
 
 
-def build_planner_service(settings: Settings, *, task_store=None, runtime_service=None, connection=None, migrate: bool = True):
+def build_planner_service(settings: Settings, *, audit: AuditService, task_store=None, runtime_service=None, connection=None, migrate: bool = True):
     """按存储模式装配计划生成服务。"""
     validate_runtime_settings(settings)
     catalog = ToolCatalog.from_config(settings.planner_tools)
@@ -275,6 +275,7 @@ def build_planner_service(settings: Settings, *, task_store=None, runtime_servic
         catalog=catalog,
         runtime_service=runtime_service,
         max_steps=settings.planner_max_steps,
+        audit=audit,
     )
     return service, store
 

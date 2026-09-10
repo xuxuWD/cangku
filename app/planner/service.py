@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.audit.models import AuditAction
+from app.audit.service import AuditService
 from app.domain import PolicyError, Task, UserContext, ensure_can_approve
 
 from .generator import PlanGenerator
@@ -30,6 +32,7 @@ class PlannerService:
         catalog: ToolCatalog,
         runtime_service: Any,
         max_steps: int,
+        audit: AuditService,
     ) -> None:
         self.task_store = task_store
         self.store = store
@@ -37,6 +40,7 @@ class PlannerService:
         self.catalog = catalog
         self.runtime_service = runtime_service
         self.max_steps = max_steps
+        self.audit = audit
 
     def propose(
         self, actor: UserContext, task_id: str, goal: str, idempotency_key: str
@@ -63,7 +67,16 @@ class PlannerService:
             created_by=actor.user_id,
             idempotency_key=idempotency_key,
         )
-        return self.store.add(proposal)
+        saved = self.store.add(proposal)
+        self.audit.record(
+            AuditAction.PLAN_PROPOSED,
+            tenant_id=actor.tenant_id,
+            actor_id=actor.user_id,
+            target_type="plan_proposal",
+            target_id=saved.proposal_id,
+            detail={"step_count": len(saved.steps), "generator": saved.generator_key},
+        )
+        return saved
 
     def get(self, actor: UserContext, proposal_id: str) -> PlanProposal:
         proposal = self.store.get(actor.tenant_id, proposal_id)
@@ -73,7 +86,16 @@ class PlannerService:
     def approve(self, actor: UserContext, proposal_id: str) -> PlanProposal:
         proposal = self.store.get(actor.tenant_id, proposal_id)
         self._ensure_approver(actor, proposal)
-        return self.store.mark_approved(proposal_id, reviewer=actor.user_id)
+        approved = self.store.mark_approved(proposal_id, reviewer=actor.user_id)
+        self.audit.record(
+            AuditAction.PLAN_APPROVED,
+            tenant_id=actor.tenant_id,
+            actor_id=actor.user_id,
+            target_type="plan_proposal",
+            target_id=approved.proposal_id,
+            detail={"step_count": len(approved.steps)},
+        )
+        return approved
 
     def reject(self, actor: UserContext, proposal_id: str, reason: str) -> PlanProposal:
         proposal = self.store.get(actor.tenant_id, proposal_id)
@@ -81,7 +103,16 @@ class PlannerService:
         normalized_reason = reason.strip() if isinstance(reason, str) else ""
         if not normalized_reason:
             raise ValueError("驳回原因不能为空")
-        return self.store.mark_rejected(proposal_id, reason=normalized_reason, reviewer=actor.user_id)
+        rejected = self.store.mark_rejected(proposal_id, reason=normalized_reason, reviewer=actor.user_id)
+        self.audit.record(
+            AuditAction.PLAN_REJECTED,
+            tenant_id=actor.tenant_id,
+            actor_id=actor.user_id,
+            target_type="plan_proposal",
+            target_id=rejected.proposal_id,
+            detail={"reason": normalized_reason},
+        )
+        return rejected
 
     def start_run(
         self, actor: UserContext, proposal_id: str, runtime_key: str, mode: str
@@ -91,7 +122,18 @@ class PlannerService:
         if proposal.status is not PlanStatus.APPROVED:
             raise PlanProposalStateConflict("计划必须先通过审批才能执行")
         steps = [step.to_step_dict() for step in proposal.steps]
-        return self.runtime_service.start(actor, proposal.task_id, runtime_key, steps, mode)
+        run_id, runtime_key, policy_version = self.runtime_service.start(
+            actor, proposal.task_id, runtime_key, steps, mode
+        )
+        self.audit.record(
+            AuditAction.PLAN_RUN_STARTED,
+            tenant_id=actor.tenant_id,
+            actor_id=actor.user_id,
+            target_type="plan_proposal",
+            target_id=proposal.proposal_id,
+            detail={"runtime_key": runtime_key},
+        )
+        return run_id, runtime_key, policy_version
 
     def _task(self, actor: UserContext, task_id: str) -> Task:
         """取任务；可见性由仓储统一判定：跨租户、不存在、或同租户但非发起人且非高权限，一律抛 TaskNotFound。"""
