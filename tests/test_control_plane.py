@@ -199,7 +199,9 @@ def test_production_mode_accepts_only_signed_access_token() -> None:
     main.settings.env = "production"
     main.settings.auth_secret = "test-secret"
     try:
-        token = create_access_token(UserContext("t-signed", "u-signed", "employee"), "test-secret")
+        token = create_access_token(
+            UserContext("t-signed", "u-signed", "employee"), "test-secret", ttl_seconds=900
+        )
         response = client.get(
             "/api/v1/tasks/missing",
             headers={"Authorization": f"Bearer {token}", "X-Tenant-Id": "forged"},

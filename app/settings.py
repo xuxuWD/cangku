@@ -60,6 +60,16 @@ class Settings(BaseSettings):
         default=2, ge=0, le=5,
         validation_alias=AliasChoices("CONTENT_MODEL_MAX_RETRIES", "WORKBENCH_CONTENT_MODEL_MAX_RETRIES"),
     )
+    bootstrap_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("BOOTSTRAP_TOKEN", "WORKBENCH_BOOTSTRAP_TOKEN"),
+    )
+    session_ttl_seconds: int = Field(
+        default=900,
+        ge=60,
+        le=3600,
+        validation_alias=AliasChoices("SESSION_TTL_SECONDS", "WORKBENCH_SESSION_TTL_SECONDS"),
+    )
 
 
 @lru_cache

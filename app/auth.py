@@ -5,15 +5,26 @@ import binascii
 import hashlib
 import hmac
 import json
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from .domain import UserContext
 
 
-def create_access_token(context: UserContext, secret: str) -> str:
+def create_access_token(context: UserContext, secret: str, *, ttl_seconds: int) -> str:
+    """签发带过期时间的会话令牌；TTL 由调用方传入，本模块不读取配置。"""
     if not secret:
         raise ValueError("认证密钥不能为空")
+    issued_at = datetime.now(UTC)
     payload = json.dumps(
-        {"tenant_id": context.tenant_id, "user_id": context.user_id, "role": context.role},
+        {
+            "tenant_id": context.tenant_id,
+            "user_id": context.user_id,
+            "role": context.role,
+            "iat": int(issued_at.timestamp()),
+            "exp": int((issued_at + timedelta(seconds=ttl_seconds)).timestamp()),
+            "jti": uuid4().hex,
+        },
         separators=(",", ":"),
     ).encode()
     encoded = base64.urlsafe_b64encode(payload).rstrip(b"=")
@@ -30,6 +41,11 @@ def verify_access_token(token: str, secret: str) -> UserContext:
             raise ValueError("签名无效")
         payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
         data = json.loads(payload)
+        expires_at = data["exp"]
+        if not isinstance(expires_at, int) or isinstance(expires_at, bool):
+            raise ValueError("缺少过期时间")
+        if datetime.now(UTC).timestamp() >= expires_at:
+            raise ValueError("登录凭证已过期")
         return UserContext(
             tenant_id=str(data["tenant_id"]),
             user_id=str(data["user_id"]),
