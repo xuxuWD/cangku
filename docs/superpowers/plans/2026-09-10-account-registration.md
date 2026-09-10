@@ -757,7 +757,51 @@ def test_admin_reset_password_requires_super_admin_and_known_account() -> None:
         )
     with pytest.raises(AccountNotFound):
         instance.reset_password(actor, "acct-missing", new_password="another-passphrase")
+
+
+def test_first_registration_with_blank_or_invalid_tenant_is_denied() -> None:
+    instance = service()
+
+    for bad_tenant in ("   ", "bad!", "t"):
+        with pytest.raises(BootstrapDenied, match="租户"):
+            instance.request_registration(
+                valid_request(tenant_id=bad_tenant, bootstrap_token=BOOTSTRAP)
+            )
+
+
+def test_first_registration_is_denied_when_server_has_no_bootstrap_token() -> None:
+    instance = service(bootstrap_token="")
+
+    with pytest.raises(BootstrapDenied, match="初始化口令"):
+        instance.request_registration(valid_request(tenant_id="t-1", bootstrap_token="anything"))
+
+
+def test_non_ascii_bootstrap_token_is_rejected_without_server_error() -> None:
+    instance = service()
+
+    with pytest.raises(BootstrapDenied, match="初始化口令"):
+        instance.request_registration(valid_request(tenant_id="t-1", bootstrap_token="口令不正确"))
+
+
+def test_bootstrap_denial_does_not_hash_password(monkeypatch) -> None:
+    instance = service()
+    calls = {"count": 0}
+
+    def exploding_hash(password: str) -> str:
+        calls["count"] += 1
+        raise AssertionError("不应在验证初始化口令之前哈希口令")
+
+    monkeypatch.setattr("app.accounts.service.hash_password", exploding_hash)
+
+    with pytest.raises(BootstrapDenied):
+        instance.request_registration(
+            valid_request(tenant_id="t-1", bootstrap_token="wrong-secret-value")
+        )
+
+    assert calls["count"] == 0
 ```
+
+> 实现说明：`request_registration` 必须先完成全部廉价校验（手机号重复、bootstrap 口令、租户合法性）再调用 `hash_password`。否则匿名注册接口会在校验失败前也执行一次 scrypt，可被反复调用放大资源消耗。bootstrap 口令比较必须走 `_constant_time_equal`（先编码为 bytes），因为 `hmac.compare_digest` 直接比较含非 ASCII 的字符串会抛 `TypeError`。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -810,6 +854,13 @@ def _normalized_tenant(tenant_id: object) -> str:
     return value
 
 
+def _constant_time_equal(left: object, right: object) -> bool:
+    """恒定时间比较两个口令字符串；非字符串或非 ASCII 都不会抛异常。"""
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
 class AccountService:
     def __init__(self, repository: AccountRepository, *, bootstrap_token: str = "") -> None:
         self.repository = repository
@@ -819,41 +870,39 @@ class AccountService:
         phone = _normalized_phone(request.phone)
         if self.repository.find_by_phone(phone) is not None:
             raise AccountConflict("该手机号已提交申请或已注册")
-        password_hash = hash_password(request.password)
 
-        if not self.repository.has_approved_admin():
-            if (
-                not self.bootstrap_token
-                or not request.bootstrap_token
-                or not hmac.compare_digest(request.bootstrap_token, self.bootstrap_token)
-            ):
-                raise BootstrapDenied("首个管理员需要正确的初始化口令")
-            tenant_id = _normalized_tenant(request.tenant_id) if request.tenant_id else None
-            if tenant_id is None:
-                raise BootstrapDenied("首个管理员申请必须声明有效租户")
-            now = datetime.now(UTC)
+        if self.repository.has_approved_admin():
             return self.repository.add(
                 Account(
                     phone=phone,
-                    password_hash=password_hash,
+                    password_hash=hash_password(request.password),
                     position=request.position.strip(),
                     full_name=request.full_name.strip(),
                     email=request.email,
-                    role=SUPER_ADMIN_ROLE,
-                    tenant_id=tenant_id,
-                    status=AccountStatus.APPROVED,
-                    reviewed_at=now,
-                    reviewed_by="bootstrap",
                 )
             )
 
+        if not self.bootstrap_token or not _constant_time_equal(request.bootstrap_token, self.bootstrap_token):
+            raise BootstrapDenied("首个管理员需要正确的初始化口令")
+        if not isinstance(request.tenant_id, str) or not request.tenant_id.strip():
+            raise BootstrapDenied("首个管理员申请必须声明有效租户")
+        try:
+            tenant_id = _normalized_tenant(request.tenant_id)
+        except ValueError as exc:
+            raise BootstrapDenied("首个管理员申请必须声明有效租户") from exc
+        now = datetime.now(UTC)
         return self.repository.add(
             Account(
                 phone=phone,
-                password_hash=password_hash,
+                password_hash=hash_password(request.password),
                 position=request.position.strip(),
                 full_name=request.full_name.strip(),
                 email=request.email,
+                role=SUPER_ADMIN_ROLE,
+                tenant_id=tenant_id,
+                status=AccountStatus.APPROVED,
+                reviewed_at=now,
+                reviewed_by="bootstrap",
             )
         )
 
@@ -911,7 +960,7 @@ class AccountService:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_service.py -q`
-Expected: PASS（14 passed）
+Expected: PASS（18 passed）
 
 - [ ] **Step 5: 提交**
 
