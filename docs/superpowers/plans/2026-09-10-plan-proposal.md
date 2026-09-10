@@ -977,8 +977,8 @@ class OpenAICompatiblePlanGenerator:
                 self.timeout_seconds,
             )
         except Exception as exc:  # 网络、超时、HTTP 状态异常统一收敛
-            raise PlanGenerationError(f"模型调用失败：{exc}") from exc
-        return self._parse(response)
+            raise PlanGenerationError("模型调用失败") from exc
+        return self._parse(response)[:max_steps]
 
     @staticmethod
     def _http_transport(
@@ -1020,7 +1020,12 @@ class OpenAICompatiblePlanGenerator:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_planner_generator.py -q`
-Expected: PASS（8 passed）
+Expected: PASS（11 passed）
+
+> **实现说明（审查后加固，必须遵守）**：
+> 1. 对外错误文案固定为「模型调用失败」，**不得**把底层异常文本拼进去（`httpx` 的 5xx 异常文本含内部 URL，注入式传输还会带出 `Authorization` 头，而接口层会把它作为 `422` 的 detail 返回客户端）。必须保留 `from exc` 以便日志追溯。
+> 2. 模型路径返回前也要 `[:max_steps]` 截断，不依赖上游 `normalize_steps` 单点兜底。
+> 3. 测试需补 3 个用例：未知多余键被剥离、超出 `max_steps` 被截断、错误文案不含端点与凭证，合计 11 项。
 
 - [ ] **Step 5: 提交**
 
