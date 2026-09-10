@@ -123,10 +123,27 @@ def test_action_values_are_stable_strings() -> None:
     assert len(set(AuditAction)) == 12
 
 
-def test_build_record_rejects_forbidden_detail_keys() -> None:
-    for bad in ({"password": "x"}, {"apiKey": "x"}, {"nested": {"accessToken": "x"}}):
+def test_build_record_rejects_undeclared_detail_keys() -> None:
+    for bad in (
+        {"password": "x"},
+        {"apiKey": "x"},
+        {"unknown": "x"},
+        {"nested": {"accessToken": "x"}},
+    ):
         with pytest.raises(AuditDetailNotAllowed):
             build_record(AuditAction.PLAN_PROPOSED, tenant_id="t-1", detail=bad)
+
+
+def test_build_record_allows_every_declared_detail_key() -> None:
+    from app.audit.models import ALLOWED_DETAIL_KEYS
+
+    record = build_record(
+        AuditAction.PLAN_RUN_STARTED,
+        tenant_id="t-1",
+        detail={key: "v" for key in ALLOWED_DETAIL_KEYS},
+    )
+
+    assert set(record.detail) == set(ALLOWED_DETAIL_KEYS)
 
 
 def test_build_record_accepts_bounded_structured_detail() -> None:
@@ -212,8 +229,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from .redaction import has_sensitive_key
-
 
 class AuditAction(StrEnum):
     ACCOUNT_REGISTRATION_REQUESTED = "account.registration.requested"
@@ -231,7 +246,21 @@ class AuditAction(StrEnum):
 
 
 class AuditDetailNotAllowed(ValueError):
-    """审计明细包含敏感字段，已拒绝写入。"""
+    """审计明细包含未声明的字段，已拒绝写入。"""
+
+
+ALLOWED_DETAIL_KEYS = frozenset(
+    {
+        "reason",
+        "role",
+        "step_count",
+        "generator",
+        "runtime_key",
+        "failure_count",
+        "bootstrap",
+        "tenant_assigned_at_approval",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -257,10 +286,11 @@ def build_record(
     phone_masked: str | None = None,
     detail: dict[str, object] | None = None,
 ) -> AuditRecord:
-    """构造审计记录；明细中出现敏感键一律拒绝，模型无法把敏感值带进审计。"""
+    """构造审计记录；明细采用白名单，只允许服务端声明的字段，未知字段一律拒绝。"""
     payload = dict(detail or {})
-    if has_sensitive_key(payload):
-        raise AuditDetailNotAllowed("审计明细包含敏感字段")
+    undeclared = {str(key) for key in payload if key not in ALLOWED_DETAIL_KEYS}
+    if undeclared:
+        raise AuditDetailNotAllowed("审计明细包含未声明的字段")
     return AuditRecord(
         action=action,
         tenant_id=tenant_id,
@@ -307,7 +337,7 @@ from .audit.redaction import mask_phone
 - [ ] **Step 6: 运行测试**
 
 Run: `py -m pytest tests/test_audit_redaction.py tests/test_audit_models.py -q`
-Expected: PASS（4 + 4 = 8 passed）
+Expected: PASS（4 + 5 = 9 passed）
 
 Run: `py -m pytest -o addopts=""`
 Expected: 全部通过（基线 380 + 本任务新增）——**特别注意 `tests/test_planner_models.py` 与 `tests/test_account_api.py` 必须仍然全绿**，它们守护本次去重是否改变了既有行为。

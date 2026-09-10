@@ -75,7 +75,7 @@ plan.run_started
 
 `AuditRecord` 字段：`action`、`actor_id`（可空，匿名注册与登录失败时为空）、`tenant_id`（**可空**：匿名注册在审批前没有租户归属）、`target_type`、`target_id`、`phone_masked`（可空）、`detail`（JSON 对象）、`occurred_at`（UTC）。
 
-`detail` 只允许出现服务端明确写入的结构化值（例如驳回原因、生成器标识、步骤数、运行时标识）；**不允许**写入请求体原文、模型原始响应、口令、哈希、令牌或密钥。
+`detail` **采用白名单**：只允许出现服务端在 `ALLOWED_DETAIL_KEYS` 中显式声明的字段（驳回原因、角色、步骤数、生成器标识、运行时标识、失败次数等），未知字段一律拒绝。审计明细面向的是**服务端自己写入**的数据，白名单比黑名单更严格；面向不可信模型输入的 `args` 仍沿用 `app/audit/redaction.py` 的黑名单判定（两者用途不同，`redaction.py` 是唯一来源）。
 
 ### 审计仓储
 
