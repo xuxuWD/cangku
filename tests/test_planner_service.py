@@ -96,13 +96,13 @@ def test_propose_is_idempotent_per_task_and_key() -> None:
     assert len(planner.store.list_for_task("t-1", task.id)) == 1
 
 
-def test_propose_rejects_other_employee_on_same_task() -> None:
-    from app.domain import TaskStore
+def test_propose_hides_task_from_other_employee() -> None:
+    from app.domain import TaskNotFound, TaskStore
 
     task_store = TaskStore()
     task = make_task(task_store)
 
-    with pytest.raises(PlannerAccessDenied):
+    with pytest.raises(TaskNotFound):
         service(task_store).propose(UserContext("t-1", "u-9", "employee"), task.id, "目标", "key-1")
 
 
@@ -228,3 +228,54 @@ def test_generation_failure_does_not_persist_a_proposal() -> None:
         planner.propose(UserContext("t-1", "u-1", "employee"), task.id, "目标", "key-1")
 
     assert planner.store.list_for_task("t-1", task.id) == []
+
+
+def test_propose_rejects_blank_goal() -> None:
+    from app.domain import TaskStore
+
+    task_store = TaskStore()
+    task = make_task(task_store)
+
+    with pytest.raises(ValueError, match="目标不能为空"):
+        service(task_store).propose(UserContext("t-1", "u-1", "employee"), task.id, "   ", "key-1")
+
+
+def test_reject_requires_reason_and_non_ceo_is_rejected() -> None:
+    from app.domain import TaskStore
+
+    task_store = TaskStore()
+    task = make_task(task_store)
+    planner = service(task_store)
+    proposal = planner.propose(UserContext("t-1", "u-1", "employee"), task.id, "目标", "key-1")
+
+    with pytest.raises(PolicyError):
+        planner.reject(UserContext("t-1", "u-2", "employee"), proposal.proposal_id, "原因")
+    with pytest.raises(ValueError, match="驳回原因不能为空"):
+        planner.reject(UserContext("t-1", "ceo-1", "ceo"), proposal.proposal_id, "   ")
+
+
+def test_duplicate_approval_conflicts() -> None:
+    from app.domain import TaskStore
+
+    task_store = TaskStore()
+    task = make_task(task_store)
+    planner = service(task_store)
+    proposal = planner.propose(UserContext("t-1", "u-1", "employee"), task.id, "目标", "key-1")
+    planner.approve(UserContext("t-1", "ceo-1", "ceo"), proposal.proposal_id)
+
+    with pytest.raises(PlanProposalStateConflict):
+        planner.approve(UserContext("t-1", "ceo-2", "ceo"), proposal.proposal_id)
+
+
+def test_get_and_run_deny_other_employee_on_same_tenant_proposal() -> None:
+    from app.domain import TaskStore
+
+    task_store = TaskStore()
+    task = make_task(task_store)
+    planner = service(task_store)
+    proposal = planner.propose(UserContext("t-1", "u-1", "employee"), task.id, "目标", "key-1")
+
+    with pytest.raises(PlannerAccessDenied):
+        planner.get(UserContext("t-1", "u-2", "employee"), proposal.proposal_id)
+    with pytest.raises(PlannerAccessDenied):
+        planner.start_run(UserContext("t-1", "u-2", "employee"), proposal.proposal_id, "mock", "product_manager")

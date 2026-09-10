@@ -94,18 +94,13 @@ class PlannerService:
         return self.runtime_service.start(actor, proposal.task_id, runtime_key, steps, mode)
 
     def _task(self, actor: UserContext, task_id: str) -> Task:
-        # 仓储把「不存在」与「同租户不可见」都收敛为 TaskNotFound，故先以同租户视角取任务，
-        # 再在服务层判定放行；跨租户或不存在的任务仍会冒泡 TaskNotFound。
-        probe = UserContext(actor.tenant_id, actor.user_id, "super_admin")
-        task = self.task_store.get(probe, task_id)
-        if actor.user_id != task.created_by and actor.role not in _ELEVATED_ROLES:
-            raise PlannerAccessDenied("当前员工无权操作此任务")
-        return task
+        """取任务；可见性由仓储统一判定：跨租户、不存在、或同租户但非发起人且非高权限，一律抛 TaskNotFound。"""
+        return self.task_store.get(actor, task_id)
 
     @staticmethod
     def _ensure_can_view(actor: UserContext, proposal: PlanProposal) -> None:
         if actor.user_id != proposal.created_by and actor.role not in _ELEVATED_ROLES:
-            raise PlannerAccessDenied("当前员工无权查看此计划")
+            raise PlannerAccessDenied("当前员工无权操作此计划")
 
     @staticmethod
     def _ensure_approver(actor: UserContext, proposal: PlanProposal) -> None:
