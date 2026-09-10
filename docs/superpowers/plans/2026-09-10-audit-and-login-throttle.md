@@ -501,6 +501,31 @@ def emit_audit_line(record: AuditRecord) -> None:
 Run: `py -m pytest tests/test_audit_logging.py -q`
 Expected: PASS（4 passed）
 
+> **必须遵守（执行中发现的真实缺陷）**：`configure_audit_logging` 会把该 logger 的 `propagate` 设为 `False`，而 `caplog` 的捕获 handler 挂在 root logger 上。如果测试只移除 handler 与复原 `_configured`，`propagate=False` 会**泄漏到全局**，让同一次运行里后续任何依赖 `caplog` 的测试失败（实测会导致 Task 3 的 `test_service_writes_to_store_and_emits_log` 报 `IndexError: list index out of range`）。
+>
+> 因此该测试文件必须包含一个 autouse fixture，对 logger 的 `handlers`、`level`、`propagate` 与模块级 `_configured` 做**完整快照与复原**，并且各测试内不再自行 `try/finally` 收尾：
+>
+> ```python
+> @pytest.fixture(autouse=True)
+> def _restore_audit_logger():
+>     import app.audit.logging as module
+>
+>     logger = logging.getLogger(AUDIT_LOGGER_NAME)
+>     snapshot = (list(logger.handlers), logger.level, logger.propagate, module._configured)
+>     try:
+>         yield
+>     finally:
+>         for handler in list(logger.handlers):
+>             logger.removeHandler(handler)
+>         for handler in snapshot[0]:
+>             logger.addHandler(handler)
+>         logger.setLevel(snapshot[1])
+>         logger.propagate = snapshot[2]
+>         module._configured = snapshot[3]
+> ```
+>
+> 验收方式：`py -m pytest tests/test_audit_logging.py tests/test_audit_store.py -q` 与反序运行都必须全绿。
+
 - [ ] **Step 5: 提交**
 
 ```bash
