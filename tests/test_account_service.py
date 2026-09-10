@@ -209,3 +209,45 @@ def test_admin_reset_password_requires_super_admin_and_known_account() -> None:
         )
     with pytest.raises(AccountNotFound):
         instance.reset_password(actor, "acct-missing", new_password="another-passphrase")
+
+
+def test_first_registration_with_blank_or_invalid_tenant_is_denied() -> None:
+    instance = service()
+
+    for bad_tenant in ("   ", "bad!", "t"):
+        with pytest.raises(BootstrapDenied, match="租户"):
+            instance.request_registration(
+                valid_request(tenant_id=bad_tenant, bootstrap_token=BOOTSTRAP)
+            )
+
+
+def test_first_registration_is_denied_when_server_has_no_bootstrap_token() -> None:
+    instance = service(bootstrap_token="")
+
+    with pytest.raises(BootstrapDenied, match="初始化口令"):
+        instance.request_registration(valid_request(tenant_id="t-1", bootstrap_token="anything"))
+
+
+def test_non_ascii_bootstrap_token_is_rejected_without_server_error() -> None:
+    instance = service()
+
+    with pytest.raises(BootstrapDenied, match="初始化口令"):
+        instance.request_registration(valid_request(tenant_id="t-1", bootstrap_token="口令不正确"))
+
+
+def test_bootstrap_denial_does_not_hash_password(monkeypatch) -> None:
+    instance = service()
+    calls = {"count": 0}
+
+    def exploding_hash(password: str) -> str:
+        calls["count"] += 1
+        raise AssertionError("不应在验证初始化口令之前哈希口令")
+
+    monkeypatch.setattr("app.accounts.service.hash_password", exploding_hash)
+
+    with pytest.raises(BootstrapDenied):
+        instance.request_registration(
+            valid_request(tenant_id="t-1", bootstrap_token="wrong-secret-value")
+        )
+
+    assert calls["count"] == 0
