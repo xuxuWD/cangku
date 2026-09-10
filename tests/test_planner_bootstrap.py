@@ -63,6 +63,11 @@ def test_unsupported_backend_and_bad_tools_are_rejected() -> None:
         build_planner_service(memory_settings(planner_tools="not-json"))
 
 
+def test_postgres_backend_requires_postgres_storage() -> None:
+    with pytest.raises(ValueError, match="计划提案存储类型"):
+        build_planner_service(memory_settings(storage_backend="sqlite"))
+
+
 def test_planner_max_steps_bounds() -> None:
     assert Settings().planner_max_steps == 10
 
