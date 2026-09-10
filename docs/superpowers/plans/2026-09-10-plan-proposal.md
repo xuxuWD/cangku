@@ -410,7 +410,13 @@ def normalize_steps(raw_steps: object, catalog: ToolCatalog, *, max_steps: int) 
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_planner_models.py -q`
-Expected: PASS（12 passed）
+Expected: PASS（17 passed）
+
+> **实现说明（审查后加固，必须遵守）**：`models.py` 在上述代码基础上还必须包含四项加固，否则代码质量审查会判为不合格：
+> 1. `kind` 必须 fail-closed 校验。副作用 kind 集合提取到 `app/runtime/contracts.py` 作为单一来源（该文件的 `AgentPlan.from_steps` 也改用它），`models.py` 从那里导入 `ALLOWED_PLAN_KINDS` 与 `SIDE_EFFECT_KINDS`，不再自行定义。`Tool.__post_init__` 中校验 `kind not in ALLOWED_PLAN_KINDS` 时抛 `ValueError`，避免配置里把 `content.publish` 写成 `kind="publsh"` 或 `"READ"` 导致危险工具被当作只读而绕过审批。
+> 2. `ToolCatalog.__init__` 必须检测重复工具名并抛 `ValueError`，避免同名后者覆盖前者把副作用工具降级为只读。
+> 3. 敏感键检查改为**词元递归匹配**：键名小写并把 `-` 归一为 `_` 后按 `_` 切词，任一词元命中 `SENSITIVE_KEY_TOKENS`（password/passwd/pwd/token/secret/key/cookie/authorization/credential/session/bearer）即拒绝，并递归检查嵌套 dict 与 list。这样 `client_secret`、`x-api-key`、`{"headers": {"Authorization": ...}}` 都会被拦截，而 `keyword` 这类误伤被排除。
+> 4. 相应地，Task 1 的测试需包含未知/大小写错误 `kind` 被拒、直接构造 `Tool` 校验、重复工具名被拒、复合与嵌套敏感键被拒、`keyword` 不被误伤这 5 个用例，合计 17 项。
 
 - [ ] **Step 5: 提交**
 
@@ -833,10 +839,11 @@ from typing import Any, Callable, Protocol
 
 import httpx
 
+from app.runtime.contracts import READ_KIND
+
 from .models import (
     PlanGenerationError,
     PlannerNotConfigured,
-    READ_KIND,
     ToolCatalog,
 )
 
@@ -1440,7 +1447,7 @@ def test_planner_max_steps_bounds() -> None:
 
 
 def test_default_catalog_is_empty_and_config_parses() -> None:
-    assert Settings().planner_tools == ""
+    assert Settings().planner_tools == "[]"
     assert ToolCatalog.from_config(Settings().planner_tools).is_empty() is True
 ```
 
@@ -1459,7 +1466,7 @@ Expected: FAIL，`ImportError: cannot import name 'build_planner_service'`
         validation_alias=AliasChoices("PLANNER_BACKEND", "WORKBENCH_PLANNER_BACKEND"),
     )
     planner_tools: str = Field(
-        default="",
+        default="[]",
         validation_alias=AliasChoices("PLANNER_TOOLS", "WORKBENCH_PLANNER_TOOLS"),
     )
     planner_max_steps: int = Field(
