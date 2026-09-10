@@ -13,6 +13,50 @@ _SCRYPT_P = 1
 _SALT_BYTES = 16
 _DERIVED_BYTES = 32
 
+# 通用弱口令样本（按公开的常见口令统计整理，不是任何一次泄露库的拷贝）。
+# 只收录长度达到 MIN_PASSWORD_LENGTH 的条目：更短的经典弱口令会被长度规则先拒绝，
+# 收录进来就是永远走不到的死数据。
+# 比对时把输入转小写后精确查表，因此大小写变体会被拦截；但列表是固定字符串集合，
+# 对已收录口令再做追加或更冷门的 leetspeak 变形不会命中（已知限制，见 API 契约）。
+COMMON_PASSWORDS = frozenset(
+    {
+        "password12",
+        "password123",
+        "password1234",
+        "passw0rd123",
+        "p@ssw0rd123",
+        "qwerty1234",
+        "qwerty12345",
+        "qwertyuiop",
+        "1q2w3e4r5t",
+        "1qaz2wsx3edc",
+        "qazwsxedc123",
+        "asdfghjkl1",
+        "abc1234567",
+        "1234567890",
+        "0987654321",
+        "letmein123",
+        "letmein1234",
+        "welcome123",
+        "welcome1234",
+        "changeme123",
+        "default123",
+        "admin12345",
+        "administrator",
+        "iloveyou123",
+        "monkey12345",
+        "dragon12345",
+        "football123",
+        "baseball123",
+        "sunshine123",
+        "princess123",
+        "superman123",
+        "master12345",
+        "shadow12345",
+        "michael12345",
+    }
+)
+
 
 class PasswordPolicyError(ValueError):
     """口令不满足最小安全策略。"""
@@ -25,6 +69,12 @@ def _validate(password: object) -> None:
         raise PasswordPolicyError(f"口令长度必须在 {MIN_PASSWORD_LENGTH} 到 {MAX_PASSWORD_LENGTH} 之间")
     if any(ord(char) < 32 or ord(char) == 127 for char in password):
         raise PasswordPolicyError("口令不能包含控制字符")
+    if password.isdigit():
+        raise PasswordPolicyError("口令不能是纯数字")
+    if len(set(password)) == 1:
+        raise PasswordPolicyError("口令不能是重复的单一字符")
+    if password.lower() in COMMON_PASSWORDS:
+        raise PasswordPolicyError("口令过于常见，请更换")
 
 
 def _b64encode(raw: bytes) -> str:
