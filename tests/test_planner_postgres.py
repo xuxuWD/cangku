@@ -187,3 +187,66 @@ def test_migration_009_defines_status_check_and_unique_idempotency() -> None:
     assert "CREATE TABLE IF NOT EXISTS workbench_plan_proposals" in migration
     assert "CHECK (status IN ('pending_review', 'approved', 'rejected'))" in migration
     assert "UNIQUE (tenant_id, task_id, idempotency_key)" in migration
+
+
+def test_postgres_list_for_task_hydrates_rows() -> None:
+    connection = RecordingConnection([[proposal_row(), proposal_row("approved")]])
+    store = PostgresPlanProposalStore(connection)
+
+    items = store.list_for_task("t-1", "task-1")
+
+    assert [item.proposal_id for item in items] == ["plan-1", "plan-1"]
+    assert items[1].status is PlanStatus.APPROVED
+    assert connection.cursor_instance.statements[0][1] == ("t-1", "task-1")
+
+
+def test_postgres_mark_rejected_passes_reason_and_guards_state() -> None:
+    connection = RecordingConnection([proposal_row("rejected")])
+    store = PostgresPlanProposalStore(connection)
+
+    rejected = store.mark_rejected("plan-1", reason="信息不足", reviewer="ceo-1")
+
+    assert rejected.status is PlanStatus.REJECTED
+    statement, params = connection.cursor_instance.statements[0]
+    assert "status = 'pending_review'" in statement
+    assert params == ("rejected", "ceo-1", "信息不足", "plan-1")
+
+
+def test_postgres_add_returns_existing_proposal_on_idempotency_conflict() -> None:
+    connection = RecordingConnection([None, proposal_row()])
+    store = PostgresPlanProposalStore(connection)
+
+    saved = store.add(make_proposal())
+
+    assert saved.proposal_id == "plan-1"
+    assert len(connection.cursor_instance.statements) == 2
+    assert "SELECT" in connection.cursor_instance.statements[1][0]
+    assert connection.cursor_instance.statements[1][1] == ("t-1", "task-1", "key-1")
+
+
+def test_postgres_serialize_and_hydrate_round_trip() -> None:
+    from app.planner.models import PlanStepView
+
+    steps = (
+        PlanStepView(
+            step_id="s1",
+            tool="content.publish",
+            kind="publish",
+            requires_approval=True,
+            args={"channel": "公众号"},
+        ),
+        PlanStepView(step_id="s2", tool="knowledge.search", kind="read", requires_approval=False),
+    )
+
+    serialized = PostgresPlanProposalStore._serialize(steps)
+    assert '"requires_approval": true' in serialized
+    assert "公众号" in serialized
+
+    row = list(proposal_row())
+    row[4] = serialized
+    hydrated = PostgresPlanProposalStore._hydrate(tuple(row))
+
+    assert [step.step_id for step in hydrated.steps] == ["s1", "s2"]
+    assert hydrated.steps[0].requires_approval is True
+    assert hydrated.steps[0].args == {"channel": "公众号"}
+    assert hydrated.steps[1].args == {}
