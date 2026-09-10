@@ -80,7 +80,7 @@ Worker 只在 PostgreSQL 模式下自动接入 Outbox 发布器；开发环境�
 
 任务创建支持幂等键。重复提交不会创建第二个任务，也不会重复写入审计事件。所有高风险动作都必须经过服务端权限策略，前端隐藏按钮不属于安全边界。
 
-自建账号流程：员工通过 `POST /api/v1/auth/registrations` 提交申请，超级管理员审批并指定角色与租户后，用 `POST /api/v1/auth/sessions` 登录换取短期会话令牌。首个管理员凭部署注入的 `WORKBENCH_BOOTSTRAP_TOKEN` 自助申请。会话有效期由 `WORKBENCH_SESSION_TTL_SECONDS` 控制（默认 900 秒），配置项见 `.env.example`。
+自建账号流程：员工通过 `POST /api/v1/auth/registrations` 提交申请，超级管理员审批并指定角色与租户后，用 `POST /api/v1/auth/sessions` 登录换取短期会话令牌。首个管理员凭部署注入的 `WORKBENCH_BOOTSTRAP_TOKEN` 自助申请。会话有效期由 `WORKBENCH_SESSION_TTL_SECONDS` 控制（默认 900 秒），配置项见 `.env.example`。超级管理员与 CEO 还须先绑定动态口令（TOTP，自建实现、仅使用标准库）才能获得完整会话：未绑定时登录只签发仅可用于完成绑定的受限会话（`POST /api/v1/auth/me/totp` 与 `/confirmation`），其有效期上限由 `WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS` 控制（默认 300 秒）。
 
 ## 安全边界
 

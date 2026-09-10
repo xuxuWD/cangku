@@ -45,7 +45,12 @@
 
 `POST /api/v1/auth/sessions`
 
-用 `phone` 与 `password` 换取会话令牌。手机号不存在、口令错误或账号未通过审批一律返回 `401` 且不区分原因。账号被锁定（同一手机号在 5 分钟窗口内失败达阈值）时返回 `429`，文案为「登录尝试过于频繁，请稍后再试」。由于计数按手机号统一执行，已存在与不存在的手机号达到阈值后表现一致，不泄露账号是否存在。成功返回 `access_token`、`token_type`、`expires_in`、`tenant_id`、`user_id` 和 `role`。会话密钥未配置时返回 `503`。
+用 `phone`、`password` 与可选 `totp_code` 换取会话令牌。手机号不存在、口令错误或账号未通过审批一律返回 `401`，文案为「手机号或密码不正确」，不区分原因。账号绑定动态口令后必须同时提交 `totp_code`：未提交返回 `401`「需要动态验证码」，验证码错误返回 `401`「动态验证码不正确」（两种情况都会计入登录失败限流）。账号被锁定（同一手机号在 5 分钟窗口内失败达阈值）时返回 `429`，文案为「登录尝试过于频繁，请稍后再试」。由于计数按手机号统一执行，已存在与不存在的手机号达到阈值后表现一致，不泄露账号是否存在。成功返回 `access_token`、`token_type`、`expires_in`、`tenant_id`、`user_id`、`role` 和 `scope`。会话密钥未配置时返回 `503`。
+
+会话按 `scope` 分两种：
+
+- `full`：完整会话，可访问全部有权限的接口。
+- `totp_enrollment`：**受限会话**。当 `WORKBENCH_REQUIRE_ADMIN_TOTP` 为真且 `super_admin` / `ceo` 尚未绑定动态口令时签发；有效期取 `min(WORKBENCH_SESSION_TTL_SECONDS, WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS)`（默认不超过 300 秒）。受限会话只允许访问 `POST /api/v1/auth/me/totp`、`POST /api/v1/auth/me/totp/confirmation` 与 `GET /api/v1/health`；访问其他受保护接口一律返回 `403`「账号需要先完成动态口令绑定」。
 
 `PUT /api/v1/auth/me/password`
 
@@ -55,13 +60,27 @@
 
 仅超级管理员可调用，用于忘记密码后的重置。请求体为 `{ "new_password": "..." }`；账号不存在返回 `404`，其他角色返回 `403`。
 
-会话令牌使用 HMAC-SHA256 签名，载荷包含租户、用户、角色、签发时间、过期时间和唯一号；过期或签名错误一律返回 `401`。有效期由 `WORKBENCH_SESSION_TTL_SECONDS` 控制，默认 900 秒，范围 60–3600。本轮不提供服务端会话撤销，登出由客户端丢弃令牌并由短期有效期兜底。
+`POST /api/v1/auth/me/totp`
+
+已登录用户开始绑定本人动态口令。服务端生成新的 base32 种子并返回 `secret`、`otpauth_uri`、`digest`（`SHA1`）、`digits`（`"6"`）、`period`（`"30"`）；此时尚未启用。重复调用会作废旧种子并重置确认状态。种子的 `otpauth_uri` 中账号标识为脱敏手机号，不含明文手机号。
+
+`POST /api/v1/auth/me/totp/confirmation`
+
+已登录用户用验证器当前 6 位码确认启用。请求体为 `{ "totp_code": "..." }`；尚未开始绑定返回 `409`「请先开始绑定动态口令」，验证码错误返回 `401`「动态验证码不正确」。
+
+`POST /api/v1/auth/accounts/{account_id}/totp-reset`
+
+仅超级管理员可调用，用于用户更换设备或丢失验证器后的找回：清除目标账号的动态口令绑定，之后该账号可仅凭口令登录（管理员会在下次登录时被要求重新绑定）。账号不存在返回 `404`，其他角色返回 `403`。
+
+动态口令为自建实现（RFC 4226 / RFC 6238，仅使用标准库）：6 位码、30 秒步长、校验窗口 ±1 步，并拒绝同一窗口内的重放。绑定、确认与重置分别写入审计动作 `account.totp.enrolled`、`account.totp.confirmed`、`account.totp.reset`；强制绑定提示写入 `account.totp.enrollment_required`。审计明细与结构化日志均不含种子或验证码。
+
+会话令牌使用 HMAC-SHA256 签名，载荷包含租户、用户、角色、会话范围、签发时间、过期时间和唯一号；过期或签名错误一律返回 `401`。有效期由 `WORKBENCH_SESSION_TTL_SECONDS` 控制，默认 900 秒，范围 60–3600；受限会话有效期另受 `WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS` 约束，默认 300 秒，范围 60–900。旧令牌缺少会话范围时按 `full` 处理。本轮不提供服务端会话撤销，登出由客户端丢弃令牌并由短期有效期兜底。
 
 ### 关键操作审计
 
 账号与计划模块的关键操作会写入通用安全审计表 `workbench_audit_log`，并同时输出单行 JSON 结构化日志（logger 名 `company_workbench.audit`，写入标准输出，级别取 `WORKBENCH_LOG_LEVEL`）。
 
-覆盖动作：`account.registration.requested`、`account.registration.approved`、`account.registration.rejected`、`account.login.succeeded`、`account.login.failed`、`account.login.locked`、`account.password.changed`、`account.password.reset`、`plan.proposed`、`plan.approved`、`plan.rejected`、`plan.run_started`。
+覆盖动作：`account.registration.requested`、`account.registration.approved`、`account.registration.rejected`、`account.login.succeeded`、`account.login.failed`、`account.login.locked`、`account.password.changed`、`account.password.reset`、`account.totp.enrolled`、`account.totp.confirmed`、`account.totp.reset`、`account.totp.enrollment_required`、`plan.proposed`、`plan.approved`、`plan.rejected`、`plan.run_started`。
 
 审计记录包含动作、操作者、租户、目标、脱敏手机号与结构化明细（明细字段由服务端白名单限定）；**不包含**口令、口令哈希、令牌、Cookie、密钥或模型原始响应。本轮不提供读取审计的接口。
 

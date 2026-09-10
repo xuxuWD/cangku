@@ -13,6 +13,7 @@
 5. 配置 `WORKBENCH_OUTBOX_MAX_ATTEMPTS`，取值为 1 到 20 的正整数，并写入交付记录。
 6. 运行 `python scripts/commercial_g0_preflight.py`。预检会校验非开发环境、PostgreSQL 存储、认证密钥、备份密钥及两者隔离；输出不得包含数据库密码、备份密钥、Cookie、令牌或原始 API 密钥。
 7. 隔离 staging 环境按 `.env.staging.example` 登记独立 PostgreSQL、Redis、对象存储、staging 租户和测试账号后，运行 `python scripts/staging_preflight.py`；预检会聚合基础设施隔离、商业化 G0 和外部 Runtime 元数据校验，必须为 `pass` 才能执行跨租户测试、并发压测、沙箱验证和真实外部服务联调。
+8. 管理员账号必须先绑定动态口令（TOTP）才能获得完整会话：`WORKBENCH_REQUIRE_ADMIN_TOTP` 为真时，未绑定的 `super_admin` / `ceo` 登录只拿到受限会话（仅可完成绑定），绑定完成后重新登录才签发 `full` 范围令牌。用户更换设备或丢失验证器时，由超级管理员通过 `POST /api/v1/auth/accounts/{account_id}/totp-reset` 清除绑定后重新绑定。
 
 Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-checklist.md) 执行；缺少任一前置条件时停止，不以本地演练替代。
 
@@ -28,7 +29,7 @@ Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-ch
 
 1. 迁移前暂停写入任务，记录当前应用版本、数据库迁移清单和 Runtime 固定版本。
 2. 对数据库执行一致性备份，对对象存储创建版本化清单；备份文件使用独立的备份加密密钥加密。
-3. 在隔离数据库先执行迁移和应用启动检查，确认迁移清单与 `migrations/` 一致。商业化持久化会自动应用 `migrations/001` 至 `011`，生产模式不允许内存回退。
+3. 在隔离数据库先执行迁移和应用启动检查，确认迁移清单与 `migrations/` 一致。商业化持久化会自动应用 `migrations/001` 至 `012`，生产模式不允许内存回退。
 4. 生产迁移完成后执行健康检查、租户读取、任务创建/取消和商业化读取的冒烟测试。
 5. 任何失败均停止后续迁移，不在原数据库直接试错。
 
