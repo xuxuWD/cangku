@@ -194,3 +194,31 @@ def test_normalize_allows_benign_keys_containing_key_substring() -> None:
     )
 
     assert steps[0].args == {"keyword": "选题", "topic": "内容"}
+
+
+def test_normalize_rejects_camel_case_sensitive_keys() -> None:
+    for sensitive in (
+        {"apiKey": "x"},
+        {"myToken": "x"},
+        {"accessToken": "x"},
+        {"clientSecret": "x"},
+        {"api_keyValue": "x"},
+        {"userToken": "x"},
+        {"nested": {"accessToken": "x"}},
+    ):
+        with pytest.raises(PlanGenerationError, match="敏感"):
+            normalize_steps(
+                [{"step_id": "s1", "tool": "knowledge.search", "args": sensitive}],
+                catalog(),
+                max_steps=5,
+            )
+
+
+def test_normalize_allows_benign_camel_case_keys() -> None:
+    steps = normalize_steps(
+        [{"step_id": "s1", "tool": "knowledge.search", "args": {"keyword": "a", "topicName": "b"}}],
+        catalog(),
+        max_steps=5,
+    )
+
+    assert steps[0].args == {"keyword": "a", "topicName": "b"}

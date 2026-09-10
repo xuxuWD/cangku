@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -26,12 +27,20 @@ SENSITIVE_KEY_TOKENS = frozenset(
 )
 
 
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _key_tokens(key: object) -> set[str]:
+    """把键名归一切词：camelCase 边界拆开、- 与 _ 视为分隔，再小写比对词元。"""
+    text = _CAMEL_BOUNDARY.sub("_", str(key))
+    return {part for part in text.lower().replace("-", "_").split("_") if part}
+
+
 def _has_sensitive_key(value: object) -> bool:
-    """递归检查是否出现敏感键名；按 _ 与 - 切词后比对词元，避免误伤 keyword 之类。"""
+    """递归检查是否出现敏感键名；按词元比对，避免误伤 keyword 之类。"""
     if isinstance(value, dict):
         for key, item in value.items():
-            tokens = {part for part in str(key).lower().replace("-", "_").split("_") if part}
-            if tokens & SENSITIVE_KEY_TOKENS or _has_sensitive_key(item):
+            if _key_tokens(key) & SENSITIVE_KEY_TOKENS or _has_sensitive_key(item):
                 return True
         return False
     if isinstance(value, list):
