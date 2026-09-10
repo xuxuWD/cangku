@@ -31,7 +31,8 @@
 | `tests/test_account_service.py` | 服务测试 |
 | `tests/test_account_auth.py` | 令牌与配置测试 |
 | `tests/test_account_api.py` | 接口测试 |
-| `tests/test_account_postgres.py` | PostgreSQL 仓储契约测试 |
+| `tests/test_account_bootstrap.py` | 账号装配测试（内存路径与非法后端） |
+| `tests/test_account_postgres.py` | PostgreSQL 仓储契约测试（Task 7 创建） |
 
 **约定：** 本仓库测试命令用 `py -m pytest`（该机器 `python` 不在 PATH）。禁止提交 `.env`、密钥、口令或口令哈希。
 
@@ -1157,7 +1158,9 @@ git commit -m "feat: 会话令牌增加过期与账号配置"
 
 **Files:**
 - Modify: `app/bootstrap.py`
-- Test: `tests/test_account_postgres.py`（本任务只加装配用例，PostgreSQL 用例在 Task 7 补全）
+- Test: `tests/test_account_bootstrap.py`
+
+> 说明：`PostgresAccountRepository` 在 Task 7 才创建，因此本任务只覆盖内存路径与非法后端；postgres 分支的装配测试放在 Task 7。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1169,16 +1172,6 @@ from app.bootstrap import build_account_service
 from app.settings import Settings
 
 
-def postgres_settings() -> Settings:
-    return Settings(
-        env="production",
-        storage_backend="postgres",
-        database_url="postgresql://workbench:pw@pg.internal:5432/workbench",
-        auth_secret="a" * 32,
-        backup_encryption_key="b" * 32,
-    )
-
-
 def test_memory_backend_returns_in_memory_repository() -> None:
     settings = Settings(env="development", storage_backend="memory", bootstrap_token="boot-secret")
 
@@ -1188,42 +1181,17 @@ def test_memory_backend_returns_in_memory_repository() -> None:
     assert service.bootstrap_token == "boot-secret"
 
 
-def test_production_requires_postgres_backend() -> None:
+def test_unsupported_backend_is_rejected() -> None:
     settings = Settings(env="development", storage_backend="sqlite")
 
     with pytest.raises(ValueError, match="账号存储类型"):
         build_account_service(settings)
-
-
-def test_postgres_backend_uses_injected_connection() -> None:
-    service, repository = build_account_service(postgres_settings(), connection=object(), migrate=False)
-
-    assert not isinstance(repository, InMemoryAccountRepository)
-    assert service.repository is repository
-
-
-def test_postgres_backend_exposes_account_repository_contract() -> None:
-    _service, repository = build_account_service(postgres_settings(), connection=object(), migrate=False)
-
-    for name in (
-        "add",
-        "find_by_phone",
-        "get",
-        "list_by_status",
-        "mark_approved",
-        "mark_rejected",
-        "update_password",
-        "has_approved_admin",
-    ):
-        assert callable(getattr(repository, name))
 ```
-
-> 说明：`PostgresAccountRepository` 类在 Task 7 创建，因此本任务只用鸭子类型断言；Task 7 会把它升级为 `isinstance` 断言。
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `py -m pytest tests/test_account_postgres.py -q`
-Expected: FAIL，`ImportError: cannot import name 'build_account_service'` 与 `ModuleNotFoundError: No module named 'app.accounts.repository'`
+Run: `py -m pytest tests/test_account_bootstrap.py -q`
+Expected: FAIL，`ImportError: cannot import name 'build_account_service'`
 
 - [ ] **Step 3: 实现装配函数**
 
@@ -1262,14 +1230,14 @@ def build_account_service(settings: Settings, *, connection=None, migrate: bool 
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `py -m pytest tests/test_account_postgres.py -q`
-Expected: PASS（4 passed）
+Run: `py -m pytest tests/test_account_bootstrap.py -q`
+Expected: PASS（2 passed）
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add app/bootstrap.py tests/test_account_postgres.py
-git commit -m "feat: 装配账号服务与仓储"
+git add app/bootstrap.py tests/test_account_bootstrap.py
+git commit -m "feat: 装配账号服务与内存仓储"
 ```
 
 ---
@@ -1793,7 +1761,7 @@ git commit -m "feat: 增加账号注册登录接口"
 
 - [ ] **Step 1: 写失败测试**
 
-在 `tests/test_account_postgres.py` 末尾追加下列假连接与用例。同时在文件顶部补充 import，最终形态如下（Task 5 已写入的 `import pytest`、`build_account_service`、`Settings`、`InMemoryAccountRepository` 保留）：
+新建 `tests/test_account_postgres.py`。文件顶部 import 与装配用例（本文件为新建，Task 5 只创建了 `tests/test_account_bootstrap.py`，两者互不影响）：
 
 ```python
 from datetime import UTC, datetime
@@ -1810,9 +1778,45 @@ from app.accounts.models import (
 from app.accounts.repository import InMemoryAccountRepository, PostgresAccountRepository
 from app.bootstrap import build_account_service
 from app.settings import Settings
+
+
+def postgres_settings() -> Settings:
+    return Settings(
+        env="production",
+        storage_backend="postgres",
+        database_url="postgresql://workbench:pw@pg.internal:5432/workbench",
+        auth_secret="a" * 32,
+        backup_encryption_key="b" * 32,
+        content_store_backend="sqlite",
+    )
+
+
+def test_postgres_backend_uses_injected_connection() -> None:
+    service, repository = build_account_service(postgres_settings(), connection=object(), migrate=False)
+
+    assert isinstance(repository, PostgresAccountRepository)
+    assert service.repository is repository
+
+
+def test_postgres_backend_exposes_account_repository_contract() -> None:
+    _service, repository = build_account_service(postgres_settings(), connection=object(), migrate=False)
+
+    for name in (
+        "add",
+        "find_by_phone",
+        "get",
+        "list_by_status",
+        "mark_approved",
+        "mark_rejected",
+        "update_password",
+        "has_approved_admin",
+    ):
+        assert callable(getattr(repository, name))
 ```
 
-追加的假连接与用例：
+> 注意：`postgres_settings()` 必须显式传 `content_store_backend="sqlite"`，因为 `tests/conftest.py` 把 `WORKBENCH_CONTENT_STORE_BACKEND` 全局设成了 `memory`，否则 `validate_runtime_settings` 会在生产环境直接拒绝启动。这是既有生产环境用例（如 `tests/test_persistence_contract.py`）的共同做法。
+
+追加下列假连接与用例：
 
 ```python
 class RecordingCursor:
@@ -1944,16 +1948,6 @@ def test_migration_008_defines_unique_phone_and_status_check() -> None:
     assert "CREATE TABLE IF NOT EXISTS workbench_accounts" in migration
     assert "phone TEXT NOT NULL UNIQUE" in migration
     assert "CHECK (status IN ('pending', 'approved', 'rejected'))" in migration
-```
-
-另外把 Task 5 留下的鸭子类型断言升级为真实类型断言，在 `test_postgres_backend_uses_injected_connection` 中改为：
-
-```python
-def test_postgres_backend_uses_injected_connection() -> None:
-    service, repository = build_account_service(postgres_settings(), connection=object(), migrate=False)
-
-    assert isinstance(repository, PostgresAccountRepository)
-    assert service.repository is repository
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -2173,7 +2167,7 @@ class PostgresAccountRepository:
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_postgres.py -q`
-Expected: PASS
+Expected: PASS（10 passed：2 个装配用例 + 8 个仓储与迁移用例）
 
 - [ ] **Step 6: 跑全量测试与编译检查**
 
