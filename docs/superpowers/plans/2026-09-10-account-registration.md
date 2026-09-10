@@ -1,4 +1,4 @@
-# 账号注册审批与登录 Implementation Plan
+﻿# 账号注册审批与登录 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1419,9 +1419,10 @@ def test_session_token_authorizes_requests_and_overrides_forged_headers(accounts
 
 
 def test_login_with_wrong_password_is_unauthorized(accounts: AccountService) -> None:
-    admin = register_admin(accounts)
+    register_admin(accounts)
 
-    assert login(admin["phone"], "wrong-horse-battery").status_code == 401
+    # 注册响应里的 phone 已脱敏，必须用真实手机号字面量才能走到「口令错误」分支
+    assert login("13800000001", "wrong-horse-battery").status_code == 401
 
 
 def test_change_own_password_requires_current_password(accounts: AccountService) -> None:
@@ -1492,6 +1493,41 @@ def test_session_endpoint_requires_configured_secret(monkeypatch, accounts: Acco
     monkeypatch.setattr(main.settings, "auth_secret", "")
 
     assert login(admin["phone"]).status_code == 503
+
+
+def test_production_mode_rejects_header_only_identity(monkeypatch, accounts: AccountService) -> None:
+    register_admin(accounts)
+    monkeypatch.setattr(main.settings, "env", "production")
+
+    response = client.get(
+        "/api/v1/auth/registrations",
+        headers={"X-Tenant-Id": "t-1", "X-User-Id": "acct-admin", "X-User-Role": SUPER_ADMIN_ROLE},
+    )
+
+    assert response.status_code == 401
+
+
+def test_invalid_status_filter_is_rejected(accounts: AccountService) -> None:
+    admin = register_admin(accounts)
+
+    response = client.get(
+        "/api/v1/auth/registrations?status=bogus",
+        headers={"X-Tenant-Id": "t-1", "X-User-Id": admin["account_id"], "X-User-Role": SUPER_ADMIN_ROLE},
+    )
+
+    assert response.status_code == 400
+
+
+def test_approval_of_unknown_account_returns_not_found(accounts: AccountService) -> None:
+    admin = register_admin(accounts)
+
+    response = client.post(
+        "/api/v1/auth/registrations/acct-missing/approval",
+        headers={"X-Tenant-Id": "t-1", "X-User-Id": admin["account_id"], "X-User-Role": SUPER_ADMIN_ROLE},
+        json={"role": "employee", "tenant_id": "t-1"},
+    )
+
+    assert response.status_code == 404
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1525,7 +1561,7 @@ from .auth import create_access_token, verify_access_token
 把 `from .bootstrap import build_commercial_components, ...` 一行补上 `build_account_service`，并在 `commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)` 之后加入：
 
 ```python
-account_service, account_repository = build_account_service(settings)
+account_service, _ = build_account_service(settings)
 ```
 
 在 `current_user` 内，把开发分支改为同时接受会话令牌：
@@ -1590,7 +1626,7 @@ class PasswordReset(BaseModel):
 
 
 def _mask_phone(phone: str) -> str:
-    if len(phone) < 7:
+    if len(phone) < 11:
         return "*" * len(phone)
     return f"{phone[:3]}{'*' * (len(phone) - 7)}{phone[-4:]}"
 
@@ -1737,12 +1773,12 @@ def reset_account_password(
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `py -m pytest tests/test_account_api.py -q`
-Expected: PASS（14 passed）
+Expected: PASS（17 passed）
 
 - [ ] **Step 5: 跑全量测试确认无回归**
 
 Run: `py -m pytest -q`
-Expected: PASS（全部通过，258 + 14 = 272）
+Expected: PASS（全部通过，258 + 17 = 275）
 
 - [ ] **Step 6: 提交**
 
