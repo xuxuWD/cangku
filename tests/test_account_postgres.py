@@ -177,3 +177,107 @@ def test_migration_008_defines_unique_phone_and_status_check() -> None:
     assert "CREATE TABLE IF NOT EXISTS workbench_accounts" in migration
     assert "phone TEXT NOT NULL UNIQUE" in migration
     assert "CHECK (status IN ('pending', 'approved', 'rejected'))" in migration
+
+
+def full_account_row() -> tuple:
+    return (
+        "acct-9", "13800000009", "scrypt$full", "技术", "王五", "w@example.com",
+        "employee", "t-9", "approved", datetime(2026, 9, 10, tzinfo=UTC),
+        datetime(2026, 9, 11, tzinfo=UTC), "acct-admin", None,
+    )
+
+
+def test_postgres_hydrate_maps_every_column() -> None:
+    connection = RecordingConnection([full_account_row()])
+    repository = PostgresAccountRepository(connection)
+
+    account = repository.get("acct-9")
+
+    assert account.account_id == "acct-9"
+    assert account.phone == "13800000009"
+    assert account.password_hash == "scrypt$full"
+    assert account.position == "技术"
+    assert account.full_name == "王五"
+    assert account.email == "w@example.com"
+    assert account.role == "employee"
+    assert account.tenant_id == "t-9"
+    assert account.status is AccountStatus.APPROVED
+    assert account.requested_at == datetime(2026, 9, 10, tzinfo=UTC)
+    assert account.reviewed_at == datetime(2026, 9, 11, tzinfo=UTC)
+    assert account.reviewed_by == "acct-admin"
+    assert account.rejection_reason is None
+
+
+def test_postgres_add_passes_all_columns_in_order() -> None:
+    connection = RecordingConnection([account_row()])
+    repository = PostgresAccountRepository(connection)
+    draft = Account(
+        phone="13800000001", password_hash="scrypt$hash", position="内容运营", full_name="张三"
+    )
+
+    repository.add(draft)
+
+    _statement, params = connection.cursor_instance.statements[0]
+    assert len(params) == 13
+    assert params[0] == draft.account_id
+    assert params[1] == "13800000001"
+    assert params[2] == "scrypt$hash"
+    assert params[3] == "内容运营"
+    assert params[4] == "张三"
+    assert params[8] == "pending"
+
+
+def test_postgres_mark_approved_passes_parameters_in_order() -> None:
+    connection = RecordingConnection([account_row("approved")])
+    repository = PostgresAccountRepository(connection)
+
+    repository.mark_approved("acct-1", role="employee", tenant_id="t-1", reviewed_by="acct-admin")
+
+    assert connection.cursor_instance.statements[0][1] == ("employee", "t-1", "acct-admin", "acct-1")
+
+
+def test_postgres_mark_rejected_updates_pending_account() -> None:
+    connection = RecordingConnection([account_row("rejected")])
+    repository = PostgresAccountRepository(connection)
+
+    account = repository.mark_rejected("acct-1", reason="资料不完整", reviewed_by="acct-admin")
+
+    assert account.status is AccountStatus.REJECTED
+    statement, params = connection.cursor_instance.statements[0]
+    assert "WHERE account_id = %s AND status = 'pending'" in statement
+    assert params == ("acct-admin", "资料不完整", "acct-1")
+
+
+def test_postgres_mark_rejected_conflicts_when_not_pending() -> None:
+    connection = RecordingConnection([None, ("acct-1",)])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(AccountStateConflict):
+        repository.mark_rejected("acct-1", reason="反悔", reviewed_by="acct-admin")
+
+
+def test_postgres_update_password_passes_parameters_in_order() -> None:
+    connection = RecordingConnection([account_row("approved")])
+    repository = PostgresAccountRepository(connection)
+
+    repository.update_password("acct-1", "scrypt$new")
+
+    assert connection.cursor_instance.statements[0][1] == ("scrypt$new", "acct-1")
+
+
+def test_postgres_update_password_raises_when_missing() -> None:
+    connection = RecordingConnection([None])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(AccountNotFound):
+        repository.update_password("acct-missing", "scrypt$new")
+
+
+def test_postgres_list_by_status_hydrates_all_rows() -> None:
+    connection = RecordingConnection([[account_row("pending"), full_account_row()]])
+    repository = PostgresAccountRepository(connection)
+
+    accounts = repository.list_by_status(AccountStatus.PENDING)
+
+    assert [item.account_id for item in accounts] == ["acct-1", "acct-9"]
+    assert connection.cursor_instance.statements[0][1] == ("pending",)
