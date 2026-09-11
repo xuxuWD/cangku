@@ -47,7 +47,8 @@ npm run dist      # 生成 Windows NSIS 安装包（需要已安装 electron-bui
 
 - **内置模式的导航取舍**：`isAllowedNavigation` 按设计拒绝 `file:` 协议（`file://` 的 origin 为 `null`，放行它等于放行任意本地文件）。因此内置模式下应用内必须使用 SPA 前端路由（`history.pushState`），不能做整页跳转；这是刻意的 fail-closed 取舍。
 - **远程模式的跨源限制**：网页端与后端跨源时需要后端 CORS 放行 `Authorization` 头（当前仅 development 环境开放 CORS 且未含该头），**真实跨源部署属未验收项**。
-- 依赖版本使用 `latest` 占位，未锁定具体版本；**首次真正打包前必须在具备网络的机器上固定版本并提交锁文件**。
+- **依赖已固定**：`electron 44.3.0`、`electron-builder 26.15.3`（精确版本，非 `latest`），并已提交 `package-lock.json` 锁定整棵依赖树。
+  本机安装使用 `npm install --ignore-scripts`，**有意跳过 Electron 二进制下载**（`postinstall` 被跳过），因此 `node --test` 可零网络依赖运行，但 `npm start` / `npm run pack` / `npm run dist` 在本机仍无法执行。
 - 未做代码签名与公证，安装包在 Windows 上可能触发 SmartScreen 警告。
 - 未实现自动更新（本工程不引入 `electron-updater`，也没有任何自动更新相关代码）。
 - 开发机没有 Electron 运行时、没有签名证书：**真实安装包构建、代码签名、公证、

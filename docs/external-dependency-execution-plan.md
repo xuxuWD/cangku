@@ -78,6 +78,14 @@ Phase 2a       Phase 2b      Phase 2c
 
 **关键路径**：`Phase 0 → G1 → 项 1 → 项 4 → 项 5`。项 2、项 8 可在 G1 后与项 1 并行；项 3/6/9 不占关键路径。
 
+### Phase 0.5 进度（2026-09-11）
+
+- ✅ **内容安全评估基线**：离线跑通并留存 `.acceptance/2026-09-11-9-content-safety/baseline.json`（6/6 用例通过）。**该结论只证明仪器可用**，不代表任何模型安全。
+- ✅ **并发探针护栏自检**：`http://` 与非独立主机地址均被拒（退出码 `2`，文案准确），日志存 `.acceptance/2026-09-11-1-concurrency-probe/`。
+- ✅ **桌面端依赖固定**：`electron 44.3.0`、`electron-builder 26.15.3` 精确版本，已提交 `package-lock.json`（含 integrity）；本机用 `npm install --ignore-scripts` 有意跳过 Electron 二进制，`node --test` 13 项通过。
+- ⬜ **桌面端代码签名证书申请**：属**外部/人工动作**（采购 OV/EV 证书 + 可信时间戳服务），我方无法代办；它是阻塞项 7 的前置。
+- ⬜ **SSO 设计 + 实现**（口径 A 选②）：开工前需确认两处安全取舍——IdP ID Token 的签名算法与依赖策略、SSO 与现有 TOTP 二次验证的关系。**确认后在此登记最终口径，再动工。**
+
 ---
 
 ## 4. 通用执行模板（每项照着走）
