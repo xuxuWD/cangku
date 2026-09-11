@@ -456,7 +456,7 @@ def build_sso_state_store(settings: Settings, *, connection=None, migrate: bool 
     raise ValueError("不支持的 SSO 状态存储类型")
 
 
-def build_planner_service(settings: Settings, *, audit: AuditService, task_store=None, runtime_service=None, run_metrics=None, connection=None, migrate: bool = True):
+def build_planner_service(settings: Settings, *, audit: AuditService, task_store=None, runtime_service=None, connection=None, migrate: bool = True):
     """按存储模式装配计划生成服务。"""
     validate_runtime_settings(settings)
     catalog = ToolCatalog.from_config(settings.planner_tools)
@@ -511,7 +511,6 @@ def build_planner_service(settings: Settings, *, audit: AuditService, task_store
         max_steps=settings.planner_max_steps,
         audit=audit,
         model_gateway=model_gateway,
-        run_metrics=run_metrics,
     )
     return service, store
 
@@ -538,7 +537,7 @@ def build_run_metrics(settings: Settings, *, connection=None, migrate: bool = Tr
     raise ValueError("不支持的运行记录存储类型")
 
 
-def build_runtime_service(settings: Settings, *, store, transport_factory=None, state_store=None):
+def build_runtime_service(settings: Settings, *, store, transport_factory=None, state_store=None, run_metrics=None):
     """从裸名配置装配 Runtime 服务；未配置任何地址时只保留 Mock。"""
     validate_runtime_settings(settings)
     from .runtime.registry import build_runtime_registry
@@ -551,7 +550,7 @@ def build_runtime_service(settings: Settings, *, store, transport_factory=None, 
         transport_factory=transport_factory,
         state_store=shared_state_store,
     )
-    return RuntimeService(store, registry=registry, state_store=shared_state_store)
+    return RuntimeService(store, registry=registry, state_store=shared_state_store, run_metrics=run_metrics)
 
 
 _RUNTIME_KEYS = ("ragflow", "agentscope", "deerflow", "codex_worker", "hermes")

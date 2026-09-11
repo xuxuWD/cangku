@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from .audit.logging import configure_audit_logging
+from .audit.models import AuditAction
 from .audit.redaction import mask_phone
 from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_session_revocation_store, build_task_repository
 from .events import EventEnvelope
@@ -88,8 +89,8 @@ store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, audit=audit_service)
 knowledge_access_registry = build_knowledge_access_registry(settings)
-runtime_service = build_runtime_service(settings, store=store)
 run_metrics_service = build_run_metrics(settings)
+runtime_service = build_runtime_service(settings, store=store, run_metrics=run_metrics_service)
 content_store = build_content_store(settings)
 content_service = ContentService(
     task_store=store,
@@ -110,7 +111,7 @@ publication_service = build_publication_service(
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 planner_service, planner_store = build_planner_service(
-    settings, task_store=store, runtime_service=runtime_service, audit=audit_service, run_metrics=run_metrics_service
+    settings, task_store=store, runtime_service=runtime_service, audit=audit_service
 )
 orchestration_service = build_orchestration_proposal_service(
     settings, metrics=run_metrics_service, audit=audit_service
@@ -234,6 +235,7 @@ class RunMetricsView(BaseModel):
     latency_ms: int
     started_at: datetime
     finished_at: datetime | None
+    finish_reason: str | None = None
 
 
 class RuntimeApprovalCreate(BaseModel):
@@ -936,6 +938,38 @@ def approve_task(task_id: str, context: UserContext = Depends(current_user)) -> 
     return to_view(task)
 
 
+def _notify_run_terminal(context: UserContext, run_id: str) -> None:
+    """运行进入失败/取消终态时通知任务创建人。
+
+    接收人必须反查（运行记录不含 user_id）；任务不可见时**跳过并写审计**，不猜接收人。
+    通知本身不是关键路径：写入失败由 InboxService 降级为 `inbox.write_failed` 审计。
+    """
+    try:
+        record = run_metrics_service.store.get(context.tenant_id, run_id)
+    except RunRecordNotFound:
+        return
+    if record.status not in {"failed", "cancelled"}:
+        return
+    try:
+        task = store.get(context, record.task_id)
+    except TaskNotFound:
+        audit_service.record(
+            AuditAction.RUN_NOTIFY_SKIPPED,
+            tenant_id=record.tenant_id,
+            actor_id=context.user_id,
+            target_type="run",
+            target_id=run_id,
+            detail={"kind": f"run.{record.status}", "reason": "task_unavailable"},
+        )
+        return
+    inbox_service.run_decided(
+        tenant_id=record.tenant_id,
+        recipient_id=task.created_by,
+        run_id=run_id,
+        status=record.status,
+    )
+
+
 @app.post("/api/v1/tasks/{task_id}/runs", response_model=RuntimeRunView, status_code=status.HTTP_201_CREATED)
 def start_runtime_run(task_id: str, payload: RuntimeRunCreate, context: UserContext = Depends(current_user)) -> RuntimeRunView:
     try:
@@ -946,6 +980,7 @@ def start_runtime_run(task_id: str, payload: RuntimeRunCreate, context: UserCont
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=400, detail="运行时不可用") from exc
+    _notify_run_terminal(context, run_id)
     return RuntimeRunView(run_id=run_id, runtime_key=runtime_key, policy_version=policy_version, status=runtime_service.snapshot(context, run_id).status)
 
 
@@ -984,6 +1019,7 @@ def get_run_metrics(run_id: str, context: UserContext = Depends(current_user)) -
         latency_ms=record.latency_ms,
         started_at=record.started_at,
         finished_at=record.finished_at,
+        finish_reason=str(record.finish_reason) if record.finish_reason else None,
     )
 
 
@@ -999,8 +1035,7 @@ def get_run_metrics_summary(
 @app.post("/api/v1/runs/{run_id}/pause")
 def pause_runtime_run(run_id: str, payload: RuntimeAction, context: UserContext = Depends(current_user)) -> dict[str, str]:
     try:
-        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
-        adapter.pause_run(run_id, payload.reason)
+        runtime_service.pause(context, run_id, payload.reason)
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
     return {"run_id": run_id, "status": "paused"}
@@ -1009,8 +1044,7 @@ def pause_runtime_run(run_id: str, payload: RuntimeAction, context: UserContext 
 @app.post("/api/v1/runs/{run_id}/resume")
 def resume_runtime_run(run_id: str, context: UserContext = Depends(current_user)) -> dict[str, str]:
     try:
-        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
-        adapter.resume_run(run_id)
+        runtime_service.resume(context, run_id)
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
     return {"run_id": run_id, "status": "running"}
@@ -1019,10 +1053,10 @@ def resume_runtime_run(run_id: str, context: UserContext = Depends(current_user)
 @app.post("/api/v1/runs/{run_id}/cancel")
 def cancel_runtime_run(run_id: str, payload: RuntimeAction, context: UserContext = Depends(current_user)) -> dict[str, str]:
     try:
-        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
-        adapter.cancel_run(run_id, payload.reason)
+        runtime_service.cancel(context, run_id, payload.reason)
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
+    _notify_run_terminal(context, run_id)
     return {"run_id": run_id, "status": "cancelled"}
 
 
@@ -1641,6 +1675,7 @@ def start_plan_run(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=400, detail="运行时不可用") from exc
+    _notify_run_terminal(context, run_id)
     return {
         "run_id": run_id,
         "runtime_key": runtime_key,

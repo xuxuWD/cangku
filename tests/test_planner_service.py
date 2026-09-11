@@ -23,7 +23,7 @@ class RecordingRuntimeService(RuntimeService):
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, list[dict], str]] = []
 
-    def start(self, actor, task_id, runtime_key, steps, mode):  # type: ignore[override]
+    def start(self, actor, task_id, runtime_key, steps, mode, **_kwargs):  # type: ignore[override]
         self.calls.append((task_id, runtime_key, steps, mode))
         return "run-1", runtime_key, "policy-1"
 

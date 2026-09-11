@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,11 +18,12 @@ class RunAccessDenied(ValueError):
 
 
 class RuntimeService:
-    def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None) -> None:
+    def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None, run_metrics: Any = None) -> None:
         self.task_store = task_store
         self.state_store = state_store or RuntimeStateStore()
         self.registry = registry or RuntimeRegistry()
         self.policy = policy or RuntimePolicy('policy-1')
+        self.run_metrics = run_metrics
         if 'mock' not in self.registry.keys():
             self.registry.register('mock', MockRuntime(self.state_store))
 
@@ -43,7 +45,7 @@ class RuntimeService:
             expires_at=datetime.now(UTC) + timedelta(minutes=15),
         )
 
-    def start(self, actor: UserContext, task_id: str, runtime_key: str, steps: list[dict[str, Any]], mode: str) -> tuple[str, str, str]:
+    def start(self, actor: UserContext, task_id: str, runtime_key: str, steps: list[dict[str, Any]], mode: str, *, proposal_id: str | None = None) -> tuple[str, str, str]:
         task = self._task(actor, task_id)
         context = self._context(task, actor, mode=mode)
         adapter = self.registry.get(runtime_key)
@@ -53,8 +55,46 @@ class RuntimeService:
         bind_state_store = getattr(adapter, "bind_state_store", None)
         if callable(bind_state_store):
             bind_state_store(self.state_store)
+        started = time.perf_counter()
         run_id = adapter.start_run(context, plan)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        self._sync_run_record(actor, run_id, runtime_key, latency_ms=latency_ms, proposal_id=proposal_id)
         return run_id, runtime_key, context.policy_version
+
+    def pause(self, actor: UserContext, run_id: str, reason: str) -> None:
+        key, adapter, _state = self.adapter_for_task(actor, run_id)
+        started = time.perf_counter()
+        adapter.pause_run(run_id, reason)
+        self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
+
+    def resume(self, actor: UserContext, run_id: str) -> None:
+        key, adapter, _state = self.adapter_for_task(actor, run_id)
+        started = time.perf_counter()
+        adapter.resume_run(run_id)
+        self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
+
+    def cancel(self, actor: UserContext, run_id: str, reason: str) -> None:
+        key, adapter, _state = self.adapter_for_task(actor, run_id)
+        started = time.perf_counter()
+        adapter.cancel_run(run_id, reason)
+        self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> int:
+        return int((time.perf_counter() - started) * 1000)
+
+    def _sync_run_record(self, actor: UserContext, run_id: str, runtime_key: str, *, latency_ms: int, proposal_id: str | None = None) -> None:
+        """把运行状态回写到运行记录；未注入指标服务时保持旧行为（不记录）。"""
+        if self.run_metrics is None:
+            return
+        state = self.snapshot(actor, run_id)
+        self.run_metrics.record_state(
+            tenant_id=state.context.tenant_id,
+            proposal_id=proposal_id,
+            runtime_key=runtime_key,
+            state=state,
+            latency_ms=latency_ms,
+        )
 
     def adapter_for(self, actor: UserContext, run_id: str):
         for key in self.registry.keys():

@@ -20,8 +20,8 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch) -> None:
     store = TaskStore()
-    runtime = RuntimeService(store)
     metrics = RunMetricsService(InMemoryRunRecordStore())
+    runtime = RuntimeService(store, run_metrics=metrics)
     planner = PlannerService(
         task_store=store,
         store=InMemoryPlanProposalStore(),
@@ -30,7 +30,6 @@ def _isolate(monkeypatch) -> None:
         runtime_service=runtime,
         max_steps=5,
         audit=AuditService(InMemoryAuditStore()),
-        run_metrics=metrics,
     )
     monkeypatch.setattr(main, "store", store)
     monkeypatch.setattr(main, "runtime_service", runtime)

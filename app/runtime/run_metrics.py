@@ -5,15 +5,21 @@ from math import ceil
 from typing import Any
 
 from .contracts import RuntimeEventType
-from .records import RunRecord, RunRecordStore
+from .records import FinishReason, RunRecord, RunRecordNotFound, RunRecordStore
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+# 结束原因由状态单向推导，保证状态与原因不可能互相漂移。
+_FINISH_REASONS = {
+    "completed": FinishReason.RUN_COMPLETED,
+    "failed": FinishReason.STEP_FAILED,
+    "cancelled": FinishReason.CANCELLED_BY_USER,
+}
 _SUMMARY_LIMIT = 100_000
 
 
 class RunMetricsService:
-    """把运行终态折算为可查询的运行记录与聚合指标。"""
+    """把运行状态折算为可查询的运行记录与聚合指标。"""
 
     def __init__(self, store: RunRecordStore) -> None:
         self.store = store
@@ -28,31 +34,44 @@ class RunMetricsService:
         latency_ms: int,
         now: datetime | None = None,
     ) -> RunRecord:
-        started_at = now or datetime.now(UTC)
+        """写入或回写一条运行记录。
+
+        同一 run_id 的后续回写（暂停/恢复/取消）必须**保留**首次写入的 `started_at` 与
+        `proposal_id`，否则启动时间会被反复重置、计划关联会被抹掉。
+        """
+        current = now or datetime.now(UTC)
+        existing = self._existing(tenant_id, state.run_id)
         knowledge_hits = sum(
             1
             for event in state.events
             if event.event_type == RuntimeEventType.TOOL_RESULT
             and event.payload.get("knowledge_hit") is True
         )
-        finished_at = started_at if state.status in _TERMINAL_STATUSES else None
+        terminal = state.status in _TERMINAL_STATUSES
         record = RunRecord(
             run_id=state.run_id,
             tenant_id=tenant_id,
             task_id=state.context.task_id,
             runtime_key=runtime_key,
             status=state.status,
-            started_at=started_at,
-            proposal_id=proposal_id,
+            started_at=existing.started_at if existing is not None else current,
+            proposal_id=proposal_id or (existing.proposal_id if existing is not None else None),
             step_count=len(state.plan.steps),
             completed_step_count=len(state.completed_steps),
             tool_calls=state.usage["tool_calls"],
             successful_tools=state.usage["successful_tools"],
             knowledge_hits=knowledge_hits,
             latency_ms=latency_ms,
-            finished_at=finished_at,
+            finished_at=current if terminal else None,
+            finish_reason=_FINISH_REASONS.get(state.status),
         )
         return self.store.upsert(record)
+
+    def _existing(self, tenant_id: str, run_id: str) -> RunRecord | None:
+        try:
+            return self.store.get(tenant_id, run_id)
+        except RunRecordNotFound:
+            return None
 
     def summary(self, tenant_id: str, *, runtime_key: str | None = None) -> dict[str, Any]:
         records = self.store.list_recent(tenant_id, limit=_SUMMARY_LIMIT)

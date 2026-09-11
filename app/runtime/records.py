@@ -3,12 +3,24 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from threading import RLock
 from typing import Protocol
 
 
 class RunRecordNotFound(LookupError):
     """运行记录不存在或不属于当前租户。"""
+
+
+class FinishReason(StrEnum):
+    """运行结束原因；由终态单向推导，非终态一律为空。
+
+    只存受控枚举、不存自由文本——失败/取消的具体细节仍由运行事件接口暴露。
+    """
+
+    RUN_COMPLETED = "run_completed"
+    CANCELLED_BY_USER = "cancelled_by_user"
+    STEP_FAILED = "step_failed"
 
 
 @dataclass
@@ -27,6 +39,7 @@ class RunRecord:
     knowledge_hits: int = 0
     latency_ms: int = 0
     finished_at: datetime | None = None
+    finish_reason: FinishReason | None = None
 
 
 class RunRecordStore(Protocol):
@@ -76,7 +89,7 @@ class PostgresRunRecordStore:
     _COLUMNS = (
         "run_id, tenant_id, task_id, proposal_id, runtime_key, status, step_count, "
         "completed_step_count, tool_calls, successful_tools, knowledge_hits, latency_ms, "
-        "started_at, finished_at"
+        "started_at, finished_at, finish_reason"
     )
 
     def __init__(self, connection_or_pool) -> None:
@@ -108,6 +121,7 @@ class PostgresRunRecordStore:
             latency_ms=int(row[11]),
             started_at=row[12],
             finished_at=row[13],
+            finish_reason=FinishReason(row[14]) if row[14] else None,
         )
 
     def upsert(self, record: RunRecord) -> RunRecord:
@@ -117,7 +131,7 @@ class PostgresRunRecordStore:
                     cursor.execute(
                         f"""
                         INSERT INTO workbench_run_records ({self._COLUMNS})
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (run_id) DO UPDATE SET
                             tenant_id = EXCLUDED.tenant_id,
                             task_id = EXCLUDED.task_id,
@@ -131,7 +145,8 @@ class PostgresRunRecordStore:
                             knowledge_hits = EXCLUDED.knowledge_hits,
                             latency_ms = EXCLUDED.latency_ms,
                             started_at = EXCLUDED.started_at,
-                            finished_at = EXCLUDED.finished_at
+                            finished_at = EXCLUDED.finished_at,
+                            finish_reason = EXCLUDED.finish_reason
                         RETURNING {self._COLUMNS}
                         """,
                         (
@@ -149,6 +164,7 @@ class PostgresRunRecordStore:
                             record.latency_ms,
                             record.started_at,
                             record.finished_at,
+                            str(record.finish_reason) if record.finish_reason else None,
                         ),
                     )
                     row = cursor.fetchone()

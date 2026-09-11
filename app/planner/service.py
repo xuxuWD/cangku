@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from app.agent_services import ModelGateway, ModelNotAllowed
@@ -37,7 +36,6 @@ class PlannerService:
         max_steps: int,
         audit: AuditService,
         model_gateway: ModelGateway | None = None,
-        run_metrics: Any = None,
     ) -> None:
         self.task_store = task_store
         self.store = store
@@ -47,7 +45,6 @@ class PlannerService:
         self.max_steps = max_steps
         self.audit = audit
         self.model_gateway = model_gateway
-        self.run_metrics = run_metrics
 
     def propose(
         self, actor: UserContext, task_id: str, goal: str, idempotency_key: str
@@ -139,21 +136,11 @@ class PlannerService:
         if proposal.status is not PlanStatus.APPROVED:
             raise PlanProposalStateConflict("计划必须先通过审批才能执行")
         steps = [step.to_step_dict() for step in proposal.steps]
-        started = time.perf_counter()
+        # 运行记录的写入统一由 RuntimeService 负责；这里只透传计划关联，避免两个写入者。
         run_id, runtime_key, policy_version = self.runtime_service.start(
-            actor, proposal.task_id, runtime_key, steps, mode
+            actor, proposal.task_id, runtime_key, steps, mode, proposal_id=proposal.proposal_id
         )
-        latency_ms = int((time.perf_counter() - started) * 1000)
         self.store.mark_run_started(proposal.proposal_id, run_id)
-        if self.run_metrics is not None:
-            state = self.runtime_service.snapshot(actor, run_id)
-            self.run_metrics.record_state(
-                tenant_id=actor.tenant_id,
-                proposal_id=proposal.proposal_id,
-                runtime_key=runtime_key,
-                state=state,
-                latency_ms=latency_ms,
-            )
         self.audit.record(
             AuditAction.PLAN_RUN_STARTED,
             tenant_id=actor.tenant_id,

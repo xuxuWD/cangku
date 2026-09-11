@@ -160,6 +160,7 @@ def run_row(status: str = "completed") -> tuple:
         120,
         datetime(2026, 9, 11, tzinfo=UTC),
         None,
+        None,
     )
 
 

@@ -14,9 +14,9 @@ from app.runtime.service import RuntimeService
 def build_harness():
     task_store = TaskStore()
     audits = InMemoryAuditStore()
-    runtime = RuntimeService(task_store)
     metric_store = InMemoryRunRecordStore()
     metrics = RunMetricsService(metric_store)
+    runtime = RuntimeService(task_store, run_metrics=metrics)
     planner = PlannerService(
         task_store=task_store,
         store=InMemoryPlanProposalStore(),
@@ -25,7 +25,6 @@ def build_harness():
         runtime_service=runtime,
         max_steps=5,
         audit=AuditService(audits),
-        run_metrics=metrics,
     )
     task = Task(
         tenant_id="t-1",

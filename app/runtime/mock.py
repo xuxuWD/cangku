@@ -5,6 +5,9 @@ from typing import Any
 from .contracts import AgentPlan, AgentRuntimeAdapter, RuntimeContext, RuntimeEvent, RuntimeEventType
 from .state import RuntimeState, RuntimeStateStore
 
+# 仅 Mock 运行时的失败注入约定；真实适配器不识别该前缀。
+FAIL_TOOL_PREFIX = "fail."
+
 
 class MockRuntime(AgentRuntimeAdapter):
     def __init__(self, store: RuntimeStateStore) -> None:
@@ -19,6 +22,23 @@ class MockRuntime(AgentRuntimeAdapter):
         state = self.store.create(context, plan)
         self._emit(state, RuntimeEventType.PLAN_CREATED, {"step_count": len(plan.steps)})
         for step in plan.steps:
+            # 确定性失败注入：工具名以 "fail." 前缀开头即失败，便于复现终态与失败通知。
+            if step.tool.startswith(FAIL_TOOL_PREFIX):
+                self._emit(state, RuntimeEventType.STEP_STARTED, {"step_id": step.step_id, "tool": step.tool})
+                state.usage["tool_calls"] += 1
+                self._emit(
+                    state,
+                    RuntimeEventType.TOOL_RESULT,
+                    {"step_id": step.step_id, "status": "error", "reason": "tool_error"},
+                )
+                state.status = "failed"
+                self._emit(
+                    state,
+                    RuntimeEventType.RUN_FAILED,
+                    {"step_id": step.step_id, "tool": step.tool, "reason": "tool_error"},
+                )
+                self.store.save_checkpoint(state)
+                return state.run_id
             if step.requires_approval:
                 state.approvals[step.step_id] = "pending"
                 self._emit(state, RuntimeEventType.APPROVAL_REQUESTED, {"step_id": step.step_id, "tool": step.tool})
