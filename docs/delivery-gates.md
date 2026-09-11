@@ -41,7 +41,7 @@
 - [x] 口令弱口令策略（禁止纯数字、重复单一字符与常见弱口令）—— 在 `hash_password` 统一实施，注册/改密/重置三条链路生效；不校验是否包含手机号或姓名，且不做变形归一（已知限制已写入 API 契约）
 - [x] 管理员动态口令二次验证（TOTP）—— 自建实现（仅标准库）、绑定/确认/重置与受限令牌；开发期接口验证，真实部署的验证器兼容性仍需验收
 - [ ] 设备绑定、生产密钥轮换和真实统一登录验收
-- [ ] Electron 桌面端和 PWA 伴侣端
+- [x] Electron 桌面端和 PWA 伴侣端 —— 桌面端 `desktop/`（Electron 安全壳：contextIsolation、禁用 nodeIntegration、沙箱、导航白名单、外链走系统浏览器、禁 webview；远程/内置两种加载模式；electron-builder NSIS 配置、**未配置签名**）；伴侣端 `companion-pwa/`（登录、待办轮询、三类审批、手写 service worker 且**不缓存 `/api/`**、manifest 与图标）。配套后端新增 `GET /api/v1/approvals/pending` 待办聚合接口。**真实安装包构建/代码签名/公证/干净电脑测试与真机 PWA 安装均未验收**
 - [x] 协同动态表现层（静态状态列表：网页管理台「协同动态」页，含加载/空/错误态与查看任务跳转）—— 仅呈现 `TaskStatus` 现有三态，文档 5 态词表中的「执行中/等待发布/已完成/需要人工处理」尚无领域状态支撑（已知限制已写入 `docs/collaboration-dynamics.md`）；Pixi/Spine 动画仍待评估
 - [x] 协同动态只读接口与任务权限过滤
 - [x] 微信公众号内容工作台 Mock Alpha：素材提交、确定性草稿、自确认和 Markdown 导出

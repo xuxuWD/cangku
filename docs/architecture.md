@@ -20,6 +20,14 @@
 
 工作台只拥有统一入口、身份、岗位、权限、任务、审批、通知、用量和审计；GEO 仍拥有观测、证据、内容、发布和报告等业务能力。两者使用任务号、项目号、产物版本和证据引用关联，不跨库写入。
 
+## 客户端
+
+- `admin-web/`：网页管理台（React + Vite），面向管理和远程协作。
+- `companion-pwa/`：手机 PWA 伴侣端（React + Vite，手写 service worker），只做登录、待办与审批；提醒为**轮询式**（非 Web Push）。
+- `desktop/`：Windows 桌面端 Electron 安全壳，加载网页端界面；打包与签名尚未验收。
+
+三端都只调用版本化 `/api/v1`，不直连数据库；「待我审批」由 `GET /api/v1/approvals/pending` 按角色聚合（任务审批、计划提案、账号注册）。
+
 事件总线按存储模式选择：开发环境使用内存总线验证接口流程；PostgreSQL 模式使用 Redis Streams，任务事务只写 Outbox，Celery Worker 负责发布，API 进程不再重复直发事件。
 
 企业知识服务通过版本化适配器接入 WeKnora。工作台只向适配器传递当前租户、岗位允许的知识库范围和查询文本，适配器返回带来源的引用片段；客户端不直连 WeKnora 数据库，也不能自行指定未授权知识库。WeKnora 的 Skill、Shell、沙箱和自动写入能力默认关闭，真实 staging 接入前不视为生产可用。
