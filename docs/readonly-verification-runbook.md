@@ -2,7 +2,7 @@
 
 > **用途**：在 **staging**（或经授权的真实库）上核验「数字员工设置 / 知识范围写路径闸门」的落地状态与**存量风险**。**全部命令只读**：不改数据、不改配置、不跑迁移。
 > **执行方式**：AI **不连** staging/生产。由你在服务器上执行本清单，把输出回传后由我判读。
-> **验证状态**：本清单的 **9 条 SQL、只读包装与判读标准已于 2026-09-12 在本机一次性真实 PostgreSQL 16 上逐条验证**（样例输出见 §7）。**本清单本身尚未在 staging 执行过**——staging 未就绪（阻塞项 1）。
+> **验证状态**：本清单的 **9 条 SQL、只读包装、只读角色建法与令牌获取的三种情形已于 2026-09-12 在本机一次性真实 PostgreSQL 16 上逐条验证**（样例输出见 §7），其中只读角色是以**真实 DSN（TCP + 密码）**跑通全部查询并确认写操作被拒；令牌流程以 FastAPI `TestClient`（进程内，走同一套中间件与路由）跑通全链路。**本清单本身尚未在 staging 执行过**——staging 未就绪（阻塞项 1）。
 
 ## 0. 安全边界（先读）
 
@@ -17,10 +17,48 @@
 | --- | --- |
 | `WORKBENCH_PSQL_DSN` | `postgresql://<只读账号>:<口令>@<主机>:5432/<库名>`。**注意**：应用侧配置用 `postgresql+psycopg://` 前缀，`psql` 用**不带** `+psycopg` 的写法 |
 | `BASE` | 应用入口，例如 `https://staging.example.internal` |
-| `TOKEN` | 超管令牌（只有 §3 需要）。获取方式见下 |
-| 工具 | `psql`、`curl`、`jq` |
+| `TOKEN` | 超管令牌（只有 §3 需要）。获取方式见 §1.3 |
+| 工具 | `psql`、`curl`、`jq`（`psql` 需安装 `postgresql-client`，与 §5 排掉的 `migration_backup_drill.py` 所需 `pg_dump` / `pg_restore` 是同一套客户端） |
 
-**令牌获取**（`POST /api/v1/auth/sessions`，请求体 `{phone, password, totp_code?}`）：
+### 1.1 怎么拿到「只读连接串」（DBA 执行）
+
+在目标库上以**管理员**身份执行下面三步（**2026-09-12 已在本机一次性真实 PostgreSQL 16 上验证**：建角色 → 授权 → 用该 DSN 跑 §2 的 9 条查询全部通过、写操作被拒）：
+
+```sql
+-- ① 建只读账号（不要给 SUPERUSER / CREATEDB / CREATEROLE）
+CREATE ROLE workbench_ro LOGIN PASSWORD '<强口令>';
+
+-- ② 允许连接 + 读取（pg_read_all_data 是 PG14+ 内置角色）
+GRANT CONNECT ON DATABASE <库名> TO workbench_ro;
+GRANT pg_read_all_data TO workbench_ro;
+
+-- ③ 核对属性：应得到 workbench_ro|f|f|t（非超管、不能建库、可登录）
+SELECT rolname, rolsuper, rolcreatedb, rolcanlogin FROM pg_roles WHERE rolname = 'workbench_ro';
+```
+
+- **为什么用 `pg_read_all_data`**：它**自动覆盖未来迁移新建的表**。本机实测：管理员新建一张表后，只读账号**无需再授权**即可 `SELECT`。若改用显式授权，必须额外写
+  `ALTER DEFAULT PRIVILEGES FOR ROLE <应用库账号> IN SCHEMA public GRANT SELECT ON TABLES TO workbench_ro;`
+  否则**迁移 023 之后的新表该账号读不到**，核验会在未来静默失败。
+- **多租户共用实例**时，`pg_read_all_data` 会读到该库内所有租户的表；若不能接受，改用显式 `GRANT SELECT ON ALL TABLES`（此时必须同时写上面那条 `ALTER DEFAULT PRIVILEGES`）。
+- 只读账号**不需要**写权限；本清单每条 SQL 仍会再套一层会话级只读（§0 第 1 条），形成双保险。
+- 传参方式：口令与 DSN 走**密钥系统/临时环境变量**，不要写进仓库、不要贴进聊天（回传时用 `***` 替换）。
+
+### 1.2 怎么拿到「目标库的已应用迁移清单」
+
+应用在 `postgres` 模式下启动时会**自动应用未执行的迁移**，并把结果记在 `workbench_schema_migrations`。因此从目标库读取的准确方式是：
+
+```sql
+SELECT version, applied_at FROM workbench_schema_migrations ORDER BY version;
+```
+
+把逗号拼接的结果填入环境变量 `WORKBENCH_APPLIED_MIGRATIONS`（`staging_preflight.py` 与 `migration_backup_drill.py --phase list` 都据此比对）。
+**若该表不存在**，说明该库的迁移**不是**由应用执行的（例如人工 `psql` 跑 `.sql`），此时清单只能由运维按实际执行记录登记——这种情况请回传给我，不要凭猜填写。
+
+### 1.3 怎么拿到「超管令牌」
+
+接口：`POST /api/v1/auth/sessions`，请求体 `{phone, password, totp_code?}`；返回含 `access_token` 与 `scope`。
+
+**情形 A：已有超管账号**（最常见）
 
 ```bash
 TOKEN=$(curl -sS -X POST "$BASE/api/v1/auth/sessions" \
@@ -28,8 +66,42 @@ TOKEN=$(curl -sS -X POST "$BASE/api/v1/auth/sessions" \
   -d '{"phone":"<超管手机号>","password":"<口令>","totp_code":"<6 位动态码>"}' | jq -r .access_token)
 ```
 
-- **必须确认返回的 `scope` 是 `full`**。若超管尚未绑定动态口令，服务端签发的是受限会话 `totp_enrollment`，此时访问本清单的接口会返回 `403`「账号需要先完成动态口令绑定」——这时先完成 `POST /api/v1/auth/me/totp` + `.../totp/confirmation` 再回来。
+**情形 B：还没有任何超管账号**（首次部署）
+调 `POST /api/v1/auth/registrations`（201 即成功）。**`bootstrap_token` 是请求体字段，不是请求头**；且必须声明 `tenant_id`，否则 `403`「首个管理员申请必须声明有效租户」：
+
+```bash
+curl -sS -X POST "$BASE/api/v1/auth/registrations" \
+  -H 'Content-Type: application/json' \
+  -d '{"phone":"<超管手机号>","password":"<≥10 位口令>","position":"<岗位>","full_name":"<姓名>",
+       "tenant_id":"<租户标识>","bootstrap_token":"<部署注入的 WORKBENCH_BOOTSTRAP_TOKEN>"}'
+```
+
+- 该口令与 `WORKBENCH_BOOTSTRAP_TOKEN` 用**恒定时间比较**；不正确 → `403`「首个管理员需要正确的初始化口令」。**注意：这条校验只在「尚无任何已批准管理员」时生效**——本机实测：一旦已有超管，同样的请求（哪怕口令错、或没带 `tenant_id`）会返回 **201 且状态 `pending`**，即变成一条普通待审批申请。**可用这一点判断目标环境是否已有超管**（`403`＝还没有；`201 pending`＝已经有了）。
+- 走通后账号**直接是 `super_admin` 且状态为已批准**（`reviewed_by=bootstrap`，**不需要他人审批**），同时写入两条审计（申请 + 批准）。
+- 一旦**已有**已批准管理员，再调此接口就是**普通申请**（进入待审批，`tenant_id` 会被忽略、角色由审批人指定）——所以这个引导口令**只在首个超管**上有效。
+
+**情形 C：返回的 `scope` 不是 `full`**
+`WORKBENCH_REQUIRE_ADMIN_TOTP` 默认为 **真**。超管尚未绑定动态口令时，登录签发的是受限会话 `totp_enrollment`（有效期取 `min(session_ttl, totp_enrollment_ttl)`，默认 300 秒），用它访问 §3 接口会 `403`「账号需要先完成动态口令绑定」。此时按顺序做：
+
+```bash
+# ① 确认确实不是 full（是 totp_enrollment 才继续）
+curl -sS -X POST "$BASE/api/v1/auth/sessions" -H 'Content-Type: application/json' \
+  -d '{"phone":"<超管手机号>","password":"<口令>"}' | jq '{scope, expires_in}'
+
+# ② 用受限令牌开始绑定（返回 secret / otpauth_uri，用验证器扫码）
+curl -sS -X POST "$BASE/api/v1/auth/me/totp" -H "Authorization: Bearer $TOKEN" | jq
+
+# ③ 用验证器当前 6 位码确认启用
+curl -sS -X POST "$BASE/api/v1/auth/me/totp/confirmation" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"totp_code":"<6 位动态码>"}'
+
+# ④ 重新登录（此时须带 totp_code），并确认 scope=full
+```
+
+- 受限会话**只允许**这 3 个接口（两个 TOTP 接口 + 登出/健康检查），其它接口一律 403（本机实测：受限令牌访问 `/api/v1/workforce/roster` → `403`「账号需要先完成动态口令绑定」）。
+- **⚠️ 实操坑（本机实测踩到）**：第 ③ 步确认绑定用的那个动态码**已被消费**。若紧接着用**同一个码**登录，会得到 `401`「手机号或密码不正确」——**这不是账号或口令错了**，而是该步长的码已用过。等验证器翻到**下一个**码（≤30 秒）再登录即可（实测：用下一个步长的码 → `200`、`scope=full`）。服务端对「用了旧码」与「口令错」返回**同一个提示语**，这是刻意不泄露失败因素的安全设计。
 - 非 `development` 环境**忽略** `X-Tenant-Id` / `X-User-Id` / `X-User-Role` 请求头，必须用真实令牌。
+- 令牌有时效（`WORKBENCH_SESSION_TTL_SECONDS` 默认 900 秒），§3 请在拿到后尽快执行。
 
 ## 2. SQL 组（只读；逐条独立执行）
 
@@ -232,4 +304,30 @@ H 员工挂非启用岗位:  N 条（贴出列表；注意 role_status=NULL 的�
 ```
 只读会话 + SELECT        -> 正常返回结果（exit 0）
 只读会话 + CREATE TABLE  -> ERROR: cannot execute CREATE TABLE in a read-only transaction（exit 1）
+```
+
+只读角色（§1.1 的建法）实测——以 `workbench_ro` 通过**真实 DSN**（`postgresql://workbench_ro:***@127.0.0.1:55432/workbench`）连接：
+
+```
+CREATE ROLE / GRANT CONNECT / GRANT pg_read_all_data -> 全部成功
+属性核对 -> workbench_ro|f|f|t（非超管、不能建库、可登录）
+9 条只读查询（pgvector / 目录两表 / 复合外键 / 知识绑定 / 归一风险 / 任务聚合 / 运行状态 / 索引）-> 全部 PASS
+SET default_transaction_read_only = on 后再 SELECT -> PASS
+CREATE TABLE（应被拒）-> PASS（InsufficientPrivilege）
+关键性质：管理员新建一张表后，workbench_ro 无需再授权即可 SELECT -> 返回 0（证明覆盖未来迁移的新表）
+```
+
+超管令牌三种情形（§1.3）实测——FastAPI `TestClient`，`WORKBENCH_REQUIRE_ADMIN_TOTP=true`：
+
+```
+情形B  引导注册（带 bootstrap_token + tenant_id）         -> 201  role=super_admin  status=approved（另写 2 条审计）
+情形B  边界：已有超管后再提交（口令错 / 缺 tenant_id）      -> 201  status=pending（不再 403，已变成普通待审批）
+情形C  未绑 TOTP 登录（不带码）                            -> 200  scope=totp_enrollment  expires_in=300
+情形C  受限令牌访问 /api/v1/workforce/roster               -> 403 「账号需要先完成动态口令绑定」
+情形C  POST /auth/me/totp                                  -> 200  返回 secret / otpauth_uri / digest=SHA1 / digits=6 / period=30
+情形C  POST /auth/me/totp/confirmation（当前步长码）        -> 200  {"status":"confirmed"}
+情形A  用【已消费】的同一个码登录                           -> 401 「手机号或密码不正确」（该步长已用过）
+情形A  用【下一个】步长的码登录                             -> 200  scope=full
+情形A  full 令牌访问 /api/v1/workforce/roster               -> 200
+情形A  已绑 TOTP 但不带码                                   -> 401 「需要动态验证码」
 ```

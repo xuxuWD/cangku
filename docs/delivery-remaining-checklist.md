@@ -18,6 +18,7 @@
 - [ ] 1.1 目标 PostgreSQL 已装 `pgvector`
       验证：`psql "$DSN" -c "SELECT extname, extversion FROM pg_extension WHERE extname='vector'"`
       判据：**有一行返回**（官方 `postgres` 镜像不带该扩展，迁移 001 会直接失败）
+- [ ] 1.1.1 只读账号已建（**怎么建：见 [`readonly-verification-runbook.md`](readonly-verification-runbook.md) §1.1**，含已在真实 PG 上验证的 `CREATE ROLE` + `pg_read_all_data` 语句，该角色可自动覆盖未来迁移新建的表）
 - [ ] 1.2 填好生产/预发配置（**不进仓库**）：`WORKBENCH_ENV≠development`、`WORKBENCH_STORAGE_BACKEND=postgres`、`WORKBENCH_DATABASE_URL`、`WORKBENCH_AUTH_SECRET`（≥32）、`WORKBENCH_BACKUP_ENCRYPTION_KEY`（与前者分离）、从目标库读出的 `WORKBENCH_APPLIED_MIGRATIONS`
 - [ ] 1.3 `python scripts/staging_preflight.py` → `pass`
       本期实测（未配置环境）会输出 24 条 `fail`，可当作「你需要准备哪些配置」的清单
