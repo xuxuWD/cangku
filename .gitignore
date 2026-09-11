@@ -15,6 +15,7 @@ tmp/
 .env.*
 !.env.example
 !.env.staging.example
+!.env.sso.example
 *.pem
 *.key
 

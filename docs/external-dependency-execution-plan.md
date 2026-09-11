@@ -177,6 +177,8 @@ Phase 2a       Phase 2b      Phase 2c
 - ID Token 签名算法为 `RS256`（或 `HS256`）；算法不在允许清单时 fail-closed。
 - 明确 IdP 是否承担 MFA：承担则 `WORKBENCH_SSO_TRUST_IDP_MFA=true`（预检会输出 warn 提示），否则保持 `false` 走应用内 TOTP。
 
+**配置与交付清单**：`.env.sso.example`（内含完整的 `WORKBENCH_SSO_*` 配置项与「IdP 侧需提供或确认」的勾选清单，可直接作为交接底稿）。
+
 **验收命令**：
 1. 配置就绪自检（不发网络）：`py scripts/sso_preflight.py --offline` → 退出码 `0`。
 2. 元数据自洽校验（默认联网，需 IdP 可达）：`py scripts/sso_preflight.py` → 退出码 `0`（不一致/不可达均 fail-closed）。
