@@ -320,3 +320,42 @@ def test_postgres_known_keys_queries_both_tables_scoped_by_tenant() -> None:
     assert statements[1][1] == ("t-1",)
     assert role_keys == {"content-operator"}
     assert agent_keys == {"content-writer"}
+
+
+# ------------------------------------------------------------ 可用性判定（阶段 2 写路径闸门）
+
+
+def test_is_active_reflects_status_format_and_tenant() -> None:
+    store = InMemoryWorkforceDirectoryStore()
+    store.create_role(ADMIN, role_key="content-operator", name="自媒体运营岗")
+    store.create_employee(ADMIN, agent_key="content-writer", name="内容创作", role_key="content-operator")
+
+    # 归一后命中（与 D5 同口径），非法格式按「不可用」处理而不是抛异常
+    assert store.role_is_active(ADMIN, "Content-Operator") is True
+    assert store.role_is_active(ADMIN, "nobody") is False
+    assert store.role_is_active(ADMIN, "运营岗") is False
+    assert store.role_is_active(OTHER_ADMIN, "content-operator") is False
+
+    assert store.agent_is_active(ADMIN, "Content-Writer") is True
+    assert store.agent_is_active(ADMIN, "geo-analyst") is False
+
+    store.update_role(ADMIN, "content-operator", status="disabled")
+    assert store.role_is_active(ADMIN, "content-operator") is False
+    # 岗位停用不影响员工自身的可用性（停用只禁止挂载与指派）
+    assert store.agent_is_active(ADMIN, "content-writer") is True
+
+    with pytest.raises(PolicyError):
+        store.role_is_active(CEO, "content-operator")
+
+
+def test_postgres_is_active_reads_status_row_normalized() -> None:
+    connection = RecordingConnection([("active",)])
+    store = PostgresWorkforceDirectoryStore(connection)
+
+    assert store.role_is_active(ADMIN, "  Content-Operator  ") is True
+    statement, params = connection.cursor_instance.statements[0]
+    assert "SELECT status FROM workbench_job_roles" in statement
+    assert params == ("t-1", "content-operator")
+
+    assert PostgresWorkforceDirectoryStore(RecordingConnection([None])).role_is_active(ADMIN, "nobody") is False
+    assert PostgresWorkforceDirectoryStore(RecordingConnection([("disabled",)])).agent_is_active(ADMIN, "content-writer") is False

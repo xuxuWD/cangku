@@ -34,6 +34,14 @@ class DirectoryConflict(DirectoryError):
     pass
 
 
+class DirectoryNotManaged(DirectoryError):
+    """知识范围绑定指向了目录里不存在或已停用的标识（阶段 2 写路径闸门 → 409）。
+
+    刻意**不**继承 `PolicyError`：否则会被知识范围接口的 `except PolicyError → 403` 截走，
+    把「未纳管」误报成「无权限」。
+    """
+
+
 class RoleNotAvailable(DirectoryError):
     """目标岗位不存在、不属于本租户，或已停用。"""
 

@@ -16,6 +16,7 @@ from .models import (
     DirectoryConflict,
     DirectoryNotFound,
     DirectoryStatus,
+    InvalidDirectoryKey,
     JobRole,
     RoleNotAvailable,
     normalize_description,
@@ -26,6 +27,14 @@ from .models import (
 )
 
 MAX_LIMIT = 200
+
+
+def _safe_key(value: str) -> str:
+    """把任意输入折算成目录键；非法或空一律返回空串（等价于「查不到」），不向上抛异常。"""
+    try:
+        return normalize_key(value)
+    except InvalidDirectoryKey:
+        return ""
 
 
 class WorkforceDirectoryStore(Protocol):
@@ -44,6 +53,10 @@ class WorkforceDirectoryStore(Protocol):
     def list_employees(self, context: UserContext, *, status: str | None = None, role_key: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[DigitalEmployee], int]: ...
 
     def known_keys(self, context: UserContext) -> tuple[set[str], set[str]]: ...
+
+    def role_is_active(self, context: UserContext, role_key: str) -> bool: ...
+
+    def agent_is_active(self, context: UserContext, agent_key: str) -> bool: ...
 
 
 def _ensure_admin(context: UserContext) -> None:
@@ -186,6 +199,23 @@ class InMemoryWorkforceDirectoryStore:
         if role.status != DirectoryStatus.ACTIVE:
             raise RoleNotAvailable("岗位已停用，不能再挂载数字员工")
         return role
+
+    # ------------------------------------------------------------ 可用性判定（阶段 2 写路径闸门）
+
+    def role_is_active(self, context: UserContext, role_key: str) -> bool:
+        """标识是否已在目录且启用；非法或空标识按「不可用」处理（不抛异常）。"""
+        _ensure_admin(context)
+        key = _safe_key(role_key)
+        with self._lock:
+            role = self._roles.get((context.tenant_id, key))
+        return role is not None and role.status == DirectoryStatus.ACTIVE
+
+    def agent_is_active(self, context: UserContext, agent_key: str) -> bool:
+        _ensure_admin(context)
+        key = _safe_key(agent_key)
+        with self._lock:
+            employee = self._employees.get((context.tenant_id, key))
+        return employee is not None and employee.status == DirectoryStatus.ACTIVE
 
 
 class PostgresWorkforceDirectoryStore:
@@ -405,3 +435,27 @@ class PostgresWorkforceDirectoryStore:
             raise RoleNotAvailable("岗位不存在或不属于本租户")
         if str(row[0]) != DirectoryStatus.ACTIVE.value:
             raise RoleNotAvailable("岗位已停用，不能再挂载数字员工")
+
+    # ------------------------------------------------------------ 可用性判定（阶段 2 写路径闸门）
+
+    def role_is_active(self, context: UserContext, role_key: str) -> bool:
+        """标识是否已在目录且启用；非法或空标识按「不可用」处理（不抛异常）。"""
+        _ensure_admin(context)
+        return self._status_is_active("workbench_job_roles", "role_key", context.tenant_id, role_key)
+
+    def agent_is_active(self, context: UserContext, agent_key: str) -> bool:
+        _ensure_admin(context)
+        return self._status_is_active("workbench_digital_employees", "agent_key", context.tenant_id, agent_key)
+
+    def _status_is_active(self, table: str, column: str, tenant_id: str, value: str) -> bool:
+        key = _safe_key(value)
+        if not key:
+            return False
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT status FROM {table} WHERE tenant_id = %s AND {column} = %s",
+                    (tenant_id, key),
+                )
+                row = cursor.fetchone()
+        return row is not None and str(row[0]) == DirectoryStatus.ACTIVE.value

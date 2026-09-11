@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ..audit.models import AuditAction
 from ..domain import UserContext
-from .models import DigitalEmployee, DirectoryStatus, JobRole
+from .models import DigitalEmployee, DirectoryNotManaged, DirectoryStatus, JobRole, normalize_key
 from .store import WorkforceDirectoryStore
 
 
@@ -103,6 +103,22 @@ class WorkforceDirectoryService:
 
     def list_employees(self, context: UserContext, *, status: str | None = None, role_key: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[DigitalEmployee], int]:
         return self.store.list_employees(context, status=status, role_key=role_key, limit=limit, offset=offset)
+
+    # ------------------------------------------------------------ 阶段 2 写路径闸门
+
+    def ensure_role_binding_available(self, context: UserContext, role_key: str) -> str:
+        """知识范围写路径闸门：岗位标识必须已在目录且启用；返回归一后的标识。
+
+        只作用于**写**路径；读/检索解析不经过这里（历史自由文本绑定仍可用）。
+        """
+        if not self.store.role_is_active(context, role_key):
+            raise DirectoryNotManaged("该标识尚未纳入目录，请先在「数字员工设置」中纳管")
+        return normalize_key(role_key)
+
+    def ensure_agent_binding_available(self, context: UserContext, agent_key: str) -> str:
+        if not self.store.agent_is_active(context, agent_key):
+            raise DirectoryNotManaged("该标识尚未纳入目录，请先在「数字员工设置」中纳管")
+        return normalize_key(agent_key)
 
     # ------------------------------------------------------------ 未纳管候选
 
