@@ -42,6 +42,29 @@ def test_applied_migrations_match_repository_migrations() -> None:
     assert registered == expected
 
 
+def test_staging_template_registers_runtime_capability_whitelists() -> None:
+    entries = read_template_entries()
+
+    # 判定依据：外部 Runtime 已接入应用装配并启用 fail-closed，
+    # 模板必须登记非空能力白名单，否则预检 pass 但应用启动期即抛 RuntimeConfigError。
+    for key in ("RAGFLOW_CAPABILITIES", "AGENTSCOPE_CAPABILITIES"):
+        value = entries.get(key, "")
+        assert any(item.strip() for item in value.split(",")), f"模板缺少非空 {key}"
+
+
+def test_staging_template_never_registers_token_values() -> None:
+    entries = read_template_entries()
+
+    # 判定依据：凭据值只经部署密钥系统注入；模板若登记 *_AUTH_TOKEN，
+    # 其值必须为空或明显占位，绝不能出现真实令牌值。
+    offenders = {
+        key: value
+        for key, value in entries.items()
+        if key.endswith("_AUTH_TOKEN") and value and "REPLACE" not in value.upper()
+    }
+    assert offenders == {}
+
+
 def test_evidence_directory_is_not_tracked() -> None:
     entries = {
         line.strip()

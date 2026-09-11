@@ -299,10 +299,12 @@
 2. **私有部署手册未覆盖异步链路（已修复）**：`docs/private-deployment-runbook.md` 曾全文未提及 Worker / Outbox / 死信，项 2 缺少执行依据；现已补手册章节。
 3. **无任何通知能力（已修复）**：项 2 的「死信通知渠道」曾是**代码缺口**而非配置项；现已在 `app/notifications.py` 实现（脱敏 webhook、原子去重、失败只写审计且不打断发布循环）。
 4. **设备绑定与统一登录（口径已变更）**：「设备绑定」已从门禁移除（见 `docs/delivery-gates.md` 变更记录）；SSO 客户端已实现（`app/accounts/sso.py` 等）。项 3 现在只剩「生产密钥轮换」与「真实 IdP 联调」两件外部事项。
-5. **项 8：运行时传输层没有任何认证注入（未修复，代码缺口）**：`app/runtime/adapters/common.py` 的 `HttpRuntimeTransport._request` 只透传 `json=`，**全链路不注入 `Authorization` / API Key / Cookie**。项 8 的标题即「**密钥注入**」，因此该项在补齐认证注入前**无法进入真实联调**（`docs/api-contract.md` 亦自述认证注入在开发期尚未实现或验证）。
-6. **项 8：配置驱动的运行时注册表未接入应用装配（未修复，代码缺口）**：`build_runtime_registry(...)` **只被测试调用**；`app/main.py` 使用 `RuntimeService(store)`，而 `app/runtime/service.py` 默认 `RuntimeRegistry()`（**只含 mock**）。即：**即使把 `RAGFLOW_ENDPOINT` / `AGENTSCOPE_ENDPOINT` 与固定版本配置齐全，运行中的应用也不会注册真实运行时**，仍然只走 mock。
+5. **项 8：运行时传输层没有任何认证注入（已修复）**：`HttpRuntimeTransport` 曾只透传 `json=`，全链路不注入认证头。现已在传输层支持认证头注入（`Authorization: Bearer <token>`，头名与前缀可配置），凭据经 `<KEY>_AUTH_TOKEN` 由部署密钥系统注入；**声明 `<KEY>_AUTH_INJECTED=true` 却无令牌时启动期 fail-closed**；令牌以 `repr=False` 处理，不入 `repr`、异常消息与健康摘要（有专门测试）。
+6. **项 8：配置驱动的运行时注册表未接入应用装配（已修复）**：`build_runtime_registry(...)` 曾只被测试调用，应用仅注册 mock。现已由 `app/bootstrap.py` 的 `build_runtime_service(...)` 接入 `app/main.py`；配置 `<KEY>_ENDPOINT` 即启用真实运行时。**接线时另发现一处潜在缺陷并已修复**：注册表与 `RuntimeService` 各自持有 `RuntimeStateStore`，导致 mock 运行记录在服务层查不到——现改为共享同一实例。
 
-> 第 5、6 条由 2026-09-11 复核代码确认（来源：`app/runtime/adapters/common.py`、`app/runtime/registry.py`、`app/runtime/service.py`、`app/main.py`），详见 `docs/runtime-onboarding-request.md`。
+> 第 5、6 条由 2026-09-11 复核代码确认并当日修复（原证据：`app/runtime/adapters/common.py`、`app/runtime/registry.py`、`app/runtime/service.py`、`app/main.py`）；配置键与索取项详见 `docs/runtime-onboarding-request.md`。
+>
+> 同时消除了由此产生的「预检通过但应用起不来」假通过：`scripts/runtime_staging_preflight.py` 与 `.env.staging.example` 已补 `<KEY>_CAPABILITIES`（能力白名单为空会导致启动期 fail-closed）。
 
 ---
 

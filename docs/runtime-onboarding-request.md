@@ -22,7 +22,7 @@
 工作台侧已经用代码定义好「对方需要满足什么」（详见 §1）。**真正缺的是外部输入**，而不是契约文本：
 
 1. 真实外部服务实例的 **HTTPS 地址**（RAGFlow / AgentScope 各一）；
-2. **凭据及其注入途径**（代码层**尚无**认证头注入实现，见 §1.8，属缺口）；
+2. **凭据及其注入途径**（注入能力**已实现**：`<KEY>_AUTH_TOKEN` + 可选 `<KEY>_AUTH_HEADER`/`<KEY>_AUTH_SCHEME`；仍**需外部方提供真实凭据与其注入方式**，见 §1.8）；
 3. **契约固定版本号**（拒绝 `latest`/`main`/`head` 一类浮动值）；
 4. **网络白名单**（工作台出口可达范围 / 域名）；
 5. **两个分属不同租户的隔离测试账号**，以及**外部侧由谁创建隔离知识库 / 命名空间**。
@@ -105,7 +105,11 @@
 - `timeout_seconds` 必须有限且 > 0（L85-92）。
 - 已注册项：`mock`、`deerflow`、`codex_worker`、`hermes`、`ragflow`、`agentscope`（L117-123）。
 
-**应用装配层面的现状（缺口）**：`app/main.py` L93 以 `RuntimeService(store)` 构造，`RuntimeService.__init__` 默认 `RuntimeRegistry()`（`app/runtime/service.py` L20-26），即**只注册 mock**；`build_runtime_registry(...)` 目前**仅被测试调用**（`tests/test_runtime_registry_config.py`）。因此「从受控配置注册 RAGFlow/AgentScope」的路径**尚未接入应用装配**，也没有把 `WORKBENCH_RUNTIME_VERSIONS` 解析为注册表配置的装配代码——这是真实缺口，需在接入外部运行时前补齐。
+**应用装配层面的现状（已于 2026-09-11 修复）**：`app/main.py` 曾以 `RuntimeService(store)` 构造，默认 `RuntimeRegistry()`（**只注册 mock**），`build_runtime_registry(...)` 仅被测试调用。现已由 `app/bootstrap.py` 的 `build_runtime_service(...)` 接入：从 Settings 读取**裸名**配置（`<KEY>_ENDPOINT` / `<KEY>_VERSION` / `<KEY>_CAPABILITIES` / `<KEY>_TIMEOUT_SECONDS` / `<KEY>_AUTH_*`）组装注册表并注入 `RuntimeService`。**未配置任何 `<KEY>_ENDPOINT` 时仍只注册 mock**（开发默认不回归）。
+>
+> 接线时另发现并修复一处潜在缺陷：注册表与 `RuntimeService` 曾各自持有 `RuntimeStateStore`，导致 mock 记录的运行在服务层查不到；现改为共享同一实例。
+>
+> 注意：`WORKBENCH_RUNTIME_VERSIONS` 是 staging 模板里的**元数据登记**键，注册表配置**不由它驱动**，而是由上述 `<KEY>_*` 裸名驱动。
 
 **RAGFlow 只读语义**（`adapters/ragflow.py` L10-52）：所有执行类方法（`start_run`/`stream_events`/`pause_run`/`resume_run`/`cancel_run`/`request_approval`/`replay_run`/`get_usage`）一律抛 `RuntimeUnavailable("RAGFlow Runtime 不可用：仅支持知识检索")`；`health()` 固定返回 `status="unavailable"`。
 
@@ -113,10 +117,12 @@
 
 **未配置不外呼**：未配置或未启用的外部 Runtime 不会被自动调用（`docs/api-contract.md` L399、L403）。
 
-### 1.8 认证与令牌传递（含缺口）
+### 1.8 认证与令牌传递
 
-- **缺口：传输层无认证头注入。** `HttpRuntimeTransport._request` 只传 `json=payload`，**不设置 `Authorization`、API Key 或 Cookie 头**（`common.py` L69-101）。工作台侧要求认证头 / API Key / Cookie 由**部署环境在传输层注入**，且不得进入任务载荷、事件或日志，但该注入**在开发期尚未实现或验证**（`docs/api-contract.md` L411 原文即如此陈述）。
-- **短时授权令牌**：`app/runtime/tokens.py` 的 `ShortLivedGrant`（HMAC-SHA256 签名，绑定 `run_id`/`task_id`/`device_id`/`actions`/`expires_at`，`issue`/`verify`）是**契约与策略辅助件**，目前**仅被测试使用**（`tests/test_runtime_policy.py`），**未接入传输层**——属缺口。
+- **认证头注入（已于 2026-09-11 实现）**：`HttpRuntimeTransport` 支持注入认证头，默认形如 `Authorization: Bearer <token>`，头名与前缀可配置（`<KEY>_AUTH_HEADER` / `<KEY>_AUTH_SCHEME`，后者允许显式置空以发送裸令牌）。凭据来自 `<KEY>_AUTH_TOKEN`（**由部署密钥系统注入**）。
+- **fail-closed**：声明 `<KEY>_AUTH_INJECTED=true` 却未提供 `<KEY>_AUTH_TOKEN` 时，**应用启动期直接报 `RuntimeConfigError`**，不会静默降级为匿名调用。
+- **密钥不外泄**：令牌字段以 `dataclasses.field(repr=False)` 处理，**不进 `repr`、不进异常消息、不进健康摘要**（有专门测试守护）；注入的头不得进入任务载荷、事件或审计。
+- **短时授权令牌**：`app/runtime/tokens.py` 的 `ShortLivedGrant`（HMAC-SHA256 签名，绑定 `run_id`/`task_id`/`device_id`/`actions`/`expires_at`，`issue`/`verify`）是**契约与策略辅助件**，目前仍**仅被测试使用**（`tests/test_runtime_policy.py`），**尚未接入传输层**——这一条仍属缺口。
 - **事件脱敏**：`RuntimeEvent.to_public_dict`（`contracts.py` L86-116）把键 `password`/`cookie`/`api_key`/`secret`/`token`/`authorization`/`access_token`/`refresh_token`/`session`/`验证码` 的值替换为 `[已隐藏]`。
 
 ---
@@ -190,11 +196,11 @@
 | # | 事项 | 状态 |
 |---|---|---|
 | U1 | RAGFlow / AgentScope 真实实例与 HTTPS 地址（E1/E3） | **待外部提供** |
-| U2 | 固定版本号（E2/E4）、认证方式与凭据注入途径（E5） | **待外部确认**；认证注入**代码层尚未实现**（§1.8） |
+| U2 | 固定版本号（E2/E4）、认证方式与凭据注入途径（E5） | **待外部确认**；注入机制**已实现**（`<KEY>_AUTH_TOKEN`，见 §1.8），缺的是外部凭据本身 |
 | U3 | 两个分属不同租户的隔离测试账号（E6）、隔离知识库/命名空间归属（E9） | **待外部提供** |
 | U4 | 沙箱能力的具体语义与验证判据（E10） | **待外部确认**；本仓库除健康摘要有 `sandbox` 字段外无沙箱验证实现（§5） |
 | U5 | 网络白名单具体条目（E7）、限流/额度（E8） | **待外部确认** |
-| U6 | 配置驱动注册表接入应用装配的时机 | **待内部排期**（§1.7 缺口） |
+| U6 | ~~配置驱动注册表接入应用装配的时机~~ | **已完成**（2026-09-11，见 §1.7） |
 
 ---
 

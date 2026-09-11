@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .audit.logging import configure_audit_logging
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -45,7 +45,7 @@ from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_a
 from .settings import get_settings, validate_runtime_settings
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import RunRecordNotFound
-from .runtime.service import RunAccessDenied, RuntimeService
+from .runtime.service import RunAccessDenied
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
 from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict, ScrapeNotConfigured
 from .content.scraper import ScrapeDenied, ScrapeFailed
@@ -90,7 +90,7 @@ store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, audit=audit_service)
 knowledge_access_registry = build_knowledge_access_registry(settings)
-runtime_service = RuntimeService(store)
+runtime_service = build_runtime_service(settings, store=store)
 run_metrics_service = build_run_metrics(settings)
 content_store = build_content_store(settings)
 content_service = ContentService(

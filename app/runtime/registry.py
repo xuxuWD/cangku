@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Any, Callable
 
@@ -32,6 +32,17 @@ class RuntimeEndpointConfig:
     timeout_seconds: float
     capabilities: tuple[str, ...]
     version: str
+    auth_injected: bool = False
+    auth_token: str = field(default="", repr=False)
+    auth_header: str = "Authorization"
+    auth_scheme: str = "Bearer"
+
+    def auth_headers(self) -> dict[str, str]:
+        """按配置组装认证头；无凭据即返回空表（绝不静默匿名以外地伪造）。"""
+        if not self.auth_token:
+            return {}
+        value = f"{self.auth_scheme} {self.auth_token}" if self.auth_scheme else self.auth_token
+        return {self.auth_header: value}
 
 
 class RuntimeRegistry:
@@ -113,7 +124,11 @@ def build_runtime_registry(
     registry = RuntimeRegistry()
     runtime_state = state_store or RuntimeStateStore()
     registry.register("mock", MockRuntime(runtime_state))
-    transport_factory = transport_factory or (lambda _key, item: HttpRuntimeTransport(timeout_seconds=item.timeout_seconds))
+    transport_factory = transport_factory or (
+        lambda _key, item: HttpRuntimeTransport(
+            timeout_seconds=item.timeout_seconds, headers=item.auth_headers()
+        )
+    )
     constructors = {
         "deerflow": DeerFlowAdapter,
         "codex_worker": CodexWorkerAdapter,
@@ -138,12 +153,24 @@ def build_runtime_registry(
         capabilities = tuple(item.strip() for item in raw_capabilities)
         timeout_seconds = _validate_timeout(key, raw.get("timeout_seconds", 30.0))
         version = _validate_version(key, raw.get("version"))
+        auth_injected = bool(raw.get("auth_injected", False))
+        raw_token = raw.get("auth_token")
+        auth_token = raw_token if isinstance(raw_token, str) else ""
+        if auth_injected and not auth_token.strip():
+            raise RuntimeConfigError(f"{key} Runtime 声明已注入认证但缺少凭据")
+        auth_header = raw.get("auth_header") or "Authorization"
+        raw_scheme = raw.get("auth_scheme", "Bearer")
+        auth_scheme = raw_scheme if isinstance(raw_scheme, str) else "Bearer"
         item = RuntimeEndpointConfig(
             key=key,
             endpoint=endpoint,
             timeout_seconds=timeout_seconds,
             capabilities=capabilities,
             version=version,
+            auth_injected=auth_injected,
+            auth_token=auth_token,
+            auth_header=auth_header,
+            auth_scheme=auth_scheme,
         )
         registry.register(key, constructor(transport_factory(key, item), endpoint))
     return registry

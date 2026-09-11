@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 import httpx
@@ -59,16 +59,24 @@ class FakeTransport:
 class HttpRuntimeTransport:
     """通过约定的 HTTP 边界调用独立 Runtime 服务。"""
 
-    def __init__(self, *, client: httpx.Client | None = None, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        *,
+        client: httpx.Client | None = None,
+        timeout_seconds: float = 30.0,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         self.client = client or httpx.Client(timeout=timeout_seconds)
+        self.headers = dict(headers or {})
 
     @staticmethod
     def _base(endpoint: str) -> str:
         return endpoint.rstrip("/")
 
     def _request(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        merged_headers = {**self.headers, **kwargs.pop("headers", {})}
         try:
-            response = self.client.request(method, url, **kwargs)
+            response = self.client.request(method, url, headers=merged_headers, **kwargs)
             response.raise_for_status()
             data = response.json()
         except (httpx.HTTPError, ValueError) as exc:

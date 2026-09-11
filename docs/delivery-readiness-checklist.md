@@ -2,10 +2,10 @@
 
 > **用途**：把 `docs/delivery-gates.md` 的勾选状态摊开成可逐项追踪的底账，区分「代码在」「有测试守护」「在真实环境验收过」三种不同状态。
 >
-> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照））
-> **基线**：分支 `feature/acceptance-tooling`，全量 **959 项测试通过**，`compileall` 退出码 0
+> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照）；第十次：项 8 两处代码缺口修复（运行时认证注入、注册表接入应用装配）+ 三项接入索取表（GEO 契约/公众号账号/外部运行时））
+> **基线**：分支 `feature/acceptance-tooling`，全量 **975 项测试通过**，`compileall` 退出码 0
 >
-> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 95 个测试文件、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
+> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 97 个测试文件、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
 
 ## 判定口径
 
@@ -25,8 +25,8 @@
 | 未勾选 | **9** |
 | 达到**真实环境验收** | **0**（部分是本地真实验证，见「本地已验证」一行） |
 | 本地已验证（真实 PostgreSQL 迁移与备份恢复演练、内容工作台内部闭环回归） | **2** |
-| 测试文件数 | **95**（`tests/`，不含 `conftest.py`） |
-| 测试用例数 | **959**（后端）+ 前端 `admin-web` 18、`companion-pwa` 24、`desktop` 13（Node `node:test`） |
+| 测试文件数 | **97**（`tests/`，不含 `conftest.py`） |
+| 测试用例数 | **975**（后端）+ 前端 `admin-web` 18、`companion-pwa` 24、`desktop` 13（Node `node:test`） |
 
 > **一句话结论**：服务端能力基本齐全，**本批次可独立实现的代码缺口已全部闭合（项 2 的死信通知渠道、项 9 的抓取器/发布器/内容安全评估、项 3 的 OIDC SSO 客户端）**；但项 3 的真实 IdP 联调与项 6 的 GEO 适配器**尚需先拿到口径/契约才能动工**，不属于本仓库可独立完成的范围。其余卡点全为外部依赖。
 >
@@ -88,7 +88,7 @@
 | 运行时 HTTP 传输与适配器（DeerFlow / Codex Worker / Hermes） | ✅ | ✅ | ⬜ | `test_runtime_http_transport.py`、`test_runtime_adapters.py` |
 | 开发期 RAGFlow/AgentScope 适配器契约与受控注册表 | ✅ | ✅ | ⬜ | `test_ragflow_adapter.py`、`test_runtime_adapters.py` |
 | RAGFlow/AgentScope staging 前置预检脚本 | ✅ | ✅ | ⬜ | `test_runtime_staging_preflight.py`；门禁注明「不替代真实联调」 |
-| RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证、真实外部服务验收 | ❌ | ❌ | ⬜ | **既缺外部资源，也有代码缺口**：运行时传输层**无任何认证注入**、配置驱动的注册表**未接入应用装配**（`app/main.py` 只注册 mock）——详见 `docs/external-dependency-acceptance-plan.md` §6 第 5、6 条；接入资料与索取表见 `docs/runtime-onboarding-request.md` |
+| RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证、真实外部服务验收 | ❌ | ❌ | ⬜ | **仅剩外部资源**：认证注入与注册表装配两处代码缺口已于 2026-09-11 修复（`docs/external-dependency-acceptance-plan.md` §6 第 5、6 条）。接入资料与索取表见 `docs/runtime-onboarding-request.md` |
 | 真实模型、网页抓取、公众号自动发布验收 | ❌ | ❌ | ⬜ | **未做** |
 | 计划生成与审核闸门（目标→`AgentPlan`→服务端风险推导→审批→复用 Runtime） | ✅ | ✅ | ⬜ | `test_planner_{api,service,models,generator,store,audit,bootstrap,postgres}.py` |
 | 计划执行的反馈与指标采集（子项目②） | ✅ | ✅ | ⬜ | `test_run_records.py`、`test_run_metrics.py`、`test_run_metrics_api.py`、`test_planner_run_wiring.py`；**已知限制**：`knowledge_hits` 依赖运行时上报，Mock 下恒为 0 |

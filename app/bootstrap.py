@@ -483,6 +483,49 @@ def build_run_metrics(settings: Settings, *, connection=None, migrate: bool = Tr
     raise ValueError("不支持的运行记录存储类型")
 
 
+def build_runtime_service(settings: Settings, *, store, transport_factory=None, state_store=None):
+    """从裸名配置装配 Runtime 服务；未配置任何地址时只保留 Mock。"""
+    validate_runtime_settings(settings)
+    from .runtime.registry import build_runtime_registry
+    from .runtime.service import RuntimeService
+    from .runtime.state import RuntimeStateStore
+
+    shared_state_store = state_store or RuntimeStateStore()
+    registry = build_runtime_registry(
+        _runtime_registry_config(settings),
+        transport_factory=transport_factory,
+        state_store=shared_state_store,
+    )
+    return RuntimeService(store, registry=registry, state_store=shared_state_store)
+
+
+_RUNTIME_KEYS = ("ragflow", "agentscope", "deerflow", "codex_worker", "hermes")
+
+
+def _runtime_registry_config(settings: Settings) -> dict[str, dict[str, object]]:
+    """把 Settings 上的裸名配置翻译成 build_runtime_registry 需要的结构。"""
+    config: dict[str, dict[str, object]] = {}
+    for key in _RUNTIME_KEYS:
+        endpoint = (getattr(settings, f"{key}_endpoint") or "").strip()
+        capabilities = [
+            item.strip()
+            for item in (getattr(settings, f"{key}_capabilities") or "").split(",")
+            if item.strip()
+        ]
+        config[key] = {
+            "enabled": bool(endpoint),
+            "endpoint": endpoint,
+            "version": getattr(settings, f"{key}_version"),
+            "capabilities": capabilities,
+            "timeout_seconds": getattr(settings, f"{key}_timeout_seconds"),
+            "auth_injected": getattr(settings, f"{key}_auth_injected"),
+            "auth_token": getattr(settings, f"{key}_auth_token"),
+            "auth_header": getattr(settings, f"{key}_auth_header"),
+            "auth_scheme": getattr(settings, f"{key}_auth_scheme"),
+        }
+    return config
+
+
 def build_orchestration_proposal_service(
     settings: Settings,
     *,

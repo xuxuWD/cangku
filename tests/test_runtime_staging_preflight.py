@@ -7,9 +7,11 @@ def valid_config() -> dict[str, object]:
         "staging_id": "customer-a-isolated",
         "ragflow_endpoint": "https://ragflow.staging.example",
         "ragflow_version": "v0.19.0",
+        "ragflow_capabilities": "knowledge_search",
         "ragflow_auth_injected": "true",
         "agentscope_endpoint": "https://agentscope.staging.example",
         "agentscope_version": "v1.2.3",
+        "agentscope_capabilities": "run, pause, resume, cancel, approvals, replay, usage",
         "agentscope_auth_injected": "true",
         "runtime_network": "ragflow.staging.example,agentscope.staging.example",
     }
@@ -54,3 +56,33 @@ def test_runtime_staging_preflight_requires_deployment_auth_markers_without_leak
     assert report.status == "fail"
     assert "认证注入" in text
     assert "secret-value" not in text
+
+
+def test_runtime_staging_preflight_fails_closed_without_capability_whitelist() -> None:
+    config = valid_config()
+    config["ragflow_capabilities"] = ""
+    config["agentscope_capabilities"] = "  ,  "
+
+    report = run_preflight(config)
+    text = report.to_text()
+
+    assert report.status == "fail"
+    assert any(
+        check.name == "RAGFlow 能力白名单" and check.status == "fail"
+        for check in report.checks
+    )
+    assert any(
+        check.name == "AgentScope 能力白名单" and check.status == "fail"
+        for check in report.checks
+    )
+    assert "fail-closed" in text
+
+
+def test_runtime_staging_preflight_passes_with_capability_whitelist() -> None:
+    report = run_preflight(valid_config())
+
+    capability_checks = [check for check in report.checks if check.name.endswith("能力白名单")]
+    assert {check.name for check in capability_checks} == {
+        "RAGFlow 能力白名单", "AgentScope 能力白名单",
+    }
+    assert all(check.status == "pass" for check in capability_checks)

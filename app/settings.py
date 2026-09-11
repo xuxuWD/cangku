@@ -273,6 +273,152 @@ class Settings(BaseSettings):
             "ORCHESTRATION_IMPROVEMENT_THRESHOLD", "WORKBENCH_ORCHESTRATION_IMPROVEMENT_THRESHOLD"
         ),
     )
+    # 外部 Runtime 裸名配置：与 staging 模板及预检脚本共用同一套变量名。
+    # ENDPOINT 非空即启用；VERSION 必须是固定版本；CAPABILITIES 为空即 fail-closed。
+    # AUTH_INJECTED=true 时必须有 AUTH_TOKEN，声明了注入却无凭据一律报错。
+    ragflow_endpoint: str = Field(
+        default="", validation_alias=AliasChoices("RAGFLOW_ENDPOINT", "WORKBENCH_RAGFLOW_ENDPOINT")
+    )
+    ragflow_version: str = Field(
+        default="", validation_alias=AliasChoices("RAGFLOW_VERSION", "WORKBENCH_RAGFLOW_VERSION")
+    )
+    ragflow_capabilities: str = Field(
+        default="",
+        validation_alias=AliasChoices("RAGFLOW_CAPABILITIES", "WORKBENCH_RAGFLOW_CAPABILITIES"),
+    )
+    ragflow_auth_injected: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("RAGFLOW_AUTH_INJECTED", "WORKBENCH_RAGFLOW_AUTH_INJECTED"),
+    )
+    ragflow_auth_token: str = Field(
+        default="", validation_alias=AliasChoices("RAGFLOW_AUTH_TOKEN", "WORKBENCH_RAGFLOW_AUTH_TOKEN")
+    )
+    ragflow_auth_header: str = Field(
+        default="Authorization",
+        validation_alias=AliasChoices("RAGFLOW_AUTH_HEADER", "WORKBENCH_RAGFLOW_AUTH_HEADER"),
+    )
+    ragflow_auth_scheme: str = Field(
+        default="Bearer", validation_alias=AliasChoices("RAGFLOW_AUTH_SCHEME", "WORKBENCH_RAGFLOW_AUTH_SCHEME")
+    )
+    ragflow_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("RAGFLOW_TIMEOUT_SECONDS", "WORKBENCH_RAGFLOW_TIMEOUT_SECONDS"),
+    )
+    agentscope_endpoint: str = Field(
+        default="", validation_alias=AliasChoices("AGENTSCOPE_ENDPOINT", "WORKBENCH_AGENTSCOPE_ENDPOINT")
+    )
+    agentscope_version: str = Field(
+        default="", validation_alias=AliasChoices("AGENTSCOPE_VERSION", "WORKBENCH_AGENTSCOPE_VERSION")
+    )
+    agentscope_capabilities: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTSCOPE_CAPABILITIES", "WORKBENCH_AGENTSCOPE_CAPABILITIES"),
+    )
+    agentscope_auth_injected: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("AGENTSCOPE_AUTH_INJECTED", "WORKBENCH_AGENTSCOPE_AUTH_INJECTED"),
+    )
+    agentscope_auth_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENTSCOPE_AUTH_TOKEN", "WORKBENCH_AGENTSCOPE_AUTH_TOKEN"),
+    )
+    agentscope_auth_header: str = Field(
+        default="Authorization",
+        validation_alias=AliasChoices("AGENTSCOPE_AUTH_HEADER", "WORKBENCH_AGENTSCOPE_AUTH_HEADER"),
+    )
+    agentscope_auth_scheme: str = Field(
+        default="Bearer",
+        validation_alias=AliasChoices("AGENTSCOPE_AUTH_SCHEME", "WORKBENCH_AGENTSCOPE_AUTH_SCHEME"),
+    )
+    agentscope_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("AGENTSCOPE_TIMEOUT_SECONDS", "WORKBENCH_AGENTSCOPE_TIMEOUT_SECONDS"),
+    )
+    deerflow_endpoint: str = Field(
+        default="", validation_alias=AliasChoices("DEERFLOW_ENDPOINT", "WORKBENCH_DEERFLOW_ENDPOINT")
+    )
+    deerflow_version: str = Field(
+        default="", validation_alias=AliasChoices("DEERFLOW_VERSION", "WORKBENCH_DEERFLOW_VERSION")
+    )
+    deerflow_capabilities: str = Field(
+        default="",
+        validation_alias=AliasChoices("DEERFLOW_CAPABILITIES", "WORKBENCH_DEERFLOW_CAPABILITIES"),
+    )
+    deerflow_auth_injected: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("DEERFLOW_AUTH_INJECTED", "WORKBENCH_DEERFLOW_AUTH_INJECTED"),
+    )
+    deerflow_auth_token: str = Field(
+        default="", validation_alias=AliasChoices("DEERFLOW_AUTH_TOKEN", "WORKBENCH_DEERFLOW_AUTH_TOKEN")
+    )
+    deerflow_auth_header: str = Field(
+        default="Authorization",
+        validation_alias=AliasChoices("DEERFLOW_AUTH_HEADER", "WORKBENCH_DEERFLOW_AUTH_HEADER"),
+    )
+    deerflow_auth_scheme: str = Field(
+        default="Bearer", validation_alias=AliasChoices("DEERFLOW_AUTH_SCHEME", "WORKBENCH_DEERFLOW_AUTH_SCHEME")
+    )
+    deerflow_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("DEERFLOW_TIMEOUT_SECONDS", "WORKBENCH_DEERFLOW_TIMEOUT_SECONDS"),
+    )
+    codex_worker_endpoint: str = Field(
+        default="", validation_alias=AliasChoices("CODEX_WORKER_ENDPOINT", "WORKBENCH_CODEX_WORKER_ENDPOINT")
+    )
+    codex_worker_version: str = Field(
+        default="", validation_alias=AliasChoices("CODEX_WORKER_VERSION", "WORKBENCH_CODEX_WORKER_VERSION")
+    )
+    codex_worker_capabilities: str = Field(
+        default="",
+        validation_alias=AliasChoices("CODEX_WORKER_CAPABILITIES", "WORKBENCH_CODEX_WORKER_CAPABILITIES"),
+    )
+    codex_worker_auth_injected: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("CODEX_WORKER_AUTH_INJECTED", "WORKBENCH_CODEX_WORKER_AUTH_INJECTED"),
+    )
+    codex_worker_auth_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("CODEX_WORKER_AUTH_TOKEN", "WORKBENCH_CODEX_WORKER_AUTH_TOKEN"),
+    )
+    codex_worker_auth_header: str = Field(
+        default="Authorization",
+        validation_alias=AliasChoices("CODEX_WORKER_AUTH_HEADER", "WORKBENCH_CODEX_WORKER_AUTH_HEADER"),
+    )
+    codex_worker_auth_scheme: str = Field(
+        default="Bearer",
+        validation_alias=AliasChoices("CODEX_WORKER_AUTH_SCHEME", "WORKBENCH_CODEX_WORKER_AUTH_SCHEME"),
+    )
+    codex_worker_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("CODEX_WORKER_TIMEOUT_SECONDS", "WORKBENCH_CODEX_WORKER_TIMEOUT_SECONDS"),
+    )
+    hermes_endpoint: str = Field(
+        default="", validation_alias=AliasChoices("HERMES_ENDPOINT", "WORKBENCH_HERMES_ENDPOINT")
+    )
+    hermes_version: str = Field(
+        default="", validation_alias=AliasChoices("HERMES_VERSION", "WORKBENCH_HERMES_VERSION")
+    )
+    hermes_capabilities: str = Field(
+        default="", validation_alias=AliasChoices("HERMES_CAPABILITIES", "WORKBENCH_HERMES_CAPABILITIES")
+    )
+    hermes_auth_injected: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("HERMES_AUTH_INJECTED", "WORKBENCH_HERMES_AUTH_INJECTED"),
+    )
+    hermes_auth_token: str = Field(
+        default="", validation_alias=AliasChoices("HERMES_AUTH_TOKEN", "WORKBENCH_HERMES_AUTH_TOKEN")
+    )
+    hermes_auth_header: str = Field(
+        default="Authorization",
+        validation_alias=AliasChoices("HERMES_AUTH_HEADER", "WORKBENCH_HERMES_AUTH_HEADER"),
+    )
+    hermes_auth_scheme: str = Field(
+        default="Bearer", validation_alias=AliasChoices("HERMES_AUTH_SCHEME", "WORKBENCH_HERMES_AUTH_SCHEME")
+    )
+    hermes_timeout_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("HERMES_TIMEOUT_SECONDS", "WORKBENCH_HERMES_TIMEOUT_SECONDS"),
+    )
 
 
 @lru_cache
