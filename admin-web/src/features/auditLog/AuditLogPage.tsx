@@ -55,7 +55,6 @@ export function AuditLogPage({ onNavigate }: { onNavigate?: (view: AppView) => v
     <main className="main-content content-history audit-log">
       <div className="page-head">
         <div>
-          <div className="eyebrow">安全与审计</div>
           <h1 className="page-title">审计日志</h1>
           <p className="page-desc">按动作、操作者、目标与时间范围查询本租户的关键操作审计；仅 CEO 与超级管理员可查看。</p>
         </div>

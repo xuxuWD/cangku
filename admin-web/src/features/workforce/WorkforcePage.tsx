@@ -23,7 +23,6 @@ export function WorkforcePage({ onNavigate }: { onNavigate?: (view: AppView) => 
     <main className="main-content content-history workforce">
       <div className="page-head">
         <div>
-          <div className="eyebrow">组织与权限</div>
           <h1 className="page-title">员工与岗位</h1>
           <p className="page-desc">这是只读视图：列出本租户已知的岗位与数字员工标识、各自绑定的知识库与关联任务数。数据来自知识范围绑定与任务记录，不做增删改；编辑绑定请前往「知识权限管理」。</p>
         </div>

@@ -7,14 +7,157 @@ import type { ContentDraft, ContentSource, ContentTask, ContentStatus } from './
 const labels: Record<ContentStatus, string> = { generating: '生成中', reviewing: '待自检', confirmed: '已确认', failed: '失败' }
 
 export function ContentWorkbenchPage({ taskId, onNavigate }: { taskId?: string; onNavigate?: (view: AppView) => void } = {}) {
-  const [topic, setTopic] = useState(''); const [sources, setSources] = useState<ContentSource[]>([{ url: '', excerpt: '' }]); const [task, setTask] = useState<ContentTask | null>(null); const [draft, setDraft] = useState<ContentDraft | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const [topic, setTopic] = useState('')
+  const [sources, setSources] = useState<ContentSource[]>([{ url: '', excerpt: '' }])
+  const [task, setTask] = useState<ContentTask | null>(null)
+  const [draft, setDraft] = useState<ContentDraft | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
   const canGenerate = topic.trim().length > 0 && sources.some((item) => item.excerpt.trim().length > 0) && !busy
   const key = useMemo(() => createIdempotencyKey(topic, sources, []), [topic, sources])
-  useEffect(() => { const saved = taskId || sessionStorage.getItem('content-task-id'); if (saved) void getContentTask(saved).then((value) => { setTask(value); setDraft(value.draft); setTopic(value.topic); sessionStorage.setItem('content-task-id', value.task_id) }).catch(() => { if (taskId) setError('无法加载该历史草稿'); else sessionStorage.removeItem('content-task-id') }) }, [taskId])
-  const generate = async () => { if (!canGenerate) return; setBusy(true); setError(''); try { const value = await createContentTask(topic, sources, [], key); setTask(value); setDraft(value.draft); sessionStorage.setItem('content-task-id', value.task_id) } catch (e) { setError(e instanceof Error ? e.message : '生成失败') } finally { setBusy(false) } }
-  const regenerate = async () => { if (!task || task.status !== 'failed') return; setBusy(true); setError(''); try { const value = await regenerateContentTask(task.task_id, createRegenerationIdempotencyKey(task.task_id, task.run_id)); setTask(value); setDraft(value.draft) } catch (e) { setError(e instanceof Error ? e.message : '重新生成失败') } finally { setBusy(false) } }
-  const save = async () => { if (!task || !draft) return; setBusy(true); try { const value = await updateDraft(task.task_id, task.revision, draft); setTask(value); setDraft(value.draft) } catch (e) { setError(e instanceof Error ? e.message : '保存失败') } finally { setBusy(false) } }
-  const confirm = async () => { if (!task) return; if (!window.confirm('确认内容已完成自检并导出？')) return; setBusy(true); try { const value = await confirmContentTask(task.task_id, task.revision); setTask(value); setDraft(value.draft); const blob = await downloadMarkdown(task.task_id); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `公众号草稿-${task.task_id}.md`; anchor.click(); URL.revokeObjectURL(url) } catch (e) { setError(e instanceof Error ? e.message : '确认失败') } finally { setBusy(false) } }
+
+  useEffect(() => {
+    const saved = taskId || sessionStorage.getItem('content-task-id')
+    if (!saved) return
+    void getContentTask(saved)
+      .then((value) => {
+        setTask(value)
+        setDraft(value.draft)
+        setTopic(value.topic)
+        sessionStorage.setItem('content-task-id', value.task_id)
+      })
+      .catch(() => {
+        if (taskId) setError('无法加载该历史草稿')
+        else sessionStorage.removeItem('content-task-id')
+      })
+  }, [taskId])
+
+  const generate = async () => {
+    if (!canGenerate) return
+    setBusy(true); setError('')
+    try {
+      const value = await createContentTask(topic, sources, [], key)
+      setTask(value); setDraft(value.draft)
+      sessionStorage.setItem('content-task-id', value.task_id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '生成失败')
+    } finally { setBusy(false) }
+  }
+
+  const regenerate = async () => {
+    if (!task || task.status !== 'failed') return
+    setBusy(true); setError('')
+    try {
+      const value = await regenerateContentTask(task.task_id, createRegenerationIdempotencyKey(task.task_id, task.run_id))
+      setTask(value); setDraft(value.draft)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '重新生成失败')
+    } finally { setBusy(false) }
+  }
+
+  const save = async () => {
+    if (!task || !draft) return
+    setBusy(true)
+    try {
+      const value = await updateDraft(task.task_id, task.revision, draft)
+      setTask(value); setDraft(value.draft)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存失败')
+    } finally { setBusy(false) }
+  }
+
+  const confirm = async () => {
+    if (!task) return
+    if (!window.confirm('确认内容已完成自检并导出？')) return
+    setBusy(true)
+    try {
+      const value = await confirmContentTask(task.task_id, task.revision)
+      setTask(value); setDraft(value.draft)
+      const blob = await downloadMarkdown(task.task_id)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `公众号草稿-${task.task_id}.md`
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '确认失败')
+    } finally { setBusy(false) }
+  }
+
   const editable = task?.status === 'reviewing'
-  return <AppShell activeView="workbench" onNavigate={onNavigate}><main className="main-content content-workbench"><div className="page-head"><div><div className="eyebrow">微信公众号图文</div><h1 className="page-title">内容工作台</h1><p className="page-desc">提交主题和素材，生成可编辑的公众号草稿。</p></div><div className="content-status">{task ? `任务 ${task.task_id}` : '准备素材'}<strong>{task ? labels[task.status] : ''}</strong></div></div>{error && <div className="notice notice-error" role="alert"><div><strong>操作未完成</strong><p>{error}</p></div></div>}{task?.status === 'failed' && <div className="notice notice-error" data-testid="generation-failure" role="alert"><div><strong>草稿生成失败</strong><p>{draft?.summary || '请检查模型配置或稍后重新生成。'}</p></div></div>}<div className="content-grid"><section className="content-panel"><div className="panel-header"><h2>素材输入</h2><span>{sources.length} 条材料</span></div><label className="field"><span>内容主题</span><input aria-label="内容主题" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="例如：企业为什么要建立 AI 知识库" /></label>{sources.map((source, index) => <div className="source-fields" key={index}><label className="field"><span>来源链接（可选）</span><input aria-label="来源链接" value={source.url} onChange={(e) => setSources((all) => all.map((item, i) => i === index ? { ...item, url: e.target.value } : item))} placeholder="https://..." /></label><label className="field"><span>正文摘录</span><textarea aria-label="正文摘录" value={source.excerpt} onChange={(e) => setSources((all) => all.map((item, i) => i === index ? { ...item, excerpt: e.target.value } : item))} placeholder="粘贴与主题相关的素材摘录" /></label></div>)}<button className="button" type="button" onClick={() => setSources((all) => [...all, { url: '', excerpt: '' }])}>添加一条材料</button><button className="button primary" type="button" disabled={!canGenerate} onClick={() => void generate()}>{busy ? '正在处理' : '开始生成'}</button></section><section className="content-panel draft-panel"><div className="panel-header"><h2>草稿预览</h2><span>演示结果</span></div>{!draft ? <div className="empty-state"><strong>提交素材后生成草稿</strong><span>页面不会抓取链接，也不会自动发布。</span></div> : <><label className="field"><span>公众号标题</span><input aria-label="公众号标题" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} disabled={!editable} /></label><label className="field"><span>摘要</span><textarea aria-label="公众号摘要" value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} disabled={!editable} /></label><label className="field"><span>正文</span><textarea className="body-editor" aria-label="公众号正文" value={draft.body_markdown} onChange={(e) => setDraft({ ...draft, body_markdown: e.target.value })} disabled={!editable} /></label><div className="draft-actions">{task?.status === 'failed' && <button className="button primary" type="button" disabled={busy} onClick={() => void regenerate()}>{busy ? '正在处理' : '重新生成'}</button>}<button className="button" type="button" disabled={busy || !editable} onClick={() => void save()}>保存修改</button><button className="button primary" type="button" disabled={busy || task?.status !== 'reviewing'} onClick={() => void confirm()}>确认并下载</button></div></>}</section></div></main></AppShell>
+
+  return <AppShell activeView="workbench" onNavigate={onNavigate}>
+    <main className="main-content content-workbench">
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">内容工作台</h1>
+          <p className="page-desc">提交主题和素材，生成可编辑的公众号草稿。</p>
+        </div>
+        <span className="page-meta">
+          <span className="status-badge">{task ? labels[task.status] : '准备素材'}</span>
+          {task && <span className="page-code">{task.task_id}</span>}
+        </span>
+      </div>
+
+      {error && <div className="notice notice-error" role="alert"><div><strong>操作未完成</strong><p>{error}</p></div></div>}
+      {task?.status === 'failed' && <div className="notice notice-error" data-testid="generation-failure" role="alert"><div><strong>草稿生成失败</strong><p>{draft?.summary || '请检查模型配置或稍后重新生成。'}</p></div></div>}
+
+      <div className="content-grid">
+        <section className="content-panel">
+          <div className="panel-header"><h2>素材输入</h2><span>{sources.length} 条材料</span></div>
+          <div className="panel-body">
+            <label className="field">
+              <span>内容主题</span>
+              <input aria-label="内容主题" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="例如：企业为什么要建立 AI 知识库" />
+            </label>
+            {sources.map((source, index) => (
+              <div className="source-fields" key={index}>
+                <label className="field">
+                  <span>来源链接（可选）</span>
+                  <input aria-label="来源链接" value={source.url} onChange={(e) => setSources((all) => all.map((item, i) => i === index ? { ...item, url: e.target.value } : item))} placeholder="https://..." />
+                </label>
+                <label className="field">
+                  <span>正文摘录</span>
+                  <textarea aria-label="正文摘录" value={source.excerpt} onChange={(e) => setSources((all) => all.map((item, i) => i === index ? { ...item, excerpt: e.target.value } : item))} placeholder="粘贴与主题相关的素材摘录" />
+                </label>
+              </div>
+            ))}
+            <div className="panel-actions">
+              <button className="button" type="button" onClick={() => setSources((all) => [...all, { url: '', excerpt: '' }])}>添加一条材料</button>
+              <button className="button primary" type="button" disabled={!canGenerate} onClick={() => void generate()}>{busy ? '正在处理' : '开始生成'}</button>
+            </div>
+          </div>
+        </section>
+
+        <section className="content-panel draft-panel">
+          <div className="panel-header"><h2>草稿预览</h2><span>演示结果</span></div>
+          <div className="panel-body">
+            {!draft
+              ? <div className="empty-state"><strong>提交素材后生成草稿</strong><span>页面不会抓取链接，也不会自动发布。</span></div>
+              : <>
+                <label className="field">
+                  <span>公众号标题</span>
+                  <input aria-label="公众号标题" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} disabled={!editable} />
+                </label>
+                <label className="field">
+                  <span>摘要</span>
+                  <textarea aria-label="公众号摘要" value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} disabled={!editable} />
+                </label>
+                <label className="field">
+                  <span>正文</span>
+                  <textarea className="body-editor" aria-label="公众号正文" value={draft.body_markdown} onChange={(e) => setDraft({ ...draft, body_markdown: e.target.value })} disabled={!editable} />
+                </label>
+                <div className="draft-actions">
+                  {task?.status === 'failed' && <button className="button primary" type="button" disabled={busy} onClick={() => void regenerate()}>{busy ? '正在处理' : '重新生成'}</button>}
+                  <button className="button" type="button" disabled={busy || !editable} onClick={() => void save()}>保存修改</button>
+                  <button className="button primary" type="button" disabled={busy || task?.status !== 'reviewing'} onClick={() => void confirm()}>确认并下载</button>
+                </div>
+              </>}
+          </div>
+        </section>
+      </div>
+    </main>
+  </AppShell>
 }

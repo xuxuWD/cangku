@@ -31,8 +31,8 @@ export function CollaborationDynamicsPage({ onOpenTask, onNavigate }: { onOpenTa
   return <AppShell activeView="dynamics" onNavigate={onNavigate}>
     <main className="main-content content-history">
       <div className="page-head">
-        <div><div className="eyebrow">协同动态</div><h1 className="page-title">协同动态</h1><p className="page-desc">展示当前账号有权限查看的任务动态，点击「查看任务」可进入任务详情。</p></div>
-        <div className="content-status"><span>动态总数</span><strong>{items.length}</strong></div>
+        <div><h1 className="page-title">协同动态</h1><p className="page-desc">展示当前账号有权限查看的任务动态，点击「查看任务」可进入任务详情。</p></div>
+        <span className="page-metric"><span>动态总数</span><strong>{items.length}</strong></span>
       </div>
       <section className="history-panel">
         {loading && <div className="loading-state" role="status">正在加载协同动态…</div>}

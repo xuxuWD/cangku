@@ -1,2 +1,2 @@
-import { FilledIcon } from './FilledIcon'
-export function NoticeBanner({ title, children, tone = 'warning' }: { title: string; children: React.ReactNode; tone?: 'warning' | 'error' | 'success' }) { return <div className={`notice notice-${tone}`} role={tone === 'error' ? 'alert' : undefined}><FilledIcon name={tone === 'error' ? 'warning' : 'access'} label={tone === 'error' ? '错误' : '提示'} /><div><strong>{title}</strong><p>{children}</p></div></div> }
+import { Icon } from './Icon'
+export function NoticeBanner({ title, children, tone = 'warning' }: { title: string; children: React.ReactNode; tone?: 'warning' | 'error' | 'success' }) { return <div className={`notice notice-${tone}`} role={tone === 'error' ? 'alert' : undefined}><Icon name={tone === 'error' ? 'warning' : 'access'} label={tone === 'error' ? '错误' : '提示'} /><div><strong>{title}</strong><p>{children}</p></div></div> }

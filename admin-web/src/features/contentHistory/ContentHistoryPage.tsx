@@ -49,11 +49,14 @@ export function ContentHistoryPage({ onOpenTask, onNavigate }: { onOpenTask: (ta
   return <AppShell activeView="history" onNavigate={onNavigate}>
     <main className="main-content content-history">
       <div className="page-head">
-        <div><div className="eyebrow">微信公众号图文</div><h1 className="page-title">历史草稿</h1><p className="page-desc">查看并继续处理已创建的内容任务。</p></div>
-        <div className="content-status"><span>任务总数</span><strong>{total}</strong></div>
+        <div><h1 className="page-title">历史草稿</h1><p className="page-desc">查看并继续处理已创建的内容任务。</p></div>
+        <span className="page-metric"><span>任务总数</span><strong>{total}</strong></span>
+      </div>
+      <div className="toolbar">
+        <label className="history-filter">状态筛选<select aria-label="状态筛选" value={status} onChange={(event) => changeStatus(event.target.value as ContentStatus | '')}>{filters.map((item) => <option value={item.value} key={item.value || 'all'}>{item.label}</option>)}</select></label>
+        <span className="history-count">共 {total} 条</span>
       </div>
       <section className="history-panel">
-        <div className="history-toolbar"><label className="history-filter">状态筛选<select aria-label="状态筛选" value={status} onChange={(event) => changeStatus(event.target.value as ContentStatus | '')}>{filters.map((item) => <option value={item.value} key={item.value || 'all'}>{item.label}</option>)}</select></label><span className="history-count">共 {total} 条</span></div>
         {loading && <div className="loading-state" role="status">正在加载历史草稿…</div>}
         {!loading && error && <div className="notice notice-error" role="alert"><div><strong>历史草稿加载失败</strong><p>{error}</p></div></div>}
         {!loading && !error && items.length === 0 && <div className="empty-state"><strong>暂无历史草稿</strong><span>创建内容任务后，草稿会出现在这里。</span></div>}

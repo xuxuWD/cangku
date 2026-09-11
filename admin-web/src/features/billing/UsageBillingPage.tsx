@@ -27,7 +27,6 @@ export function UsageBillingPage({ onNavigate }: { onNavigate?: (view: AppView) 
     <main className="main-content content-history usage-billing">
       <div className="page-head">
         <div>
-          <div className="eyebrow">经营与成本</div>
           <h1 className="page-title">用量与费用</h1>
           <p className="page-desc">本租户的累计用量与累计费用，数据来自追加式用量账本（含冲正记录）。本页只读，不提供冲正、额度调整或计费口径变更入口。</p>
         </div>
@@ -53,19 +52,21 @@ export function UsageBillingPage({ onNavigate }: { onNavigate?: (view: AppView) 
 
       {!state.loading && usage && <section className="history-panel usage-billing__panel" aria-label="用量与费用汇总">
         <div className="panel-header"><h2>租户累计</h2><span>{usage.tenant_id}</span></div>
-        <div className="usage-billing__grid">
-          <div className="usage-billing__item">
-            <span className="usage-billing__label">累计用量</span>
-            <b className="usage-billing__value">{usage.units}</b>
-            <small>账本记录的原始单位，页面不做业务含义解释。</small>
+        <div className="panel-body">
+          <div className="stat-grid">
+            <div className="stat-tile">
+              <span className="stat-label">累计用量</span>
+              <b className="stat-value">{usage.units}</b>
+              <p className="stat-hint">账本记录的原始单位，页面不做业务含义解释。</p>
+            </div>
+            <div className="stat-tile">
+              <span className="stat-label">累计费用</span>
+              <b className="stat-value">{formatCents(usage.cost_cents)}</b>
+              <p className="stat-hint">账本以整数分记账；发生过冲正时累计可能为负。</p>
+            </div>
           </div>
-          <div className="usage-billing__item">
-            <span className="usage-billing__label">累计费用</span>
-            <b className="usage-billing__value">{formatCents(usage.cost_cents)}</b>
-            <small>账本以整数分记账；发生过冲正时累计可能为负。</small>
-          </div>
+          {isEmpty && <div className="empty-state"><strong>本期还没有用量记录</strong><span>有计量事件写入账本后，这里会显示累计用量与费用。</span></div>}
         </div>
-        {isEmpty && <div className="empty-state"><strong>本期还没有用量记录</strong><span>有计量事件写入账本后，这里会显示累计用量与费用。</span></div>}
       </section>}
 
       <p className="usage-billing__footnote">模型清单尚未实现：模型由配置注入（内容侧与规划侧两套），没有实体表与接口，属下一期立项。按时间 / 模型 / 任务的花费维度、预算与告警、冲正入口同样未做。</p>

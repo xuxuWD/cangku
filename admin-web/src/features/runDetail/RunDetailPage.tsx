@@ -115,7 +115,6 @@ export function RunDetailPage({ runId, onNavigate }: { runId: string; onNavigate
     <main className="main-content content-history run-detail">
       <div className="page-head">
         <div>
-          <div className="eyebrow">运行详情</div>
           <h1 className="page-title">{title}</h1>
           <p className="page-desc">展示该次运行的指标、事件时间线与审批项；审批通过与驳回由后端状态驱动。</p>
         </div>
@@ -127,14 +126,16 @@ export function RunDetailPage({ runId, onNavigate }: { runId: string; onNavigate
       <section className="history-panel run-detail__panel" aria-label="运行概览">
         <div className="panel-header"><h2>运行概览</h2>{state.metrics && <span>{runStatusLabel(state.metrics.status)}</span>}</div>
         {state.loadingOverview && <div className="loading-state" role="status"><span className="loading-dot" />正在加载运行详情…</div>}
-        {!state.loadingOverview && state.metrics && <div className="run-detail__grid">
-          <div className="run-detail__item"><span className="run-detail__label">运行状态</span><span className={`status-badge status-${state.metrics.status}`}>{runStatusLabel(state.metrics.status)}</span></div>
-          <div className="run-detail__item"><span className="run-detail__label">结束原因</span><span className="run-detail__value">{finishReasonLabel(state.metrics.finish_reason)}</span></div>
-          <div className="run-detail__item"><span className="run-detail__label">步骤完成度</span><span className="run-detail__value">{state.metrics.completed_step_count}/{state.metrics.step_count}</span></div>
-          <div className="run-detail__item"><span className="run-detail__label">工具调用</span><span className="run-detail__value">{state.metrics.tool_calls}</span></div>
-          <div className="run-detail__item"><span className="run-detail__label">耗时</span><span className="run-detail__value">{state.metrics.latency_ms} ms</span></div>
-          <div className="run-detail__item"><span className="run-detail__label">开始时间</span><span className="run-detail__value">{formatLocalTime(state.metrics.started_at)}</span></div>
-          <div className="run-detail__item"><span className="run-detail__label">结束时间</span><span className="run-detail__value">{state.metrics.finished_at ? formatLocalTime(state.metrics.finished_at) : '—'}</span></div>
+        {!state.loadingOverview && state.metrics && <div className="panel-body">
+          <div className="run-detail__grid">
+            <div className="run-detail__item"><span className="run-detail__label">运行状态</span><span className={`status-badge status-${state.metrics.status}`}>{runStatusLabel(state.metrics.status)}</span></div>
+            <div className="run-detail__item"><span className="run-detail__label">结束原因</span><span className="run-detail__value">{finishReasonLabel(state.metrics.finish_reason)}</span></div>
+            <div className="run-detail__item"><span className="run-detail__label">步骤完成度</span><span className="run-detail__value">{state.metrics.completed_step_count}/{state.metrics.step_count}</span></div>
+            <div className="run-detail__item"><span className="run-detail__label">工具调用</span><span className="run-detail__value">{state.metrics.tool_calls}</span></div>
+            <div className="run-detail__item"><span className="run-detail__label">耗时</span><span className="run-detail__value">{state.metrics.latency_ms} ms</span></div>
+            <div className="run-detail__item"><span className="run-detail__label">开始时间</span><span className="run-detail__value">{formatLocalTime(state.metrics.started_at)}</span></div>
+            <div className="run-detail__item"><span className="run-detail__label">结束时间</span><span className="run-detail__value">{state.metrics.finished_at ? formatLocalTime(state.metrics.finished_at) : '—'}</span></div>
+          </div>
         </div>}
         {!state.loadingOverview && !state.metrics && !pageError && state.metricsError && <div className="notice notice-error" role="alert"><div><strong>运行概览加载失败</strong><p>{state.metricsError.message}</p></div><button className="text-action" type="button" onClick={() => void reloadOverview()}>重新尝试</button></div>}
       </section>

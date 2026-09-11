@@ -49,14 +49,13 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
     <main className="main-content content-history workforce-settings">
       <div className="page-head">
         <div>
-          <div className="eyebrow">组织与权限</div>
           <h1 className="page-title">数字员工设置</h1>
           <p className="page-desc">维护本租户的岗位与数字员工。标识创建后不可修改；停用只影响后续挂载与指派，不撤销既有知识绑定、也不影响历史任务。仅超级管理员可读写。</p>
         </div>
         <div className="actions"><button className="button" type="button" onClick={() => void load()}>刷新</button></div>
       </div>
 
-      <div className="controls">
+      <div className="toolbar">
         <div className="segment" role="tablist" aria-label="目录类型">
           <button role="tab" type="button" aria-selected={state.tab === 'roles'} className={state.tab === 'roles' ? 'active' : ''} onClick={() => switchTab('roles')}>岗位</button>
           <button role="tab" type="button" aria-selected={state.tab === 'agents'} className={state.tab === 'agents' ? 'active' : ''} onClick={() => switchTab('agents')}>数字员工</button>

@@ -72,10 +72,10 @@ export function InboxPage({ onOpenTask, onOpenRun, onNavigate }: { onOpenTask?: 
   return <AppShell activeView="inbox" onNavigate={onNavigate}>
     <main className="main-content content-history">
       <div className="page-head">
-        <div><div className="eyebrow">站内通知</div><h1 className="page-title">通知</h1><p className="page-desc">审批结果与运行结果会记录在这里，标记已读只影响你自己的收件箱。</p></div>
+        <div><h1 className="page-title">通知</h1><p className="page-desc">审批结果与运行结果会记录在这里，标记已读只影响你自己的收件箱。</p></div>
         <div className="actions"><button className="button" type="button" disabled={state.markingAll || state.unreadCount === 0} onClick={() => void markAll()}>{state.markingAll ? '正在处理' : '全部标记已读'}</button></div>
       </div>
-      <div className="controls"><span className="role-note">未读通知 {state.unreadCount} 条</span></div>
+      <div className="toolbar"><span className="role-note">未读通知 {state.unreadCount} 条</span></div>
       {state.error && <div className="notice notice-error" role="alert"><div><strong>通知加载失败</strong><p>{state.error.message}</p></div><button className="text-action" type="button" onClick={() => void load()}>重新尝试</button></div>}
       <section className="history-panel">
         {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载通知…</div>}

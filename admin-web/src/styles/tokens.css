@@ -1,1 +1,121 @@
-:root{--canvas:#e8eef1;--surface:#f0f4f6;--card:#fff;--ink:#17232a;--muted:#697980;--line:#d4dfe3;--cyan:#08a6b8;--blue:#2779e8;--green:#43b957;--orange:#e49a22;--radius-md:14px;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--motion-fast:180ms;--motion-normal:240ms;--soft:3px 3px 8px rgba(112,132,142,.18),-3px -3px 8px rgba(255,255,255,.82);--inset:inset 2px 2px 5px rgba(119,139,149,.17),inset -2px -2px 5px rgba(255,255,255,.86)}
+/* 设计令牌：全部界面只取用这里的语义变量，不在组件里写死颜色与圆角。
+   浅色为默认值；深色通过 <html data-theme="dark"> 覆盖同一组语义名。
+   「跟随系统」由 app/theme.ts 解析成 light/dark 后写入 data-theme，CSS 只认 data-theme。 */
+
+:root {
+  color-scheme: light;
+
+  /* 背景层级：应用底 → 侧栏 → 卡片 → 次级面 → 内嵌面 */
+  --bg-app: #ffffff;
+  --bg-sidebar: #f7f7f5;
+  --bg-card: #ffffff;
+  --bg-subtle: #f2f2f0;
+  --bg-inset: #fafafa;
+  --bg-elevated: #ffffff;
+  --bg-hover: #f0f0ee;
+
+  /* 文本层级 */
+  --fg-primary: #1a1a1a;
+  --fg-secondary: #6b6b6b;
+  --fg-muted: #9a9a9a;
+  --fg-inverse: #ffffff;
+
+  /* 描边与分隔 */
+  --border-soft: #e8e8e6;
+  --border-strong: #d8d8d5;
+
+  /* 品牌墨绿：只用于品牌标识与成功/正向强调 */
+  --accent: #0f6b52;
+  --accent-hover: #0c5a45;
+  --accent-soft: #e6f2ec;
+  --accent-fg: #ffffff;
+
+  /* 反色药丸（导航激活、分段器激活） */
+  --pill-active-bg: #1f1f1f;
+  --pill-active-fg: #ffffff;
+  --pill-idle-bg: #ffffff;
+
+  /* 状态色 + 各自的淡底 */
+  --success: #1f7a4d;
+  --success-soft: #e7f4ec;
+  --warning: #9a6414;
+  --warning-soft: #fdf3e2;
+  --danger: #b3352c;
+  --danger-soft: #fdeceb;
+  --info: #1f5fa8;
+  --info-soft: #e9f1fb;
+
+  /* 圆角：药丸 / 输入卡 / 卡片 / 控件 / 导航项 */
+  --radius-pill: 999px;
+  --radius-hero: 24px;
+  --radius-card: 16px;
+  --radius-control: 10px;
+  --radius-nav: 10px;
+  --radius-chip: 8px;
+
+  /* 间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+
+  /* 动效：克制，只做底色与边框过渡 */
+  --motion-fast: 140ms;
+  --motion-normal: 200ms;
+
+  /* 浮层投影：WorkBuddy 风格几乎不用阴影，只有脱离文档流的浮层给一层极轻的 */
+  --shadow-pop: 0 10px 30px rgba(20, 20, 20, 0.1);
+  --shadow-pop-strong: 0 20px 55px rgba(20, 20, 20, 0.18);
+
+  /* 焦点环 */
+  --ring: 0 0 0 3px rgba(15, 107, 82, 0.18);
+
+  /* 布局尺寸 */
+  --sidebar-width: 300px;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg-app: #0a0a0a;
+  --bg-sidebar: #141414;
+  --bg-card: #191919;
+  --bg-subtle: #1f1f1f;
+  --bg-inset: #202020;
+  --bg-elevated: #232323;
+  --bg-hover: #262626;
+
+  --fg-primary: #f2f2f2;
+  --fg-secondary: #9a9a9a;
+  --fg-muted: #6e6e6e;
+  --fg-inverse: #ffffff;
+
+  --border-soft: #2a2a2a;
+  --border-strong: #3a3a3a;
+
+  --accent: #3aa681;
+  --accent-hover: #46b892;
+  --accent-soft: #14312a;
+  --accent-fg: #06231a;
+
+  --pill-active-bg: #2e2e2e;
+  --pill-active-fg: #ffffff;
+  --pill-idle-bg: #191919;
+
+  --success: #4caf7d;
+  --success-soft: #14301f;
+  --warning: #d3a04a;
+  --warning-soft: #33260f;
+  --danger: #e0736a;
+  --danger-soft: #33191a;
+  --info: #6aa3e0;
+  --info-soft: #14243a;
+
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --shadow-pop-strong: 0 20px 55px rgba(0, 0, 0, 0.6);
+
+  --ring: 0 0 0 3px rgba(58, 166, 129, 0.28);
+}
