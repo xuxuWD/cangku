@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from typing import NoReturn
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -72,6 +73,17 @@ from .orchestration.models import (
     OrchestrationProposalNotFound,
     OrchestrationProposalStateConflict,
 )
+from .workforce import (
+    DigitalEmployee,
+    DirectoryConflict,
+    DirectoryError,
+    DirectoryNotFound,
+    InvalidDirectoryKey,
+    InvalidDirectoryName,
+    JobRole,
+    RoleNotAvailable,
+    WorkforceDirectoryService,
+)
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
@@ -90,6 +102,13 @@ store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, audit=audit_service)
 knowledge_access_registry = build_knowledge_access_registry(settings)
+workforce_directory_store = build_workforce_directory_store(settings)
+workforce_directory_service = WorkforceDirectoryService(
+    workforce_directory_store,
+    audit=audit_service,
+    knowledge_registry=knowledge_access_registry,
+    task_store=store,
+)
 run_metrics_service = build_run_metrics(settings)
 runtime_state_store = build_runtime_state_store(settings)
 runtime_service = build_runtime_service(
@@ -801,6 +820,260 @@ def workforce_roster(context: UserContext = Depends(current_user)) -> WorkforceR
     ]
     items.sort(key=lambda item: (-item.task_count, item.key))
     return WorkforceRosterView(items=items, total=len(items))
+
+
+def _require_workforce_directory_admin(context: UserContext) -> None:
+    if context.role != "super_admin":
+        raise HTTPException(status_code=403, detail="只有超级管理员可以管理岗位与数字员工目录")
+
+
+def _workforce_status_query(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value not in ("active", "disabled"):
+        raise HTTPException(status_code=422, detail="状态只能是 active 或 disabled")
+    return value
+
+
+def _raise_directory_http(exc: Exception) -> NoReturn:
+    """把目录领域异常映射成 HTTP 语义；子类先判，避免被基类 `DirectoryError` 截走。"""
+    if isinstance(exc, (DirectoryConflict, RoleNotAvailable)):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, (InvalidDirectoryKey, InvalidDirectoryName)):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, DirectoryNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, DirectoryError):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, PolicyError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    raise exc
+
+
+class JobRoleView(BaseModel):
+    role_key: str
+    name: str
+    description: str
+    status: str
+    created_by: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class JobRoleListView(BaseModel):
+    items: list[JobRoleView]
+    total: int
+    limit: int
+    offset: int
+
+
+class JobRoleCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role_key: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=60)
+    description: str = Field(default="", max_length=200)
+
+
+class JobRoleUpdateRequest(BaseModel):
+    """只允许改中文名、描述与状态；标识不在模型里，传了会因 `extra=forbid` 直接 422。"""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    description: str | None = Field(default=None, max_length=200)
+    status: str | None = None
+
+
+class DigitalEmployeeView(BaseModel):
+    agent_key: str
+    name: str
+    description: str
+    role_key: str
+    status: str
+    created_by: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class DigitalEmployeeListView(BaseModel):
+    items: list[DigitalEmployeeView]
+    total: int
+    limit: int
+    offset: int
+
+
+class DigitalEmployeeCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_key: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=60)
+    role_key: str = Field(min_length=1, max_length=64)
+    description: str = Field(default="", max_length=200)
+
+
+class DigitalEmployeeUpdateRequest(BaseModel):
+    """`agent_key` 是身份、不可改；`role_key` 是「所属岗位」，可以换岗（会校验岗位可用）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    description: str | None = Field(default=None, max_length=200)
+    role_key: str | None = Field(default=None, min_length=1, max_length=64)
+    status: str | None = None
+
+
+class WorkforceCandidatesView(BaseModel):
+    roles: list[str]
+    agents: list[str]
+
+
+def _job_role_view(role: JobRole) -> JobRoleView:
+    return JobRoleView(
+        role_key=role.role_key,
+        name=role.name,
+        description=role.description,
+        status=role.status.value,
+        created_by=role.created_by,
+        created_at=role.created_at,
+        updated_at=role.updated_at,
+    )
+
+
+def _digital_employee_view(employee: DigitalEmployee) -> DigitalEmployeeView:
+    return DigitalEmployeeView(
+        agent_key=employee.agent_key,
+        name=employee.name,
+        description=employee.description,
+        role_key=employee.role_key,
+        status=employee.status.value,
+        created_by=employee.created_by,
+        created_at=employee.created_at,
+        updated_at=employee.updated_at,
+    )
+
+
+@app.get("/api/v1/workforce/roles", response_model=JobRoleListView)
+def list_workforce_roles(
+    role_status: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> JobRoleListView:
+    """岗位目录列表：仅超级管理员、严格本租户、必须分页。"""
+    _require_workforce_directory_admin(context)
+    items, total = workforce_directory_service.list_roles(
+        context, status=_workforce_status_query(role_status), limit=limit, offset=offset
+    )
+    return JobRoleListView(
+        items=[_job_role_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
+
+
+@app.post("/api/v1/workforce/roles", response_model=JobRoleView, status_code=status.HTTP_201_CREATED)
+def create_workforce_role(
+    payload: JobRoleCreateRequest, context: UserContext = Depends(current_user)
+) -> JobRoleView:
+    """新建岗位：标识重复 409，标识或中文名非法 422。"""
+    _require_workforce_directory_admin(context)
+    try:
+        role = workforce_directory_service.create_role(
+            context, role_key=payload.role_key, name=payload.name, description=payload.description
+        )
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return _job_role_view(role)
+
+
+@app.patch("/api/v1/workforce/roles/{role_key}", response_model=JobRoleView)
+def update_workforce_role(
+    role_key: str, payload: JobRoleUpdateRequest, context: UserContext = Depends(current_user)
+) -> JobRoleView:
+    """改中文名 / 描述 / 状态；标识不可改，岗位不存在 404。"""
+    _require_workforce_directory_admin(context)
+    try:
+        role = workforce_directory_service.update_role(
+            context,
+            role_key,
+            name=payload.name,
+            description=payload.description,
+            status=_workforce_status_query(payload.status),
+        )
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return _job_role_view(role)
+
+
+@app.get("/api/v1/workforce/agents", response_model=DigitalEmployeeListView)
+def list_workforce_agents(
+    agent_status: str | None = Query(default=None, alias="status"),
+    role_key: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> DigitalEmployeeListView:
+    """数字员工目录列表：可按状态与所属岗位过滤；仅超级管理员、严格本租户、必须分页。"""
+    _require_workforce_directory_admin(context)
+    try:
+        items, total = workforce_directory_service.list_employees(
+            context,
+            status=_workforce_status_query(agent_status),
+            role_key=role_key,
+            limit=limit,
+            offset=offset,
+        )
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return DigitalEmployeeListView(
+        items=[_digital_employee_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
+
+
+@app.post(
+    "/api/v1/workforce/agents",
+    response_model=DigitalEmployeeView,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_workforce_agent(
+    payload: DigitalEmployeeCreateRequest, context: UserContext = Depends(current_user)
+) -> DigitalEmployeeView:
+    """新建数字员工：标识重复 409，所属岗位不存在或已停用 409。"""
+    _require_workforce_directory_admin(context)
+    try:
+        employee = workforce_directory_service.create_employee(
+            context,
+            agent_key=payload.agent_key,
+            name=payload.name,
+            role_key=payload.role_key,
+            description=payload.description,
+        )
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return _digital_employee_view(employee)
+
+
+@app.patch("/api/v1/workforce/agents/{agent_key}", response_model=DigitalEmployeeView)
+def update_workforce_agent(
+    agent_key: str, payload: DigitalEmployeeUpdateRequest, context: UserContext = Depends(current_user)
+) -> DigitalEmployeeView:
+    """改中文名 / 描述 / 所属岗位 / 状态；`agent_key` 是身份不可改（传了 422）。"""
+    _require_workforce_directory_admin(context)
+    try:
+        employee = workforce_directory_service.update_employee(
+            context,
+            agent_key,
+            name=payload.name,
+            description=payload.description,
+            role_key=payload.role_key,
+            status=_workforce_status_query(payload.status),
+        )
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return _digital_employee_view(employee)
+
+
+@app.get("/api/v1/workforce/candidates", response_model=WorkforceCandidatesView)
+def workforce_candidates(context: UserContext = Depends(current_user)) -> WorkforceCandidatesView:
+    """尚未纳入目录的标识：知识绑定与任务里出现过、但目录里还没有的那些（供一键纳管）。"""
+    _require_workforce_directory_admin(context)
+    result = workforce_directory_service.candidates(context)
+    return WorkforceCandidatesView(roles=result["roles"], agents=result["agents"])
 
 
 def _knowledge_access_view(binding_type: str, binding_key: str, knowledge_base_ids: set[str]) -> dict[str, object]:

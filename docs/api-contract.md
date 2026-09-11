@@ -425,7 +425,64 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 - 排序：`task_count` 倒序，其次 `key` 升序（结果稳定）。
 - 不返回账号、手机号或任何 PII。
-- **不是目录管理**：没有新增/编辑/停用岗位或数字员工的能力，页面只反映已出现过的标识；真正的目录实体需单独立项。系统角色（账号 `role`）不在此接口。`task_count` 为**精确匹配**，标识写法不同（大小写、空格）会被视作不同标识，不做归一化。
+- **不是目录管理**：本接口只反映「已出现过的标识」，不提供新增/编辑/停用；真正的目录实体见下一节。系统角色（账号 `role`）不在此接口。`task_count` 为**精确匹配**，标识写法不同（大小写、空格）会被视作不同标识，不做归一化。
+
+## 岗位与数字员工目录（「数字员工设置」）
+
+把岗位与数字员工变成**可管理的目录实体**：岗位有标识、中文名、描述与启用状态；数字员工有标识、中文名、**所属岗位**、描述与启用状态。口径见 `docs/superpowers/specs/2026-09-12-agent-directory-design.md`。
+
+**通用约定（适用于本节全部接口）**
+
+- **权限**：仅 `super_admin` 可读写；`ceo`、`customer_admin`、`department_lead`、`employee` 一律 `403`「只有超级管理员可以管理岗位与数字员工目录」；未认证 `401`。权限在仓储层与接口层各强制一次。
+- **租户隔离**：只读写当前租户；他租户的标识按「不存在」处理（`404`），不泄露存在性。
+- **标识规则**：`^[a-z0-9][a-z0-9._-]{0,63}$`；提交前 `strip()` 并转小写（大小写不同视为同一标识）；**创建后不可修改**（任务、知识绑定、运行记录都引用了它）。
+- **停用不删除**：`status` 只有 `active` / `disabled`；停用只影响「能否挂载新员工 / 后续指派」，不撤销既有知识绑定，也不影响历史任务与运行。
+- **分页**：列表接口必须带 `limit`（1–200，默认 50）与 `offset`（≥0），响应含 `total`。
+- **请求体未知字段**：一律 `422`（`extra="forbid"`），避免「传了标识但被静默忽略」。
+- **审计**：每次变更写审计，动作为 `workforce.role.created` / `workforce.role.updated` / `workforce.role.disabled` / `workforce.agent.created` / `workforce.agent.updated` / `workforce.agent.disabled`，明细只含 `role_key`、`agent_key`、`status`、`changed_fields`（均为服务端声明值）。
+- **响应不含 PII**：字段固定为 `role_key`、`agent_key`、`name`、`description`、`role_key`（所属岗位）、`status`、`created_by`、`created_at`、`updated_at`。
+
+`GET /api/v1/workforce/roles`
+
+- 查询参数：`status`（可选，`active` / `disabled`，其他值 `422`）、`limit`、`offset`。
+- 响应：`{"items": [{role_key, name, description, status, created_by, created_at, updated_at}], "total", "limit", "offset"}`；按 `role_key` 升序。
+
+`POST /api/v1/workforce/roles`
+
+- 请求体：`{"role_key": "...", "name": "...", "description": "..."}`（`description` 可省略）。
+- `201` 返回创建后的视图；标识重复 `409`「该岗位标识已存在」；标识非法或中文名为空/超长 `422`。
+
+`PATCH /api/v1/workforce/roles/{role_key}`
+
+- 请求体只允许 `name`、`description`、`status`；**传 `role_key` 直接 `422`**（标识不可改）。
+- `200` 返回更新后的视图；岗位不存在或不属于本租户 `404`；`status` 非法 `422`。
+
+`GET /api/v1/workforce/agents`
+
+- 查询参数：`status`（可选）、`role_key`（可选，按所属岗位过滤）、`limit`、`offset`。
+- 响应：`{"items": [{agent_key, name, description, role_key, status, created_by, created_at, updated_at}], "total", "limit", "offset"}`；按 `role_key`、`agent_key` 升序。
+
+`POST /api/v1/workforce/agents`
+
+- 请求体：`{"agent_key": "...", "name": "...", "role_key": "...", "description": "..."}`（`description` 可省略）。
+- `201`；数字员工标识重复 `409`；**所属岗位不存在、不属于本租户或已停用 `409`**。
+
+`PATCH /api/v1/workforce/agents/{agent_key}`
+
+- 请求体允许 `name`、`description`、`role_key`（**换岗**，会重新校验岗位可用）、`status`；**传 `agent_key` 直接 `422`**（身份不可改）。
+- `200`；员工不存在或不属于本租户 `404`；目标岗位不可用 `409`。
+
+`GET /api/v1/workforce/candidates`
+
+- **未纳管**标识：知识范围绑定与任务记录里出现过、但目录里还没有的标识，供管理员一键纳管。
+- 响应：`{"roles": [...], "agents": [...]}`；岗位候选来自知识范围的 `role` 绑定，员工候选来自 `agent` 绑定与任务中 `employee_key` 的并集。
+- 该结果是**实时求差集**，不落库，因此不存在「已纳管却仍显示未纳管」的第二份真相。
+
+**已知限制（如实登记）**
+
+- **命名不对齐**：目录用 `agent_key`，任务字段是 `employee_key`（同值不同名）；因此一个曾作为 `employee_key` 使用过的标识，即使已作为「岗位」纳管，仍会出现在员工候选里。
+- **阶段 1 不强制绑定前置**：`PUT /api/v1/knowledge-access/roles|agents/...` 仍未校验标识是否已在目录（写路径收敛为阶段 2，收敛条件见设计文档 §11 Q2），因此当前允许先配范围、后纳管。
+- 不含模型 / Runtime / 技能 / 预算绑定，也不含组织与部门（均属后续独立立项）。
 
 ## 审计查询
 

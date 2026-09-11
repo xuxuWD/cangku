@@ -24,6 +24,10 @@ from .planner.store import InMemoryPlanProposalStore
 from .repository import PostgresTaskRepository, TaskRepository
 from .sessions import InMemorySessionRevocationStore
 from .settings import Settings, validate_runtime_settings
+from .workforce.store import (
+    InMemoryWorkforceDirectoryStore,
+    PostgresWorkforceDirectoryStore,
+)
 
 
 def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True):
@@ -324,6 +328,26 @@ def build_knowledge_access_registry(settings: Settings, *, connection=None):
             connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
         return PostgresKnowledgeAccessRegistry(connection)
     raise ValueError("不支持的知识范围仓储类型")
+
+
+def build_workforce_directory_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配岗位/数字员工目录仓储（表 `workbench_job_roles` /
+    `workbench_digital_employees`，迁移 022）。"""
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存岗位/数字员工目录仓储")
+        return InMemoryWorkforceDirectoryStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresWorkforceDirectoryStore(connection)
+    raise ValueError("不支持的岗位/数字员工目录仓储类型")
 
 
 def build_session_revocation_store(settings: Settings, *, connection=None, migrate: bool = True):
