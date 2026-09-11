@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Sequence
+
 from .logging import emit_audit_line
 from .models import AuditAction, AuditRecord, build_record
 from .store import AuditStore
@@ -34,3 +37,29 @@ class AuditService:
         saved = self.store.append(record)
         emit_audit_line(saved)
         return saved
+
+    def query(
+        self,
+        tenant_id: str,
+        *,
+        actions: Sequence[AuditAction] | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        actor_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[AuditRecord], int]:
+        """只读查询：转发到仓储；租户条件由调用方从鉴权上下文提供，不允许省略。"""
+        return self.store.query(
+            tenant_id,
+            actions=actions,
+            target_type=target_type,
+            target_id=target_id,
+            actor_id=actor_id,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
