@@ -334,6 +334,62 @@ def build_account_service(
     )
 
 
+def build_sso_config(settings: Settings):
+    """按配置装配 SSO；未启用返回 None，启用但缺必填项 fail-closed 报错。"""
+    if not settings.sso_enabled:
+        return None
+    from .accounts.sso import SsoConfig
+
+    required = {
+        "sso_issuer": settings.sso_issuer,
+        "sso_authorization_endpoint": settings.sso_authorization_endpoint,
+        "sso_token_endpoint": settings.sso_token_endpoint,
+        "sso_jwks_uri": settings.sso_jwks_uri,
+        "sso_client_id": settings.sso_client_id,
+        "sso_client_secret": settings.sso_client_secret,
+        "sso_redirect_uri": settings.sso_redirect_uri,
+    }
+    missing = [
+        name
+        for name, value in required.items()
+        if not (isinstance(value, str) and value.strip())
+    ]
+    if missing:
+        raise ValueError("SSO 已启用但缺少必填配置：" + "、".join(missing))
+    return SsoConfig(
+        issuer=settings.sso_issuer.strip(),
+        authorization_endpoint=settings.sso_authorization_endpoint.strip(),
+        token_endpoint=settings.sso_token_endpoint.strip(),
+        jwks_uri=settings.sso_jwks_uri.strip(),
+        client_id=settings.sso_client_id.strip(),
+        client_secret=settings.sso_client_secret,
+        redirect_uri=settings.sso_redirect_uri.strip(),
+        scopes=tuple(item for item in settings.sso_scopes.split() if item),
+        timeout_seconds=settings.sso_timeout_seconds,
+    )
+
+
+def build_sso_state_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配 SSO 授权 state 仓储。"""
+    validate_runtime_settings(settings)
+    from .accounts.sso_store import InMemorySsoStateStore, PostgresSsoStateStore
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存 SSO 状态仓储")
+        return InMemorySsoStateStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresSsoStateStore(connection)
+    raise ValueError("不支持的 SSO 状态存储类型")
+
+
 def build_planner_service(settings: Settings, *, audit: AuditService, task_store=None, runtime_service=None, run_metrics=None, connection=None, migrate: bool = True):
     """按存储模式装配计划生成服务。"""
     validate_runtime_settings(settings)

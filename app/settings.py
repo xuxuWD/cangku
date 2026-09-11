@@ -193,6 +193,64 @@ class Settings(BaseSettings):
             "TOTP_ENROLLMENT_TTL_SECONDS", "WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS"
         ),
     )
+    sso_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SSO_ENABLED", "WORKBENCH_SSO_ENABLED"),
+    )
+    sso_provider: str = Field(
+        default="generic_oidc",
+        validation_alias=AliasChoices("SSO_PROVIDER", "WORKBENCH_SSO_PROVIDER"),
+    )
+    sso_issuer: str = Field(
+        default="",
+        validation_alias=AliasChoices("SSO_ISSUER", "WORKBENCH_SSO_ISSUER"),
+    )
+    sso_authorization_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "SSO_AUTHORIZATION_ENDPOINT", "WORKBENCH_SSO_AUTHORIZATION_ENDPOINT"
+        ),
+    )
+    sso_token_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices("SSO_TOKEN_ENDPOINT", "WORKBENCH_SSO_TOKEN_ENDPOINT"),
+    )
+    sso_jwks_uri: str = Field(
+        default="",
+        validation_alias=AliasChoices("SSO_JWKS_URI", "WORKBENCH_SSO_JWKS_URI"),
+    )
+    sso_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("SSO_CLIENT_ID", "WORKBENCH_SSO_CLIENT_ID"),
+    )
+    sso_client_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("SSO_CLIENT_SECRET", "WORKBENCH_SSO_CLIENT_SECRET"),
+    )
+    sso_redirect_uri: str = Field(
+        default="",
+        validation_alias=AliasChoices("SSO_REDIRECT_URI", "WORKBENCH_SSO_REDIRECT_URI"),
+    )
+    sso_scopes: str = Field(
+        default="openid email profile",
+        validation_alias=AliasChoices("SSO_SCOPES", "WORKBENCH_SSO_SCOPES"),
+    )
+    sso_trust_idp_mfa: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SSO_TRUST_IDP_MFA", "WORKBENCH_SSO_TRUST_IDP_MFA"),
+    )
+    sso_state_ttl_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=900,
+        validation_alias=AliasChoices("SSO_STATE_TTL_SECONDS", "WORKBENCH_SSO_STATE_TTL_SECONDS"),
+    )
+    sso_timeout_seconds: float = Field(
+        default=10.0,
+        ge=1,
+        le=60,
+        validation_alias=AliasChoices("SSO_TIMEOUT_SECONDS", "WORKBENCH_SSO_TIMEOUT_SECONDS"),
+    )
     orchestration_default_runtime_key: str = Field(
         default="mock",
         validation_alias=AliasChoices(

@@ -61,6 +61,7 @@ def test_postgres_backend_exposes_account_repository_contract() -> None:
     for name in (
         "add",
         "find_by_phone",
+        "find_by_email",
         "get",
         "list_by_status",
         "mark_approved",
@@ -71,6 +72,7 @@ def test_postgres_backend_exposes_account_repository_contract() -> None:
         "confirm_totp",
         "clear_totp",
         "record_totp_step",
+        "set_sso_identity",
     ):
         assert callable(getattr(repository, name))
 
@@ -124,7 +126,7 @@ def account_row(status: str = "pending") -> tuple:
     return (
         "acct-1", "13800000001", "scrypt$hash", "内容运营", "张三", None,
         None, None, status, datetime(2026, 9, 10, tzinfo=UTC), None, None, None,
-        None, None, None,
+        None, None, None, None, None,
     )
 
 
@@ -138,7 +140,7 @@ def totp_row(
     return (
         "acct-1", "13800000001", "scrypt$hash", "内容运营", "张三", None,
         None, None, status, datetime(2026, 9, 10, tzinfo=UTC), None, None, None,
-        secret, confirmed_at, last_step,
+        secret, confirmed_at, last_step, None, None,
     )
 
 
@@ -227,6 +229,7 @@ def full_account_row() -> tuple:
         "employee", "t-9", "approved", datetime(2026, 9, 10, tzinfo=UTC),
         datetime(2026, 9, 11, tzinfo=UTC), "acct-admin", None,
         "JBSWY3DPEHPK3PXP", datetime(2026, 9, 12, tzinfo=UTC), 4242,
+        "generic_oidc", "sub-9",
     )
 
 
@@ -252,6 +255,8 @@ def test_postgres_hydrate_maps_every_column() -> None:
     assert account.totp_secret == "JBSWY3DPEHPK3PXP"
     assert account.totp_confirmed_at == datetime(2026, 9, 12, tzinfo=UTC)
     assert account.totp_last_step == 4242
+    assert account.sso_provider == "generic_oidc"
+    assert account.sso_subject == "sub-9"
 
 
 def test_postgres_add_passes_all_columns_in_order() -> None:
@@ -264,7 +269,7 @@ def test_postgres_add_passes_all_columns_in_order() -> None:
     repository.add(draft)
 
     _statement, params = connection.cursor_instance.statements[0]
-    assert len(params) == 16
+    assert len(params) == 18
     assert params[0] == draft.account_id
     assert params[1] == "13800000001"
     assert params[2] == "scrypt$hash"
@@ -274,6 +279,8 @@ def test_postgres_add_passes_all_columns_in_order() -> None:
     assert params[13] is None
     assert params[14] is None
     assert params[15] is None
+    assert params[16] is None
+    assert params[17] is None
 
 
 def test_postgres_mark_approved_passes_parameters_in_order() -> None:
@@ -352,6 +359,8 @@ def test_columns_constant_matches_hydrate_order() -> None:
         "totp_secret",
         "totp_confirmed_at",
         "totp_last_step",
+        "sso_provider",
+        "sso_subject",
     ]
 
 

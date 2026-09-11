@@ -78,3 +78,6 @@ class Account:
     totp_secret: str | None = None
     totp_confirmed_at: datetime | None = None
     totp_last_step: int | None = None
+    # SSO 单点登录身份绑定：provider 为 IdP 标识，subject 为 IdP 侧稳定用户标识。
+    sso_provider: str | None = None
+    sso_subject: str | None = None

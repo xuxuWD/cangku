@@ -17,9 +17,15 @@ from .models import (
 )
 
 
+def _normalize_email(email: object) -> str:
+    """邮箱比较统一按小写去空白，避免大小写造成重复身份。"""
+    return email.strip().lower() if isinstance(email, str) else ""
+
+
 class AccountRepository(Protocol):
     def add(self, account: Account) -> Account: ...
     def find_by_phone(self, phone: str) -> Account | None: ...
+    def find_by_email(self, email: str) -> Account | None: ...
     def get(self, account_id: str) -> Account: ...
     def list_by_status(self, status: AccountStatus) -> list[Account]: ...
     def mark_approved(self, account_id: str, *, role: str, tenant_id: str, reviewed_by: str) -> Account: ...
@@ -30,6 +36,7 @@ class AccountRepository(Protocol):
     def confirm_totp(self, account_id: str, *, step: int) -> Account: ...
     def clear_totp(self, account_id: str) -> Account: ...
     def record_totp_step(self, account_id: str, step: int) -> Account: ...
+    def set_sso_identity(self, account_id: str, *, provider: str, subject: str) -> Account: ...
 
 
 class InMemoryAccountRepository:
@@ -52,6 +59,16 @@ class InMemoryAccountRepository:
         with self._lock:
             account_id = self._by_phone.get(phone)
             return self._accounts.get(account_id) if account_id else None
+
+    def find_by_email(self, email: str) -> Account | None:
+        normalized = _normalize_email(email)
+        if not normalized:
+            return None
+        with self._lock:
+            for account in self._accounts.values():
+                if account.email and _normalize_email(account.email) == normalized:
+                    return account
+        return None
 
     def get(self, account_id: str) -> Account:
         with self._lock:
@@ -134,6 +151,13 @@ class InMemoryAccountRepository:
             account.totp_last_step = step
             return account
 
+    def set_sso_identity(self, account_id: str, *, provider: str, subject: str) -> Account:
+        with self._lock:
+            account = self._require(account_id)
+            account.sso_provider = provider
+            account.sso_subject = subject
+            return account
+
     def _require(self, account_id: str) -> Account:
         account = self._accounts.get(account_id)
         if account is None:
@@ -147,7 +171,7 @@ class PostgresAccountRepository:
     _COLUMNS = (
         "account_id, phone, password_hash, position, full_name, email, role, tenant_id, "
         "status, requested_at, reviewed_at, reviewed_by, rejection_reason, "
-        "totp_secret, totp_confirmed_at, totp_last_step"
+        "totp_secret, totp_confirmed_at, totp_last_step, sso_provider, sso_subject"
     )
 
     def __init__(self, connection_or_pool) -> None:
@@ -181,6 +205,8 @@ class PostgresAccountRepository:
             totp_secret=row[13],
             totp_confirmed_at=row[14],
             totp_last_step=row[15],
+            sso_provider=row[16],
+            sso_subject=row[17],
         )
 
     def add(self, account: Account) -> Account:
@@ -190,7 +216,7 @@ class PostgresAccountRepository:
                     cursor.execute(
                         f"""
                         INSERT INTO workbench_accounts ({self._COLUMNS})
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (phone) DO NOTHING
                         RETURNING {self._COLUMNS}
                         """,
@@ -200,6 +226,7 @@ class PostgresAccountRepository:
                             account.status.value, account.requested_at, account.reviewed_at,
                             account.reviewed_by, account.rejection_reason,
                             account.totp_secret, account.totp_confirmed_at, account.totp_last_step,
+                            account.sso_provider, account.sso_subject,
                         ),
                     )
                     row = cursor.fetchone()
@@ -212,6 +239,19 @@ class PostgresAccountRepository:
             with connection.cursor() as cursor:
                 cursor.execute(
                     f"SELECT {self._COLUMNS} FROM workbench_accounts WHERE phone = %s", (phone,)
+                )
+                row = cursor.fetchone()
+        return self._hydrate(row) if row is not None else None
+
+    def find_by_email(self, email: str) -> Account | None:
+        normalized = _normalize_email(email)
+        if not normalized:
+            return None
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._COLUMNS} FROM workbench_accounts WHERE lower(btrim(email)) = %s",
+                    (normalized,),
                 )
                 row = cursor.fetchone()
         return self._hydrate(row) if row is not None else None
@@ -401,3 +441,21 @@ class PostgresAccountRepository:
                     """
                 )
                 return cursor.fetchone() is not None
+
+    def set_sso_identity(self, account_id: str, *, provider: str, subject: str) -> Account:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_accounts
+                        SET sso_provider = %s, sso_subject = %s
+                        WHERE account_id = %s
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (provider, subject, account_id),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise AccountNotFound(account_id)
+        return self._hydrate(row)
