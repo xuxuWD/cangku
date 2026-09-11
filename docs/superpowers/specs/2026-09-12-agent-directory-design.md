@@ -53,6 +53,7 @@
 | D2 | 归属关系 | **数字员工归属一个岗位**（`agent.role_key` 必填） | 岗位成为范围的载体，员工级可单独绑定（语义与既有「知识权限管理」页说明一致） |
 | D3 | 编辑权限 | **仅 `super_admin` 读写**（`ceo` / `customer_admin` 均不可见） | 与知识范围管理完全一致，不新增权限面；私有部署客户管理员需求出现时再单独立项 |
 | D4 | 存量自由文本标识 | **自动登记为「未纳管」**（可一键纳管，不阻断现有流程） | 采用**实时计算**而非落库，避免制造第二份真相 |
+| D5 | 知识范围绑定键（`binding_key`）的大小写归一（阶段 2 前置，2026-09-12 评审后新增） | **归一**：绑定键与目录标识一样做 `strip().lower()` | 写入时归一化绑定键；存量大小写不一致的行在下一次保存时被改写；`roster` / `candidates` 的精确匹配口径随之变化，实现时**必须同步 `docs/api-contract.md`** |
 
 ## 5. 数据模型
 
@@ -233,3 +234,41 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 | 审计动作 | 4 条：`workforce.role.created` ×2、`workforce.agent.created`、`workforce.role.disabled` |
 
 **结论**：① 三源并集与「按类型分开」的语义成立；② **建同名岗位不会让该标识从员工候选里消失**（它仍作为任务的 `employee_key` 存在），这正是 Q2 收敛条件必须取「绑定侧」的原因；③ 内存存储进程结束即消失、无落盘（`git status` 干净、无 `.db` 文件），**本次结果不代表任何真实环境的未纳管情况**，真实判定仍需 staging 与超管令牌（阻塞项 1）。
+
+## 14. 阶段 2 影响清点（评审材料，2026-09-12）
+
+> 结论先说：**破坏面远小于 §5.3 初稿的估计**，但开工前必须先定 §14.2 的三条口径，其中第 3 条（大小写归一）不解决会形成死结。
+
+### 14.1 事实清点
+
+| 面 | 结论 | 依据 |
+| --- | --- | --- |
+| 写接口实现点 | **只有 2 处** | `app/main.py:1085-1097`（`PUT .../roles/{role_key}`）与 `app/main.py:1109-1121`（`PUT .../agents/{agent_key}`） |
+| 当前写流程 | 先 `_ensure_knowledge_admin`（`PolicyError` → `403`）→ `bind_*` → `resolve` | 同上 |
+| 打 HTTP 写接口的测试 | **仅 1 个文件 2 个用例** | `tests/test_control_plane.py:345`（超管写 role，键 `content-operator`）、`:367`（ceo 写 agent，断言 `403`） |
+| 直接调 store `bind_role`/`bind_agent` 的测试 | 5 个文件 14 处，**只测注册表本身** | `test_knowledge_policy.py`(5)、`test_workforce_roster_store.py`(4)、`test_workforce_roster_api.py`(2)、`test_workforce_directory_api.py`(2)、`test_knowledge.py`(1) |
+| 前端调用方 | 只有 `saveKnowledgeAccess`；且候选已改为读目录（阶段 1 只拉 `status=active`），正常操作提交不了未纳管标识 | `admin-web/src/features/knowledgeAccess/api.ts`、`KnowledgeAccessPage.tsx` |
+| 存量数据影响 | 既有绑定行**读 / 检索不受影响**（`resolve` 不改），只有「重新保存该绑定的范围」才需要先纳管 → 影响的是**管理动作**，不是运行链路 | `app/knowledge_policy.py:48-52`、`:146-160` |
+
+**推论**：只要校验放在**接口层**，要动的只有「2 个 PUT 分支 + 1 个测试文件的 2 个用例 + 契约文案」，仓储层原语、注册表单测与检索链路全部不动，且**不涉及任何迁移**。
+
+### 14.2 必须先定的三条口径
+
+1. **校验层次 = 接口层**，不进 `KnowledgeAccessRegistry.bind_*`。理由：① 两个 store 方法被 14 处单测直接调用，放进仓储层等于让注册表单测被迫先建目录，并把注册表从「绑定原语」耦合上「目录」；② `app/` 内除这两个 PUT 外**没有其它写绑定的调用点**（已全仓核对），接口层足够覆盖。
+2. **顺序：先 `403`，后 `409`**。现有 `except PolicyError → 403` 包住整个 try；目录校验若复用 `PolicyError`，越权请求会拿到 `409`，直接破坏「普通用户调管理接口必得 `403`」这条安全断言（`tests/test_control_plane.py:367` 正是它）。因此需要**独立异常类型**（如 `DirectoryNotManaged` → `409`），且权限判定必须排在它前面。
+3. **绑定键的大小写归一陷阱（不解决会死结）**：目录侧写入会 `strip().lower()`，但知识范围绑定的 `binding_key` **今天完全不归一**——`_normalize` 只拒绝空白、不规范化键本身（`app/knowledge_policy.py:75-79`），PG 的 `_bind` 原样写入（`:108-132`）。若阶段 2 要求「绑定键必须等于目录里的标识」，库里既有的 `Content-Operator` 这类绑定会**两头堵**：既不算已纳管（≠ 目录里的 `content-operator`），重写又被 `409` 拒绝。**已定（见 §4 D5）：绑定键也做 `strip().lower()` 归一**；实现时须同步改写 `roster` / `candidates` 的精确匹配口径与 `docs/api-contract.md`。
+
+### 14.3 实现要点与回退
+
+- 需要新增**只读判定**：现有 `known_keys`（`app/workforce/store.py:174` 内存版、`:387` PG 版）**刻意包含停用项**（那是「未纳管」用的口径），**不能**直接拿来判断 `active`；应新增 `is_active(context, kind, key)`，或在服务层用 `list_roles/list_employees(status='active')` 组装。
+- 契约改动：`docs/api-contract.md`「知识范围」章节补 `409` 语义；「岗位与数字员工目录」章节删掉「阶段 1 不强制绑定前置」那段限制。
+- 测试改动：`tests/test_control_plane.py` 两个用例补前置目录数据（或把断言从 `403` 保持不动、只给超管那条建目录）。
+- **回退**：只改接口层分支，回退＝还原那两个 `PUT` 的校验行；无迁移、无表结构变更、无需数据修复。
+- **开工前提**仍是 §11 Q2 的「绑定侧未纳管为空」。
+
+### 14.4 评审结论
+
+三条口径已定：① 校验放接口层；② 顺序先 `403` 后 `409`（需独立异常类型，不复用 `PolicyError`）；③ 绑定键归一到 `strip().lower()`（见 §4 D5）。
+
+**但阶段 2 仍未开工**，因为还有一条硬前提：§11 Q2 的「**绑定侧未纳管为空**」需要在**有真实数据的环境**验证（本机内存态无法得出真实结论，见 §13.6）。该前提满足后，实施顺序为：改那 2 个 `PUT` 分支（含绑定键归一）→ 同步 `docs/api-contract.md`（409 语义 + 精确匹配口径）→ 补 `tests/test_control_plane.py` 的前置目录数据 → 全量回归。
+
