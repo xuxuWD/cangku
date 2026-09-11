@@ -138,6 +138,28 @@ class Settings(BaseSettings):
             "TOTP_ENROLLMENT_TTL_SECONDS", "WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS"
         ),
     )
+    orchestration_default_runtime_key: str = Field(
+        default="mock",
+        validation_alias=AliasChoices(
+            "ORCHESTRATION_DEFAULT_RUNTIME_KEY", "WORKBENCH_ORCHESTRATION_DEFAULT_RUNTIME_KEY"
+        ),
+    )
+    orchestration_min_samples: int = Field(
+        default=5,
+        ge=1,
+        le=1000,
+        validation_alias=AliasChoices(
+            "ORCHESTRATION_MIN_SAMPLES", "WORKBENCH_ORCHESTRATION_MIN_SAMPLES"
+        ),
+    )
+    orchestration_improvement_threshold: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "ORCHESTRATION_IMPROVEMENT_THRESHOLD", "WORKBENCH_ORCHESTRATION_IMPROVEMENT_THRESHOLD"
+        ),
+    )
 
 
 @lru_cache

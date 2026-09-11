@@ -320,6 +320,48 @@ def build_run_metrics(settings: Settings, *, connection=None, migrate: bool = Tr
     raise ValueError("不支持的运行记录存储类型")
 
 
+def build_orchestration_proposal_service(
+    settings: Settings,
+    *,
+    metrics,
+    audit: AuditService,
+    connection=None,
+    migrate: bool = True,
+):
+    """按存储模式装配编排优化提案服务。"""
+    validate_runtime_settings(settings)
+    from .orchestration.service import OrchestrationProposalService
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存优化提案仓储")
+        from .orchestration.store import InMemoryOrchestrationProposalStore
+
+        store = InMemoryOrchestrationProposalStore()
+    elif settings.storage_backend == "postgres":
+        from .orchestration.store import PostgresOrchestrationProposalStore
+
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        store = PostgresOrchestrationProposalStore(connection)
+    else:
+        raise ValueError("不支持的优化提案存储类型")
+
+    return OrchestrationProposalService(
+        store,
+        metrics=metrics,
+        audit=audit,
+        default_runtime_key=settings.orchestration_default_runtime_key,
+        min_samples=settings.orchestration_min_samples,
+        improvement_threshold=settings.orchestration_improvement_threshold,
+    )
+
+
 def build_audit_service(settings: Settings, *, connection=None, migrate: bool = True) -> AuditService:
     """按存储模式装配审计仓储。"""
     validate_runtime_settings(settings)

@@ -23,6 +23,9 @@ class AuditAction(StrEnum):
     PLAN_APPROVED = "plan.approved"
     PLAN_REJECTED = "plan.rejected"
     PLAN_RUN_STARTED = "plan.run_started"
+    ORCHESTRATION_PROPOSED = "orchestration.proposed"
+    ORCHESTRATION_APPROVED = "orchestration.approved"
+    ORCHESTRATION_REJECTED = "orchestration.rejected"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -41,6 +44,10 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "bootstrap",
         "tenant_assigned_at_approval",
         "data_classification",
+        "kind",
+        "current_value",
+        "proposed_value",
+        "run_count",
     }
 )
 

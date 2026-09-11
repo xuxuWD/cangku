@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .audit.logging import configure_audit_logging
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_planner_service, build_run_metrics, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_run_metrics, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -58,6 +58,10 @@ from .planner.models import (
     PlannerNotConfigured,
     UnknownTool,
 )
+from .orchestration.models import (
+    OrchestrationProposalNotFound,
+    OrchestrationProposalStateConflict,
+)
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
@@ -91,6 +95,9 @@ content_service = ContentService(
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 planner_service, planner_store = build_planner_service(
     settings, task_store=store, runtime_service=runtime_service, audit=audit_service, run_metrics=run_metrics_service
+)
+orchestration_service = build_orchestration_proposal_service(
+    settings, metrics=run_metrics_service, audit=audit_service
 )
 account_service, _ = build_account_service(
     settings, audit=audit_service, login_limiter=login_rate_limiter
@@ -1264,3 +1271,114 @@ def start_plan_run(
         "policy_version": policy_version,
         "status": runtime_service.snapshot(context, run_id).status,
     }
+
+
+class OrchestrationProposalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(default="runtime_default", min_length=1, max_length=60)
+
+
+class OrchestrationProposalRejection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+def _ensure_orchestration_admin(context: UserContext) -> None:
+    if context.role not in {"ceo", "super_admin"}:
+        raise HTTPException(status_code=403, detail="只有 CEO 或超级管理员可以管理编排优化提案")
+
+
+def _orchestration_view(proposal) -> dict[str, object]:
+    return {
+        "proposal_id": proposal.proposal_id,
+        "kind": proposal.kind.value,
+        "current_value": proposal.current_value,
+        "proposed_value": proposal.proposed_value,
+        "rationale": proposal.rationale,
+        "metrics_snapshot": proposal.metrics_snapshot,
+        "status": proposal.status.value,
+        "created_by": proposal.created_by,
+        "created_at": proposal.created_at,
+        "reviewed_by": proposal.reviewed_by,
+        "reviewed_at": proposal.reviewed_at,
+        "rejection_reason": proposal.rejection_reason,
+    }
+
+
+@app.post("/api/v1/orchestration-proposals")
+def create_orchestration_proposal(
+    payload: OrchestrationProposalCreate, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    _ensure_orchestration_admin(context)
+    try:
+        proposal, reason = orchestration_service.generate(context, kind=payload.kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "proposal": _orchestration_view(proposal) if proposal is not None else None,
+        "reason": reason,
+    }
+
+
+@app.get("/api/v1/orchestration-proposals")
+def list_orchestration_proposals(
+    context: UserContext = Depends(current_user),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, object]:
+    _ensure_orchestration_admin(context)
+    return {
+        "items": [
+            _orchestration_view(item)
+            for item in orchestration_service.list(context, limit=limit)
+        ]
+    }
+
+
+@app.get("/api/v1/orchestration-proposals/{proposal_id}")
+def get_orchestration_proposal(
+    proposal_id: str, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    _ensure_orchestration_admin(context)
+    try:
+        proposal = orchestration_service.get(context, proposal_id)
+    except OrchestrationProposalNotFound as exc:
+        raise HTTPException(status_code=404, detail="优化提案不存在") from exc
+    return _orchestration_view(proposal)
+
+
+@app.post("/api/v1/orchestration-proposals/{proposal_id}/approval")
+def approve_orchestration_proposal(
+    proposal_id: str, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    _ensure_orchestration_admin(context)
+    try:
+        proposal = orchestration_service.approve(context, proposal_id)
+    except OrchestrationProposalNotFound as exc:
+        raise HTTPException(status_code=404, detail="优化提案不存在") from exc
+    except OrchestrationProposalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _orchestration_view(proposal)
+
+
+@app.post("/api/v1/orchestration-proposals/{proposal_id}/rejection")
+def reject_orchestration_proposal(
+    proposal_id: str,
+    payload: OrchestrationProposalRejection,
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    _ensure_orchestration_admin(context)
+    try:
+        proposal = orchestration_service.reject(context, proposal_id, payload.reason)
+    except OrchestrationProposalNotFound as exc:
+        raise HTTPException(status_code=404, detail="优化提案不存在") from exc
+    except OrchestrationProposalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _orchestration_view(proposal)

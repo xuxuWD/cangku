@@ -80,7 +80,7 @@
 
 账号与计划模块的关键操作会写入通用安全审计表 `workbench_audit_log`，并同时输出单行 JSON 结构化日志（logger 名 `company_workbench.audit`，写入标准输出，级别取 `WORKBENCH_LOG_LEVEL`）。
 
-覆盖动作：`account.registration.requested`、`account.registration.approved`、`account.registration.rejected`、`account.login.succeeded`、`account.login.failed`、`account.login.locked`、`account.password.changed`、`account.password.reset`、`account.totp.enrolled`、`account.totp.confirmed`、`account.totp.reset`、`account.totp.enrollment_required`、`plan.proposed`、`plan.approved`、`plan.rejected`、`plan.run_started`。
+覆盖动作：`account.registration.requested`、`account.registration.approved`、`account.registration.rejected`、`account.login.succeeded`、`account.login.failed`、`account.login.locked`、`account.password.changed`、`account.password.reset`、`account.totp.enrolled`、`account.totp.confirmed`、`account.totp.reset`、`account.totp.enrollment_required`、`plan.proposed`、`plan.approved`、`plan.rejected`、`plan.run_started`、`orchestration.proposed`、`orchestration.approved`、`orchestration.rejected`。
 
 审计记录包含动作、操作者、租户、目标、脱敏手机号与结构化明细（明细字段由服务端白名单限定）；**不包含**口令、口令哈希、令牌、Cookie、密钥或模型原始响应。本轮不提供读取审计的接口。
 
@@ -260,6 +260,36 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 提案视图包含提案号、任务号、目标、步骤（含服务端推导的 `kind` 与 `requires_approval`）、状态、生成器标识与时间；不包含模型密钥、原始模型响应或内部提示词。
 
 工具白名单由 `WORKBENCH_PLANNER_TOOLS` 配置声明，**默认空**；为空时计划生成返回 `422`（未配置任何可用工具），不会产出空计划。
+
+## 基于指标的编排优化提案
+
+工作台读取运行指标（子项目②），在样本充足时自动生成一条「将默认运行时切换到表现更好运行时」的**待人工审核提案**。提案只做建议与留痕，**不会自动修改任何配置**：审批通过只改变提案状态，采纳与执行必须由人按运行手册完成。全部接口仅 CEO 或超级管理员可访问，其他角色返回 `403`「只有 CEO 或超级管理员可以管理编排优化提案」。
+
+生成规则固定且确定性：只保留样本数不少于 `WORKBENCH_ORCHESTRATION_MIN_SAMPLES` 的运行时；合格运行时少于 2 个、当前默认运行时已最优、当前默认运行时样本不足、或最优运行时完成率提升未达到 `WORKBENCH_ORCHESTRATION_IMPROVEMENT_THRESHOLD` 时，均**不生成提案**，由 `reason` 说明原因。合格集合内按完成率、工具成功率、样本数降序、运行时键升序取优，相同输入始终得到相同结论。相同的待审建议会复用既有提案（幂等）；被驳回后可重新生成。
+
+`POST /api/v1/orchestration-proposals`
+
+请求体为 `{ "kind": "runtime_default" }`（可省略，当前仅支持 `runtime_default`，其他值返回 `422`）。接口**始终返回 `200`**，响应为 `{ "proposal": <提案视图>|null, "reason": "..." }`；无提案时 `proposal` 为 `null`，`reason` 为人类可读原因。
+
+`GET /api/v1/orchestration-proposals?limit=50`
+
+列出当前租户的优化提案，返回 `{ "items": [<提案视图>...] }`。
+
+`GET /api/v1/orchestration-proposals/{proposal_id}`
+
+查看提案详情；跨租户或不存在统一返回 `404`「优化提案不存在」。
+
+`POST /api/v1/orchestration-proposals/{proposal_id}/approval`
+
+仅 CEO 或超级管理员可调用，且**发起人不能审批自己提交的优化提案**；否则返回 `403`。只允许 `pending_review` 状态，重复审批返回 `409`，提案不存在返回 `404`。审批通过不触发任何运行时配置变更。
+
+`POST /api/v1/orchestration-proposals/{proposal_id}/rejection`
+
+仅 CEO 或超级管理员可调用。请求体为 `{ "reason": "..." }`，去空后为空返回 `422`，只允许 `pending_review` 状态，映射同审批。
+
+提案视图包含提案号、类型、当前值、建议值、理由、指标快照、状态与时间；指标快照只保留运行时公开评估字段（运行时键、样本数、完成率、工具成功率、知识命中率、P95 延迟），不含内部结构。
+
+生成、审批与驳回分别写入审计动作 `orchestration.proposed`、`orchestration.approved`、`orchestration.rejected`，明细字段由服务端白名单限定。
 
 ## Agent Runtime 运行
 
