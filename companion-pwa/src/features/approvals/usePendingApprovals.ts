@@ -6,6 +6,7 @@ const EMPTY_COUNTS: PendingApprovalCounts = {
   task_approval: 0,
   plan_proposal: 0,
   account_registration: 0,
+  run_approval: 0,
   total: 0,
 }
 

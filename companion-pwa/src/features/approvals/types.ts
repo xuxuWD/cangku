@@ -1,4 +1,12 @@
-export type PendingApprovalKind = 'task_approval' | 'plan_proposal' | 'account_registration'
+export type PendingApprovalKind = 'task_approval' | 'plan_proposal' | 'account_registration' | 'run_approval'
+
+// run_approval 的 detail 字段：客户端据此拼出决议接口路径（其余 kind 的 detail 各异，故统一用 Record 承载）。
+export interface RunApprovalDetail {
+  run_id: string
+  approval_id: string
+  step_id: string | null
+  tool: string | null
+}
 
 export interface PendingApproval {
   kind: PendingApprovalKind
@@ -13,6 +21,7 @@ export interface PendingApprovalCounts {
   task_approval: number
   plan_proposal: number
   account_registration: number
+  run_approval: number
   total: number
 }
 

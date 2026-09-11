@@ -14,7 +14,7 @@ const session: Session = {
 
 type FetchMock = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-const zeroCounts = { task_approval: 0, plan_proposal: 0, account_registration: 0, total: 0 }
+const zeroCounts = { task_approval: 0, plan_proposal: 0, account_registration: 0, run_approval: 0, total: 0 }
 
 const taskItem: PendingApproval = {
   kind: 'task_approval',
@@ -90,7 +90,12 @@ describe('ApprovalsPage', () => {
     const registration: PendingApproval = { kind: 'account_registration', target_id: 'a-1', title: '138****0001', requested_by: null, created_at: '2026-01-03T00:00:00Z', detail: { position: '内容运营' } }
     vi.stubGlobal(
       'fetch',
-      vi.fn<FetchMock>(async () => ok({ items: [taskItem, proposal, registration], counts: { task_approval: 1, plan_proposal: 1, account_registration: 1, total: 3 } }))
+      vi.fn<FetchMock>(async () =>
+        ok({
+          items: [taskItem, proposal, registration],
+          counts: { task_approval: 1, plan_proposal: 1, account_registration: 1, run_approval: 0, total: 3 },
+        })
+      )
     )
 
     render(<ApprovalsPage />)
@@ -133,6 +138,42 @@ describe('ApprovalsPage', () => {
       const call = fetchMock.mock.calls.find((entry) => String(entry[0]).includes('/auth/registrations/a-7/approval'))
       expect(call).toBeDefined()
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({ role: 'ceo', tenant_id: 'tenant-1' })
+    })
+  })
+
+  it('renders a run approval card with approve and reject actions and posts to the run decision endpoint', async () => {
+    const runItem: PendingApproval = {
+      kind: 'run_approval',
+      target_id: 'run-9',
+      title: '发布内容',
+      requested_by: 'u-2',
+      created_at: '2026-01-04T00:00:00Z',
+      detail: { run_id: 'run-9', approval_id: 's1', step_id: null, tool: null },
+    }
+    const fetchMock = vi.fn<FetchMock>(async (input) => {
+      const url = String(input)
+      if (url.includes('/approvals/pending')) return ok({ items: [runItem], counts: { ...zeroCounts, run_approval: 1, total: 1 } })
+      return ok({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+
+    render(<ApprovalsPage />)
+
+    const card = (await screen.findByText('发布内容')).closest('li') as HTMLElement
+    expect(screen.getByText('运行审批')).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: '通过' })).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: '驳回' })).toBeInTheDocument()
+    // 运行审批不需要角色选择器（只有账号注册需要）。
+    expect(within(card).queryByLabelText('分配角色')).toBeNull()
+
+    await user.click(within(card).getByRole('button', { name: '通过' }))
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((entry) => String(entry[0]).includes('/runs/run-9/approvals/s1/approval'))
+      expect(call).toBeDefined()
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ approved: true })
+      expect(String(call?.[0])).not.toContain('/auth/registrations/')
     })
   })
 })

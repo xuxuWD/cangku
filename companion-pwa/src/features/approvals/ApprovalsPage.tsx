@@ -13,6 +13,7 @@ export const KIND_LABELS: Record<PendingApproval['kind'], string> = {
   task_approval: '任务审批',
   plan_proposal: '计划提案',
   account_registration: '账号注册',
+  run_approval: '运行审批',
 }
 
 interface ApprovalsPageProps {

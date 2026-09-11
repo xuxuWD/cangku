@@ -1,5 +1,10 @@
 import { loadSession } from '../../app/session'
-import { DEFAULT_APPROVAL_ROLE, type PendingApproval, type PendingApprovalsResponse } from './types'
+import {
+  DEFAULT_APPROVAL_ROLE,
+  type PendingApproval,
+  type PendingApprovalsResponse,
+  type RunApprovalDetail,
+} from './types'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1').replace(/\/$/, '')
 
@@ -92,12 +97,40 @@ export interface ApproveOptions {
   role?: string
 }
 
+const MISSING_RUN_INFO = '该待办缺少运行信息，请刷新后重试。'
+
+// 从 detail 中取运行审批信息；缺少关键字段时返回 null，避免拼出错误路径。
+function extractRunApprovalDetail(item: PendingApproval): RunApprovalDetail | null {
+  const { run_id: runId, approval_id: approvalId, step_id: stepId, tool } = item.detail
+  if (typeof runId !== 'string' || runId === '') return null
+  if (typeof approvalId !== 'string' || approvalId === '') return null
+  return {
+    run_id: runId,
+    approval_id: approvalId,
+    step_id: typeof stepId === 'string' ? stepId : null,
+    tool: typeof tool === 'string' ? tool : null,
+  }
+}
+
+// 运行审批决议路径：POST /runs/{run_id}/approvals/{approval_id}/approval
+function runApprovalPath(item: PendingApproval): string | null {
+  const detail = extractRunApprovalDetail(item)
+  if (!detail) return null
+  return `/runs/${encodeURIComponent(detail.run_id)}/approvals/${encodeURIComponent(detail.approval_id)}/approval`
+}
+
 export function approveItem(item: PendingApproval, options: ApproveOptions = {}): Promise<unknown> {
   if (item.kind === 'task_approval') {
     return authenticatedPost(`/tasks/${encodeURIComponent(item.target_id)}/approve`, {})
   }
   if (item.kind === 'plan_proposal') {
     return authenticatedPost(`/plan-proposals/${encodeURIComponent(item.target_id)}/approval`, {})
+  }
+  // 运行审批必须先于账号注册兜底分支判断，否则会被误发到注册接口。
+  if (item.kind === 'run_approval') {
+    const path = runApprovalPath(item)
+    if (!path) return Promise.reject(new ApiError(MISSING_RUN_INFO, 400))
+    return authenticatedPost(path, { approved: true })
   }
   // 账号注册审批必须带 role 与 tenant_id：角色由审批人指定，租户取当前会话。
   const session = loadSession()
@@ -110,6 +143,12 @@ export function approveItem(item: PendingApproval, options: ApproveOptions = {})
 export function rejectItem(item: PendingApproval, reason: string): Promise<unknown> {
   if (item.kind === 'plan_proposal') {
     return authenticatedPost(`/plan-proposals/${encodeURIComponent(item.target_id)}/rejection`, { reason })
+  }
+  // 运行审批的驳回同样打到决议接口，仅 body 的 approved 取 false。
+  if (item.kind === 'run_approval') {
+    const path = runApprovalPath(item)
+    if (!path) return Promise.reject(new ApiError(MISSING_RUN_INFO, 400))
+    return authenticatedPost(path, { approved: false })
   }
   if (item.kind === 'account_registration') {
     return authenticatedPost(`/auth/registrations/${encodeURIComponent(item.target_id)}/rejection`, { reason })

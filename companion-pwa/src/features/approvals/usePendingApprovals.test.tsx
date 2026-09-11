@@ -16,7 +16,10 @@ function pendingResponse(): Response {
   return {
     ok: true,
     status: 200,
-    json: async () => ({ items: [], counts: { task_approval: 0, plan_proposal: 0, account_registration: 0, total: 0 } }),
+    json: async () => ({
+      items: [],
+      counts: { task_approval: 0, plan_proposal: 0, account_registration: 0, run_approval: 0, total: 0 },
+    }),
   } as unknown as Response
 }
 

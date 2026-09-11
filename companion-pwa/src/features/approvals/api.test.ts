@@ -30,7 +30,10 @@ describe('approvals api', () => {
 
   it('parses pending approvals and injects the bearer token', async () => {
     const fetchMock = vi.fn<FetchMock>(async () =>
-      jsonResponse({ items: [], counts: { task_approval: 0, plan_proposal: 0, account_registration: 0, total: 0 } })
+      jsonResponse({
+        items: [],
+        counts: { task_approval: 0, plan_proposal: 0, account_registration: 0, run_approval: 0, total: 0 },
+      })
     )
     vi.stubGlobal('fetch', fetchMock)
 
@@ -99,6 +102,81 @@ describe('approvals api', () => {
 
     expect(String(fetchMock.mock.calls[0][0])).toContain('/auth/registrations/x-1/rejection')
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ reason: '资料不全' })
+  })
+
+  it('posts run approval to the run decision endpoint and never to the registration endpoint', async () => {
+    const fetchMock = vi.fn<FetchMock>(async () => jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+    const runApprovalItem: PendingApproval = {
+      kind: 'run_approval',
+      target_id: 'run-x',
+      title: '运行审批',
+      requested_by: 'u-2',
+      created_at: '2026-01-01T00:00:00Z',
+      detail: { run_id: 'run-x', approval_id: 's1', step_id: 'step-1', tool: 'content.publish' },
+    }
+
+    await approveItem(runApprovalItem)
+
+    const url = String(fetchMock.mock.calls[0][0])
+    expect(url).toContain('/runs/run-x/approvals/s1/approval')
+    expect(url).not.toContain('/auth/registrations/')
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ approved: true })
+  })
+
+  it('rejects a run approval with approved=false and never hits the registration endpoint', async () => {
+    const fetchMock = vi.fn<FetchMock>(async () => jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+    const runApprovalItem: PendingApproval = {
+      kind: 'run_approval',
+      target_id: 'run-x',
+      title: '运行审批',
+      requested_by: 'u-2',
+      created_at: '2026-01-01T00:00:00Z',
+      detail: { run_id: 'run-x', approval_id: 's1', step_id: null, tool: null },
+    }
+
+    await rejectItem(runApprovalItem, '风险过高')
+
+    const url = String(fetchMock.mock.calls[0][0])
+    expect(url).toContain('/runs/run-x/approvals/s1/approval')
+    expect(url).not.toContain('/auth/registrations/')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ approved: false })
+  })
+
+  it('rejects locally with a Chinese hint when a run approval lacks run info', async () => {
+    const fetchMock = vi.fn<FetchMock>(async () => jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+    const brokenItem: PendingApproval = {
+      kind: 'run_approval',
+      target_id: 'run-x',
+      title: '运行审批',
+      requested_by: 'u-2',
+      created_at: '2026-01-01T00:00:00Z',
+      detail: {},
+    }
+
+    await expect(approveItem(brokenItem)).rejects.toThrow('该待办缺少运行信息，请刷新后重试。')
+    await expect(rejectItem(brokenItem, '不通过')).rejects.toThrow('该待办缺少运行信息，请刷新后重试。')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('throws SessionExpiredError on 401 for a run approval decision', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<FetchMock>(async () => ({ ok: false, status: 401, json: async () => ({}) }) as unknown as Response)
+    )
+    const runApprovalItem: PendingApproval = {
+      kind: 'run_approval',
+      target_id: 'run-x',
+      title: '运行审批',
+      requested_by: 'u-2',
+      created_at: '2026-01-01T00:00:00Z',
+      detail: { run_id: 'run-x', approval_id: 's1', step_id: null, tool: null },
+    }
+
+    await expect(approveItem(runApprovalItem)).rejects.toBeInstanceOf(SessionExpiredError)
   })
 
   it('createSession posts credentials and returns the server session', async () => {
