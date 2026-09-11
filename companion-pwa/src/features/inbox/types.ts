@@ -7,6 +7,8 @@ export type InboxKind =
   | 'orchestration.rejected'
   | 'publication.manual_takeover'
   | 'run.failed'
+  | 'run.cancelled'
+  | 'run.approval_rejected'
   | 'account.registration.approved'
 
 export type InboxTargetType = 'task' | 'plan_proposal' | 'orchestration_proposal' | 'publication' | 'run'
@@ -34,6 +36,8 @@ export const INBOX_KIND_LABELS: Record<InboxKind, string> = {
   'orchestration.rejected': '编排优化被驳回',
   'publication.manual_takeover': '发布转人工接管',
   'run.failed': '运行失败',
+  'run.cancelled': '运行被取消',
+  'run.approval_rejected': '运行审批被驳回',
   'account.registration.approved': '注册申请已通过',
 }
 
