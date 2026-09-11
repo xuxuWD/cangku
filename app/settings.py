@@ -428,6 +428,13 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("CORS_ALLOW_CREDENTIALS", "WORKBENCH_CORS_ALLOW_CREDENTIALS"),
     )
+    # 站内通知（收件箱）保留期：过期条目在写入/读取时惰性清理。
+    inbox_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        validation_alias=AliasChoices("INBOX_RETENTION_DAYS", "WORKBENCH_INBOX_RETENTION_DAYS"),
+    )
 
 
 CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]

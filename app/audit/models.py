@@ -39,6 +39,7 @@ class AuditAction(StrEnum):
     CONTENT_PUBLICATION_SUCCEEDED = "content.publication.succeeded"
     CONTENT_PUBLICATION_MANUAL_TAKEOVER = "content.publication.manual_takeover"
     CONTENT_PUBLICATION_VERIFIED = "content.publication.verified"
+    INBOX_WRITE_FAILED = "inbox.write_failed"
 
 
 class AuditDetailNotAllowed(ValueError):

@@ -33,7 +33,8 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.ACCOUNT_SSO_LOGIN_REJECTED.value == "account.sso.login.rejected"
     assert AuditAction.ACCOUNT_SSO_IDENTITY_BOUND.value == "account.sso.identity.bound"
     assert AuditAction.ACCOUNT_SSO_MFA_REQUIRED.value == "account.sso.mfa_required"
-    assert len(set(AuditAction)) == 30
+    assert AuditAction.INBOX_WRITE_FAILED.value == "inbox.write_failed"
+    assert len(set(AuditAction)) == 31
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:
