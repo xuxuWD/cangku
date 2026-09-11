@@ -21,7 +21,7 @@ def configure_outbox_publisher(publisher: OutboxPublisherProtocol | None) -> Non
     _outbox_publisher = publisher
 
 
-def configure_runtime(*, settings=None, connection=None, redis_client=None) -> OutboxPublisherProtocol:
+def configure_runtime(*, settings=None, connection=None, redis_client=None, audit=None) -> OutboxPublisherProtocol:
     """Wire a production Outbox publisher into this Celery process."""
     if settings is None:
         settings = get_settings()
@@ -29,7 +29,9 @@ def configure_runtime(*, settings=None, connection=None, redis_client=None) -> O
         raise ValueError("Worker 必须使用 PostgreSQL")
     from .bootstrap import build_outbox_publisher
 
-    publisher = build_outbox_publisher(settings, connection=connection, redis_client=redis_client)
+    publisher = build_outbox_publisher(
+        settings, connection=connection, redis_client=redis_client, audit=audit
+    )
     configure_outbox_publisher(publisher)
     return publisher
 
@@ -57,8 +59,19 @@ def create_celery_app() -> Celery:
 
 celery_app = create_celery_app()
 
-if get_settings().env != "development":
-    configure_runtime()
+_worker_settings = get_settings()
+if _worker_settings.env != "development":
+    from .bootstrap import build_audit_service
+
+    configure_runtime(
+        settings=_worker_settings,
+        audit=(
+            # 迁移由 API 进程负责；Worker 只建审计连接，避免在导入期触发迁移。
+            build_audit_service(_worker_settings, migrate=False)
+            if _worker_settings.dead_letter_webhook_url
+            else None
+        ),
+    )
 
 
 @celery_app.task(bind=True, autoretry_for=(TimeoutError,), retry_backoff=True, max_retries=3)

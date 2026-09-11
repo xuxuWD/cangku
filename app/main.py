@@ -82,7 +82,7 @@ audit_service = build_audit_service(settings)
 login_rate_limiter = build_login_rate_limiter(settings)
 store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
-dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
+dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, audit=audit_service)
 knowledge_access_registry = build_knowledge_access_registry(settings)
 runtime_service = RuntimeService(store)
 run_metrics_service = build_run_metrics(settings)
@@ -164,6 +164,7 @@ class DeadLetterView(BaseModel):
     recorded_at: datetime
     replayed_at: datetime | None
     replayed_by: str | None
+    notified_at: datetime | None
 
 
 class CollaborationDynamicView(BaseModel):
@@ -611,6 +612,7 @@ def list_dead_letters(context: UserContext = Depends(current_user)) -> list[Dead
             recorded_at=item.recorded_at,
             replayed_at=item.replayed_at,
             replayed_by=item.replayed_by,
+            notified_at=item.notified_at,
         )
         for item in items
     ]

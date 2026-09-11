@@ -257,6 +257,7 @@ def test_super_admin_can_list_and_replay_dead_letter() -> None:
     listed = client.get("/api/v1/dead-letters", headers=headers(role="super_admin", user_id="admin"))
     assert listed.status_code == 200
     assert listed.json()[0]["event_id"] == "dead-1"
+    assert listed.json()[0]["notified_at"] is None
 
     replay = client.post("/api/v1/dead-letters/dead-1/replay", headers=headers(role="super_admin", user_id="admin"))
     assert replay.status_code == 200

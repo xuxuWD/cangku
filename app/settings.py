@@ -27,6 +27,21 @@ class Settings(BaseSettings):
         le=20,
         validation_alias=AliasChoices("OUTBOX_MAX_ATTEMPTS", "WORKBENCH_OUTBOX_MAX_ATTEMPTS"),
     )
+    dead_letter_webhook_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "DEAD_LETTER_WEBHOOK_URL", "WORKBENCH_DEAD_LETTER_WEBHOOK_URL"
+        ),
+    )
+    dead_letter_webhook_timeout_seconds: float = Field(
+        default=5.0,
+        ge=1,
+        le=30,
+        validation_alias=AliasChoices(
+            "DEAD_LETTER_WEBHOOK_TIMEOUT_SECONDS",
+            "WORKBENCH_DEAD_LETTER_WEBHOOK_TIMEOUT_SECONDS",
+        ),
+    )
     storage_backend: str = "memory"
     content_store_backend: str = Field(
         default="sqlite",

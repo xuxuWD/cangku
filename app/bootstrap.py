@@ -141,7 +141,9 @@ def build_content_generator(settings: Settings):
     raise ValueError("不支持的内容生成后端")
 
 
-def build_outbox_publisher(settings: Settings, *, connection=None, redis_client=None) -> OutboxPublisher:
+def build_outbox_publisher(
+    settings: Settings, *, connection=None, redis_client=None, audit=None
+) -> OutboxPublisher:
     """Build the production Outbox publisher from deployment-owned clients."""
     validate_runtime_settings(settings)
     if settings.storage_backend != "postgres":
@@ -156,7 +158,9 @@ def build_outbox_publisher(settings: Settings, *, connection=None, redis_client=
 
         redis_client = Redis.from_url(settings.redis_url, decode_responses=False)
     event_bus = RedisStreamEventBus(redis_client)
-    dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, connection=connection)
+    dead_letter_store = build_dead_letter_store(
+        settings, event_bus=event_bus, connection=connection, audit=audit
+    )
     return OutboxPublisher(
         connection,
         event_bus,
@@ -165,21 +169,34 @@ def build_outbox_publisher(settings: Settings, *, connection=None, redis_client=
     )
 
 
-def build_dead_letter_store(settings: Settings, *, event_bus, connection=None):
+def build_dead_letter_store(settings: Settings, *, event_bus, connection=None, audit=None):
     """Select a development or durable dead-letter repository."""
     validate_runtime_settings(settings)
     if settings.storage_backend == "memory":
         if settings.env != "development":
             raise ValueError("生产环境禁止使用内存死信仓储")
-        return DeadLetterStore(event_bus)
-    if settings.storage_backend == "postgres":
+        store = DeadLetterStore(event_bus)
+    elif settings.storage_backend == "postgres":
         if connection is None:
             from psycopg_pool import ConnectionPool
 
             database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
             connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
-        return PostgresDeadLetterStore(connection, event_bus)
-    raise ValueError("不支持的死信仓储类型")
+        store = PostgresDeadLetterStore(connection, event_bus)
+    else:
+        raise ValueError("不支持的死信仓储类型")
+    if not settings.dead_letter_webhook_url or audit is None:
+        return store
+    from .notifications import DeadLetterNotifier, WebhookNotificationChannel
+    from .dead_letters import NotifyingDeadLetterStore
+
+    channel = WebhookNotificationChannel(
+        settings.dead_letter_webhook_url,
+        timeout_seconds=settings.dead_letter_webhook_timeout_seconds,
+    )
+    return NotifyingDeadLetterStore(
+        inner=store, notifier=DeadLetterNotifier(channel), audit=audit
+    )
 
 
 def build_knowledge_access_registry(settings: Settings, *, connection=None):

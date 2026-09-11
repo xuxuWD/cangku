@@ -22,7 +22,9 @@ def test_build_record_defaults_and_identity() -> None:
 def test_action_values_are_stable_strings() -> None:
     assert AuditAction.ACCOUNT_LOGIN_LOCKED.value == "account.login.locked"
     assert AuditAction.PLAN_RUN_STARTED.value == "plan.run_started"
-    assert len(set(AuditAction)) == 19
+    assert AuditAction.DEAD_LETTER_NOTIFIED.value == "dead_letter.notified"
+    assert AuditAction.DEAD_LETTER_NOTIFICATION_FAILED.value == "dead_letter.notification_failed"
+    assert len(set(AuditAction)) == 21
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

@@ -29,11 +29,20 @@ Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-ch
 
 1. 迁移前暂停写入任务，记录当前应用版本、数据库迁移清单和 Runtime 固定版本。
 2. 对数据库执行一致性备份，对对象存储创建版本化清单；备份文件使用独立的备份加密密钥加密。
-3. 在隔离数据库先执行迁移和应用启动检查，确认迁移清单与 `migrations/` 一致。商业化持久化会自动应用 `migrations/001` 至 `012`，生产模式不允许内存回退。
+3. 在隔离数据库先执行迁移和应用启动检查，确认迁移清单与 `migrations/` 一致。商业化持久化会自动应用 `migrations/001` 至 `015`，生产模式不允许内存回退。
 4. 生产迁移完成后执行健康检查、租户读取、任务创建/取消和商业化读取的冒烟测试。
 5. 任何失败均停止后续迁移，不在原数据库直接试错。
 
 本地已完成一次临时 PostgreSQL 的迁移、商业化读写、`pg_dump` 导出及恢复到新数据库的演练；该结果不替代客户 staging 数据库、恢复窗口和客户管理员验收。
+
+## 异步链路：Worker、Outbox 与死信
+
+1. **启动 Worker**：`celery -A app.worker:celery_app worker --loglevel=INFO`。非 `development` 环境启动时会自动装配 Outbox 发布器（`configure_runtime`），并按 beat 计划（`app.worker` 中的 `outbox-publisher`，默认 15 秒）周期调用 `publish_pending` 发布 `workbench_event_outbox` 中未发布的记录。
+2. **Outbox 重试**：单条记录发布失败时 `attempts` 加一并写入 `last_error`，成功后才置 `published_at`；达到 `WORKBENCH_OUTBOX_MAX_ATTEMPTS`（1 至 20 的正整数）后转入死信，不再自动重试。
+3. **死信登记与人工重放**：死信写入 `workbench_dead_letters`。CEO 或超级管理员可用 `GET /api/v1/dead-letters` 查看本租户死信（含 `notified_at`，用于判断是否已发出通知），用 `POST /api/v1/dead-letters/{event_id}/replay` 人工重放；重放会再次发布事件并把 `replayed_at` / `replayed_by` 落库，重复重放返回 `already_replayed`。
+4. **死信通知渠道配置**：设置 `WORKBENCH_DEAD_LETTER_WEBHOOK_URL` 后，死信登记会对该事件**去重通知一次**（`notified_at` 由空变为非空时才发送），超时由 `WORKBENCH_DEAD_LETTER_WEBHOOK_TIMEOUT_SECONDS`（1 至 30 秒，默认 5）控制；以 JSON POST 发送。**未配置该地址时不发送任何通知**，行为与未接入通知渠道时一致。
+5. **通知失败的处理**：Webhook 请求失败（含非 2xx）**不会向上抛出、不会重试、不会打断 Outbox 发布循环**，只在审计中记录 `dead_letter.notification_failed`；成功发送记录 `dead_letter.notified`。因此通知失败时死信本身仍完整保留，可人工排查渠道后处理。
+6. **通知载荷约定**：载荷固定字段为 `kind`、`event_id`、`tenant_id`、`action`、`aggregate_type`、`aggregate_id`、`attempts`、`error`、`occurred_at`。**绝不包含事件的 `payload`**；`error` 会截断到 200 字符，并把 `scheme://user:pass@host` 形式的凭证替换为 `scheme://***@host`。Webhook 地址与超时从环境变量注入，不得写入镜像或代码。
 
 ## 恢复与回滚
 
