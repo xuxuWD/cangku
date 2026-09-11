@@ -766,6 +766,43 @@ def _ensure_knowledge_admin(context: UserContext) -> None:
         raise PolicyError("只有超级管理员可以调整知识库范围")
 
 
+class WorkforceRosterItem(BaseModel):
+    key: str
+    role_knowledge_base_ids: list[str]
+    agent_knowledge_base_ids: list[str]
+    task_count: int
+
+
+class WorkforceRosterView(BaseModel):
+    items: list[WorkforceRosterItem]
+    total: int
+
+
+@app.get("/api/v1/workforce/roster", response_model=WorkforceRosterView)
+def workforce_roster(context: UserContext = Depends(current_user)) -> WorkforceRosterView:
+    """岗位与数字员工清单（只读）。
+
+    数据来自三个事实源的并集：知识范围里的岗位绑定、数字员工绑定、以及任务中出现过的
+    `employee_key`；不含账号 PII，也不提供增删改（编辑走「知识权限管理」）。
+    """
+    if context.role != "super_admin":
+        raise HTTPException(status_code=403, detail="只有超级管理员可以查看岗位与数字员工清单")
+    bindings = knowledge_access_registry.list_bindings(context)
+    counts = store.count_by_employee(context.tenant_id)
+    keys = set(bindings["role"]) | set(bindings["agent"]) | set(counts)
+    items = [
+        WorkforceRosterItem(
+            key=key,
+            role_knowledge_base_ids=bindings["role"].get(key, []),
+            agent_knowledge_base_ids=bindings["agent"].get(key, []),
+            task_count=counts.get(key, 0),
+        )
+        for key in keys
+    ]
+    items.sort(key=lambda item: (-item.task_count, item.key))
+    return WorkforceRosterView(items=items, total=len(items))
+
+
 def _knowledge_access_view(binding_type: str, binding_key: str, knowledge_base_ids: set[str]) -> dict[str, object]:
     return {
         "binding_type": binding_type,
