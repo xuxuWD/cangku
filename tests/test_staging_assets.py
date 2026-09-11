@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "migrations"
 STAGING_TEMPLATE = ROOT / ".env.staging.example"
 ACCEPTANCE_PLAN = ROOT / "docs" / "external-dependency-acceptance-plan.md"
+EXECUTION_PLAN = ROOT / "docs" / "external-dependency-execution-plan.md"
 
 
 def read_template_entries() -> dict[str, str]:
@@ -59,3 +60,15 @@ def test_acceptance_plan_covers_nine_gates() -> None:
     for number in range(1, 10):
         assert f"### 项 {number} ·" in content, f"计划缺少项 {number}"
     assert "需先补的代码" in content
+
+
+def test_execution_plan_covers_nine_cards_and_definition_of_done() -> None:
+    content = EXECUTION_PLAN.read_text(encoding="utf-8")
+
+    # 判定依据：执行计划必须逐项给出执行卡，且必须定义完成条件与口径确认点，
+    # 否则「开始验收」缺少统一入口，容易各做各的。
+    for number in range(1, 10):
+        assert f"### 项 {number} ·" in content, f"执行计划缺少项 {number} 的执行卡"
+    assert "## 0. 开工前必须先定的两个口径" in content
+    assert "## 8. 完成定义（DoD）" in content
+    assert "五步法" in content

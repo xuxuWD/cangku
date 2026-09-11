@@ -2,9 +2,9 @@
 
 > **用途**：把 `docs/delivery-gates.md` 中 9 项未勾选门禁逐项拆成**可执行的验收计划**：需要哪些外部输入、先补哪些代码、按什么顺序跑、通过判据是什么、留什么证据、失败怎么回滚。
 >
-> **生成日期**：2026-09-11　**基线**：分支 `feature/planning-closure`，后端 **662 项测试通过**，`compileall` 退出码 0
+> **生成日期**：2026-09-11　**基线**：分支 `feature/planning-closure`，后端 **753 项测试通过**，`compileall` 退出码 0
 >
-> **与既有文档的关系**：本计划**不替代** `docs/staging-acceptance-checklist.md`（项 1–5 的执行底稿）、`docs/private-deployment-runbook.md`（私有部署与回滚）、`docs/superpowers/poc-staging-runbook.md`（外部 Runtime 联调）。本计划负责**把它们编排到 9 项门禁上**，并补齐它们没有覆盖的部分。
+> **与既有文档的关系**：本计划**不替代** `docs/staging-acceptance-checklist.md`（项 1–5 的执行底稿）、`docs/private-deployment-runbook.md`（私有部署与回滚）、`docs/superpowers/poc-staging-runbook.md`（外部 Runtime 联调）。本计划负责**把它们编排到 9 项门禁上**，并补齐它们没有覆盖的部分。**执行编排**（阶段顺序、依赖、分工、检查点、输入交接、风险预案）见 `docs/external-dependency-execution-plan.md`；该文件不重复本文件的判定口径与证据要求，两者冲突时**以本文件为准**。
 >
 > **证据口径**：本计划本身**不构成任何验收证据**。未通过真实验收的能力不得写成「已上线 / 已发布 / 已收录」。
 
