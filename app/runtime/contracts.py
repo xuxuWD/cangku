@@ -89,6 +89,39 @@ class AgentPlan:
         return cls(tuple(steps))
 
 
+SENSITIVE_PAYLOAD_KEYS = frozenset(
+    {
+        "password",
+        "cookie",
+        "api_key",
+        "secret",
+        "token",
+        "authorization",
+        "access_token",
+        "refresh_token",
+        "session",
+        "验证码",
+    }
+)
+_REDACTED = "[已隐藏]"
+
+
+def redact_payload(value: Any) -> Any:
+    """递归把敏感键的值替换为占位符。
+
+    读取输出（`RuntimeEvent.to_public_dict`）与**持久化写入**共用这一套规则：
+    事件一旦落库就是长期留存，凭据类键不应写进数据库。
+    """
+    if isinstance(value, dict):
+        return {
+            key: _REDACTED if key.lower() in SENSITIVE_PAYLOAD_KEYS else redact_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_payload(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class RuntimeEvent:
     run_id: str
@@ -97,35 +130,12 @@ class RuntimeEvent:
     payload: dict[str, Any] = field(default_factory=dict)
 
     def to_public_dict(self) -> dict[str, Any]:
-        sensitive_keys = {
-            "password",
-            "cookie",
-            "api_key",
-            "secret",
-            "token",
-            "authorization",
-            "access_token",
-            "refresh_token",
-            "session",
-            "验证码",
-        }
-
-        def redact(value: Any) -> Any:
-            if isinstance(value, dict):
-                return {
-                    key: "[已隐藏]" if key.lower() in sensitive_keys else redact(item)
-                    for key, item in value.items()
-                }
-            if isinstance(value, list):
-                return [redact(item) for item in value]
-            return value
-
         return {
             "cursor": f"{self.run_id}:{self.sequence}",
             "run_id": self.run_id,
             "sequence": self.sequence,
             "event_type": self.event_type.value,
-            "payload": redact(self.payload),
+            "payload": redact_payload(self.payload),
         }
 
 
