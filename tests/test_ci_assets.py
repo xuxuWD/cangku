@@ -70,3 +70,27 @@ def test_workflow_requires_no_secrets() -> None:
 
     # 判定依据：门禁只跑测试与编译，不应引用任何密钥；引用即意味着 CI 被赋予了凭据面。
     assert "secrets." not in content
+
+
+# GitHub 已把下列 Action 大版本的运行时标记为弃用（当前被强制跑到 Node 24）。
+# 该集合应随上游弃用进度增补，防止无意间回落。
+DEPRECATED_ACTION_REFS = (
+    "actions/checkout@v4",
+    "actions/setup-node@v4",
+    "actions/setup-python@v5",
+)
+
+
+def test_actions_are_pinned_to_explicit_non_deprecated_majors() -> None:
+    content = read_workflow()
+    refs = re.findall(r"uses:\s*(\S+)", content)
+
+    assert refs, "工作流未引用任何 Action"
+
+    for ref in refs:
+        # 判定依据：必须写明确大版本；引用分支（@main/@master）等于把门禁交给上游随时刻变。
+        assert re.fullmatch(r"[\w.-]+/[\w.-]+@v\d+", ref), f"Action 版本写法不规范：{ref}"
+
+    # 判定依据：不得回落已被弃用的 Action 大版本。
+    deprecated = sorted(set(refs) & set(DEPRECATED_ACTION_REFS))
+    assert deprecated == [], f"CI 使用已弃用的 Action 版本：{deprecated}"

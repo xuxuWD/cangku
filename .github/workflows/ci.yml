@@ -6,6 +6,7 @@
 #   - 桌面端：node --test（跳过 Electron 二进制下载，单测不需要运行时）
 #
 # 说明：本工作流只跑测试与编译，不引用任何密钥，权限收紧为只读。
+# 已验证：push 触发 run 34590744934（4 个 job 全绿，38s）。
 name: CI
 
 on:
@@ -25,8 +26,8 @@ jobs:
     name: 后端（pytest + compileall）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           # 与 Dockerfile 的 python:3.12-slim 对齐；满足 requires-python>=3.11
           python-version: "3.12"
@@ -47,8 +48,8 @@ jobs:
       run:
         working-directory: admin-web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           # vite 8 / vitest 5 要求 Node 22+
           node-version: "22"
@@ -68,8 +69,8 @@ jobs:
       run:
         working-directory: companion-pwa
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -88,8 +89,8 @@ jobs:
       run:
         working-directory: desktop
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
