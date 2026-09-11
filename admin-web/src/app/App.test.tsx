@@ -42,6 +42,33 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: '知识权限管理' })).toBeInTheDocument())
   })
 
+  it('renders the workforce roster page and drops the hardcoded sidebar summary', async () => {
+    window.history.replaceState({}, '', '/?view=workforce')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/workforce/roster')) return { ok: true, json: async () => ({ items: [{ key: 'content-operator', role_knowledge_base_ids: ['company-general'], agent_knowledge_base_ids: [], task_count: 2 }], total: 1 }) } as Response
+      if (url.includes('/inbox?')) return { ok: true, json: async () => ({ items: [], unread_count: 0 }) } as Response
+      return { ok: true, json: async () => ({}) } as Response
+    }))
+
+    render(<App />)
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: '员工与岗位' })).toBeInTheDocument())
+    expect(await screen.findByText('content-operator')).toBeInTheDocument()
+    expect(screen.queryByText('本月授权概况')).not.toBeInTheDocument()
+    expect(screen.queryByText(/已配置 18 个岗位/)).not.toBeInTheDocument()
+  })
+
+  it('navigates to the workforce roster page from the sidebar', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByText('员工与岗位', { selector: '.nav-item' }))
+
+    expect(window.location.search).toBe('?view=workforce')
+    await waitFor(() => expect(screen.getByRole('heading', { name: '员工与岗位' })).toBeInTheDocument())
+  })
+
   it('falls back to the content workbench for an unknown view', async () => {
     window.history.replaceState({}, '', '/?view=unknown')
 
