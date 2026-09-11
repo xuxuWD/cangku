@@ -88,7 +88,7 @@
 | 运行时 HTTP 传输与适配器（DeerFlow / Codex Worker / Hermes） | ✅ | ✅ | ⬜ | `test_runtime_http_transport.py`、`test_runtime_adapters.py` |
 | 开发期 RAGFlow/AgentScope 适配器契约与受控注册表 | ✅ | ✅ | ⬜ | `test_ragflow_adapter.py`、`test_runtime_adapters.py` |
 | RAGFlow/AgentScope staging 前置预检脚本 | ✅ | ✅ | ⬜ | `test_runtime_staging_preflight.py`；门禁注明「不替代真实联调」 |
-| RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证、真实外部服务验收 | ❌ | ❌ | ⬜ | **未做**（等外部资源） |
+| RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证、真实外部服务验收 | ❌ | ❌ | ⬜ | **既缺外部资源，也有代码缺口**：运行时传输层**无任何认证注入**、配置驱动的注册表**未接入应用装配**（`app/main.py` 只注册 mock）——详见 `docs/external-dependency-acceptance-plan.md` §6 第 5、6 条；接入资料与索取表见 `docs/runtime-onboarding-request.md` |
 | 真实模型、网页抓取、公众号自动发布验收 | ❌ | ❌ | ⬜ | **未做** |
 | 计划生成与审核闸门（目标→`AgentPlan`→服务端风险推导→审批→复用 Runtime） | ✅ | ✅ | ⬜ | `test_planner_{api,service,models,generator,store,audit,bootstrap,postgres}.py` |
 | 计划执行的反馈与指标采集（子项目②） | ✅ | ✅ | ⬜ | `test_run_records.py`、`test_run_metrics.py`、`test_run_metrics_api.py`、`test_planner_run_wiring.py`；**已知限制**：`knowledge_hits` 依赖运行时上报，Mock 下恒为 0 |

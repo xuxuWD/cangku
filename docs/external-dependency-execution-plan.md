@@ -239,6 +239,7 @@ Phase 2a       Phase 2b      Phase 2c
 - **风险**：发现任何凭据泄漏迹象 → 立即暂停并轮换该凭据。
 
 ### 项 8 · RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证和真实外部服务验收
+- **接入资料与索取表**：`docs/runtime-onboarding-request.md`（外部运行时= RAGFlow/AgentScope；工作台侧契约出处、外部输入索取、跨租户与压测要求）。
 - **前置**：两者的 HTTPS 地址 + 固定版本 + 认证注入 + 隔离测试账号 + 网络白名单。
 - **执行序列**：
   1. `py scripts/runtime_staging_preflight.py` → `pass`

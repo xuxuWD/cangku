@@ -222,6 +222,7 @@
 
 ### 项 8 · RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证和真实外部服务验收
 
+- **接入资料与索取表**：`docs/runtime-onboarding-request.md`（外部运行时= RAGFlow/AgentScope；工作台侧契约出处、外部输入索取、跨租户与压测要求）。
 - **目标**：证明外部知识层与受控执行器在真实环境下范围校验正确、失败可控、可人工接管。
 - **需要的输入**：RAGFlow / AgentScope 各自的 **HTTPS 地址 + 固定版本 + 认证注入 + 隔离测试账号**；最小网络白名单。
 - **验收步骤**：
@@ -292,12 +293,16 @@
 
 ## 6. 本计划编制时发现的阻塞性缺陷
 
-以下 4 条是**代码/文档层面**的缺陷，不需要外部资源即可修复，但不修复会导致验收无法进行或验收结论不可信：
+以下 6 条是**代码/文档层面**的缺陷，不需要外部资源即可修复，但不修复会导致验收无法进行或验收结论不可信：
 
 1. **`.env.staging.example` 迁移清单过期（已修复）**：`WORKBENCH_APPLIED_MIGRATIONS` 只登记到 `012_account_totp`，而 `migrations/` 实际已有 `001`–`014`。按该模板执行时 `staging_preflight.py` / `commercial_g0_preflight.py` 的「迁移状态」会判 `blocked`，**总闸门永远无法 `pass`**。已补 `013_run_records`、`014_orchestration_proposals`，并新增 `tests/staging_assets` 静态契约测试防止再次漂移。
-2. **私有部署手册未覆盖异步链路**：`docs/private-deployment-runbook.md` 全文未提及 Worker / Outbox / 死信，项 2 缺少执行依据，验收前需补手册章节。
-3. **无任何通知能力**：项 2 的「死信通知渠道」是**代码缺口**而非配置项（`app/` 内相关关键字 0 命中）。
-4. **设备绑定与统一登录未实现**：项 3 在补齐这两块代码前**无法进入验收**。
+2. **私有部署手册未覆盖异步链路（已修复）**：`docs/private-deployment-runbook.md` 曾全文未提及 Worker / Outbox / 死信，项 2 缺少执行依据；现已补手册章节。
+3. **无任何通知能力（已修复）**：项 2 的「死信通知渠道」曾是**代码缺口**而非配置项；现已在 `app/notifications.py` 实现（脱敏 webhook、原子去重、失败只写审计且不打断发布循环）。
+4. **设备绑定与统一登录（口径已变更）**：「设备绑定」已从门禁移除（见 `docs/delivery-gates.md` 变更记录）；SSO 客户端已实现（`app/accounts/sso.py` 等）。项 3 现在只剩「生产密钥轮换」与「真实 IdP 联调」两件外部事项。
+5. **项 8：运行时传输层没有任何认证注入（未修复，代码缺口）**：`app/runtime/adapters/common.py` 的 `HttpRuntimeTransport._request` 只透传 `json=`，**全链路不注入 `Authorization` / API Key / Cookie**。项 8 的标题即「**密钥注入**」，因此该项在补齐认证注入前**无法进入真实联调**（`docs/api-contract.md` 亦自述认证注入在开发期尚未实现或验证）。
+6. **项 8：配置驱动的运行时注册表未接入应用装配（未修复，代码缺口）**：`build_runtime_registry(...)` **只被测试调用**；`app/main.py` 使用 `RuntimeService(store)`，而 `app/runtime/service.py` 默认 `RuntimeRegistry()`（**只含 mock**）。即：**即使把 `RAGFLOW_ENDPOINT` / `AGENTSCOPE_ENDPOINT` 与固定版本配置齐全，运行中的应用也不会注册真实运行时**，仍然只走 mock。
+
+> 第 5、6 条由 2026-09-11 复核代码确认（来源：`app/runtime/adapters/common.py`、`app/runtime/registry.py`、`app/runtime/service.py`、`app/main.py`），详见 `docs/runtime-onboarding-request.md`。
 
 ---
 
