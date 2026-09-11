@@ -45,7 +45,7 @@ from .accounts.sso import SsoError, SsoNotConfigured
 from .accounts.sso_store import SsoStateNotFound
 from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
 from .settings import get_settings, resolve_cors_options, validate_runtime_settings
-from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound
+from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import FinishReason, RunRecordNotFound
 from .runtime.service import RunAccessDenied, RunApprovalDenied
@@ -124,6 +124,7 @@ approvals_service = ApprovalsService(
     task_store=store,
     proposal_store=planner_store,
     account_service=account_service,
+    run_approvals=runtime_service,
 )
 
 
@@ -1139,6 +1140,8 @@ def decide_run_approval(
         raise HTTPException(status_code=404, detail="审批不存在") from exc
     except ApprovalAlreadyDecided as exc:
         raise HTTPException(status_code=409, detail="审批已决议") from exc
+    except RunNotDecidable as exc:
+        raise HTTPException(status_code=409, detail="运行已结束，无法决议") from exc
     audit_service.record(
         AuditAction.RUN_APPROVAL_DECIDED,
         tenant_id=context.tenant_id,

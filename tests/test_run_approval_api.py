@@ -48,7 +48,7 @@ def ceo() -> dict[str, str]:
     return headers(user_id="ceo-1", role="ceo")
 
 
-def start_run() -> str:
+def start_run(steps: list[dict] | None = None) -> str:
     created = client.post(
         "/api/v1/tasks",
         headers=headers(),
@@ -64,10 +64,11 @@ def start_run() -> str:
     run = client.post(
         f"/api/v1/tasks/{created.json()['id']}/runs",
         headers=headers(),
-        json={"runtime_key": "mock", "steps": TWO_STEPS},
+        json={"runtime_key": "mock", "steps": steps or TWO_STEPS},
     )
     assert run.status_code == 201
-    assert run.json()["status"] == "running"
+    if steps is None:
+        assert run.json()["status"] == "running"
     return run.json()["run_id"]
 
 
@@ -164,3 +165,22 @@ def test_decision_requires_login() -> None:
     assert client.post(
         f"/api/v1/runs/{run_id}/approvals/s2/approval", json={"approved": True}
     ).status_code == 401
+
+
+def test_terminal_run_cannot_be_decided_again() -> None:
+    # 两条都需审批：驳回第一条后运行已终态，第二条仍 pending，用它能真正触发终态守卫。
+    two_approvals = [
+        {"step_id": "s1", "kind": "write", "tool": "file.write"},
+        {"step_id": "s2", "kind": "write", "tool": "file.write"},
+    ]
+    run_id = start_run(two_approvals)
+    assert client.post(
+        f"/api/v1/runs/{run_id}/approvals/s1/approval", headers=ceo(), json={"approved": False}
+    ).status_code == 200
+
+    again = client.post(
+        f"/api/v1/runs/{run_id}/approvals/s2/approval", headers=ceo(), json={"approved": True}
+    )
+
+    assert again.status_code == 409
+    assert client.get(f"/api/v1/runs/{run_id}/metrics", headers=headers()).json()["status"] == "failed"

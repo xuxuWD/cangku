@@ -32,6 +32,10 @@ class ApprovalAlreadyDecided(ValueError):
     """审批项已决议过，不允许重复改判（接口层按 409 处理）。"""
 
 
+class RunNotDecidable(ValueError):
+    """运行已进入终态，任何审批都不再可决议（接口层按 409 处理）。"""
+
+
 @dataclass(frozen=True)
 class KnowledgeCitation:
     document_id: str

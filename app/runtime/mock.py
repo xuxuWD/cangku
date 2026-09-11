@@ -7,6 +7,7 @@ from .contracts import (
     AgentRuntimeAdapter,
     ApprovalAlreadyDecided,
     ApprovalNotFound,
+    RunNotDecidable,
     RuntimeContext,
     RuntimeEvent,
     RuntimeEventType,
@@ -15,6 +16,9 @@ from .state import RuntimeState, RuntimeStateStore
 
 # 仅 Mock 运行时的失败注入约定；真实适配器不识别该前缀。
 FAIL_TOOL_PREFIX = "fail."
+
+# 终态：任何审批都不应再改变这些状态。
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 class MockRuntime(AgentRuntimeAdapter):
@@ -101,6 +105,9 @@ class MockRuntime(AgentRuntimeAdapter):
     def decide_approval(self, run_id: str, approval_id: str, approved: bool) -> None:
         """决议一个待审批项：通过则执行对应步骤，驳回则立即失败且不再执行。"""
         state = self.store.get(run_id)
+        if state.status in _TERMINAL_STATUSES:
+            # 终态即终态：不允许用剩余审批把已结束的运行复活。
+            raise RunNotDecidable(run_id)
         if approval_id not in state.approvals:
             raise ApprovalNotFound(approval_id)
         if state.approvals[approval_id] != "pending":

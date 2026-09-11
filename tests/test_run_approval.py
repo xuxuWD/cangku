@@ -12,6 +12,7 @@ from app.runtime.contracts import (
     AgentPlan,
     ApprovalAlreadyDecided,
     ApprovalNotFound,
+    RunNotDecidable,
     RuntimeContext,
 )
 from app.runtime.mock import MockRuntime
@@ -131,13 +132,23 @@ def test_approval_requires_leaving_no_pending_items_before_completing() -> None:
 def test_unknown_or_repeated_decision_is_rejected() -> None:
     store = RuntimeStateStore()
     runtime = MockRuntime(store)
-    run_id = runtime.start_run(runtime_context(), plan())
+    steps = [
+        {"step_id": "s1", "kind": "write", "tool": "file.write"},
+        {"step_id": "s2", "kind": "write", "tool": "file.write"},
+    ]
+    run_id = runtime.start_run(runtime_context(), plan(steps))
 
     with pytest.raises(ApprovalNotFound):
         runtime.decide_approval(run_id, "nope", True)
 
-    runtime.decide_approval(run_id, "s2", True)
+    # 运行仍在进行中：重复决议同一项按「已决议」拒绝。
+    runtime.decide_approval(run_id, "s1", True)
     with pytest.raises(ApprovalAlreadyDecided):
+        runtime.decide_approval(run_id, "s1", False)
+
+    # 全部决议后运行进入终态：此时任何审批都按「终态不可决议」拒绝。
+    runtime.decide_approval(run_id, "s2", True)
+    with pytest.raises(RunNotDecidable):
         runtime.decide_approval(run_id, "s2", False)
 
 
