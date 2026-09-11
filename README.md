@@ -93,7 +93,7 @@ Worker 只在 PostgreSQL 模式下自动接入 Outbox 发布器；开发环境�
 
 GEO 是独立项目，通过版本化适配器接入。工作台统一承载用户、岗位、权限、任务、审批、通知、用量和审计；GEO 继续负责 GEO 业务、证据、内容、观测和报告。禁止跨库写入、复制 GEO 内部表或把 GEO 内部实现暴露给客户端。
 
-> 通知能力的**当前范围**：① 死信运维通知渠道（脱敏 webhook，`app/notifications.py`，未配置地址则不发送）；② 面向员工的**站内通知收件箱**（`app/inbox.py` + `migrations/019_inbox_items.sql`，覆盖任务审批、计划与编排提案审核、内容发布转人工接管、账号注册通过，见 `docs/api-contract.md`「站内通知（收件箱）」）。**仍未实现**：服务端推送与运行失败通知（运行终态当前未落盘，缺口见 `docs/delivery-readiness-checklist.md`）；两端提醒均为**客户端轮询**。
+> 通知能力的**当前范围**：① 死信运维通知渠道（脱敏 webhook，`app/notifications.py`，未配置地址则不发送）；② 面向员工的**站内通知收件箱**（`app/inbox.py` + `migrations/019_inbox_items.sql`，覆盖任务审批、计划与编排提案审核、内容发布转人工接管、运行失败与被取消、账号注册通过，见 `docs/api-contract.md`「站内通知（收件箱）」）。**仍未实现**：服务端推送；两端提醒均为**客户端轮询**。运行记录会在终态落盘并带受控的 `finish_reason`（迁移 `020`）。
 
 ## 资料处理
 

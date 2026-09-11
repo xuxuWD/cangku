@@ -2,10 +2,10 @@
 
 > **用途**：把 `docs/delivery-gates.md` 的勾选状态摊开成可逐项追踪的底账，区分「代码在」「有测试守护」「在真实环境验收过」三种不同状态。
 >
-> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照）；第十次：项 8 两处代码缺口修复（运行时认证注入、注册表接入应用装配）+ 三项接入索取表（GEO 契约/公众号账号/外部运行时）；第十一次：分支 `feature/acceptance-tooling` 快进合入 `main`，基线口径由该分支改为 `main`；第十二次：TOTP 种子静态加密（HKDF 子密钥 + AES-256-GCM）与会话令牌服务端撤销（登出立即生效，迁移 018）；第十三次：补齐契约遗漏（内容任务列表、运行指标两接口）并新增路由覆盖守护测试；第十四次：审计明细嵌套值的递归敏感键校验（防御性加固），并订正过期口径——桌面端自动更新行拆出为已完成、通知能力范围改为「仅死信运维通知渠道」、核实记录注同步；第十五次：接入提交门禁 CI（`.github/workflows/ci.yml` + 静态契约守护）；第十六次：修复两个前端依赖版本漂移——`admin-web`、`companion-pwa` 的全部依赖由 `latest` 改为精确版本，并新增 lockfile 一致性守护；第十七次：CI 首次实跑通过（run `34590744934`）、Action 升到 v7 消除弃用告警并补齐 Action 版本守护，v7 版工作流再次实跑通过（run `34591258934`，4 job 全绿）；第十八次：员工站内通知收件箱——迁移 `019_inbox_items` + `app/inbox.py`（内存/PostgreSQL 双仓储）+ 三接口 + 两端入口，写入失败不阻断仅写审计；并登记「运行终态未落盘」缺口（E 节））
-> **基线**：分支 `main`（`feature/acceptance-tooling` 已于 2026-09-11 快进合入），全量 **1064 项测试通过**，`compileall` 退出码 0
+> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照）；第十次：项 8 两处代码缺口修复（运行时认证注入、注册表接入应用装配）+ 三项接入索取表（GEO 契约/公众号账号/外部运行时）；第十一次：分支 `feature/acceptance-tooling` 快进合入 `main`，基线口径由该分支改为 `main`；第十二次：TOTP 种子静态加密（HKDF 子密钥 + AES-256-GCM）与会话令牌服务端撤销（登出立即生效，迁移 018）；第十三次：补齐契约遗漏（内容任务列表、运行指标两接口）并新增路由覆盖守护测试；第十四次：审计明细嵌套值的递归敏感键校验（防御性加固），并订正过期口径——桌面端自动更新行拆出为已完成、通知能力范围改为「仅死信运维通知渠道」、核实记录注同步；第十五次：接入提交门禁 CI（`.github/workflows/ci.yml` + 静态契约守护）；第十六次：修复两个前端依赖版本漂移——`admin-web`、`companion-pwa` 的全部依赖由 `latest` 改为精确版本，并新增 lockfile 一致性守护；第十七次：CI 首次实跑通过（run `34590744934`）、Action 升到 v7 消除弃用告警并补齐 Action 版本守护，v7 版工作流再次实跑通过（run `34591258934`，4 job 全绿）；第十八次：员工站内通知收件箱——迁移 `019_inbox_items` + `app/inbox.py`（内存/PostgreSQL 双仓储）+ 三接口 + 两端入口，写入失败不阻断仅写审计；并登记「运行终态未落盘」缺口（E 节）；第十九次：补齐运行终态落盘（`RuntimeService` 统一回写 start/pause/resume/cancel、直启与内容生成运行一并纳入）、新增受控 `finish_reason`（迁移 020）与 Mock 确定性失败路径（`fail.` 前缀），接入运行失败/取消站内通知，并把「带审批步骤的运行终态」登记为新缺口）
+> **基线**：分支 `main`（`feature/acceptance-tooling` 已于 2026-09-11 快进合入），全量 **1083 项测试通过**，`compileall` 退出码 0
 >
-> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 107 个测试模块、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
+> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 110 个测试模块、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
 
 ## 判定口径
 
@@ -26,8 +26,8 @@
 | 达到**真实环境验收**（staging / 生产 / 真实外部账号） | **0**（另有本地真实验证 2 项、CI 环境验证 1 项，见下两行） |
 | 本地已验证（真实 PostgreSQL 迁移与备份恢复演练、内容工作台内部闭环回归） | **2** |
 | CI 环境已验证（提交门禁在 GitHub Actions 实跑通过） | **1** |
-| 测试文件数 | **107** 个测试模块（`tests/`；另有 `conftest.py` 与 `oidc_test_idp.py` 两个辅助文件，不计入） |
-| 测试用例数 | **1064**（后端）+ 前端 `admin-web` 27、`companion-pwa` 32、`desktop` 19（Node `node:test`） |
+| 测试文件数 | **110** 个测试模块（`tests/`；另有 `conftest.py` 与 `oidc_test_idp.py` 两个辅助文件，不计入） |
+| 测试用例数 | **1083**（后端）+ 前端 `admin-web` 27、`companion-pwa` 32、`desktop` 19（Node `node:test`） |
 
 > **一句话结论**：服务端能力基本齐全，**本批次可独立实现的代码缺口已全部闭合（项 2 的死信通知渠道、项 9 的抓取器/发布器/内容安全评估、项 3 的 OIDC SSO 客户端）**；但项 3 的真实 IdP 联调与项 6 的 GEO 适配器**尚需先拿到口径/契约才能动工**，不属于本仓库可独立完成的范围。其余卡点全为外部依赖。
 >
@@ -93,9 +93,11 @@
 | RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证、真实外部服务验收 | ❌ | ❌ | ⬜ | **仅剩外部资源**：认证注入与注册表装配两处代码缺口已于 2026-09-11 修复（`docs/external-dependency-acceptance-plan.md` §6 第 5、6 条）。接入资料与索取表见 `docs/runtime-onboarding-request.md` |
 | 真实模型、网页抓取、公众号自动发布验收 | ❌ | ❌ | ⬜ | **未做** |
 | 计划生成与审核闸门（目标→`AgentPlan`→服务端风险推导→审批→复用 Runtime） | ✅ | ✅ | ⬜ | `test_planner_{api,service,models,generator,store,audit,bootstrap,postgres}.py` |
-| 计划执行的反馈与指标采集（子项目②） | ✅ | ✅ | ⬜ | `test_run_records.py`、`test_run_metrics.py`、`test_run_metrics_api.py`、`test_planner_run_wiring.py`；**已知限制**：`knowledge_hits` 依赖运行时上报，Mock 下恒为 0 |
+| 计划执行的反馈与指标采集（子项目②） | ✅ | ✅ | ⬜ | `test_run_records.py`、`test_run_metrics.py`、`test_run_metrics_api.py`、`test_planner_run_wiring.py`、`test_run_finish_reason.py`、`test_runtime_lifecycle.py`；终态与受控 `finish_reason`（迁移 `020`）已落盘；**已知限制**：`knowledge_hits` 依赖运行时上报，Mock 下恒为 0 |
 | 基于指标的编排优化提案（子项目③） | ✅ | ✅ | ⬜ | `test_orchestration_{models,store,postgres,service,api,bootstrap}.py`；设计见 `docs/superpowers/specs/2026-09-11-orchestration-proposal-design.md`；**审批通过不自动改配置** |
-| 运行失败通知（站内） | ❌ | ❌ | ⬜ | **本轮移出，缺口已登记**：核实发现运行终态**从未落盘**——`RunMetricsService.record_state` 仅被 `PlannerService.start_run` 调用，记录的是启动快照 `running`；Mock 运行时只产生 `completed/paused/running/cancelled`，无 `failed`。缺少「运行失败」数据源，需先补运行终态写入，再接入站内通知 |
+| 运行失败通知（站内） | ✅ | ✅ | ⬜ | 已接入：运行进入 `failed`/`cancelled` 终态时通知任务创建人（`run.failed` / `run.cancelled`）；接收人经 `task_id → created_by` 反查，任务不可见时跳过并写审计 `run.notify_skipped`。测试 `test_run_terminal_notifications.py` |
+| 运行终态落盘与结束原因 | ✅ | ✅ | ⬜ | 写入者收敛到 `RuntimeService`（`start`/`pause`/`resume`/`cancel` 都回写同一记录并保留原始启动时间）；`finish_reason` 为受控枚举，迁移 `020`；Mock 提供 `fail.` 前缀的确定性失败路径。测试 `test_run_finish_reason.py`、`test_runtime_lifecycle.py` |
+| 带审批步骤的运行终态 | ❌ | ❌ | ⬜ | **已登记缺口**：`requires_approval` 步骤需要「审批决议 → 恢复执行 → 终态」一整套流程；当前该场景永久停在 `running`，本轮明确不处理 |
 
 ## F. 事件与异步
 
@@ -151,7 +153,7 @@
 | 伴侣端待办聚合接口 `GET /api/v1/approvals/pending` | ✅ | ✅ | ⬜ | `test_approvals_{service,store,api}.py`（30 项）；按角色过滤 + 计划提案自审排除 + 注册标识脱敏 |
 | Electron 桌面端（README 声明为主员工端） | ✅ | ✅ | ⬜ | `desktop/`（Electron 安全壳 + electron-builder NSIS 配置）；`node --test` 19 项 + `test_desktop_assets.py` 10 项；**未签名、未打包、未做干净电脑测试** |
 | 手机 PWA 伴侣端（审批与提醒） | ✅ | ✅ | ⬜ | `companion-pwa/`（登录、待办轮询、三类审批、manifest 与 service worker）；Vitest 32 项 + `test_pwa_assets.py` 8 项；**提醒是轮询而非 Web Push，真机安装未验收** |
-| 员工站内通知收件箱（通知页 + 未读角标） | ✅ | ✅ | ⬜ | 后端 `app/inbox.py` + 迁移 `019_inbox_items` + 三接口（`test_inbox_{store,service,api}.py`）；管理台 `admin-web/src/features/inbox/`（Vitest 9 项，含「通知」导航入口）、伴侣端 `companion-pwa/src/features/inbox/`（Vitest 8 项）；写入失败不阻断主流程并写审计 `inbox.write_failed`；**运行失败通知未接入**（见 E 节），服务端推送未实现 |
+| 员工站内通知收件箱（通知页 + 未读角标） | ✅ | ✅ | ⬜ | 后端 `app/inbox.py` + 迁移 `019_inbox_items` + 三接口（`test_inbox_{store,service,api}.py`）；管理台 `admin-web/src/features/inbox/`（Vitest 9 项，含「通知」导航入口）、伴侣端 `companion-pwa/src/features/inbox/`（Vitest 8 项）；写入失败不阻断主流程并写审计 `inbox.write_failed`；九类触发点（含运行失败 `run.failed` 与被取消 `run.cancelled`），服务端推送未实现 |
 
 ## K. 交付与运维
 
@@ -176,7 +178,7 @@
 | 「手机端先以 PWA 伴侣形式提供审批与提醒」 | 已建 `companion-pwa/`（登录 + 待办轮询 + 三类审批 + 未读通知区块）；**提醒为轮询，未做 Web Push** |
 | 「生产部署切换到 PostgreSQL、Redis、对象存储和异步 Worker」 | 代码路径具备，**从未在真实环境跑通** |
 | 「统一登录和短期会话」 | 自建账号 + 短期会话 + TOTP 二次验证 + OIDC SSO 客户端已实现；**SSO 真实 IdP 联调与设备绑定未做** |
-| 「通知」 | **部分**：① 已实现**死信运维通知渠道**（脱敏 webhook + 原子去重，`app/notifications.py`、迁移 `015`）；② 已实现面向员工的**站内通知收件箱**（`app/inbox.py`、迁移 `019`，覆盖任务审批、计划与编排提案审核、内容发布转人工接管、账号注册通过；两端已接入口）；**仍未实现**：服务端推送、运行失败通知（运行终态未落盘，见 E 节），伴侣端提醒为客户端轮询 |
+| 「通知」 | **部分**：① 已实现**死信运维通知渠道**（脱敏 webhook + 原子去重，`app/notifications.py`、迁移 `015`）；② 已实现面向员工的**站内通知收件箱**（`app/inbox.py`、迁移 `019`，覆盖任务审批、计划与编排提案审核、内容发布转人工接管、运行失败与被取消、账号注册通过；两端已接入口）；**仍未实现**：服务端推送，伴侣端提醒为客户端轮询。运行记录在终态落盘并带受控 `finish_reason`（迁移 `020`） |
 | 「GEO 版本化适配器接入」 | **外部依赖阻塞**（见 K 节与阻塞项 6） |
 
 ## 阻塞项：需要外部资源（代码无法代替）
@@ -209,6 +211,7 @@
 13. **PWA 真机验收**：真机安装性验证；若要真推送再引入 HTTPS + VAPID（阻塞项 8）。
 14. **GEO 适配器**：待 GEO 侧提供契约后再启动（见阻塞项 6），不做占位实现。
 15. ~~员工站内通知收件箱~~ ✅（本批次已完成：迁移 `019` + `app/inbox.py` 双仓储 + 三接口 + 两端入口，见 J 节）；配套登记「运行终态未落盘」缺口（E 节），运行失败通知待运行终态落盘后再接入；服务端推送仍属未实现。
+16. ~~运行终态落盘 + 运行结果通知~~ ✅（已完成：`RuntimeService` 统一回写 start/pause/resume/cancel、受控 `finish_reason`（迁移 `020`）、Mock `fail.` 失败路径、`run.failed`/`run.cancelled` 站内通知，见 E/J 节）；新登记缺口「带审批步骤的运行终态」（E 节）。
 
 ## 生成时的核实记录
 

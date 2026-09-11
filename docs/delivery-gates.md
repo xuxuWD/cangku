@@ -32,7 +32,7 @@
 - [ ] Celery Worker 实跑、Outbox 生产连接池、死信通知渠道和 staging 验收 —— **代码缺口已补齐**：死信通知渠道已实现（迁移 015 + `app/notifications.py` 的脱敏 webhook、原子去重、通知失败只写审计不打断发布循环），并已补 `docs/private-deployment-runbook.md` 的异步链路章节；仍缺真实 Redis、Worker 运行环境与通知渠道地址
 - [x] 自建账号注册审批、登录会话与管理员重置密码（开发期接口验证）
 - [x] 计划生成与审核闸门：目标到 AgentPlan 提案、服务端风险推导、审批后复用既有 Runtime（开发期接口验证）
-- [x] 计划执行的反馈与指标采集（子项目②）—— 运行记录表（迁移 013）+ `RunRecord` 双仓储 + `RunMetricsService` 聚合 + `GET /api/v1/runs/{run_id}/metrics` 与 `GET /api/v1/metrics/summary`；提案回写 `run_id`。开发期接口验证，`knowledge_hits` 依赖运行时上报，Mock 下恒为 0（已知限制）
+- [x] 计划执行的反馈与指标采集（子项目②）—— 运行记录表（迁移 013）+ 结束原因（迁移 020）+ `RunRecord` 双仓储 + `RunMetricsService` 聚合 + `GET /api/v1/runs/{run_id}/metrics` 与 `GET /api/v1/metrics/summary`；提案回写 `run_id`。**运行终态已落盘**：记录的写入者收敛到 `RuntimeService`（直启运行、计划驱动运行、内容生成运行与暂停/恢复/取消都回写同一记录，保留原始启动时间），`finish_reason` 为受控枚举（`run_completed`/`cancelled_by_user`/`step_failed`），Mock 提供 `fail.` 前缀的确定性失败路径。开发期接口验证，`knowledge_hits` 依赖运行时上报，Mock 下恒为 0（已知限制）；带 `requires_approval` 步骤的运行仍停在 `running`（无审批决议流程，缺口见就绪清单 E 节）
 - [x] 基于指标的编排优化提案（子项目③）—— 迁移 014 + `app/orchestration/` 提案生成/状态机/审批/审计 + 5 个接口；样本门槛与改善阈值双闸门，样本不足不出提案；**审批通过不自动改配置**。设计见 `docs/superpowers/specs/2026-09-11-orchestration-proposal-design.md`
 - [x] 账号登录限流与失败锁定（宪法第一道防线要求）—— 开发期接口验证，429 行为已测试；生产并发与网关层限流仍需 staging 验收
 - [x] 账号关键操作结构化审计日志（注册、审批、登录、改密、重置）—— 审计表 + stdout 结构化日志，开发期接口验证；PostgreSQL 实跑与日志采集仍需 staging 验收
@@ -43,7 +43,7 @@
 - [x] 会话令牌服务端撤销（登出立即生效）—— 迁移 `018` + `workbench_session_revocations` 撤销名单（内存 / PostgreSQL 双实现）+ `POST /api/v1/auth/logout`；鉴权依赖在每次请求校验撤销状态，登出后同一令牌立即 `401`；撤销查询失败按 `503` fail-closed，缺少 `jti` 的令牌按无效处理，开发期头部身份不适用
 - [ ] 生产密钥轮换与真实统一登录验收 —— **口径变更（2026-09-11）**：原门禁写法的「设备绑定」不再列入，产品决定采用「注册申请 + 管理员审批」制（重复手机号有提示、审批时由管理员指定角色、发起人不能自审），设备绑定明确不做；本项剩余要求为部署密钥系统的生产轮换与真实 IdP 的统一登录验收，均需外部资源。变更理由见文末「门禁口径变更记录」
 - [x] Electron 桌面端和 PWA 伴侣端 —— 桌面端 `desktop/`（Electron 安全壳：contextIsolation、禁用 nodeIntegration、沙箱、导航白名单、外链走系统浏览器、禁 webview；远程/内置两种加载模式；electron-builder NSIS 配置、**未配置签名**）；伴侣端 `companion-pwa/`（登录、待办轮询、三类审批、手写 service worker 且**不缓存 `/api/`**、manifest 与图标）。配套后端新增 `GET /api/v1/approvals/pending` 待办聚合接口。**真实安装包构建/代码签名/公证/干净电脑测试与真机 PWA 安装均未验收**
-- [x] 员工站内通知收件箱 —— 迁移 `019_inbox_items` + `app/inbox.py`（内存 / PostgreSQL 双仓储、服务端固定文案不含用户输入与手机号、幂等已读、按保留期惰性清理）+ 三个接口（`GET /api/v1/inbox`、`POST /api/v1/inbox/{inbox_id}/read`、`POST /api/v1/inbox/read-all`）；触发点覆盖任务审批通过、计划与编排提案通过/驳回、内容发布转人工接管、账号注册通过。通知写入失败**不阻断**主流程并写审计 `inbox.write_failed`。两端入口：管理台「通知」页、伴侣端未读通知区块。**未接入**：运行失败通知（运行终态当前未落盘，缺口见 `docs/delivery-readiness-checklist.md` E 节）；服务端推送仍未实现。设计见 `docs/superpowers/specs/2026-09-11-inbox-notification-design.md`
+- [x] 员工站内通知收件箱 —— 迁移 `019_inbox_items` + `app/inbox.py`（内存 / PostgreSQL 双仓储、服务端固定文案不含用户输入与手机号、幂等已读、按保留期惰性清理）+ 三个接口（`GET /api/v1/inbox`、`POST /api/v1/inbox/{inbox_id}/read`、`POST /api/v1/inbox/read-all`）；触发点覆盖任务审批通过、计划与编排提案通过/驳回、内容发布转人工接管、运行失败与被取消、账号注册通过。通知写入失败**不阻断**主流程并写审计 `inbox.write_failed`。两端入口：管理台「通知」页、伴侣端未读通知区块。**未接入**：服务端推送仍未实现。设计见 `docs/superpowers/specs/2026-09-11-inbox-notification-design.md` 与 `docs/superpowers/specs/2026-09-11-run-lifecycle-design.md`
 - [x] 协同动态表现层（静态状态列表：网页管理台「协同动态」页，含加载/空/错误态与查看任务跳转）—— 仅呈现 `TaskStatus` 现有三态，文档 5 态词表中的「执行中/等待发布/已完成/需要人工处理」尚无领域状态支撑（已知限制已写入 `docs/collaboration-dynamics.md`）；Pixi/Spine 动画仍待评估
 - [x] 协同动态只读接口与任务权限过滤
 - [x] 微信公众号内容工作台 Mock Alpha：素材提交、确定性草稿、自确认和 Markdown 导出

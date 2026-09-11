@@ -387,7 +387,7 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 | `created_at` | string | 创建时间（ISO 8601） |
 | `read_at` | string \| null | 已读时间，未读为 `null` |
 
-- `kind` 固定七取值：`task.approved`、`plan.approved`、`plan.rejected`、`orchestration.approved`、`orchestration.rejected`、`publication.manual_takeover`、`account.registration.approved`。
+- `kind` 固定九取值：`task.approved`、`plan.approved`、`plan.rejected`、`orchestration.approved`、`orchestration.rejected`、`publication.manual_takeover`、`run.failed`、`run.cancelled`、`account.registration.approved`。
 
 `POST /api/v1/inbox/{inbox_id}/read`
 
@@ -397,7 +397,7 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 把本人全部未读通知标记为已读，返回 `{"updated": <实际更新条数>}`；无未读时返回 `{"updated": 0}`。
 
-**触发点**：任务审批通过、计划提案通过/驳回、编排优化提案通过/驳回、内容发布失败转人工接管、账号注册审核通过。运行失败通知**尚未接入**：运行终态当前未落盘，缺口已登记在 `docs/delivery-readiness-checklist.md`。
+**触发点**：任务审批通过、计划提案通过/驳回、编排优化提案通过/驳回、内容发布失败转人工接管、运行失败、运行被取消、账号注册审核通过。运行类通知的接收人经 `task_id → task.created_by` 反查；任务不可见时跳过通知并写审计 `run.notify_skipped`。
 
 **写入失败不阻断主流程**：通知写入异常时主业务照常返回，并写入审计 `inbox.write_failed`（明细仅含 `kind` 等非敏感字段）。
 
@@ -405,11 +405,15 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 ## 运行指标（子项目②）
 
-每次运行都会写入运行记录（迁移 `013`），用于聚合指标与生成编排优化提案的样本来源。
+每次运行都会写入运行记录（迁移 `013`，结束原因见迁移 `020`），用于聚合指标与生成编排优化提案的样本来源。「运行」包括通过 `POST /api/v1/tasks/{task_id}/runs` 直接启动的运行、计划审批通过后启动的运行，以及内容生成内部启动的运行；记录的**写入者是运行时服务**，暂停/恢复/取消后都会回写同一条记录（保留原始启动时间）。
 
 `GET /api/v1/runs/{run_id}/metrics`
 
-返回单次运行的结构化指标：`run_id`、`task_id`、`proposal_id`、`runtime_key`、`status`、`step_count`、`completed_step_count`、`tool_calls`、`successful_tools`、`knowledge_hits`、`latency_ms`、`started_at`、`finished_at`。运行记录不存在，或该运行所属任务对调用者不可见时，统一返回 `404`「运行记录不存在」（跨租户不泄露存在性）。**已知限制**：`knowledge_hits` 依赖运行时上报，Mock 运行时下恒为 0。
+返回单次运行的结构化指标：`run_id`、`task_id`、`proposal_id`、`runtime_key`、`status`、`step_count`、`completed_step_count`、`tool_calls`、`successful_tools`、`knowledge_hits`、`latency_ms`、`started_at`、`finished_at`、`finish_reason`。运行记录不存在，或该运行所属任务对调用者不可见时，统一返回 `404`「运行记录不存在」（跨租户不泄露存在性）。
+
+- `finish_reason` 是**受控枚举**（`run_completed` / `cancelled_by_user` / `step_failed`），仅终态非空；非终态（`running` / `paused`）恒为 `null`，且此时 `finished_at` 也为 `null`。
+- `finish_reason` **不承载自由文本**：失败与取消的具体原因（哪一步、什么原因）需查 `GET /api/v1/runs/{run_id}/events`。
+- **已知限制**：`knowledge_hits` 依赖运行时上报，Mock 运行时下恒为 0；带 `requires_approval` 步骤的运行会停在 `running`（无审批决议流程，缺口已登记）。
 
 `GET /api/v1/metrics/summary`
 
@@ -449,9 +453,9 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 运行时只是任务执行器，不是权限或任务最终状态事实源。所有动作仍由工作台策略中心检查，计划阶段不执行写入、发布、删除、权限或生产工作流动作。
 
-- POST /api/v1/tasks/{task_id}/runs：在指定任务下创建运行。请求可指定 runtime_key、mode 和步骤计划；服务端从任务快照重建租户、用户、岗位、项目、预算、知识/文件范围和策略版本，客户端不能覆盖这些字段。
+- POST /api/v1/tasks/{task_id}/runs：在指定任务下创建运行。请求可指定 runtime_key、mode 和步骤计划；服务端从任务快照重建租户、用户、岗位、项目、预算、知识/文件范围和策略版本，客户端不能覆盖这些字段。创建成功即写入运行记录（响应中的 `status` 反映启动后的真实状态）。
 - GET /api/v1/runs/{run_id}/events?cursor=...：返回脱敏事件摘要，支持断点读取；内部 Harness session、凭据和原始敏感载荷不返回。
-- POST /api/v1/runs/{run_id}/pause、POST /api/v1/runs/{run_id}/resume、POST /api/v1/runs/{run_id}/cancel：任务创建人、CEO 或超级管理员可操作；跨租户运行统一返回 404。
+- POST /api/v1/runs/{run_id}/pause、POST /api/v1/runs/{run_id}/resume、POST /api/v1/runs/{run_id}/cancel：任务创建人、CEO 或超级管理员可操作；跨租户运行统一返回 404。三个动作都会**回写运行记录**（取消后 `status=cancelled`、`finish_reason=cancelled_by_user`、`finished_at` 非空；暂停与恢复为非终态，`finish_reason` 与 `finished_at` 均为 `null`）。取消成功后会向任务创建人发出一条 `run.cancelled` 站内通知。
 - POST /api/v1/runs/{run_id}/approvals：登记高风险动作审批请求，返回审批号和 pending 状态，不代表已执行。
 
 开发环境默认注册 mock Runtime。DeerFlow、Codex Worker、Hermes 只能作为独立外部适配器接入，不能直连工作台数据库、Redis、GEO 或生产账号；Hermes 的成长结果只能进入待审核提案。
