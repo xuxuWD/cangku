@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .audit.logging import configure_audit_logging
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_run_metrics, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_run_metrics, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -45,7 +45,8 @@ from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import RunRecordNotFound
 from .runtime.service import RunAccessDenied, RuntimeService
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
-from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict
+from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict, ScrapeNotConfigured
+from .content.scraper import ScrapeDenied, ScrapeFailed
 from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
 from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
@@ -92,6 +93,8 @@ content_service = ContentService(
     content_store=build_content_store(settings),
     knowledge_registry=knowledge_access_registry,
     content_generator=build_content_generator(settings),
+    scraper=build_content_scraper(settings),
+    audit=audit_service,
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 planner_service, planner_store = build_planner_service(
@@ -258,6 +261,11 @@ class ContentRegeneration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class ScrapeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=1, max_length=2048)
 
 
 def _content_view(record) -> dict[str, object]:
@@ -516,6 +524,26 @@ def export_content_task(task_id: str, context: UserContext = Depends(current_use
         media_type="text/markdown",
         headers={"Content-Disposition": f'attachment; filename="content-{task_id}.md"'},
     )
+
+
+@app.post("/api/v1/content-sources/scrape")
+def scrape_content_source(payload: ScrapeRequest, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    try:
+        document = content_service.scrape_source(context, payload.url)
+    except ScrapeNotConfigured as exc:
+        raise HTTPException(status_code=503, detail="未配置抓取白名单，抓取功能未启用") from exc
+    except ScrapeDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ScrapeFailed as exc:
+        raise HTTPException(status_code=502, detail="抓取失败") from exc
+    return {
+        "url": document.url,
+        "title": document.title,
+        "text": document.text,
+        "truncated": document.truncated,
+        "content_type": document.content_type,
+        "fetched_at": document.fetched_at,
+    }
 
 
 @app.get("/api/v1/commercial/tenant", response_model=CommercialTenantView)

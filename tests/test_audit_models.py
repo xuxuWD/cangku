@@ -24,7 +24,8 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.PLAN_RUN_STARTED.value == "plan.run_started"
     assert AuditAction.DEAD_LETTER_NOTIFIED.value == "dead_letter.notified"
     assert AuditAction.DEAD_LETTER_NOTIFICATION_FAILED.value == "dead_letter.notification_failed"
-    assert len(set(AuditAction)) == 21
+    assert AuditAction.CONTENT_SOURCE_SCRAPED.value == "content.source.scraped"
+    assert len(set(AuditAction)) == 22
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

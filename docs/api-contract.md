@@ -112,7 +112,7 @@
 
 ## 公众号内容工作台 Alpha
 
-内容工作台面向内部内容运营员工，使用现有任务和 Runtime 作为事实源，首期只生成微信公众号图文草稿，不抓取网页、不调用真实模型、不自动发布。
+内容工作台面向内部内容运营员工，使用现有任务和 Runtime 作为事实源，首期只生成微信公众号图文草稿，默认不抓取网页（仅在服务端配置抓取白名单后可用受限抓取接口）、不调用真实模型、不自动发布。
 
 `POST /api/v1/content-tasks`
 
@@ -142,7 +142,11 @@
 
 仅允许导出已确认草稿，未确认返回 `409`。响应为 UTF-8 Markdown，包含标题、摘要、正文、配图建议、来源和公开任务号；不包含租户 ID、角色、Token、Cookie、API Key、Runtime 内部会话或原始事件载荷。
 
-Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入摘录中的指令性文字不会改变权限、策略或任务状态。内容 API 不提供网页抓取、外部发布或知识库写入能力。
+`POST /api/v1/content-sources/scrape`
+
+需登录。请求体固定为 `{"url": "<http/https 地址>"}`，长度上限 2048，不接受未知字段（否则 `422`）。抓取功能默认关闭：仅当配置了抓取白名单（`CONTENT_SCRAPE_ALLOWED_DOMAINS`，逗号分隔）时可用，未配置返回 `503`（白名单为空即关闭，不是放行）。服务端只访问白名单域名及其子域，并遵守 `robots.txt`、按域限速（`CONTENT_SCRAPE_MIN_INTERVAL_SECONDS`）、限制响应体积（`CONTENT_SCRAPE_MAX_BYTES`）：非 `http`/`https`、地址含用户信息、域名不在白名单、robots 不允许或不可用（fail-closed）一律返回 `403`（`ScrapeDenied`）；非 `2xx`（不自动跨域跳转）、内容类型不受支持、正文为空、超时/网络失败一律返回 `502`（`ScrapeFailed`）。成功返回 `{"url","title","text","truncated","content_type","fetched_at"}`。**无论成功或被拒都写入审计 `content.source.scraped`，detail 仅含 `domain` 与 `status`（`fetched`/`denied`/`failed`）**；只读、不执行 JS、不写入任何数据，也不提供外部发布能力。
+
+Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入摘录中的指令性文字不会改变权限、策略或任务状态。
 
 `POST /api/v1/tasks`
 

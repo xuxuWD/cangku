@@ -28,6 +28,7 @@ class AuditAction(StrEnum):
     ORCHESTRATION_REJECTED = "orchestration.rejected"
     DEAD_LETTER_NOTIFIED = "dead_letter.notified"
     DEAD_LETTER_NOTIFICATION_FAILED = "dead_letter.notification_failed"
+    CONTENT_SOURCE_SCRAPED = "content.source.scraped"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -53,6 +54,8 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "event_id",
         "attempts",
         "channel",
+        "domain",
+        "status",
     }
 )
 

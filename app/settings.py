@@ -75,6 +75,26 @@ class Settings(BaseSettings):
         default=2, ge=0, le=5,
         validation_alias=AliasChoices("CONTENT_MODEL_MAX_RETRIES", "WORKBENCH_CONTENT_MODEL_MAX_RETRIES"),
     )
+    content_scrape_allowed_domains: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONTENT_SCRAPE_ALLOWED_DOMAINS", "WORKBENCH_CONTENT_SCRAPE_ALLOWED_DOMAINS"),
+    )
+    content_scrape_timeout_seconds: float = Field(
+        default=10.0, ge=1, le=60,
+        validation_alias=AliasChoices("CONTENT_SCRAPE_TIMEOUT_SECONDS", "WORKBENCH_CONTENT_SCRAPE_TIMEOUT_SECONDS"),
+    )
+    content_scrape_max_bytes: int = Field(
+        default=2_000_000, ge=1_000, le=20_000_000,
+        validation_alias=AliasChoices("CONTENT_SCRAPE_MAX_BYTES", "WORKBENCH_CONTENT_SCRAPE_MAX_BYTES"),
+    )
+    content_scrape_min_interval_seconds: float = Field(
+        default=1.0, ge=0, le=60,
+        validation_alias=AliasChoices("CONTENT_SCRAPE_MIN_INTERVAL_SECONDS", "WORKBENCH_CONTENT_SCRAPE_MIN_INTERVAL_SECONDS"),
+    )
+    content_scrape_user_agent: str = Field(
+        default="CompanyWorkbenchBot/0.1",
+        validation_alias=AliasChoices("CONTENT_SCRAPE_USER_AGENT", "WORKBENCH_CONTENT_SCRAPE_USER_AGENT"),
+    )
     bootstrap_token: str = Field(
         default="",
         validation_alias=AliasChoices("BOOTSTRAP_TOKEN", "WORKBENCH_BOOTSTRAP_TOKEN"),

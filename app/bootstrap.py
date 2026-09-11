@@ -141,6 +141,28 @@ def build_content_generator(settings: Settings):
     raise ValueError("不支持的内容生成后端")
 
 
+def build_content_scraper(settings: Settings):
+    """按白名单装配网页抓取器；未配置域名即关闭抓取功能（不是放行）。"""
+    validate_runtime_settings(settings)
+    domains = frozenset(
+        item.strip().lower()
+        for item in settings.content_scrape_allowed_domains.split(",")
+        if item.strip()
+    )
+    if not domains:
+        return None
+    from .content.scraper import ScrapePolicy, WebScraper
+
+    policy = ScrapePolicy(
+        allowed_domains=domains,
+        user_agent=settings.content_scrape_user_agent,
+        timeout_seconds=settings.content_scrape_timeout_seconds,
+        max_bytes=settings.content_scrape_max_bytes,
+        min_interval_seconds=settings.content_scrape_min_interval_seconds,
+    )
+    return WebScraper(policy)
+
+
 def build_outbox_publisher(
     settings: Settings, *, connection=None, redis_client=None, audit=None
 ) -> OutboxPublisher:

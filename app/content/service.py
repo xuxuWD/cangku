@@ -4,7 +4,9 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
+from app.audit.models import AuditAction
 from app.domain import AuditEvent, IdempotencyConflict, RiskLevel, Task, TaskNotFound, UserContext
 from app.knowledge_policy import KnowledgeAccessRegistry
 from app.runtime.service import RuntimeService
@@ -12,6 +14,7 @@ from app.runtime.service import RuntimeService
 from .export import MarkdownExporter
 from .generator import ContentGenerationError, ContentGenerationInput, ContentGenerator, MockContentGenerator
 from .models import ContentAudit, ContentBriefInput, ContentDraft, ContentStatus, NormalizedBrief, normalize_brief
+from .scraper import ScrapeDenied, ScrapeFailed, ScrapedDocument, WebScraper
 from .store import ContentRecord, ContentStore, ContentStoreConflict
 
 
@@ -27,6 +30,17 @@ class ExportNotAllowed(ValueError):
     pass
 
 
+class ScrapeNotConfigured(ValueError):
+    """未配置抓取白名单时抓取功能关闭。"""
+
+
+def _url_host(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
 def _fingerprint(brief: NormalizedBrief) -> str:
     value = {"topic": brief.topic, "sources": [item.__dict__ for item in brief.sources], "knowledge_references": brief.knowledge_references}
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -36,12 +50,39 @@ class ContentService:
     def __init__(
         self, task_store: Any, runtime_service: RuntimeService, content_store: ContentStore,
         knowledge_registry: KnowledgeAccessRegistry | None = None, content_generator: ContentGenerator | None = None,
+        scraper: WebScraper | None = None, audit: Any | None = None,
     ) -> None:
         self.task_store = task_store
         self.runtime_service = runtime_service
         self.content_store = content_store
         self.knowledge_registry = knowledge_registry
         self.content_generator = content_generator or MockContentGenerator()
+        self.scraper = scraper
+        self.audit = audit
+
+    def _record_scrape(self, actor: UserContext, domain: str, status: str) -> None:
+        if self.audit is None:
+            return
+        self.audit.record(
+            AuditAction.CONTENT_SOURCE_SCRAPED,
+            tenant_id=actor.tenant_id,
+            actor_id=actor.user_id,
+            detail={"domain": domain, "status": status},
+        )
+
+    def scrape_source(self, actor: UserContext, url: str) -> ScrapedDocument:
+        if self.scraper is None:
+            raise ScrapeNotConfigured("未配置抓取白名单，抓取功能未启用")
+        try:
+            document = self.scraper.fetch(url)
+        except ScrapeDenied:
+            self._record_scrape(actor, _url_host(url), "denied")
+            raise
+        except ScrapeFailed:
+            self._record_scrape(actor, _url_host(url), "failed")
+            raise
+        self._record_scrape(actor, _url_host(document.url), "fetched")
+        return document
 
     def _record(self, actor: UserContext, task_id: str) -> ContentRecord:
         try:
