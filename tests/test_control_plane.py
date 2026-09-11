@@ -311,6 +311,36 @@ def test_collaboration_dynamics_are_filtered_by_task_access() -> None:
     assert other.json()["id"] in {item["aggregate_id"] for item in ceo_view.json()}
 
 
+def test_collaboration_dynamics_expose_tenant_project_and_owner() -> None:
+    created = client.post(
+        "/api/v1/tasks",
+        headers=headers(user_id="dynamic-owner"),
+        json={
+            "title": "带项目归属的动态",
+            "employee_key": "content-operator",
+            "risk_level": "low",
+            "budget": 1,
+            "project_id": "proj-dynamics",
+            "idempotency_key": "dynamic-fields-001",
+        },
+    )
+    assert created.status_code == 201
+    task_id = created.json()["id"]
+
+    response = client.get(
+        "/api/v1/collaboration-dynamics",
+        headers=headers(user_id="dynamic-owner"),
+    )
+
+    assert response.status_code == 200
+    item = next(row for row in response.json() if row["aggregate_id"] == task_id)
+    assert item["tenant_id"] == "t-1"
+    assert item["project_id"] == "proj-dynamics"
+    assert item["created_by"] == "dynamic-owner"
+    assert item["employee_key"] == "content-operator"
+    assert item["status"] == "queued"
+
+
 def test_super_admin_can_configure_role_knowledge_access() -> None:
     response = client.put(
         "/api/v1/knowledge-access/roles/content-operator",

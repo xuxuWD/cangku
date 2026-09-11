@@ -172,6 +172,23 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 返回当前用户有权限查看的近期任务事件摘要，供桌面端、网页端和未来动画表现层使用。接口只读，不接受动作指令；任务标题、数字员工、状态和发生时间均来自服务端真实任务记录。普通员工只能看到自己有权限读取的任务，CEO 和超级管理员可按当前租户权限查看汇总。
 
+响应为数组，每项字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `event_id` | string | 任务事件 ID |
+| `aggregate_id` | string | 任务号 |
+| `action` | string | 事件动作 |
+| `title` | string | 任务标题 |
+| `employee_key` | string | 数字员工标识 |
+| `status` | string | 任务状态，当前为 `queued` / `pending_approval` / `cancelled` |
+| `tenant_id` | string | 所属租户 |
+| `project_id` | string \| null | 所属项目，可为空 |
+| `created_by` | string | 责任人 |
+| `occurred_at` | string | 发生时间（ISO 8601） |
+
+`status` 仅取当前任务状态机已有的三态；「执行中 / 等待发布 / 已完成 / 需要人工处理」等状态在任务状态机落地前不会返回。
+
 ## 企业知识检索
 
 工作台通过 WeKnora 适配器调用官方 `POST /api/v1/knowledge-search`。适配器固定绑定租户、受限 API Key 和知识库白名单，只返回检索片段及来源引用，不把 WeKnora 内部表结构暴露给客户端。知识库写入、Skill 安装、Shell、沙箱和提示词变更不属于该只读接口范围。

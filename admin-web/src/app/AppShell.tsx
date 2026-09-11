@@ -1,7 +1,7 @@
 import type { IconName } from '../components/FilledIcon'
 import { FilledIcon } from '../components/FilledIcon'
 
-export type AppView = 'workbench' | 'history' | 'knowledge'
+export type AppView = 'workbench' | 'history' | 'knowledge' | 'dynamics'
 
 const navigation: Array<{ icon: IconName; label: string; view?: AppView }> = [
   { icon: 'home', label: '内容工作台', view: 'workbench' },
@@ -10,6 +10,7 @@ const navigation: Array<{ icon: IconName; label: string; view?: AppView }> = [
   { icon: 'agent', label: '数字员工设置' },
   { icon: 'model', label: '模型与费用' },
   { icon: 'history', label: '历史草稿', view: 'history' },
+  { icon: 'project', label: '协同动态', view: 'dynamics' },
 ]
 
 export function AppShell({ children, activeView = 'workbench', onNavigate }: { children: React.ReactNode; activeView?: AppView; onNavigate?: (view: AppView) => void }) {

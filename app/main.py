@@ -158,6 +158,9 @@ class CollaborationDynamicView(BaseModel):
     title: str
     employee_key: str
     status: TaskStatus
+    tenant_id: str
+    project_id: str | None
+    created_by: str
     occurred_at: datetime
 
 
@@ -698,6 +701,9 @@ def collaboration_dynamics(
                 title=task.title,
                 employee_key=task.employee_key,
                 status=task.status,
+                tenant_id=task.tenant_id,
+                project_id=task.project_id,
+                created_by=task.created_by,
                 occurred_at=event.occurred_at,
             )
         )
