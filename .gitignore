@@ -7,6 +7,15 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# AI 工具本地工作产物（不入库）
+# brainstorm 设计稿、SDD 任务简报/评审 diff/进度属临时产物；
+# 有意提交的 `.superpowers/sdd/**/task-*-report.md` 不受这些规则影响。
+.superpowers/brainstorm/
+.superpowers/sdd/**/task-*-brief.md
+.superpowers/sdd/**/review-*.diff
+.superpowers/sdd/**/progress.md
+.trae/
+
 # 解析过程产生的页面图片与临时文件
 tmp/
 
