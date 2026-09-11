@@ -2,7 +2,7 @@ import type { IconName } from '../components/FilledIcon'
 import { FilledIcon } from '../components/FilledIcon'
 import { useUnreadCount } from '../features/inbox/useUnreadCount'
 
-export type AppView = 'workbench' | 'history' | 'knowledge' | 'dynamics' | 'inbox' | 'run'
+export type AppView = 'workbench' | 'history' | 'knowledge' | 'dynamics' | 'inbox' | 'run' | 'audit'
 
 const navigation: Array<{ icon: IconName; label: string; view?: AppView }> = [
   { icon: 'home', label: '内容工作台', view: 'workbench' },
@@ -13,6 +13,7 @@ const navigation: Array<{ icon: IconName; label: string; view?: AppView }> = [
   { icon: 'model', label: '模型与费用' },
   { icon: 'history', label: '历史草稿', view: 'history' },
   { icon: 'project', label: '协同动态', view: 'dynamics' },
+  { icon: 'check', label: '安全与审计', view: 'audit' },
 ]
 
 export function AppShell({ children, activeView = 'workbench', onNavigate }: { children: React.ReactNode; activeView?: AppView; onNavigate?: (view: AppView) => void }) {
