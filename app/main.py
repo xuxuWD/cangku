@@ -39,7 +39,9 @@ from .accounts.models import (
 )
 from .accounts.passwords import PasswordPolicyError
 from .accounts.rate_limit import LoginRateLimited
-from .auth import TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
+from .accounts.sso import SsoError, SsoNotConfigured
+from .accounts.sso_store import SsoStateNotFound
+from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
 from .settings import get_settings, validate_runtime_settings
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import RunRecordNotFound
@@ -333,6 +335,11 @@ TOTP_ENROLLMENT_ALLOWED: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+# SSO 受限令牌（scope=sso_pending）只允许完成应用内二次验证与健康检查。
+SSO_PENDING_ALLOWED: frozenset[str] = frozenset(
+    {"/api/v1/auth/sso/verification", "/api/v1/health"}
+)
+
 
 def current_user(
     request: Request,
@@ -360,6 +367,8 @@ def current_user(
         context = UserContext(tenant_id=tenant_id, user_id=user_id, role=role)
     if context.scope == TOTP_ENROLLMENT_SCOPE and (request.method, request.url.path) not in TOTP_ENROLLMENT_ALLOWED:
         raise HTTPException(status_code=403, detail="账号需要先完成动态口令绑定")
+    if context.scope == SSO_PENDING_SCOPE and request.url.path not in SSO_PENDING_ALLOWED:
+        raise HTTPException(status_code=403, detail="请先完成动态验证码校验")
     return context
 
 
@@ -1068,6 +1077,19 @@ class TotpConfirmation(BaseModel):
     totp_code: str = Field(min_length=1, max_length=20)
 
 
+class SsoCallback(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=4096)
+    state: str = Field(min_length=1, max_length=512)
+
+
+class SsoVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    totp_code: str = Field(min_length=1, max_length=20)
+
+
 class PasswordChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1226,6 +1248,104 @@ def create_session(payload: SessionCreate) -> dict[str, object]:
         "user_id": context.user_id,
         "role": context.role,
         "scope": context.scope,
+    }
+
+
+@app.get("/api/v1/auth/sso/authorize")
+def sso_authorize() -> dict[str, str]:
+    try:
+        url, state = account_service.begin_sso_login()
+    except SsoNotConfigured as exc:
+        raise HTTPException(status_code=503, detail="SSO 未启用") from exc
+    return {"authorization_url": url, "state": state}
+
+
+@app.post("/api/v1/auth/sso/callback")
+def sso_callback(payload: SsoCallback) -> dict[str, object]:
+    if not settings.auth_secret:
+        raise HTTPException(status_code=503, detail="会话密钥未配置，请先设置 WORKBENCH_AUTH_SECRET")
+    try:
+        account, requires_totp = account_service.complete_sso_login(
+            code=payload.code, state=payload.state
+        )
+    except SsoNotConfigured as exc:
+        raise HTTPException(status_code=503, detail="SSO 未启用") from exc
+    except (SsoError, SsoStateNotFound) as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if requires_totp:
+        context = UserContext(
+            tenant_id=str(account.tenant_id),
+            user_id=account.account_id,
+            role=str(account.role),
+            scope=SSO_PENDING_SCOPE,
+        )
+        ttl = settings.sso_state_ttl_seconds
+        token = create_access_token(context, settings.auth_secret, ttl_seconds=ttl)
+        return {
+            "access_token": token,
+            "token_type": "Bearer",
+            "expires_in": ttl,
+            "scope": SSO_PENDING_SCOPE,
+            "requires_totp": True,
+            "tenant_id": context.tenant_id,
+            "user_id": context.user_id,
+            "role": context.role,
+        }
+    context = UserContext(
+        tenant_id=str(account.tenant_id),
+        user_id=account.account_id,
+        role=str(account.role),
+        scope=FULL_SCOPE,
+    )
+    ttl = settings.session_ttl_seconds
+    token = create_access_token(context, settings.auth_secret, ttl_seconds=ttl)
+    return {
+        "access_token": token,
+        "token_type": "Bearer",
+        "expires_in": ttl,
+        "tenant_id": context.tenant_id,
+        "user_id": context.user_id,
+        "role": context.role,
+        "scope": context.scope,
+    }
+
+
+@app.post("/api/v1/auth/sso/verification")
+def sso_verification(
+    payload: SsoVerification, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    if context.scope != SSO_PENDING_SCOPE:
+        raise HTTPException(status_code=403, detail="当前会话不允许执行该操作")
+    if not settings.auth_secret:
+        raise HTTPException(status_code=503, detail="会话密钥未配置，请先设置 WORKBENCH_AUTH_SECRET")
+    try:
+        account = account_service.repository.get(context.user_id)
+    except AccountNotFound as exc:
+        raise HTTPException(status_code=401, detail="账号不可用") from exc
+    try:
+        account_service.verify_sso_totp(account, payload.totp_code)
+    except TotpRequired as exc:
+        raise HTTPException(status_code=401, detail="需要动态验证码") from exc
+    except TotpInvalid as exc:
+        raise HTTPException(status_code=401, detail="动态验证码不正确") from exc
+    except LoginFailed as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    session_context = UserContext(
+        tenant_id=str(account.tenant_id),
+        user_id=account.account_id,
+        role=str(account.role),
+        scope=FULL_SCOPE,
+    )
+    ttl = settings.session_ttl_seconds
+    token = create_access_token(session_context, settings.auth_secret, ttl_seconds=ttl)
+    return {
+        "access_token": token,
+        "token_type": "Bearer",
+        "expires_in": ttl,
+        "tenant_id": session_context.tenant_id,
+        "user_id": session_context.user_id,
+        "role": session_context.role,
+        "scope": session_context.scope,
     }
 
 

@@ -29,7 +29,11 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.CONTENT_PUBLICATION_SUCCEEDED.value == "content.publication.succeeded"
     assert AuditAction.CONTENT_PUBLICATION_MANUAL_TAKEOVER.value == "content.publication.manual_takeover"
     assert AuditAction.CONTENT_PUBLICATION_VERIFIED.value == "content.publication.verified"
-    assert len(set(AuditAction)) == 26
+    assert AuditAction.ACCOUNT_SSO_LOGIN_SUCCEEDED.value == "account.sso.login.succeeded"
+    assert AuditAction.ACCOUNT_SSO_LOGIN_REJECTED.value == "account.sso.login.rejected"
+    assert AuditAction.ACCOUNT_SSO_IDENTITY_BOUND.value == "account.sso.identity.bound"
+    assert AuditAction.ACCOUNT_SSO_MFA_REQUIRED.value == "account.sso.mfa_required"
+    assert len(set(AuditAction)) == 30
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

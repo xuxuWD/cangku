@@ -19,6 +19,10 @@ class AuditAction(StrEnum):
     ACCOUNT_TOTP_CONFIRMED = "account.totp.confirmed"
     ACCOUNT_TOTP_RESET = "account.totp.reset"
     ACCOUNT_TOTP_ENROLLMENT_REQUIRED = "account.totp.enrollment_required"
+    ACCOUNT_SSO_LOGIN_SUCCEEDED = "account.sso.login.succeeded"
+    ACCOUNT_SSO_LOGIN_REJECTED = "account.sso.login.rejected"
+    ACCOUNT_SSO_IDENTITY_BOUND = "account.sso.identity.bound"
+    ACCOUNT_SSO_MFA_REQUIRED = "account.sso.mfa_required"
     PLAN_PROPOSED = "plan.proposed"
     PLAN_APPROVED = "plan.approved"
     PLAN_REJECTED = "plan.rejected"
@@ -42,6 +46,7 @@ class AuditDetailNotAllowed(ValueError):
 ALLOWED_DETAIL_KEYS = frozenset(
     {
         "reason",
+        "provider",
         "role",
         "step_count",
         "generator",

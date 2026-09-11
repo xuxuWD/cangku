@@ -322,6 +322,12 @@ def build_account_service(
         repository = PostgresAccountRepository(connection)
     else:
         raise ValueError("不支持的账号存储类型")
+    sso_config = build_sso_config(settings)
+    sso_state_store = (
+        build_sso_state_store(settings, connection=connection, migrate=migrate)
+        if sso_config is not None
+        else None
+    )
     return (
         AccountService(
             repository,
@@ -329,6 +335,11 @@ def build_account_service(
             audit=audit,
             login_limiter=login_limiter,
             require_admin_totp=settings.require_admin_totp,
+            sso_config=sso_config,
+            sso_state_store=sso_state_store,
+            sso_provider=settings.sso_provider,
+            sso_trust_idp_mfa=settings.sso_trust_idp_mfa,
+            sso_state_ttl_seconds=settings.sso_state_ttl_seconds,
         ),
         repository,
     )

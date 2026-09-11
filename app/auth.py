@@ -12,6 +12,7 @@ from .domain import UserContext
 
 FULL_SCOPE = "full"
 TOTP_ENROLLMENT_SCOPE = "totp_enrollment"
+SSO_PENDING_SCOPE = "sso_pending"
 
 
 def create_access_token(context: UserContext, secret: str, *, ttl_seconds: int) -> str:

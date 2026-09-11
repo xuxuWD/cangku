@@ -84,7 +84,15 @@ Phase 2a       Phase 2b      Phase 2c
 - ✅ **并发探针护栏自检**：`http://` 与非独立主机地址均被拒（退出码 `2`，文案准确），日志存 `.acceptance/2026-09-11-1-concurrency-probe/`。
 - ✅ **桌面端依赖固定**：`electron 44.3.0`、`electron-builder 26.15.3` 精确版本，已提交 `package-lock.json`（含 integrity）；本机用 `npm install --ignore-scripts` 有意跳过 Electron 二进制，`node --test` 13 项通过。
 - ⬜ **桌面端代码签名证书申请**：属**外部/人工动作**（采购 OV/EV 证书 + 可信时间戳服务），我方无法代办；它是阻塞项 7 的前置。
-- ⬜ **SSO 设计 + 实现**（口径 A 选②）：开工前需确认两处安全取舍——IdP ID Token 的签名算法与依赖策略、SSO 与现有 TOTP 二次验证的关系。**确认后在此登记最终口径，再动工。**
+- ✅ **SSO 构建块 + 服务与接口已实现**（口径 A 选②）：OIDC 客户端、一次性 state 仓储、`AccountService` 登录编排与三个接口（`/auth/sso/authorize`、`/auth/sso/callback`、`/auth/sso/verification`）均已落地，并有离线测试守护。**真实 IdP 联调属未验收**（须先拿到 IdP 的 client id/secret 与回调域名）。
+
+**SSO 已确认口径（2026-09-11）**：
+
+| 取舍 | 最终口径 |
+| --- | --- |
+| ID Token 签名算法与依赖 | **引入 `cryptography` 作为显式依赖并锁定版本**，同时支持 `HS256` 与 `RS256`；`cryptography` 缺失时 fail-closed 并给出明确报错。严格算法白名单，**拒绝 `alg=none` 与未知算法** |
+| 与 TOTP 的关系 | **新增配置开关，默认仍要求应用内 TOTP**（`sso_trust_idp_mfa` 默认 `false`）；只有部署方显式声明「IdP 已承担 MFA」才可关闭 |
+| 账号绑定 | **仅允许登录已审批账号，不自动建号**；按 IdP 返回的 `email_verified` 邮箱匹配，并把 `sub` 落库（迁移 017 增加 `sso_subject`/`sso_provider`） |
 
 ---
 

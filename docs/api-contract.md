@@ -80,9 +80,40 @@
 
 账号与计划模块的关键操作会写入通用安全审计表 `workbench_audit_log`，并同时输出单行 JSON 结构化日志（logger 名 `company_workbench.audit`，写入标准输出，级别取 `WORKBENCH_LOG_LEVEL`）。
 
-覆盖动作：`account.registration.requested`、`account.registration.approved`、`account.registration.rejected`、`account.login.succeeded`、`account.login.failed`、`account.login.locked`、`account.password.changed`、`account.password.reset`、`account.totp.enrolled`、`account.totp.confirmed`、`account.totp.reset`、`account.totp.enrollment_required`、`plan.proposed`、`plan.approved`、`plan.rejected`、`plan.run_started`、`orchestration.proposed`、`orchestration.approved`、`orchestration.rejected`。
+覆盖动作：`account.registration.requested`、`account.registration.approved`、`account.registration.rejected`、`account.login.succeeded`、`account.login.failed`、`account.login.locked`、`account.password.changed`、`account.password.reset`、`account.totp.enrolled`、`account.totp.confirmed`、`account.totp.reset`、`account.totp.enrollment_required`、`account.sso.login.succeeded`、`account.sso.login.rejected`、`account.sso.identity.bound`、`account.sso.mfa_required`、`plan.proposed`、`plan.approved`、`plan.rejected`、`plan.run_started`、`orchestration.proposed`、`orchestration.approved`、`orchestration.rejected`。
 
 审计记录包含动作、操作者、租户、目标、脱敏手机号与结构化明细（明细字段由服务端白名单限定）；**不包含**口令、口令哈希、令牌、Cookie、密钥或模型原始响应。本轮不提供读取审计的接口。
+
+## 统一登录（SSO / OIDC）
+
+在自建账号之上提供可选的 OIDC 单点登录。**默认关闭**（`WORKBENCH_SSO_ENABLED=false`）；启用时缺少任一必填项（issuer、授权/令牌/公钥端点、client id/secret、回调地址）一律按 fail-closed 在启动时报错。SSO 只做「登录」，账号仍由审批制产生。
+
+`GET /api/v1/auth/sso/authorize`
+
+无需认证。生成一次性 `state`、`nonce` 与 PKCE，返回 `{ "authorization_url": "...", "state": "..." }`，客户端据此跳转 IdP。未启用 SSO 返回 `503`「SSO 未启用」。
+
+`POST /api/v1/auth/sso/callback`
+
+无需认证。请求体为 `{ "code": "...", "state": "..." }`。服务端一次性消费 `state`（过期或重复使用一律拒绝），用授权码 + PKCE 换取令牌并校验 ID Token，按 **已验证邮箱**（`email_verified=true`）匹配账号。根据是否仍需要应用内 TOTP 返回两种结果：
+
+- **需要 TOTP**：`200`，返回受限令牌 `scope=sso_pending`、`requires_totp=true`、`expires_in=WORKBENCH_SSO_STATE_TTL_SECONDS`，并附 `tenant_id`、`user_id`、`role`。
+- **不需要 TOTP**：`200`，返回与 `POST /api/v1/auth/sessions` 同构的完整会话（`scope=full`、`expires_in=WORKBENCH_SESSION_TTL_SECONDS`）。
+
+错误映射：未启用返回 `503`；`state` 失效、账号不存在/未审批、身份不匹配、ID Token 校验失败一律返回 `401`，detail 为固定安全文案，**不回吐 IdP 原始响应**。
+
+`POST /api/v1/auth/sso/verification`
+
+需要认证，且**只接受 `scope=sso_pending` 的受限令牌**（其他 scope 返回 `403`）。请求体为 `{ "totp_code": "..." }`；校验通过后返回完整会话（同 `create_session` 结构）。验证码错误/缺失沿用密码登录的同款状态码与文案（`401`）。
+
+受限令牌 `sso_pending` 的权限边界：仅允许访问 `POST /api/v1/auth/sso/verification` 与 `GET /api/v1/health`，访问其他受保护接口一律返回 `403`「请先完成动态验证码校验」。
+
+安全约定：
+
+- **不自动建号**：邮箱在部署内必须已存在且已审批；否则返回 `401`，绝不隐式创建账号。邮箱只用于匹配，**不写入审计明细与日志**，拒绝审计只记录固定原因码与 `provider`。
+- **防账号接管**：首次登录把 IdP 的 `sub` 绑定到账号（`account.sso.identity.bound`）；此后 `sub` 与已绑定值不一致一律拒绝。
+- **算法白名单**：ID Token 只接受 `HS256`（用 `client_secret` 验签）与 `RS256`（用 jwks 公钥验签），显式拒绝 `alg=none` 与未知算法，防止算法混淆。
+- **MFA 关系**：`WORKBENCH_SSO_TRUST_IDP_MFA` 默认 `false`，即 IdP 承担 MFA 与否都仍要求应用内 TOTP；只有部署方显式声明「IdP 已承担 MFA」时才跳过。应用内 TOTP 的校验与重放防护与密码登录完全一致。
+- 审计动作：`account.sso.login.succeeded`、`account.sso.login.rejected`、`account.sso.identity.bound`、`account.sso.mfa_required`（明细只含 `provider` / 固定 `reason`）。
 
 ## 私有部署商业化 G0
 
