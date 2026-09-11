@@ -4,6 +4,7 @@
 > **状态真相仍在** [`docs/delivery-readiness-checklist.md`](delivery-readiness-checklist.md)（现状与 ✅/❌），本文件是它的**执行层**，编号与它的「阻塞项 1–8」一一对应，避免两处各说一套。
 > **口径**：以下所有事项**代码无法代替**；代码侧缺口已归零，唯一例外是 GEO 适配器（需对端契约，见组 5）。
 > **红线**：写操作（迁移演练、并发压测、密钥轮换、启动应用服务）**必须单独授权**并在专用账号下执行；只读部分用 [`docs/readonly-verification-runbook.md`](readonly-verification-runbook.md)。
+> **本机已验证（2026-09-12，一次性本机环境，未触碰 staging）**：1.7 跨租户探测、1.8 并发压测三场景、2.2 密钥轮换两阶段 —— 命令与判据均按实测结论写成，可直接照抄。
 
 ---
 
@@ -30,8 +31,19 @@
 - [ ] 1.7 **跨租户只读探测**（需两个不同租户的令牌 + **每个 KIND 在两租户各一个真实资源 ID**）：
       `python scripts/cross_tenant_probe.py --base-url … --token-a … --token-b … --resource "task:<A_ID>:<B_ID>"`（**漏掉 `--resource` 会 `exit=2`**）
       判据：`exit=0` 且报告 `A→A=200 B→B=200 A→B=404 B→A=404`（本机已实测通过）
-- [ ] 1.8 **并发压测**（写操作，需专用账号）：`scripts/staging_concurrency_probe.py`
-      判据：登录限流、任务幂等、审批原子性三场景行为与离线断言一致
+- [ ] 1.8 **并发压测**（写操作，需专用账号）：
+
+      ```bash
+      python scripts/staging_concurrency_probe.py --base-url "$BASE" \
+        --token "$TOKEN" --phone "$PROBE_PHONE" --password "$PROBE_PASSWORD" \
+        --scene login_throttle --scene task_idempotency --scene plan_approval \
+        --proposal-id "$PROPOSAL_ID" --concurrency 8
+      ```
+
+      - `--base-url` / `--token` / `--phone` / `--password` 四个**必填**；**`--phone` 必须是专用探针账号**（登录场景会把它锁定一段时间），**绝不能用真人账号**。
+      - **`login_throttle` 第一次跑必然 `fail`（`{401:8}`），这不是缺陷**：8 个并发请求在账号被锁定之前**同时通过了「未锁定」检查**，而锁定是在失败计数之后才生效。**紧接着再跑一次即 `pass`（`{429:8}`）**，报告还会自己推出「部署最大失败次数约为 5」（与默认 `WORKBENCH_LOGIN_MAX_FAILURES=5` 一致）——**不要因为这个 fail 去改代码或调配置**。
+      - **`plan_approval` 的前置**：需要一个处于 `pending_review`、且**发起人 ≠ 令牌用户**的提案（自审会被拒）；另外**创建提案要求 `WORKBENCH_PLANNER_TOOLS` 非空**（默认空时建提案直接 `422`「未配置任何可用工具」，本机实测），所以要在 staging 上先备好真实提案，**不能临时现造**。
+      判据（2026-09-12 本机实测三场景全部跑通）：`login_throttle` 第二次 `{429:8}`；`task_idempotency` `{200:7,201:1}`（同一幂等键只产生 1 条记录）；`plan_approval` `{200:1,409:7}`（并发审批保持原子）
 - [ ] 1.9 **审计落 PG 的实跑验证 + 日志采集告警**
       判据：库里能查到审计行；采集侧有告警规则（此前只有假连接静态断言）
 - [ ] 1.10 **Outbox / Celery Worker 实跑**：Redis + Worker 进程 + 死信通知渠道地址
@@ -48,8 +60,28 @@
 **需要谁提供**：部署密钥系统（Vault/KMS/云密钥服务）与轮换流程。
 
 - [ ] 2.1 两把密钥由密钥系统注入（`WORKBENCH_AUTH_SECRET`、`WORKBENCH_BACKUP_ENCRYPTION_KEY`，≥32 位且互不相同），仓库内无明文
-- [ ] 2.2 轮换演练（写操作，需授权）：`scripts/secret_rotation_drill.py`
-      判据：轮换后旧密钥失效、新密钥生效，**不改代码、不重启改配置以外的动作**
+- [ ] 2.2 **轮换演练**（写操作，需授权）：`scripts/secret_rotation_drill.py`
+      两阶段，**`before` 与 `after` 之间必须替换 `WORKBENCH_AUTH_SECRET` 并重启应用**（密钥只在启动期读取）：
+
+      ```bash
+      # ① 轮换前：登录取令牌，写入证据文件（含令牌，用完即删）
+      python scripts/secret_rotation_drill.py --phase before --base-url "$BASE" \
+        --phone "$PHONE" --password "$PASSWORD" --output /tmp/rot-token.json
+
+      # ② 替换 WORKBENCH_AUTH_SECRET 并重启应用
+
+      # ③ 轮换后：断言旧令牌失效 / 重登成功 / 新令牌可用
+      python scripts/secret_rotation_drill.py --phase after --base-url "$BASE" \
+        --phone "$PHONE" --password "$PASSWORD" --output /tmp/rot-token.json
+      ```
+
+      - **前置：应用必须使用持久化账号仓储**（`WORKBENCH_STORAGE_BACKEND=postgres`）。默认 `memory` 下账号只存在于进程内，重启即丢，会导致 `after` 阶段「重新登录」返回 `401 手机号或密码不正确`——这是**运行配置问题，不是轮换缺陷**（本机已踩过一次，见下）。staging 本就是 postgres，正常不会遇到。
+      - 令牌是无状态 HMAC-SHA256（`auth_secret` 参与签名），因此**重启本身不会**让旧令牌失效；`after` 阶段的 401 只可能来自密钥变化。本机做了对照实验确认这一点。
+      - 受保护探针默认 `GET /api/v1/approvals/pending`（任意已登录角色均 200），可用 `--probe-path` 覆盖；报告**只打印令牌指纹（SHA-256 前 8 位），绝不打印令牌原文**。
+      判据（2026-09-12 本机 PG16 + `WORKBENCH_STORAGE_BACKEND=postgres` 实测）：
+      - 对照（**同密钥**重启）：旧令牌 `200`、重新登录 `200` → 证明重启不影响会话
+      - 轮换（S1→S2）后：旧令牌 `401`、重新登录成功（新指纹 `sha256:aa523ec5`）、新令牌 `200`，`exit=0` 全 `pass`
+      - 落库旁证：`workbench_accounts` 中该账号 `scrypt$` 哈希与轮换前一致（改密钥不动口令哈希）
 
 ---
 
