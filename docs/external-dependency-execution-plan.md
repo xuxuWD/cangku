@@ -184,6 +184,10 @@ Phase 2a       Phase 2b      Phase 2c
 2. 元数据自洽校验（默认联网，需 IdP 可达）：`py scripts/sso_preflight.py` → 退出码 `0`（不一致/不可达均 fail-closed）。
 3. 无 IdP 时的 fail-closed 演示：`py scripts/sso_preflight.py --example` → 退出码 `1`。
 
+**预检覆盖面**（`fail` = 已确定会导致对接失败；`warn` = 需人工确认的风险）：
+- 本地（离线可跑）：配置齐备性、四个 URL 必须 `https`、**请求作用域必须含 `openid` 与 `email`**（缺 `email` 会导致账号匹配全线失败）；并提示 `redirect_uri` 应指向**客户端**（后端 `/api/v1/auth/sso/callback` 是 POST+JSON，不能作为浏览器跳转目标）。
+- 联网：issuer 与三端点一致性、ID Token 签名算法（RS256/HS256）、JWKS 可用密钥、**授权码模式**（`response_types_supported` 含 `code`）、**PKCE S256**（本系统固定发 `code_challenge_method=S256`）、**令牌端点认证方式**（本系统把 `client_secret` 放在表单体，需支持 `client_secret_post`）、**本机与 IdP 的时钟偏移**（> 60 秒判 fail，因 `exp`/`iat` 容差为 60 秒）。
+
 **联调动作**（按序执行并留证）：
 1. 发起授权 → 完成回调：`GET /api/v1/auth/sso/authorize` → IdP 登录 → `POST /api/v1/auth/sso/callback`。
 2. 若回调返回 `requires_totp=true`（`scope=sso_pending`）→ 用受限令牌走 `POST /api/v1/auth/sso/verification` 换完整会话。
