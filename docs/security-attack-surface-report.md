@@ -211,11 +211,11 @@ single_scrypt_ms => 53.3
 
 ## 4. 已知限制
 
-1. **TOTP 密钥明文存储**：`totp_secret` 以 base32 文本直接写入账号仓储（`set_totp` / `workbench_accounts.totp_secret`），标准库无 AES。**数据库泄露即可绕过 MFA**；静态加密列为后续项。
+1. ~~**TOTP 密钥明文存储**~~ **已修复（2026-09-11）**：改为在账号持久化适配器（`PostgresAccountRepository`）实施静态加密——AES-256-GCM，子密钥由 `WORKBENCH_BACKUP_ENCRYPTION_KEY` 经 HKDF-SHA256（info=`workbench-totp-secret-v1`，RFC 5869）派生，密文格式 `v1:base64(nonce||ct||tag)`，见 `app/accounts/secrets.py`。**剩余边界**：① 开发用内存仓储不落盘，不做加密；② 历史明文行仍可读（只读兼容，新写入一律加密）；③ 拿到 `v1:` 密文却无密钥时仓储直接 fail-closed；④ 轮换备份加密密钥会使既有 TOTP 密文不可解，需由 `super_admin` 重置动态口令后重新绑定。
 2. **登录限流按手机号计数**：挡不住攻击者轮换手机号，每个号仍可消耗 5 次 scrypt（本机约 53 ms/次）。生产仍需网关层限流。
 3. **弱口令列表为固定字符串集合**：不做变形归一——对已收录口令追加字符、或更冷门的 leetspeak 变形不被拦截；也不校验口令是否包含本人手机号或姓名（已与 `docs/api-contract.md` 一致）。
-4. **会话令牌无服务端撤销**：登出仅靠客户端丢弃令牌 + 短期 TTL（默认 900 秒）兜底，服务端不维护撤销名单。
-5. **审计明细白名单只校验顶层键名**：`build_record` 仅对顶层 `key in ALLOWED_DETAIL_KEYS` 做判断，不递归校验值的内容。
+4. ~~**会话令牌无服务端撤销**~~ **已修复（2026-09-11）**：新增 `POST /api/v1/auth/logout` 与按 `jti` 的服务端撤销名单（内存 + PostgreSQL 表 `workbench_session_revocations`，迁移 `018`），鉴权依赖在每次请求时校验撤销状态，登出后同一令牌**立即失效**；撤销条目只保留到令牌自身过期时间。**剩余边界**：① 撤销查询失败时按 fail-closed 返回 `503`（不放行）；② 缺少 `jti` 的令牌按无效处理；③ 开发期头部身份（`X-*` 头）没有令牌，不适用撤销。
+5. ~~**审计明细白名单只校验顶层键名**~~ **已修复（2026-09-11）**：`build_record` 在顶层白名单之外，对**每个明细值**调用 `redaction.has_sensitive_key` 做递归敏感键检查，命中即抛 `AuditDetailNotAllowed`。顶层键仍以白名单为准（因此 `runtime_key` 这类含 `key` 词元的合法键不会被启发式误伤）；**嵌套结构里出现 `*_key` 等敏感词元一律拒绝**（fail-closed）。当前所有明细值都是标量，因此该加固不改变既有行为。
 6. **TOTP 同一窗口重放防护**：TOTP 确认后，同一 30 秒窗口内的同一个码无法再次用于登录（被重放防护拒绝）——这是正确行为，但客户端需等待新窗口。
 7. **未在真实环境验证的部分**：PostgreSQL 仓储、Celery/Outbox、外部 Runtime 均未在真实环境验证。
 8. **开发态请求头身份**：`X-Tenant-Id/X-User-Id/X-User-Role` 在 `development` 下是设计内约定；必须以生产门禁（`WORKBENCH_ENV≠development`）确保其不被启用。

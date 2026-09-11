@@ -2,10 +2,10 @@
 
 > **用途**：把 `docs/delivery-gates.md` 的勾选状态摊开成可逐项追踪的底账，区分「代码在」「有测试守护」「在真实环境验收过」三种不同状态。
 >
-> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照）；第十次：项 8 两处代码缺口修复（运行时认证注入、注册表接入应用装配）+ 三项接入索取表（GEO 契约/公众号账号/外部运行时））
-> **基线**：分支 `feature/acceptance-tooling`，全量 **975 项测试通过**，`compileall` 退出码 0
+> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照）；第十次：项 8 两处代码缺口修复（运行时认证注入、注册表接入应用装配）+ 三项接入索取表（GEO 契约/公众号账号/外部运行时）；第十一次：分支 `feature/acceptance-tooling` 快进合入 `main`，基线口径由该分支改为 `main`；第十二次：TOTP 种子静态加密（HKDF 子密钥 + AES-256-GCM）与会话令牌服务端撤销（登出立即生效，迁移 018）；第十三次：补齐契约遗漏（内容任务列表、运行指标两接口）并新增路由覆盖守护测试；第十四次：审计明细嵌套值的递归敏感键校验（防御性加固），并订正过期口径——桌面端自动更新行拆出为已完成、通知能力范围改为「仅死信运维通知渠道」、核实记录注同步）
+> **基线**：分支 `main`（`feature/acceptance-tooling` 已于 2026-09-11 快进合入），全量 **1031 项测试通过**，`compileall` 退出码 0
 >
-> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 97 个测试文件、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
+> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 102 个测试模块、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
 
 ## 判定口径
 
@@ -20,13 +20,13 @@
 
 | 维度 | 数量 |
 | --- | --- |
-| 门禁总项数 | **56**（`delivery-gates.md`） |
-| 已勾选（实现） | **47** |
+| 门禁总项数 | **57**（`delivery-gates.md`） |
+| 已勾选（实现） | **48** |
 | 未勾选 | **9** |
 | 达到**真实环境验收** | **0**（部分是本地真实验证，见「本地已验证」一行） |
 | 本地已验证（真实 PostgreSQL 迁移与备份恢复演练、内容工作台内部闭环回归） | **2** |
-| 测试文件数 | **97**（`tests/`，不含 `conftest.py`） |
-| 测试用例数 | **975**（后端）+ 前端 `admin-web` 18、`companion-pwa` 24、`desktop` 13（Node `node:test`） |
+| 测试文件数 | **102** 个测试模块（`tests/`；另有 `conftest.py` 与 `oidc_test_idp.py` 两个辅助文件，不计入） |
+| 测试用例数 | **1031**（后端）+ 前端 `admin-web` 18、`companion-pwa` 24、`desktop` 13（Node `node:test`） |
 
 > **一句话结论**：服务端能力基本齐全，**本批次可独立实现的代码缺口已全部闭合（项 2 的死信通知渠道、项 9 的抓取器/发布器/内容安全评估、项 3 的 OIDC SSO 客户端）**；但项 3 的真实 IdP 联调与项 6 的 GEO 适配器**尚需先拿到口径/契约才能动工**，不属于本仓库可独立完成的范围。其余卡点全为外部依赖。
 >
@@ -42,7 +42,7 @@
 | FastAPI 服务入口与健康检查 | ✅ | ✅ | ⬜ | `test_control_plane.py` |
 | 开发期任务幂等、租户隔离、风险审批、审计计数 | ✅ | ✅ | ⬜ | `test_control_plane.py` |
 | 基础依赖、环境示例、Docker Compose | ✅ | — | ⬜ | `.env.example`、`docker-compose.yml`（基础设施）；应用编排见 I 节「应用容器化」 |
-| 契约测试与 Python 编译检查 | ✅ | ✅ | — | `test_persistence_contract.py` |
+| 契约测试与 Python 编译检查 | ✅ | ✅ | — | `test_persistence_contract.py`、`test_api_contract_coverage.py`（守护每个 `/api/` 路由都已写入 `docs/api-contract.md`） |
 | PostgreSQL 任务 CRUD、唯一约束、原子审批、迁移 runner | ✅ | ✅ | ⬜ | `test_persistence_contract.py`；**未在真实 PG 上运行** |
 | PostgreSQL 连接池适配、审计读取、审批事务 | ✅ | ✅ | ⬜ | 同上 |
 | Redis Streams/Celery 事件总线、Outbox 事务写入、幂等消费者**骨架** | ✅ | ✅ | ⬜ | `test_events.py`、`test_outbox.py`；门禁自述为「骨架」 |
@@ -57,7 +57,8 @@
 | 生产密钥轮换、真实统一登录验收 | ❌ | ❌ | ⬜ | **口径变更**：原「设备绑定」已从该项移除（产品采用「注册申请 + 管理员审批」制，理由见 `delivery-gates.md`「门禁口径变更记录」）；SSO 客户端已实现（见下一行），密钥轮换需部署密钥系统，两者均待外部资源（TOTP 二次验证已完成，见下两行） |
 | SSO（OIDC）实现 | ✅ | ✅ | ⬜ | `app/accounts/sso.py`、`app/accounts/sso_store.py`、`AccountService` 登录编排与 `/auth/sso/{authorize,callback,verification}` 三接口；迁移 017 + 算法白名单（HS256/RS256，拒绝 `none`）+ 不自动建号；测试见 `tests/test_sso_login.py`、`tests/test_sso_blocks.py`、`tests/test_sso_e2e.py`（真实 HTTP + 真实 RS256，进程内 WSGI）、夹具 `tests/oidc_test_idp.py`、预检 `scripts/sso_preflight.py`；**本地端到端预演已通过，真实 IdP 联调未验收** |
 | 口令弱口令策略（禁止纯数字与常见口令） | ✅ | ✅ | ⬜ | `test_account_password_policy.py`；**已知限制**：不校验是否含手机号/姓名、不做变形归一 |
-| 管理员动态口令二次验证（TOTP） | ✅ | ✅ | ⬜ | `test_totp.py`、`test_account_totp.py`、`test_account_totp_api.py`、`test_account_repository_totp.py`；真实部署的验证器兼容性未验收 |
+| 管理员动态口令二次验证（TOTP） | ✅ | ✅ | ⬜ | `test_totp.py`、`test_account_totp.py`、`test_account_totp_api.py`、`test_account_repository_totp.py`、`test_account_secrets.py`；TOTP 种子在持久化层静态加密（AES-256-GCM + HKDF 子密钥，密文带 `v1:` 前缀，旧明文只读兼容；内存仓储不落盘故不加密）；真实部署的验证器兼容性未验收 |
+| 会话令牌服务端撤销（登出立即生效） | ✅ | ✅ | ⬜ | `test_session_revocation.py`、迁移 `018`（`workbench_session_revocations`）；登出后同一令牌立即 `401`，撤销条目保留至令牌自身过期，撤销查询失败按 `503` fail-closed；开发期头部身份不适用 |
 
 ## C. 权限与策略
 
@@ -130,12 +131,13 @@
 
 | 项 | 实现 | 测试 | 验收 | 证据 |
 | --- | --- | --- | --- | --- |
-| 账号关键操作结构化审计（8 类动作，审计表 + stdout JSON） | ✅ | ✅ | ⬜ | `test_audit_{redaction,models,logging,store,postgres,bootstrap}.py`、`test_account_audit.py` |
+| 账号关键操作结构化审计（8 类动作，审计表 + stdout JSON） | ✅ | ✅ | ⬜ | `test_audit_{redaction,models,logging,store,postgres,bootstrap}.py`、`test_account_audit.py`；顶层键走白名单，明细值若为嵌套结构则按敏感键递归拒绝 |
 | 计划模块生成/审批/驳回/执行纳入审计（4 类动作） | ✅ | ✅ | ⬜ | `test_planner_audit.py` |
 | 审计落 PG 的实跑验证与日志采集告警 | ❌ | ❌ | ⬜ | **未做**（PG 仓储仅用假连接做静态断言） |
 | 攻击面八类检查**正式报告**（宪法第八章） | ✅ | — | ⬜ | `docs/security-attack-surface-report.md`；基于本机 `TestClient` 实测，**真实 staging / 生产环境验收未做** |
 | 应用容器化（Dockerfile） | ✅ | ✅ | ⬜ | `Dockerfile`、`docker-compose.app.yml`、`test_container_assets.py`（静态资产校验）；**真实镜像构建与容器运行未验收** |
-| 桌面应用签名/公证/自动更新/干净电脑测试（宪法 2.5） | ❌ | — | ⬜ | **未开始** |
+| 桌面端自动更新（接线 + 搬运层演练） | ✅ | ✅ | ⬜ | `desktop/src/config.cjs`（fail-closed 更新策略）、`desktop/src/main.cjs`（electron-updater 接线）、`scripts/desktop_update_drill.py`、`test_desktop_assets.py`、`test_desktop_update_drill.py`；**「旧版 → 新版」真实更新链路未验收** |
+| 桌面应用签名/公证/干净电脑测试（宪法 2.5） | ❌ | — | ⬜ | **未做**：需 Windows 代码签名证书（OV/EV）+ 可信时间戳 + 干净 Windows 机器，属外部资源 |
 
 ## J. 客户端
 
@@ -170,7 +172,7 @@
 | 「手机端先以 PWA 伴侣形式提供审批与提醒」 | 已建 `companion-pwa/`（登录 + 待办轮询 + 三类审批）；**提醒为轮询，未做 Web Push** |
 | 「生产部署切换到 PostgreSQL、Redis、对象存储和异步 Worker」 | 代码路径具备，**从未在真实环境跑通** |
 | 「统一登录和短期会话」 | 自建账号 + 短期会话 + TOTP 二次验证 + OIDC SSO 客户端已实现；**SSO 真实 IdP 联调与设备绑定未做** |
-| 「通知」 | 门禁中无对应实现项，**未见实现** |
+| 「通知」 | **部分**：已实现**死信运维通知渠道**（脱敏 webhook + 原子去重，`app/notifications.py`、迁移 `015`）；面向员工的业务通知/服务端推送**未实现**，伴侣端提醒为客户端轮询 |
 | 「GEO 版本化适配器接入」 | **外部依赖阻塞**（见 K 节与阻塞项 6） |
 
 ## 阻塞项：需要外部资源（代码无法代替）
@@ -196,7 +198,7 @@
 6. ~~规划能力闭环：数据分级闸门、运行指标采集、编排优化提案~~ ✅（本批次已完成，见 C/E 节）。
 7. ~~协同动态表现层（静态状态列表）~~ ✅（本批次已完成，见 J 节）。
 8. ~~客户端三端：待办聚合接口 + PWA 伴侣端 + Electron 桌面端~~ ✅（本批次已完成，见 J 节）。
-9. **合并本批次分支 `feature/planning-closure` 回 `main`**（本轮成果：后端 826 项 + `admin-web` 18 + `companion-pwa` 24 + `desktop` 13 全绿）。
+9. ~~合并批次分支回 `main`~~ ✅（`feature/compliance-deployable`、规划能力闭环与 `feature/acceptance-tooling` 的内容均已进入 `main`；`feature/acceptance-tooling` 于 2026-09-11 **快进合入**，`main` 基线为后端 **975** 项 + `admin-web` 18 + `companion-pwa` 24 + `desktop` 13 全绿）。
 10. ~~内容安全评估用例（项 9 的最后一块代码缺口）~~ ✅（已完成：canary 判定 + 反向控制，见 G 节与 `docs/content-safety-evaluation.md`）。
 11. **拿到外部资源后**：跑 `py scripts/staging_preflight.py` → `py scripts/staging_concurrency_probe.py` → 跨租户测试 → 并发压测 → 沙箱验证 → 真实联调；内容侧另跑 `py scripts/content_safety_evaluation.py` 并留存 JSON 报告。
 12. **桌面端发布链**：固定依赖版本 → 代码签名与时间戳 → 安装包构建 → 干净 Windows 机器验收（阻塞项 7）。
@@ -215,7 +217,7 @@
 | 无通知实现 | 在 `app/` 内检索 `notification` / `notify` / `webhook` | 0 个命中 |
 | 无弱口令策略与管理员二次验证 | 在 `app/` 内检索 `weak_password` / `common_password` / `mfa` / `totp` / `second_factor` | 0 个命中 |
 
-> **注**：以上是 2026-09-10 生成本清单时的**一次性**核实记录。其中「无应用 Dockerfile」「无弱口令策略与管理员二次验证」已于 2026-09-11 第一批次落地；「管理台仅 3 个页面」已于第二批次变为 4 个（新增协同动态）；「无 Electron 工程」已于第三批次落地（新增 `desktop/`）。最新状态以正文各节点为准；「无通知实现」仍与当前一致——伴侣端的提醒是**客户端轮询**，服务端仍没有通知/推送/webhook 能力。
+> **注**：以上是 2026-09-10 生成本清单时的**一次性**核实记录。其中「无应用 Dockerfile」「无弱口令策略与管理员二次验证」已于 2026-09-11 第一批次落地；「管理台仅 3 个页面」已于第二批次变为 4 个（新增协同动态）；「无 Electron 工程」已于第三批次落地（新增 `desktop/`）；**「无通知实现」已不再成立**——死信运维通知渠道（脱敏 webhook）已于同批次实现（`app/notifications.py`、迁移 `015`），但面向员工的业务通知与服务端推送仍未实现，伴侣端提醒是**客户端轮询**。最新状态以正文各节点为准。
 
 其余「✅ 实现」项依据是 `delivery-gates.md` 已勾选；「测试 ✅」依据是 `tests/` 下存在对应主题的测试文件（**仅按文件名与主题匹配，未逐条核对覆盖度**）。
 

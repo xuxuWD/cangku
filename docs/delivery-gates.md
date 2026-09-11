@@ -39,7 +39,8 @@
 - [x] 计划模块的生成、审批与执行纳入审计（与上一项一并落地）—— plan.proposed/approved/rejected/run_started 已写入审计，开发期接口验证；PostgreSQL 实跑仍需 staging 验收
 - [x] 规划输入的数据分级与 `ModelGateway` 闸门 —— 数据分级由服务端从 `Task.risk_level` 推导（low→internal / medium→confidential / high→restricted），拒绝客户端指定；真实模型后端在生成前经 `ModelGateway` 授权，未获准则 403，Mock 后端不外发数据不介入
 - [x] 口令弱口令策略（禁止纯数字、重复单一字符与常见弱口令）—— 在 `hash_password` 统一实施，注册/改密/重置三条链路生效；不校验是否包含手机号或姓名，且不做变形归一（已知限制已写入 API 契约）
-- [x] 管理员动态口令二次验证（TOTP）—— 自建实现（仅标准库）、绑定/确认/重置与受限令牌；开发期接口验证，真实部署的验证器兼容性仍需验收
+- [x] 管理员动态口令二次验证（TOTP）—— 自建实现（仅标准库）、绑定/确认/重置与受限令牌；**TOTP 种子在持久化适配器静态加密**（AES-256-GCM，子密钥由备份加密密钥经 HKDF-SHA256 派生，密文 `v1:` 前缀，历史明文只读兼容，内存仓储不落盘故不加密）；开发期接口验证，真实部署的验证器兼容性仍需验收
+- [x] 会话令牌服务端撤销（登出立即生效）—— 迁移 `018` + `workbench_session_revocations` 撤销名单（内存 / PostgreSQL 双实现）+ `POST /api/v1/auth/logout`；鉴权依赖在每次请求校验撤销状态，登出后同一令牌立即 `401`；撤销查询失败按 `503` fail-closed，缺少 `jti` 的令牌按无效处理，开发期头部身份不适用
 - [ ] 生产密钥轮换与真实统一登录验收 —— **口径变更（2026-09-11）**：原门禁写法的「设备绑定」不再列入，产品决定采用「注册申请 + 管理员审批」制（重复手机号有提示、审批时由管理员指定角色、发起人不能自审），设备绑定明确不做；本项剩余要求为部署密钥系统的生产轮换与真实 IdP 的统一登录验收，均需外部资源。变更理由见文末「门禁口径变更记录」
 - [x] Electron 桌面端和 PWA 伴侣端 —— 桌面端 `desktop/`（Electron 安全壳：contextIsolation、禁用 nodeIntegration、沙箱、导航白名单、外链走系统浏览器、禁 webview；远程/内置两种加载模式；electron-builder NSIS 配置、**未配置签名**）；伴侣端 `companion-pwa/`（登录、待办轮询、三类审批、手写 service worker 且**不缓存 `/api/`**、manifest 与图标）。配套后端新增 `GET /api/v1/approvals/pending` 待办聚合接口。**真实安装包构建/代码签名/公证/干净电脑测试与真机 PWA 安装均未验收**
 - [x] 协同动态表现层（静态状态列表：网页管理台「协同动态」页，含加载/空/错误态与查看任务跳转）—— 仅呈现 `TaskStatus` 现有三态，文档 5 态词表中的「执行中/等待发布/已完成/需要人工处理」尚无领域状态支撑（已知限制已写入 `docs/collaboration-dynamics.md`）；Pixi/Spine 动画仍待评估
@@ -64,7 +65,7 @@
 1. 先增加或更新行为测试，再修改生产代码。
 2. `python -m pytest -q` 全部通过。
 3. `python -m compileall -q app tests extract_pdf.py` 通过。
-4. 新接口同步更新 `docs/api-contract.md`。
+4. 新接口同步更新 `docs/api-contract.md`（由 `tests/test_api_contract_coverage.py` 守护：每个 `/api/` 路由都必须能在契约中查到完整路径）。
 5. 不提交 `.env`、密钥、Cookie、浏览器会话、客户原文或临时媒体。
 6. 未通过真实验收的能力不能写成“已上线”“已发布”或“已收录”。
 

@@ -310,11 +310,11 @@
 
 ## 附录 A · 客户端发布链（**不计入**上述 9 项门禁）
 
-客户端的门禁项已勾选，但以下两步同样是外部依赖，需与正式发布一起做：
+客户端的门禁项已勾选，但以下步骤同样是外部依赖，需与正式发布一起做：
 
-- **桌面端**：固定依赖版本（当前 devDependencies 用 `latest` 占位）→ 代码签名与可信时间戳 → `npm run dist` 产出 NSIS 安装包 → **干净 Windows 机器**跑「安装 → 打开 → 更新」全流程（宪法 2.5）→ 观察 SmartScreen 信誉积累。详见 `desktop/README.md`。
-- **PWA 伴侣端**：真机（iOS / Android）安装性验证（当前图标为 SVG，部分平台要求位图）；若要真推送，需引入 HTTPS 域名与 VAPID 密钥。详见 `companion-pwa/README.md`。
-- **共同前置**：跨源部署需后端 CORS 放行 `Authorization` 头（当前仅 `development` 注册 CORS 且未含该头）。
+- **桌面端**：~~固定依赖版本~~ ✅（已固定精确版本 `electron 44.3.0` / `electron-builder 26.15.3` / `electron-updater 6.8.9`，并锁定 `package-lock.json`；自动更新已按配置 fail-closed 接线）→ 代码签名与可信时间戳 → `npm run dist` 产出 NSIS 安装包（构建需注入 `WORKBENCH_DESKTOP_UPDATE_URL`）→ **干净 Windows 机器**跑「安装 → 打开 → 更新（旧版 → 新版）」全流程（宪法 2.5）→ 观察 SmartScreen 信誉积累。**搬运层可用 `py scripts/desktop_update_drill.py` 机械校验**（元数据形状 / 版本递增 / 安装包 sha512 与大小），**安装层仍须人工**，脚本对这部分输出 `skipped`。详见 `desktop/README.md`。
+- **PWA 伴侣端**：真机（iOS / Android）安装性验证（图标同时提供 SVG 与位图 PNG）；若要真推送，需引入 HTTPS 域名与 VAPID 密钥。详见 `companion-pwa/README.md`。
+- **共同前置**：~~跨源部署需后端 CORS 放行 `Authorization` 头~~ ✅ 已实现：非 `development` 环境按 `WORKBENCH_CORS_ALLOWED_ORIGINS` 注册 CORS（头白名单固定含 `Authorization`），留空即不放行任何跨源（fail-closed）；**真实跨源部署仍属未验收项**。
 
 ## 附录 B · 预检脚本速查
 
@@ -349,10 +349,15 @@ py scripts/cross_tenant_probe.py --base-url https://staging.example.com `
     --token-a $env:WORKBENCH_PROBE_TOKEN_A --token-b $env:WORKBENCH_PROBE_TOKEN_B `
     --resource task:<A的资源id>:<B的资源id>
 
+# 桌面端自动更新链路（客户端发布链）：校验元数据形状、版本递增、安装包 sha512 与大小；
+# 「旧版 → 新版」实装升级必须人工在干净 Windows 机器上完成，脚本只列清单不算通过。
+py scripts/desktop_update_drill.py --update-url https://updates.example.com/workbench `
+    --current-version 1.0.0 --channel latest --output .acceptance/desktop-update/report.json
+
 # Worker（生产模式自动绑定 Outbox 发布器）
 celery -A app.worker:celery_app worker --loglevel=INFO
 ```
 
 > 预检脚本**只验证部署元数据**：不发起网络请求、不读取也不打印密钥值、退出码为 `pass`→0 / 其余→1。**不得**把预检 `pass` 当作真实验收证据。
 >
-> 例外：`worker_preflight.py`、`secret_rotation_drill.py`、`cross_tenant_probe.py` 会**按设计**对目标环境发起真实请求（它们本身就是验收工具，需显式传入 `--base-url`/令牌）。四者都带 fail-closed 护栏（拒绝非 HTTPS、拒绝回落 localhost），且**只输出状态码与判定文案，绝不打印令牌、密钥、DSN 口令或响应正文**。
+> 例外：`worker_preflight.py`、`secret_rotation_drill.py`、`cross_tenant_probe.py`、`desktop_update_drill.py` 会**按设计**对目标环境发起真实请求（它们本身就是验收工具，需显式传入 `--base-url`/`--update-url`/令牌）。它们都带 fail-closed 护栏（拒绝非 HTTPS、拒绝回落 localhost），且**只输出状态码、主机、版本与判定文案，绝不打印令牌、密钥、DSN 口令或响应正文**。

@@ -134,7 +134,7 @@ Phase 2a       Phase 2b      Phase 2c
 - **执行序列**：
   1. `py scripts/staging_preflight.py` → `pass`（留存原文）
   2. 一致性备份 + 记录校验值
-  3. 启动应用让迁移 runner 应用 `001`–`016`，记录实际迁移清单
+  3. 启动应用让迁移 runner 应用 `001`–`018`，记录实际迁移清单
   4. 冒烟：`GET /api/v1/health`、租户读取、跨租户 404
   5. `py scripts/staging_concurrency_probe.py --base-url <https://staging> --token <探针令牌> --phone <探针号> --password <探针口令> --proposal-id <待审提案> --output <证据目录>/probe.json`
   6. 回滚演练：按备份恢复到迁移前，验证可启动/可读/隔离仍成立
