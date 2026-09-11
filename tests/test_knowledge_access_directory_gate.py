@@ -141,6 +141,16 @@ def test_agent_binding_requires_managed_active_agent() -> None:
     assert put_agent("content-writer", ["kb-2"]).status_code == 409
 
 
+def test_agent_binding_blocked_when_owning_role_is_disabled() -> None:
+    """口径收严（2026-09-12 真实 PG 回归后定）：岗位停用连带约束其下属员工。"""
+    create_role()
+    create_agent()
+
+    client.patch("/api/v1/workforce/roles/content-operator", headers=headers(), json={"status": "disabled"})
+
+    assert put_agent("content-writer", ["kb-1"]).status_code == 409
+
+
 def test_agent_binding_accepts_managed_agent() -> None:
     create_role()
     create_agent()

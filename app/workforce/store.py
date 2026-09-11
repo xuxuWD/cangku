@@ -211,11 +211,15 @@ class InMemoryWorkforceDirectoryStore:
         return role is not None and role.status == DirectoryStatus.ACTIVE
 
     def agent_is_active(self, context: UserContext, agent_key: str) -> bool:
+        """员工可用 = 员工自身 active **且** 所属岗位 active（岗位停用连带约束其员工）。"""
         _ensure_admin(context)
         key = _safe_key(agent_key)
         with self._lock:
             employee = self._employees.get((context.tenant_id, key))
-        return employee is not None and employee.status == DirectoryStatus.ACTIVE
+            if employee is None or employee.status != DirectoryStatus.ACTIVE:
+                return False
+            role = self._roles.get((context.tenant_id, employee.role_key))
+        return role is not None and role.status == DirectoryStatus.ACTIVE
 
 
 class PostgresWorkforceDirectoryStore:
@@ -444,8 +448,28 @@ class PostgresWorkforceDirectoryStore:
         return self._status_is_active("workbench_job_roles", "role_key", context.tenant_id, role_key)
 
     def agent_is_active(self, context: UserContext, agent_key: str) -> bool:
+        """员工可用 = 员工自身 active **且** 所属岗位 active；一次 JOIN 查完，避免两次往返。"""
         _ensure_admin(context)
-        return self._status_is_active("workbench_digital_employees", "agent_key", context.tenant_id, agent_key)
+        key = _safe_key(agent_key)
+        if not key:
+            return False
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT employee.status, role.status
+                    FROM workbench_digital_employees AS employee
+                    LEFT JOIN workbench_job_roles AS role
+                      ON role.tenant_id = employee.tenant_id AND role.role_key = employee.role_key
+                    WHERE employee.tenant_id = %s AND employee.agent_key = %s
+                    """,
+                    (context.tenant_id, key),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return False
+        # 所属岗位缺失时 LEFT JOIN 出 NULL，与「已停用」同样按不可用处理
+        return str(row[0]) == DirectoryStatus.ACTIVE.value and str(row[1]) == DirectoryStatus.ACTIVE.value
 
     def _status_is_active(self, table: str, column: str, tenant_id: str, value: str) -> bool:
         key = _safe_key(value)

@@ -341,8 +341,8 @@ def test_is_active_reflects_status_format_and_tenant() -> None:
 
     store.update_role(ADMIN, "content-operator", status="disabled")
     assert store.role_is_active(ADMIN, "content-operator") is False
-    # 岗位停用不影响员工自身的可用性（停用只禁止挂载与指派）
-    assert store.agent_is_active(ADMIN, "content-writer") is True
+    # 岗位停用连带约束其下属员工（口径收严：员工不能脱离岗位独立存在）
+    assert store.agent_is_active(ADMIN, "content-writer") is False
 
     with pytest.raises(PolicyError):
         store.role_is_active(CEO, "content-operator")
@@ -358,4 +358,20 @@ def test_postgres_is_active_reads_status_row_normalized() -> None:
     assert params == ("t-1", "content-operator")
 
     assert PostgresWorkforceDirectoryStore(RecordingConnection([None])).role_is_active(ADMIN, "nobody") is False
-    assert PostgresWorkforceDirectoryStore(RecordingConnection([("disabled",)])).agent_is_active(ADMIN, "content-writer") is False
+
+
+def test_postgres_agent_is_active_joins_own_and_role_status() -> None:
+    """员工可用 = 员工自身 active 且所属岗位 active；一次 JOIN 查完。"""
+    connection = RecordingConnection([("active", "disabled")])
+    store = PostgresWorkforceDirectoryStore(connection)
+
+    assert store.agent_is_active(ADMIN, "Content-Writer") is False
+    statement, params = connection.cursor_instance.statements[0]
+    assert "LEFT JOIN workbench_job_roles" in statement
+    assert params == ("t-1", "content-writer")
+
+    assert PostgresWorkforceDirectoryStore(RecordingConnection([("active", "active")])).agent_is_active(ADMIN, "content-writer") is True
+    assert PostgresWorkforceDirectoryStore(RecordingConnection([("disabled", "active")])).agent_is_active(ADMIN, "content-writer") is False
+    assert PostgresWorkforceDirectoryStore(RecordingConnection([None])).agent_is_active(ADMIN, "nobody") is False
+    # 所属岗位缺失时 LEFT JOIN 出 NULL，同样按不可用处理
+    assert PostgresWorkforceDirectoryStore(RecordingConnection([("active", None)])).agent_is_active(ADMIN, "content-writer") is False
