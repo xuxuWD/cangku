@@ -67,3 +67,47 @@ def test_build_record_accepts_bounded_structured_detail() -> None:
     )
 
     assert record.detail == {"runtime_key": "mock", "step_count": 3}
+
+
+def test_build_record_rejects_sensitive_keys_inside_detail_values() -> None:
+    # 判定依据：顶层白名单挡不住「允许的键里塞嵌套结构」，值必须递归检查敏感键。
+    for bad in (
+        {"reason": {"api_key": "x"}},
+        {"reason": {"apiKey": "x"}},
+        {"reason": [{"access_token": "x"}]},
+        {"reason": {"stage": {"cookie": "x"}}},
+        {"proposed_value": {"sessionId": "x"}},
+        {"reason": {"credentials": {"bearer": "x"}}},
+    ):
+        with pytest.raises(AuditDetailNotAllowed):
+            build_record(AuditAction.PLAN_PROPOSED, tenant_id="t-1", detail=bad)
+
+
+def test_build_record_accepts_nested_detail_without_sensitive_keys() -> None:
+    detail = {
+        "reason": {"stage": "review", "count": 2},
+        "proposed_value": [{"runtime": "mock", "steps": 3}],
+    }
+
+    record = build_record(AuditAction.ORCHESTRATION_PROPOSED, tenant_id="t-1", detail=detail)
+
+    assert record.detail == detail
+
+
+def test_build_record_keeps_top_level_allowlist_authority() -> None:
+    # 回归：顶层键由白名单显式允许，`runtime_key` 词元含 `key` 也不得被启发式误伤。
+    record = build_record(
+        AuditAction.PLAN_RUN_STARTED, tenant_id="t-1", detail={"runtime_key": "mock"}
+    )
+
+    assert record.detail == {"runtime_key": "mock"}
+
+
+def test_build_record_rejects_nested_key_token_even_under_allowed_key() -> None:
+    # 刻意行为：嵌套结构一律按敏感键启发式判定，因此嵌套的 `runtime_key` 也会被拒（fail-closed）。
+    with pytest.raises(AuditDetailNotAllowed):
+        build_record(
+            AuditAction.PLAN_RUN_STARTED,
+            tenant_id="t-1",
+            detail={"reason": {"runtime_key": "mock"}},
+        )

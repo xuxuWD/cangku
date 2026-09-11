@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
+from .redaction import has_sensitive_key
+
 
 class AuditAction(StrEnum):
     ACCOUNT_REGISTRATION_REQUESTED = "account.registration.requested"
@@ -94,11 +96,18 @@ def build_record(
     phone_masked: str | None = None,
     detail: dict[str, object] | None = None,
 ) -> AuditRecord:
-    """构造审计记录；明细采用白名单，只允许服务端声明的字段，未知字段一律拒绝。"""
+    """构造审计记录；明细采用白名单，只允许服务端声明的字段，未知字段一律拒绝。
+
+    顶层键以白名单为准（因此 ``runtime_key`` 这类含 ``key`` 词元的合法键不会被误伤）；
+    键值内部若出现嵌套结构，则按 ``redaction.has_sensitive_key`` 递归检查敏感键，
+    命中即拒绝——防止把凭据塞进「已允许的键」里写进审计。
+    """
     payload = dict(detail or {})
     undeclared = {str(key) for key in payload if key not in ALLOWED_DETAIL_KEYS}
     if undeclared:
         raise AuditDetailNotAllowed("审计明细包含未声明的字段")
+    if any(has_sensitive_key(value) for value in payload.values()):
+        raise AuditDetailNotAllowed("审计明细的嵌套结构中包含敏感字段")
     return AuditRecord(
         action=action,
         tenant_id=tenant_id,
