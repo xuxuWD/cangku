@@ -50,6 +50,8 @@ class InboxKind(StrEnum):
     ORCHESTRATION_APPROVED = "orchestration.approved"
     ORCHESTRATION_REJECTED = "orchestration.rejected"
     PUBLICATION_MANUAL_TAKEOVER = "publication.manual_takeover"
+    RUN_FAILED = "run.failed"
+    RUN_CANCELLED = "run.cancelled"
     ACCOUNT_REGISTRATION_APPROVED = "account.registration.approved"
 
 
@@ -61,6 +63,8 @@ _TITLES: dict[InboxKind, str] = {
     InboxKind.ORCHESTRATION_APPROVED: "你的编排优化提案已通过审核",
     InboxKind.ORCHESTRATION_REJECTED: "你的编排优化提案已被驳回",
     InboxKind.PUBLICATION_MANUAL_TAKEOVER: "内容发布失败，需人工接管",
+    InboxKind.RUN_FAILED: "你的任务运行失败，请查看运行详情",
+    InboxKind.RUN_CANCELLED: "你的任务运行已取消",
     InboxKind.ACCOUNT_REGISTRATION_APPROVED: "你的账号申请已通过审批",
 }
 
@@ -389,6 +393,22 @@ class InboxService:
             tenant_id=tenant_id,
             recipient_id=recipient_id,
             kind=InboxKind.ACCOUNT_REGISTRATION_APPROVED,
+        )
+
+    def run_decided(self, *, tenant_id: str, recipient_id: str, run_id: str, status: str) -> None:
+        """运行进入失败/取消终态：通知等待结果的人。非终态不通知。"""
+        if status == "failed":
+            kind = InboxKind.RUN_FAILED
+        elif status == "cancelled":
+            kind = InboxKind.RUN_CANCELLED
+        else:
+            return
+        self.notify(
+            tenant_id=tenant_id,
+            recipient_id=recipient_id,
+            kind=kind,
+            target_type="run",
+            target_id=run_id,
         )
 
     # ------------------------------------------------------------ 读取
