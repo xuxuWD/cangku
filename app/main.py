@@ -50,6 +50,7 @@ from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
 from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
 from .agent_services import ModelNotAllowed
+from .approvals import ApprovalsService
 from .planner.models import (
     PlanGenerationError,
     PlanProposalNotFound,
@@ -101,6 +102,11 @@ orchestration_service = build_orchestration_proposal_service(
 )
 account_service, _ = build_account_service(
     settings, audit=audit_service, login_limiter=login_rate_limiter
+)
+approvals_service = ApprovalsService(
+    task_store=store,
+    proposal_store=planner_store,
+    account_service=account_service,
 )
 
 
@@ -924,6 +930,20 @@ class RegistrationRejection(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class PendingApprovalView(BaseModel):
+    kind: str
+    target_id: str
+    title: str
+    requested_by: str | None
+    created_at: datetime
+    detail: dict[str, object]
+
+
+class PendingApprovalsView(BaseModel):
+    items: list[PendingApprovalView]
+    counts: dict[str, int]
+
+
 class SessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1041,6 +1061,29 @@ def reject_registration(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _account_view(account)
+
+
+def _pending_approval_view(item) -> PendingApprovalView:
+    return PendingApprovalView(
+        kind=item.kind,
+        target_id=item.target_id,
+        title=item.title,
+        requested_by=item.requested_by,
+        created_at=item.created_at,
+        detail=item.detail,
+    )
+
+
+@app.get("/api/v1/approvals/pending")
+def list_pending_approvals(
+    limit: int = Query(default=50, ge=1, le=200),
+    context: UserContext = Depends(current_user),
+) -> PendingApprovalsView:
+    items, counts = approvals_service.pending(context, limit=limit)
+    return PendingApprovalsView(
+        items=[_pending_approval_view(item) for item in items],
+        counts=counts,
+    )
 
 
 @app.post("/api/v1/auth/sessions")

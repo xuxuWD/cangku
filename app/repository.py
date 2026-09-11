@@ -11,6 +11,7 @@ class TaskRepository(Protocol):
     def create(self, context: UserContext, task: Task) -> tuple[Task, bool]: ...
     def get(self, context: UserContext, task_id: str) -> Task: ...
     def approve(self, context: UserContext, task_id: str) -> Task: ...
+    def list_pending_approval(self, tenant_id: str, *, limit: int) -> list[Task]: ...
 
 
 class PostgresTaskRepository:
@@ -138,6 +139,24 @@ class PostgresTaskRepository:
                     )
                     task.audits = [AuditEvent(action=a[0], actor_id=a[1], actor_role=a[2], at=a[3]) for a in cursor.fetchall()]
                     return task
+
+    def list_pending_approval(self, tenant_id: str, *, limit: int) -> list[Task]:
+        """列出待审批任务；任务无业务时间字段，按 id 升序保证分页确定性。"""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, tenant_id, project_id, created_by, employee_key, title,
+                           risk_level, budget, idempotency_key, request_fingerprint, status
+                    FROM workbench_tasks
+                    WHERE tenant_id = %s AND status = 'pending_approval'
+                    ORDER BY id
+                    LIMIT %s
+                    """,
+                    (tenant_id, limit),
+                )
+                rows = cursor.fetchall()
+        return [self._row_to_task(row) for row in rows]
 
     @staticmethod
     def _row_to_task(row: tuple) -> Task:

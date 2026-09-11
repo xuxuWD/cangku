@@ -20,6 +20,7 @@ class PlanProposalStore(Protocol):
     def get(self, tenant_id: str, proposal_id: str) -> PlanProposal: ...
     def find_by_idempotency(self, tenant_id: str, task_id: str, idempotency_key: str) -> PlanProposal | None: ...
     def list_for_task(self, tenant_id: str, task_id: str) -> list[PlanProposal]: ...
+    def list_pending_review(self, tenant_id: str, *, limit: int) -> list[PlanProposal]: ...
     def mark_approved(self, proposal_id: str, *, reviewer: str) -> PlanProposal: ...
     def mark_rejected(self, proposal_id: str, *, reason: str, reviewer: str) -> PlanProposal: ...
     def mark_run_started(self, proposal_id: str, run_id: str) -> PlanProposal: ...
@@ -66,6 +67,16 @@ class InMemoryPlanProposalStore:
                 for item in self._items.values()
                 if item.tenant_id == tenant_id and item.task_id == task_id
             ]
+
+    def list_pending_review(self, tenant_id: str, *, limit: int) -> list[PlanProposal]:
+        with self._lock:
+            items = [
+                item
+                for item in self._items.values()
+                if item.tenant_id == tenant_id and item.status is PlanStatus.PENDING_REVIEW
+            ]
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return items[:limit]
 
     def mark_approved(self, proposal_id: str, *, reviewer: str) -> PlanProposal:
         with self._lock:
@@ -256,6 +267,20 @@ class PostgresPlanProposalStore:
                     WHERE tenant_id = %s AND task_id = %s ORDER BY created_at
                     """,
                     (tenant_id, task_id),
+                )
+                rows = cursor.fetchall()
+        return [self._hydrate(row) for row in rows]
+
+    def list_pending_review(self, tenant_id: str, *, limit: int) -> list[PlanProposal]:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT {self._COLUMNS} FROM workbench_plan_proposals
+                    WHERE tenant_id = %s AND status = 'pending_review'
+                    ORDER BY created_at DESC LIMIT %s
+                    """,
+                    (tenant_id, limit),
                 )
                 rows = cursor.fetchall()
         return [self._hydrate(row) for row in rows]

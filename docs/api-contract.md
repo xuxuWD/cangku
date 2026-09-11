@@ -261,6 +261,47 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 工具白名单由 `WORKBENCH_PLANNER_TOOLS` 配置声明，**默认空**；为空时计划生成返回 `422`（未配置任何可用工具），不会产出空计划。
 
+## 待我审批聚合
+
+把三类待审批事项聚合成一个只读列表，供工作台首屏轮询展示「待我审批」。接口**不执行任何审批动作**，只做查询与计数。
+
+`GET /api/v1/approvals/pending?limit=50`
+
+- `limit` 为可选查询参数，默认 `50`，取值范围 `1`~`200`；越界返回 `422`。
+- 需要登录；未认证返回 `401`。
+- **按角色过滤**：任务审批（`task_approval`）与计划提案（`plan_proposal`）仅 `ceo`/`super_admin` 可见；账号注册（`account_registration`）仅 `super_admin` 可见。
+- 非审批角色（如 `employee`、`department_lead`）**返回 `200` 与空列表、全 0 计数**，而非报错，便于客户端直接展示「暂无待办」。
+- 计划提案中 `created_by` 与当前用户相同的会被剔除（与审批动作「发起人不能自审」保持一致）。
+- 每类最多返回 `limit` 条，合并后按 `created_at` 降序；任务数据类没有时间字段，统一用最早时间兜底排在末尾。
+- 不同租户之间数据隔离：只返回当前租户的任务与计划提案；账号注册按既有注册列表口径（超级管理员可见的未分配租户申请）。
+
+响应结构：
+
+```json
+{
+  "items": [
+    {
+      "kind": "task_approval",
+      "target_id": "task-xxx",
+      "title": "整理选题",
+      "requested_by": "u-1",
+      "created_at": "2026-09-10T00:00:00+00:00",
+      "detail": { "risk_level": "high", "employee_key": "content-operator" }
+    }
+  ],
+  "counts": {
+    "task_approval": 1,
+    "plan_proposal": 0,
+    "account_registration": 0,
+    "total": 1
+  }
+}
+```
+
+- `kind` 固定三取值：`task_approval`、`plan_proposal`、`account_registration`。
+- `detail` 只含既有接口已暴露的非敏感字段：任务为 `risk_level`、`employee_key`；计划提案为 `step_count`；账号注册为 `position`。
+- `counts` 四个键恒存在，无待办时为 `0`；`total` 为本次返回条目总数。账号注册的标题为脱敏手机号，不泄露超出既有注册列表接口的 PII。
+
 ## 基于指标的编排优化提案
 
 工作台读取运行指标（子项目②），在样本充足时自动生成一条「将默认运行时切换到表现更好运行时」的**待人工审核提案**。提案只做建议与留痕，**不会自动修改任何配置**：审批通过只改变提案状态，采纳与执行必须由人按运行手册完成。全部接口仅 CEO 或超级管理员可访问，其他角色返回 `403`「只有 CEO 或超级管理员可以管理编排优化提案」。

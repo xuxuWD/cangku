@@ -108,6 +108,20 @@ class TaskStore:
             task.audits.append(AuditEvent(action="task.approved", actor_id=context.user_id, actor_role=context.role))
             return task
 
+    def list_pending_approval(self, tenant_id: str, *, limit: int) -> list[Task]:
+        """列出待审批任务。
+
+        Task 数据类没有 created_at，这里按 task.id 升序保证结果确定性。
+        """
+        with self._lock:
+            items = [
+                task
+                for task in self._tasks.values()
+                if task.tenant_id == tenant_id and task.status is TaskStatus.PENDING_APPROVAL
+            ]
+        items.sort(key=lambda task: task.id)
+        return items[:limit]
+
 
 def ensure_can_create(context: UserContext, risk_level: RiskLevel, budget: float) -> None:
     if context.role not in {"employee", "department_lead", "ceo", "super_admin"}:
