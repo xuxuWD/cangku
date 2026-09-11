@@ -416,9 +416,72 @@ class Settings(BaseSettings):
         default="Bearer", validation_alias=AliasChoices("HERMES_AUTH_SCHEME", "WORKBENCH_HERMES_AUTH_SCHEME")
     )
     hermes_timeout_seconds: float = Field(
-        default=30.0,
-        validation_alias=AliasChoices("HERMES_TIMEOUT_SECONDS", "WORKBENCH_HERMES_TIMEOUT_SECONDS"),
+        default=30.0, validation_alias=AliasChoices("HERMES_TIMEOUT_SECONDS", "WORKBENCH_HERMES_TIMEOUT_SECONDS"),
     )
+    # 跨源部署（桌面端远程模式 / PWA 伴侣端）：非 development 环境只在显式配置来源后
+    # 才注册 CORS；留空即视为「不允许任何跨源」（fail-closed）。
+    cors_allowed_origins: str = Field(
+        default="",
+        validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS", "WORKBENCH_CORS_ALLOWED_ORIGINS"),
+    )
+    cors_allow_credentials: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("CORS_ALLOW_CREDENTIALS", "WORKBENCH_CORS_ALLOW_CREDENTIALS"),
+    )
+
+
+CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+CORS_HEADERS = [
+    "Authorization",
+    "Accept",
+    "Content-Type",
+    "X-Tenant-Id",
+    "X-User-Id",
+    "X-User-Role",
+    "Idempotency-Key",
+]
+DEVELOPMENT_CORS_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1):\d+"
+
+
+def parse_cors_origins(raw: str) -> list[str]:
+    """解析并校验允许来源清单。
+
+    只接受 `scheme://host[:port]` 形式的**裸来源**：拒绝通配符 `*`、非 http(s) 协议，
+    以及带路径/查询/结尾斜杠的地址（这类写法不会与浏览器的 `Origin` 头相等，属于配错）。
+    """
+    origins = [item.strip() for item in (raw or "").split(",") if item.strip()]
+    for origin in origins:
+        if origin == "*":
+            raise ValueError("CORS 允许来源不能使用通配符 *")
+        if not origin.startswith(("http://", "https://")):
+            raise ValueError(f"CORS 允许来源必须是 http(s) 绝对来源：{origin}")
+        remainder = origin.split("://", 1)[1]
+        if not remainder or any(mark in remainder for mark in ("/", "?", "#")):
+            raise ValueError(f"CORS 允许来源不能包含路径或查询：{origin}")
+    return origins
+
+
+def resolve_cors_options(settings: Settings) -> dict[str, object] | None:
+    """给出 `CORSMiddleware` 参数；返回 `None` 表示不注册 CORS 中间件。"""
+    if settings.env == "development":
+        return {
+            "allow_origins": [],
+            "allow_origin_regex": DEVELOPMENT_CORS_ORIGIN_REGEX,
+            "allow_credentials": False,
+            "allow_methods": CORS_METHODS,
+            "allow_headers": CORS_HEADERS,
+        }
+
+    origins = parse_cors_origins(settings.cors_allowed_origins)
+    if not origins:
+        return None
+
+    return {
+        "allow_origins": origins,
+        "allow_credentials": settings.cors_allow_credentials,
+        "allow_methods": CORS_METHODS,
+        "allow_headers": CORS_HEADERS,
+    }
 
 
 @lru_cache
@@ -447,3 +510,5 @@ def validate_runtime_settings(settings: Settings) -> None:
         raise ValueError("备份加密密钥至少需要 32 个字符")
     if settings.auth_secret == settings.backup_encryption_key:
         raise ValueError("认证密钥和备份加密密钥必须不同")
+    # 跨源来源配置错误必须在启动期暴露（例如通配符或带路径的地址）。
+    parse_cors_origins(settings.cors_allowed_origins)

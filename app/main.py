@@ -42,7 +42,7 @@ from .accounts.rate_limit import LoginRateLimited
 from .accounts.sso import SsoError, SsoNotConfigured
 from .accounts.sso_store import SsoStateNotFound
 from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
-from .settings import get_settings, validate_runtime_settings
+from .settings import get_settings, resolve_cors_options, validate_runtime_settings
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import RunRecordNotFound
 from .runtime.service import RunAccessDenied
@@ -74,15 +74,10 @@ from .orchestration.models import (
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
 settings = get_settings()
 validate_runtime_settings(settings)
-if settings.env == "development":
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[],
-        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1):\d+",
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Accept", "Content-Type", "X-Tenant-Id", "X-User-Id", "X-User-Role", "Idempotency-Key"],
-    )
+# 跨源部署：development 走本机来源正则；其他环境仅在显式配置允许来源时注册 CORS。
+cors_options = resolve_cors_options(settings)
+if cors_options is not None:
+    app.add_middleware(CORSMiddleware, **cors_options)
 configure_audit_logging(settings.log_level)
 audit_service = build_audit_service(settings)
 login_rate_limiter = build_login_rate_limiter(settings)
