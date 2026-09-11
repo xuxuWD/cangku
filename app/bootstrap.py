@@ -13,6 +13,7 @@ from .domain import TaskStore
 from .dead_letters import DeadLetterStore, PostgresDeadLetterStore
 from .knowledge_policy import KnowledgeAccessRegistry, PostgresKnowledgeAccessRegistry
 from .events import InMemoryEventBus, RedisStreamEventBus
+from .inbox import InMemoryInboxStore, InboxService, PostgresInboxStore
 from .migrations import apply_migrations
 from .outbox import OutboxPublisher
 from .planner.classification import PLAN_GENERATION_CAPABILITY
@@ -185,12 +186,39 @@ def build_content_publisher(settings: Settings):
     )
 
 
+def build_inbox_service(settings: Settings, *, audit=None, connection=None, migrate: bool = True) -> InboxService:
+    """按存储模式装配站内通知（收件箱）。
+
+    保留期取 ``WORKBENCH_INBOX_RETENTION_DAYS``（默认 90 天）；过期条目由仓储惰性清理。
+    """
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存收件箱")
+        return InboxService(
+            InMemoryInboxStore(retention_days=settings.inbox_retention_days), audit=audit
+        )
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return InboxService(
+            PostgresInboxStore(connection, retention_days=settings.inbox_retention_days), audit=audit
+        )
+    raise ValueError("不支持的收件箱存储类型")
+
+
 def build_publication_service(
     settings: Settings,
     *,
     content_store,
     publisher=None,
     audit=None,
+    inbox=None,
     connection=None,
     migrate: bool = True,
 ):
@@ -219,6 +247,7 @@ def build_publication_service(
         store,
         publisher=publisher,
         audit=audit,
+        inbox=inbox,
     )
 
 

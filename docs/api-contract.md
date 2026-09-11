@@ -365,6 +365,44 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 - `detail` 只含既有接口已暴露的非敏感字段：任务为 `risk_level`、`employee_key`；计划提案为 `step_count`；账号注册为 `position`。
 - `counts` 四个键恒存在，无待办时为 `0`；`total` 为本次返回条目总数。账号注册的标题为脱敏手机号，不泄露超出既有注册列表接口的 PII。
 
+## 站内通知（收件箱）
+
+把「与本人相关的结果」投递给**等待结果的人**，供工作台首屏与「通知」页展示。收件箱只做通知，**不承载任何业务正文**：标题是服务端固定文案，不含用户输入、手机号、客户原文或任务内容。接收人即触发动作的申请人（任务提交人、计划/编排提案发起人、内容发布记录创建人）。
+
+三类接口均需登录（未认证 `401`），且**只返回/只影响调用者本人**的通知；跨用户、跨租户一律不可见。
+
+`GET /api/v1/inbox?unread_only=false&limit=50`
+
+- `unread_only` 可选，默认 `false`；`limit` 可选，默认 `50`，取值 `1`~`200`，越界返回 `422`。
+- 按创建时间降序返回；`unread_count` **始终是本人未读总数**，与 `unread_only`、`limit` 无关，便于客户端角标直接取值。
+- 返回 `{"items": [...], "unread_count": 0}`，每项字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `inbox_id` | string | 通知 ID（服务端生成） |
+| `kind` | string | 通知类型，见下表 |
+| `title` | string | 服务端固定文案 |
+| `target_type` | string \| null | 关联对象类型，可为空 |
+| `target_id` | string \| null | 关联对象 ID（任务号、提案号等），可为空 |
+| `created_at` | string | 创建时间（ISO 8601） |
+| `read_at` | string \| null | 已读时间，未读为 `null` |
+
+- `kind` 固定七取值：`task.approved`、`plan.approved`、`plan.rejected`、`orchestration.approved`、`orchestration.rejected`、`publication.manual_takeover`、`account.registration.approved`。
+
+`POST /api/v1/inbox/{inbox_id}/read`
+
+标记单条通知已读，返回更新后的通知对象。**重复标记幂等**（首次写入的 `read_at` 不被覆盖）。他人或跨租户的通知统一返回 `404`「通知不存在」，不泄露存在性。
+
+`POST /api/v1/inbox/read-all`
+
+把本人全部未读通知标记为已读，返回 `{"updated": <实际更新条数>}`；无未读时返回 `{"updated": 0}`。
+
+**触发点**：任务审批通过、计划提案通过/驳回、编排优化提案通过/驳回、内容发布失败转人工接管、账号注册审核通过。运行失败通知**尚未接入**：运行终态当前未落盘，缺口已登记在 `docs/delivery-readiness-checklist.md`。
+
+**写入失败不阻断主流程**：通知写入异常时主业务照常返回，并写入审计 `inbox.write_failed`（明细仅含 `kind` 等非敏感字段）。
+
+**保留期**：通知保留 `WORKBENCH_INBOX_RETENTION_DAYS` 天（默认 `90`），由写入时的惰性清理删除过期记录，无独立定时任务。
+
 ## 运行指标（子项目②）
 
 每次运行都会写入运行记录（迁移 `013`），用于聚合指标与生成编排优化提案的样本来源。

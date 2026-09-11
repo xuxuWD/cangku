@@ -26,11 +26,14 @@ class PublicationService:
         *,
         publisher: Publisher | None,
         audit: Any,
+        inbox: Any = None,
     ) -> None:
         self.content_store = content_store
         self.publication_store = publication_store
         self.publisher = publisher
         self.audit = audit
+        # 站内通知（收件箱）：失败转人工接管时告知内容负责人；None 表示不接入。
+        self.inbox = inbox
 
     def _record(self, actor: UserContext, task_id: str) -> ContentRecord:
         try:
@@ -104,6 +107,13 @@ class PublicationService:
                 actor,
                 {"target": target, "status": "manual_takeover"},
             )
+            # 告知内容负责人需要人工接管；通知失败不阻断（InboxService 内部降级为审计）。
+            if self.inbox is not None:
+                self.inbox.publication_manual_takeover(
+                    tenant_id=actor.tenant_id,
+                    recipient_id=record.created_by,
+                    task_id=task_id,
+                )
             raise
         succeeded = self.publication_store.mark_result(
             stored.publication_id, status="succeeded", receipt_id=receipt.receipt_id

@@ -10,8 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .audit.logging import configure_audit_logging
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_session_revocation_store, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_session_revocation_store, build_task_repository
 from .events import EventEnvelope
+from .inbox import InboxItem, InboxNotFound
 from .domain import (
     AuditEvent,
     IdempotencyConflict,
@@ -82,6 +83,7 @@ configure_audit_logging(settings.log_level)
 audit_service = build_audit_service(settings)
 login_rate_limiter = build_login_rate_limiter(settings)
 session_revocation_store = build_session_revocation_store(settings)
+inbox_service = build_inbox_service(settings, audit=audit_service)
 store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, audit=audit_service)
@@ -104,6 +106,7 @@ publication_service = build_publication_service(
     content_store=content_store,
     publisher=content_publisher,
     audit=audit_service,
+    inbox=inbox_service,
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 planner_service, planner_store = build_planner_service(
@@ -926,6 +929,10 @@ def approve_task(task_id: str, context: UserContext = Depends(current_user)) -> 
     except TaskStateConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     publish_task_event(task, "task.approved", context)
+    # 站内通知：把结果告知任务创建人（通知失败不阻断审批，内部降级为审计）。
+    inbox_service.task_approved(
+        tenant_id=task.tenant_id, recipient_id=task.created_by, task_id=task.id
+    )
     return to_view(task)
 
 
@@ -1180,6 +1187,10 @@ def approve_registration(
         raise HTTPException(status_code=404, detail="账号申请不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # 站内通知：告知申请人已通过审批（驳回不发站内通知——被驳回账号无法登录）。
+    inbox_service.registration_approved(
+        tenant_id=str(account.tenant_id or ""), recipient_id=account.account_id
+    )
     return _account_view(account)
 
 
@@ -1221,6 +1232,62 @@ def list_pending_approvals(
         items=[_pending_approval_view(item) for item in items],
         counts=counts,
     )
+
+
+class InboxItemView(BaseModel):
+    inbox_id: str
+    kind: str
+    title: str
+    target_type: str | None = None
+    target_id: str | None = None
+    created_at: datetime
+    read_at: datetime | None = None
+
+
+class InboxListView(BaseModel):
+    items: list[InboxItemView]
+    unread_count: int
+
+
+def _inbox_view(item: InboxItem) -> InboxItemView:
+    return InboxItemView(
+        inbox_id=item.inbox_id,
+        kind=item.kind.value,
+        title=item.title,
+        target_type=item.target_type,
+        target_id=item.target_id,
+        created_at=item.created_at,
+        read_at=item.read_at,
+    )
+
+
+@app.get("/api/v1/inbox", response_model=InboxListView)
+def list_inbox(
+    unread_only: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=200),
+    context: UserContext = Depends(current_user),
+) -> InboxListView:
+    """列出**本人**的站内通知；`unread_count` 始终是本人未读总数（与筛选无关）。"""
+    items, unread_count = inbox_service.list(context, unread_only=unread_only, limit=limit)
+    return InboxListView(
+        items=[_inbox_view(item) for item in items], unread_count=unread_count
+    )
+
+
+@app.post("/api/v1/inbox/{inbox_id}/read", response_model=InboxItemView)
+def mark_inbox_read(inbox_id: str, context: UserContext = Depends(current_user)) -> InboxItemView:
+    """标记单条通知已读；他人或跨租户一律 404（不泄露存在性），重复标记幂等。"""
+    try:
+        item = inbox_service.mark_read(context, inbox_id)
+    except InboxNotFound as exc:
+        raise HTTPException(status_code=404, detail="通知不存在") from exc
+    return _inbox_view(item)
+
+
+@app.post("/api/v1/inbox/read-all")
+def mark_all_inbox_read(context: UserContext = Depends(current_user)) -> dict[str, int]:
+    """把本人全部未读通知标记为已读，返回实际更新条数。"""
+    return {"updated": inbox_service.mark_all_read(context)}
 
 
 @app.post("/api/v1/auth/sessions")
@@ -1523,6 +1590,12 @@ def approve_plan_proposal(proposal_id: str, context: UserContext = Depends(curre
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    inbox_service.plan_decided(
+        tenant_id=proposal.tenant_id,
+        recipient_id=proposal.created_by,
+        proposal_id=proposal.proposal_id,
+        approved=True,
+    )
     return _plan_view(proposal)
 
 
@@ -1540,6 +1613,13 @@ def reject_plan_proposal(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # 站内通知：驳回结果告知提案发起人（通知失败不阻断审批）。
+    inbox_service.plan_decided(
+        tenant_id=proposal.tenant_id,
+        recipient_id=proposal.created_by,
+        proposal_id=proposal.proposal_id,
+        approved=False,
+    )
     return _plan_view(proposal)
 
 
@@ -1657,6 +1737,13 @@ def approve_orchestration_proposal(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    # 站内通知：审核结果告知提案发起人（通知失败不阻断审批）。
+    inbox_service.orchestration_decided(
+        tenant_id=proposal.tenant_id,
+        recipient_id=proposal.created_by,
+        proposal_id=proposal.proposal_id,
+        approved=True,
+    )
     return _orchestration_view(proposal)
 
 
@@ -1677,4 +1764,11 @@ def reject_orchestration_proposal(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # 站内通知：驳回结果告知提案发起人（通知失败不阻断审批）。
+    inbox_service.orchestration_decided(
+        tenant_id=proposal.tenant_id,
+        recipient_id=proposal.created_by,
+        proposal_id=proposal.proposal_id,
+        approved=False,
+    )
     return _orchestration_view(proposal)
