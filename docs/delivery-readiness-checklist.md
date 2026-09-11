@@ -151,7 +151,7 @@
 
 | 项 | 实现 | 测试 | 验收 | 证据 |
 | --- | --- | --- | --- | --- |
-| 网页管理台（知识权限、公众号内容工作台、内容历史、协同动态、通知、安全与审计） | ✅ | ✅（Vitest，60 项） | ⬜ | `admin-web/`（6 个侧栏 feature 页面 + 运行详情页） |
+| 网页管理台（知识权限、公众号内容工作台、内容历史、协同动态、通知、安全与审计、员工与岗位） | ✅ | ✅（Vitest，74 项） | ⬜ | `admin-web/`（7 个侧栏 feature 页面 + 运行详情页） |
 | 协同动态只读接口与任务权限过滤 | ✅ | ✅ | ⬜ | 门禁已勾选；响应已含租户/项目/责任人 |
 | 协同动态表现层（静态状态列表） | ✅ | ✅ | ⬜ | `admin-web/src/features/collaborationDynamics/`（页面 + 4 项 Vitest）；**已知限制**：仅呈现 `TaskStatus` 三态，文档 5 态词表无领域支撑 |
 | 伴侣端待办聚合接口 `GET /api/v1/approvals/pending` | ✅ | ✅ | ⬜ | `test_approvals_{service,store,api}.py`、`test_approvals_run_kind.py`；四类 kind（含 `run_approval`）+ 按角色过滤 + 计划提案与运行审批自审排除 + 注册标识脱敏 |
@@ -159,6 +159,7 @@
 | 手机 PWA 伴侣端（审批与提醒） | ✅ | ✅ | ⬜ | `companion-pwa/`（登录、待办轮询、四类审批、manifest 与 service worker）；Vitest 37 项 + `test_pwa_assets.py` 8 项；**提醒是轮询而非 Web Push，真机安装未验收** |
 | 员工站内通知收件箱（通知页 + 未读角标） | ✅ | ✅ | ⬜ | 后端 `app/inbox.py` + 迁移 `019_inbox_items` + 三接口（`test_inbox_{store,service,api}.py`）；管理台 `admin-web/src/features/inbox/`（含「通知」导航入口）、伴侣端 `companion-pwa/src/features/inbox/`（Vitest 8 项）；写入失败不阻断主流程并写审计 `inbox.write_failed`；十类触发点（含运行失败 `run.failed`、被取消 `run.cancelled`、审批被驳回 `run.approval_rejected`），服务端推送未实现 |
 | 管理台运行详情页（指标 / 事件时间线 / 审批决议） | ✅ | ✅ | ⬜ | `admin-web/src/features/runDetail/`（Vitest 20 项，含分区独立失败与自审隐藏）；入口为通知页 `run.*` 跳转与 `?view=run&run=<run_id>` 直达；事件 payload 只渲染白名单字段；**无运行列表页**（后端无租户级运行索引），**不含**暂停/恢复/取消；两端收件箱 kind 漂移已修复并由 `test_frontend_inbox_kinds.py` 守护 |
+| 管理台「员工与岗位」只读清单页 | ✅ | ✅ | ⬜ | 后端 `GET /api/v1/workforce/roster`（仅超管、严格本租户、三源并集）+ `KnowledgeAccessRegistry.list_bindings` 与 `TaskStore.count_by_employee` 双实现（`test_workforce_roster_{store,api}.py`）；前端 `admin-web/src/features/workforce/`（Vitest 12 项）；侧栏「员工与岗位」接上真实页面并删除写死的 18/42 假数据块。**限制**：不是目录管理（无实体、无增删改）、不含系统角色分布、`task_count` 为精确匹配；「数字员工设置」与「模型与费用」仍为占位项 |
 
 ## K. 交付与运维
 
@@ -222,6 +223,7 @@
 19. ~~审批人的运行审批待办入口~~ ✅（已完成：聚合第 4 类 `run_approval` + 伴侣端第 4 类卡片与决议动作，见 E/J 节），**E 节原有 ❌ 项已清零**；新登记缺口「运行时状态持久化」（E 节）。
 20. ~~运行时状态持久化~~ ✅（已完成：迁移 `021` + PG 状态仓储 + 编解码与写入即脱敏 + postgres 强制持久化装配，见 E 节）；**E 节当前无 ❌ 项**。真实 PostgreSQL 的重启恢复仍需 staging 验收（阻塞项 1）。
 21. ~~通用审计查询接口 + 管理台审计页~~ ✅（已完成：`GET /api/v1/audits` + `admin-web/src/features/auditLog/`，见 I 节）；配套 33 个动作标签的漂移守护测试。
+22. ~~管理台「员工与岗位」只读清单页~~ ✅（已完成：`GET /api/v1/workforce/roster` + 两个只读查询 + `admin-web/src/features/workforce/`，见 J 节）；同时**删掉侧栏写死的「18 个岗位 / 42 个数字员工」假数据块**。「数字员工设置」「模型与费用」仍无数据源，属未做（见 J 节限制）。
 
 ## 生成时的核实记录
 
