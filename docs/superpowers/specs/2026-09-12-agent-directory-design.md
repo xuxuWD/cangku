@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 | # | 问题 | 建议与理由 |
 | --- | --- | --- |
 | Q1 | 是否引入「员工继承岗位知识范围」？今日解析**无继承**（事实 4），且运行时把 `employee_key` 当 `role_key` 用（事实 3） | **本期不做**。若要做，需同时改运行时传参（传 `agent_key` + 所属 `role_key`），属**检索行为变更**，必须单独评审；本期只把归属关系落在目录里备用 |
-| Q2 | 阶段 2（写知识范围强制目录校验）的收敛条件 | 建议以「未纳管列表为空 / 管理员确认纳管完毕」为唯一收敛条件，并作为阶段 2 的开工前提；**不按时间**排期 |
+| Q2 | 阶段 2（写知识范围强制目录校验）的收敛条件 | 收敛条件取**「绑定侧未纳管为空」**，并作为阶段 2 的开工前提；**不按时间**排期。**依据（2026-09-12 本地带数据实测，见 §13.6）**：`candidates` 的员工候选把**任务中的 `employee_key`** 也算进去，而建同名**岗位**并不会让它消失；若按字面的「candidates 全空」判定，只要历史任务里存在 `employee_key` 就**永远不空**（条件不可达）。阶段 2 实际校验的对象只是知识范围写接口的 `binding_key`（`role` / `agent` 绑定），任务 `employee_key` 不参与绑定写入。故判据按绑定侧取：① `GET /api/v1/workforce/candidates` 的 `roles` 为空；② `GET /api/v1/workforce/roster` 中 `agent_knowledge_base_ids` 非空、且该 key 不在员工目录里的项为空（**用现有两个只读接口即可判定，不需要新接口**）。任务侧的历史标识另立处置（逐个纳管为员工，或明确豁免），**不阻塞阶段 2** |
 | Q3 | 停用员工的后果 | 建议：**停用只禁止「新任务指派」**，不撤销知识绑定、不影响历史与进行中的运行；已停用员工的既有绑定仍按原样解析 |
 
 ## 12. 落地清单（评审通过后才动手）
@@ -214,4 +214,22 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 2. **标识一旦写错就永久留存**：不可改标识换来的是历史可追溯，代价是错标识只能停用 + 新建。
 3. **阶段 1 到阶段 2 之间仍是双轨**：目录是展示权威、写接口仍接受自由文本；这是刻意的过渡态，收敛条件见 Q2。
 4. **知识库清单仍写死在前端**（事实 8）：本期只改岗位/员工候选来源；知识库实体化属另一条线（需与 WeKnora 的库清单对齐后才能定真源）。
-5. **本文件不构成任何实现完成的声明**：阶段 1 完成前，「数字员工设置」仍是占位项。
+5. **本文件不构成任何实现完成的声明**：阶段 1 已于 2026-09-12 落地（提交 `8f23ee6`…`4e6fff3`，CI run `34628395663` 四个 job 全绿）；**阶段 2 未做**。
+
+### 13.6 阶段 1 落地后的实测记录（2026-09-12，本地进程内带数据）
+
+在 `env=development` + `storage_backend=memory` 下（`X-*` 头身份仅在 development 生效，见 `app/main.py:376-391`），手工造 2 条知识范围绑定 + 2 条任务后实测：
+
+| 步骤 | 结果 |
+| --- | --- |
+| 初始 `candidates` | `{"roles": ["content-operator"], "agents": ["content-operator", "content-writer", "geo-analyst"]}` |
+| 建岗位 `content-operator` / `geo-operator` | `201` / `201` |
+| 建岗位 `CONTENT-OPERATOR` | `409`（大小写折叠为同一标识） |
+| 建员工 `content-writer` → `content-operator` | `201` |
+| 纳管后 `candidates` | `{"roles": [], "agents": ["content-operator", "geo-analyst"]}` |
+| `PATCH` 传 `role_key` | `422`（标识不可改） |
+| 停用岗位后挂员工 | `409` |
+| `ceo` 读 `candidates` | `403` |
+| 审计动作 | 4 条：`workforce.role.created` ×2、`workforce.agent.created`、`workforce.role.disabled` |
+
+**结论**：① 三源并集与「按类型分开」的语义成立；② **建同名岗位不会让该标识从员工候选里消失**（它仍作为任务的 `employee_key` 存在），这正是 Q2 收敛条件必须取「绑定侧」的原因；③ 内存存储进程结束即消失、无落盘（`git status` 干净、无 `.db` 文件），**本次结果不代表任何真实环境的未纳管情况**，真实判定仍需 staging 与超管令牌（阻塞项 1）。
