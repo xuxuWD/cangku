@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { clearSession, isSessionExpired, loadSession, type Session } from './session'
 import { LoginPage } from '../features/session/LoginPage'
 import { ApprovalsPage } from '../features/approvals/ApprovalsPage'
+import { InboxSection } from '../features/inbox/InboxSection'
 import type { PendingApprovalCounts } from '../features/approvals/types'
 
 const EMPTY_COUNTS: PendingApprovalCounts = {
@@ -45,6 +46,7 @@ export default function App() {
         </button>
       </header>
       <ApprovalsPage onSessionExpired={handleLogout} onCountsChange={setCounts} />
+      <InboxSection onSessionExpired={handleLogout} />
     </div>
   )
 }
