@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from threading import RLock
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ class RuntimeState:
     checkpoint: dict[str, object] | None = None
     approvals: dict[str, str] = field(default_factory=dict)
     usage: dict[str, int] = field(default_factory=lambda: {"tool_calls": 0, "successful_tools": 0})
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class RuntimeStateStore:
@@ -40,6 +42,15 @@ class RuntimeStateStore:
     def get(self, run_id: str) -> RuntimeState:
         with self._lock:
             return self._states[run_id]
+
+    def list_for_tenant(self, tenant_id: str) -> list[RuntimeState]:
+        """按租户列出运行状态。
+
+        注意：运行时状态本身是**进程内状态**（所有存储模式都一样），因此这里只能看到
+        当前进程创建的运行；重启或多进程部署下结果不完整（已登记为已知限制）。
+        """
+        with self._lock:
+            return [state for state in self._states.values() if state.context.tenant_id == tenant_id]
 
     def append(self, state: RuntimeState, event: RuntimeEvent) -> None:
         with self._lock:

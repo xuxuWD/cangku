@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -22,6 +23,21 @@ class RunApprovalDenied(ValueError):
 
 
 _APPROVER_ROLES = frozenset({'ceo', 'super_admin'})
+# 只有非终态运行里的审批才可决议；终态运行的待办列出即误导。
+_ACTIVE_STATUSES = frozenset({'running', 'paused'})
+
+
+@dataclass(frozen=True)
+class PendingRunApproval:
+    """待决议的运行审批；供「待我审批」聚合展示与跳转。"""
+
+    run_id: str
+    approval_id: str
+    task_id: str
+    requested_by: str
+    created_at: datetime
+    step_id: str | None = None
+    tool: str | None = None
 
 
 class RuntimeService:
@@ -100,6 +116,35 @@ class RuntimeService:
             raise RunApprovalDenied('只有 CEO 或超级管理员可以决议运行审批')
         if actor.user_id == state.context.user_id:
             raise RunApprovalDenied('发起人不能审批自己发起的运行')
+
+    def list_pending_approvals(self, actor: UserContext, *, limit: int = 50) -> list[PendingRunApproval]:
+        """本租户待决议的运行审批（只读）。
+
+        只覆盖**非终态运行**里仍为 `pending` 的审批；运行时状态是进程内状态，因此
+        重启或多进程部署下只能看到当前进程创建的运行（已登记为已知限制）。
+        """
+        pending: list[PendingRunApproval] = []
+        for state in self.state_store.list_for_tenant(actor.tenant_id):
+            if state.status not in _ACTIVE_STATUSES:
+                continue
+            tools = {step.step_id: step.tool for step in state.plan.steps}
+            for approval_id, status in state.approvals.items():
+                if status != 'pending':
+                    continue
+                is_step = approval_id in tools
+                pending.append(
+                    PendingRunApproval(
+                        run_id=state.run_id,
+                        approval_id=approval_id,
+                        task_id=state.context.task_id,
+                        requested_by=state.context.user_id,
+                        created_at=state.created_at,
+                        step_id=approval_id if is_step else None,
+                        tool=tools.get(approval_id),
+                    )
+                )
+        pending.sort(key=lambda item: item.created_at, reverse=True)
+        return pending[:limit]
 
     @staticmethod
     def _elapsed_ms(started: float) -> int:
