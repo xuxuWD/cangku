@@ -102,6 +102,12 @@ class Settings(BaseSettings):
         le=120,
         validation_alias=AliasChoices("PLANNER_MODEL_TIMEOUT_SECONDS", "WORKBENCH_PLANNER_MODEL_TIMEOUT_SECONDS"),
     )
+    planner_model_sensitive_data: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "PLANNER_MODEL_SENSITIVE_DATA", "WORKBENCH_PLANNER_MODEL_SENSITIVE_DATA"
+        ),
+    )
     login_max_failures: int = Field(
         default=5,
         ge=1,

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.agent_services import ModelGateway, ModelNotAllowed
 from app.audit.models import AuditAction
 from app.audit.service import AuditService
 from app.domain import PolicyError, Task, UserContext, ensure_can_approve
 
+from .classification import PLAN_GENERATION_CAPABILITY, classification_for_risk
 from .generator import PlanGenerator
 from .models import (
     PlanProposal,
@@ -33,6 +35,7 @@ class PlannerService:
         runtime_service: Any,
         max_steps: int,
         audit: AuditService,
+        model_gateway: ModelGateway | None = None,
     ) -> None:
         self.task_store = task_store
         self.store = store
@@ -41,14 +44,25 @@ class PlannerService:
         self.runtime_service = runtime_service
         self.max_steps = max_steps
         self.audit = audit
+        self.model_gateway = model_gateway
 
     def propose(
         self, actor: UserContext, task_id: str, goal: str, idempotency_key: str
     ) -> PlanProposal:
         task = self._task(actor, task_id)
+        classification = classification_for_risk(task.risk_level)
         normalized_goal = goal.strip() if isinstance(goal, str) else ""
         if not normalized_goal:
             raise ValueError("目标不能为空")
+
+        if self.model_gateway is not None and self.generator.model_name:
+            route = self.model_gateway.choose(
+                capability=PLAN_GENERATION_CAPABILITY,
+                data_classification=classification.value,
+                preferred=self.generator.model_name,
+            )
+            if route.model_key != self.generator.model_name:
+                raise ModelNotAllowed("规划模型与网关判定不一致，已拒绝")
 
         existing = self.store.find_by_idempotency(actor.tenant_id, task.id, idempotency_key)
         if existing is not None:
@@ -74,7 +88,7 @@ class PlannerService:
             actor_id=actor.user_id,
             target_type="plan_proposal",
             target_id=saved.proposal_id,
-            detail={"step_count": len(saved.steps), "generator": saved.generator_key},
+            detail={"step_count": len(saved.steps), "generator": saved.generator_key, "data_classification": classification.value},
         )
         return saved
 

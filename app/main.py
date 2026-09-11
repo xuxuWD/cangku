@@ -48,6 +48,7 @@ from .content.service import ContentNotFound, ContentService, ExportNotAllowed, 
 from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
 from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
+from .agent_services import ModelNotAllowed
 from .planner.models import (
     PlanGenerationError,
     PlanProposalNotFound,
@@ -1133,6 +1134,8 @@ def create_plan_proposal(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (UnknownTool, PlanGenerationError) as exc:
         raise HTTPException(status_code=422, detail="计划生成失败，请调整目标后重试") from exc
+    except ModelNotAllowed as exc:
+        raise HTTPException(status_code=403, detail="没有获准处理当前数据等级的模型") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _plan_view(proposal)

@@ -39,6 +39,7 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "failure_count",
         "bootstrap",
         "tenant_assigned_at_approval",
+        "data_classification",
     }
 )
 

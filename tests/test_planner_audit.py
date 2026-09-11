@@ -95,7 +95,7 @@ def test_propose_audit_detail_has_step_count_and_generator_not_goal_text() -> No
     harness.service.propose(UserContext("t-1", "u-1", "employee"), harness.task.id, "机密目标文本", "key-1")
 
     details = [item.detail for item in harness.audits.list_recent(None, limit=100)]
-    assert {"step_count": 1, "generator": "mock"} in details
+    assert {"step_count": 1, "generator": "mock", "data_classification": "internal"} in details
     assert "机密目标文本" not in str(details)
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 from .accounts.rate_limit import InMemoryLoginAttemptStore, LoginRateLimiter
 from .accounts.repository import InMemoryAccountRepository
 from .accounts.service import AccountService
+from .agent_services import ModelGateway, ProviderModel
 from .audit.service import AuditService
 from .audit.store import InMemoryAuditStore
 from .domain import TaskStore
@@ -13,6 +14,7 @@ from .knowledge_policy import KnowledgeAccessRegistry, PostgresKnowledgeAccessRe
 from .events import InMemoryEventBus, RedisStreamEventBus
 from .migrations import apply_migrations
 from .outbox import OutboxPublisher
+from .planner.classification import PLAN_GENERATION_CAPABILITY
 from .planner.generator import MockPlanGenerator
 from .planner.models import ToolCatalog
 from .planner.service import PlannerService
@@ -242,6 +244,7 @@ def build_planner_service(settings: Settings, *, audit: AuditService, task_store
     catalog = ToolCatalog.from_config(settings.planner_tools)
     if settings.planner_backend == "mock":
         generator = MockPlanGenerator()
+        model_gateway = None
     elif settings.planner_backend == "openai_compatible":
         from .planner.generator import OpenAICompatiblePlanGenerator
 
@@ -250,6 +253,15 @@ def build_planner_service(settings: Settings, *, audit: AuditService, task_store
             model_name=settings.planner_model_name,
             api_key=settings.planner_model_api_key,
             timeout_seconds=settings.planner_model_timeout_seconds,
+        )
+        model_gateway = ModelGateway(
+            [
+                ProviderModel(
+                    model_key=settings.planner_model_name,
+                    capabilities=frozenset({PLAN_GENERATION_CAPABILITY}),
+                    sensitive_data=settings.planner_model_sensitive_data,
+                )
+            ]
         )
     else:
         raise ValueError("不支持的规划生成后端")
@@ -280,6 +292,7 @@ def build_planner_service(settings: Settings, *, audit: AuditService, task_store
         runtime_service=runtime_service,
         max_steps=settings.planner_max_steps,
         audit=audit,
+        model_gateway=model_gateway,
     )
     return service, store
 

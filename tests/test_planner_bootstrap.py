@@ -1,9 +1,11 @@
 import pytest
 from pydantic import ValidationError
 
+from app.agent_services import DataClassification, ModelNotAllowed
 from app.audit.service import AuditService
 from app.audit.store import InMemoryAuditStore
 from app.bootstrap import build_planner_service
+from app.planner.classification import PLAN_GENERATION_CAPABILITY
 from app.planner.generator import MockPlanGenerator, OpenAICompatiblePlanGenerator
 from app.planner.models import ToolCatalog
 from app.planner.store import InMemoryPlanProposalStore
@@ -88,3 +90,50 @@ def test_planner_max_steps_bounds() -> None:
 def test_default_catalog_is_empty_and_config_parses() -> None:
     assert Settings().planner_tools == "[]"
     assert ToolCatalog.from_config(Settings().planner_tools).is_empty() is True
+
+
+def test_mock_backend_does_not_wire_a_model_gateway() -> None:
+    service, _store = build_planner_service(memory_settings(), audit=audit())
+
+    assert service.model_gateway is None
+
+
+def test_openai_backend_wires_gateway_and_rejects_restricted_by_default() -> None:
+    service, _store = build_planner_service(
+        memory_settings(
+            planner_backend="openai_compatible",
+            planner_model_base_url="https://model.example/v1",
+            planner_model_name="planner-small",
+            planner_model_api_key="secret-key",
+        ),
+        audit=audit(),
+    )
+
+    assert service.model_gateway is not None
+    with pytest.raises(ModelNotAllowed):
+        service.model_gateway.choose(
+            capability=PLAN_GENERATION_CAPABILITY,
+            data_classification=DataClassification.RESTRICTED.value,
+            preferred="planner-small",
+        )
+
+
+def test_openai_backend_sensitive_flag_allows_restricted_data() -> None:
+    service, _store = build_planner_service(
+        memory_settings(
+            planner_backend="openai_compatible",
+            planner_model_base_url="https://model.example/v1",
+            planner_model_name="planner-small",
+            planner_model_api_key="secret-key",
+            planner_model_sensitive_data=True,
+        ),
+        audit=audit(),
+    )
+
+    route = service.model_gateway.choose(
+        capability=PLAN_GENERATION_CAPABILITY,
+        data_classification=DataClassification.RESTRICTED.value,
+        preferred="planner-small",
+    )
+
+    assert route.model_key == "planner-small"
