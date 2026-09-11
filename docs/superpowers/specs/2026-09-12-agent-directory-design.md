@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 | 动作 | 规则 | 影响面 |
 | --- | --- | --- |
 | **读 / 检索解析** | **不变**：`resolve()` 不校验目录，存量绑定与既有任务照旧可用 | 零回归风险（事实 4：本来就无继承，本期也**不引入**继承，见 §11 Q1） |
-| **写（配置知识范围）** | **已实施（阶段 2，2026-09-12）**：`PUT /knowledge-access/roles/{role_key}`、`.../agents/{agent_key}` 要求该标识**已在目录且 `status='active'`**；未纳管、已停用、格式非法或跨租户一律 `409`「该标识尚未纳入目录，请先在「数字员工设置」中纳管」。绑定键同时按 D5 归一（去空白 + 小写）。**判定顺序：先 `403` 后 `409`** | 实测破坏面只有 2 个 `PUT` 分支 + 1 个测试文件的 2 个用例（见 §14.1）；**无迁移、无表结构变更** |
+| **写（配置知识范围）** | **已实施（阶段 2，2026-09-12）**：`PUT /knowledge-access/roles/{role_key}`、`.../agents/{agent_key}` 要求该标识**已在目录且 `status='active'`**（数字员工还要求**其所属岗位也是 `active`**，见 §14.6 收严）；未纳管、已停用、格式非法或跨租户一律 `409`「该标识尚未纳入目录，请先在「数字员工设置」中纳管」。绑定键同时按 D5 归一（去空白 + 小写）。**判定顺序：先 `403` 后 `409`** | 实测破坏面只有 2 个 `PUT` 分支 + 1 个测试文件的 2 个用例（见 §14.1）；**无迁移、无表结构变更** |
 | **候选来源** | 前端下拉改为目录数据（替代写死清单，事实 7） | 管理台行为变更，非破坏性 |
 
 阶段划分的理由：**读路径是生产运行链路，写路径是管理配置链路**。把校验放在写路径，既能消灭「配置里出现不存在的人」这一类脏数据，又不会让历史运行记录或检索立刻失效。
@@ -192,7 +192,7 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 | --- | --- | --- |
 | Q1 | 是否引入「员工继承岗位知识范围」？今日解析**无继承**（事实 4），且运行时把 `employee_key` 当 `role_key` 用（事实 3） | **本期不做**。若要做，需同时改运行时传参（传 `agent_key` + 所属 `role_key`），属**检索行为变更**，必须单独评审；本期只把归属关系落在目录里备用 |
 | Q2 | 阶段 2（写知识范围强制目录校验）的收敛条件 | 收敛条件取**「绑定侧未纳管为空」**，并作为阶段 2 的开工前提；**不按时间**排期。**依据（2026-09-12 本地带数据实测，见 §13.6）**：`candidates` 的员工候选把**任务中的 `employee_key`** 也算进去，而建同名**岗位**并不会让它消失；若按字面的「candidates 全空」判定，只要历史任务里存在 `employee_key` 就**永远不空**（条件不可达）。阶段 2 实际校验的对象只是知识范围写接口的 `binding_key`（`role` / `agent` 绑定），任务 `employee_key` 不参与绑定写入。故判据按绑定侧取：① `GET /api/v1/workforce/candidates` 的 `roles` 为空；② `GET /api/v1/workforce/roster` 中 `agent_knowledge_base_ids` 非空、且该 key 不在员工目录里的项为空（**用现有两个只读接口即可判定，不需要新接口**）。任务侧的历史标识另立处置（逐个纳管为员工，或明确豁免），**不阻塞阶段 2** |
-| Q3 | 停用员工的后果 | 建议：**停用只禁止「新任务指派」**，不撤销知识绑定、不影响历史与进行中的运行；已停用员工的既有绑定仍按原样解析 |
+| Q3 | 停用员工的后果 | 建议：**停用只禁止「新任务指派」**，不撤销知识绑定、不影响历史与进行中的运行；已停用员工的既有绑定仍按原样解析。**2026-09-12 收严（已实施）**：知识范围**写**路径对员工同时要求「员工 `active` **且** 所属岗位 `active`」（依据与实测见 §14.6）；**读/检索与历史绑定不受影响** |
 
 ## 12. 落地清单（评审通过后才动手）
 
@@ -295,5 +295,26 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 
 **回归**：后端 `pytest` exit=0、`compileall` exit=0；`admin-web` 94 passed、`companion-pwa` 37 passed、`desktop` 19 pass / 0 fail。
 
-**未验证（如实登记）**：真实 PostgreSQL 下的闸门行为（PG 的 `role_is_active` 只用假连接做了 SQL/参数断言）；未做浏览器人工闭环；存量库里若存在大小写/空白不一致的绑定，其**下一次保存**会被归一改写（口径 D5 的预期行为，未经真实数据演练）。
+**未验证（更新于 2026-09-12 真实 PG 回归后）**：真实 PostgreSQL 的闸门行为**已在本机一次性 PostgreSQL 16 上回归通过**（见 §14.6）；**staging / 生产仍未验收**；未做浏览器人工闭环；存量库里若存在大小写/空白不一致的绑定，其**下一次保存**会被归一改写（口径 D5 的预期行为，**未经真实数据演练**）。
+
+### 14.6 真实 PostgreSQL 回归（2026-09-12，本机一次性容器）
+
+**环境**：Docker `pgvector/pgvector:pg16`，端口 55432，**跑完即删**；应用以 `WORKBENCH_STORAGE_BACKEND=postgres` + 真实 DSN 启动（TestClient 走真实 PG 仓储），内容仓储设 `memory` 以免写本地 sqlite。**这不是 staging**（无独立主机 / TLS / 独立密钥 / 外部 Runtime / 回滚演练），仅用于消除「PG 只用假连接断言」这一缺口。
+
+| # | 检查 | 结果 |
+| --- | --- | --- |
+| 1 | 迁移链在真实 PG 可建 | `vector 0.8.6` 安装成功；迁移 022 建出两张表 |
+| 2 | **复合外键真实存在** | `FOREIGN KEY (tenant_id, role_key) REFERENCES workbench_job_roles(tenant_id, role_key)`（`pg_get_constraintdef` 实测） |
+| 3 | CHECK 约束 | `status = ANY (ARRAY['active','disabled'])` |
+| 4 | 写入归一（D5） | `POST /workforce/roles` 传 `"  Content-Operator  "` → `201` 且回显 `content-operator`；库里实存小写（`role/content-operator`、`agent/content-writer`）；大写路径 `GET` 也能读到 |
+| 5 | 写路径闸门 | 未纳管 role / agent → `409`；已纳管 → `200`；`ceo` → `403`（鉴权优先）；跨租户 → `409`（t-2 目录 total 0） |
+| 6 | **复合外键真的拦人** | 直接 SQL 插入 `role_key` 不存在的员工 → `ForeignKeyViolation` |
+| 7 | **停用连带约束（新口径）** | 停用岗位后：改岗位范围 `409`、**改其下属员工范围也 `409`**；重新启用后员工恢复 `200`（派生规则，不是一次性开关）；单独停用员工 → `409` |
+| 8 | 审计落库 | `record_id` 为 PG `BIGSERIAL` 整数（`1/2/3`），说明审计同样走真实 PG |
+
+**顺带查到一条部署前置**：官方 `postgres:16-alpine` 镜像**不带 pgvector**，迁移 001 的 `CREATE EXTENSION vector` 会直接抛 `FeatureNotSupported`；已把「目标 PostgreSQL 必须安装 pgvector」补进 `docs/staging-acceptance-checklist.md` 的前置条件。
+
+**由本次回归定下的口径收严（已实施）**：`agent_is_active` 改为「员工自身 `active` **且** 所属岗位 `active`」——PG 侧用一条 `LEFT JOIN` 查完（岗位缺失时 LEFT JOIN 出 `NULL`，同样按不可用处理），内存实现同步。理由：**员工不能脱离岗位独立存在**。回归中已实测「停用岗位 → 其员工写范围 `409`」。
+
+**未验证**：staging / 生产（仍属阻塞项 1）；浏览器人工闭环；存量数据归一改写的真实验练。
 

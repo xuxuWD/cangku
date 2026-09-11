@@ -7,6 +7,7 @@
 - [ ] `WORKBENCH_ENV` 已设置为非 `development`
 - [ ] `WORKBENCH_STORAGE_BACKEND=postgres`
 - [ ] `WORKBENCH_DATABASE_URL` 指向独立 staging PostgreSQL
+- [ ] **目标 PostgreSQL 已安装 `pgvector` 扩展**（迁移 `001_initial.sql` 的第一句是 `CREATE EXTENSION IF NOT EXISTS vector`；官方 `postgres` 镜像**不含**该扩展，缺失时迁移直接抛 `FeatureNotSupported: extension "vector" is not available`。已在 2026-09-12 本机一次性容器上复现，改用 `pgvector/pgvector:pg16` 后通过）
 - [ ] `WORKBENCH_AUTH_SECRET` 至少 32 个字符，并通过部署密钥系统注入
 - [ ] `WORKBENCH_BACKUP_ENCRYPTION_KEY` 已配置，且备份密钥与应用密钥分离
 - [ ] `WORKBENCH_APPLIED_MIGRATIONS` 已从目标数据库读取
