@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .audit.logging import configure_audit_logging
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_session_revocation_store, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -81,6 +81,7 @@ if cors_options is not None:
 configure_audit_logging(settings.log_level)
 audit_service = build_audit_service(settings)
 login_rate_limiter = build_login_rate_limiter(settings)
+session_revocation_store = build_session_revocation_store(settings)
 store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, audit=audit_service)
@@ -326,13 +327,14 @@ TOTP_ENROLLMENT_ALLOWED: frozenset[tuple[str, str]] = frozenset(
     {
         ("POST", "/api/v1/auth/me/totp"),
         ("POST", "/api/v1/auth/me/totp/confirmation"),
+        ("POST", "/api/v1/auth/logout"),
         ("GET", "/api/v1/health"),
     }
 )
 
 # SSO 受限令牌（scope=sso_pending）只允许完成应用内二次验证与健康检查。
 SSO_PENDING_ALLOWED: frozenset[str] = frozenset(
-    {"/api/v1/auth/sso/verification", "/api/v1/health"}
+    {"/api/v1/auth/sso/verification", "/api/v1/auth/logout", "/api/v1/health"}
 )
 
 
@@ -360,6 +362,14 @@ def current_user(
         if not tenant_id or not user_id or not role:
             raise HTTPException(status_code=401, detail="缺少登录身份信息")
         context = UserContext(tenant_id=tenant_id, user_id=user_id, role=role)
+    if context.token_id:
+        # 服务端撤销名单：登出后同一令牌立即失效。查询失败必须 fail-closed。
+        try:
+            revoked = session_revocation_store.is_revoked(context.token_id)
+        except Exception as exc:  # noqa: BLE001 存储故障不能降级为放行
+            raise HTTPException(status_code=503, detail="会话状态暂时无法校验，请稍后重试") from exc
+        if revoked:
+            raise HTTPException(status_code=401, detail="登录凭证已失效，请重新登录")
     if context.scope == TOTP_ENROLLMENT_SCOPE and (request.method, request.url.path) not in TOTP_ENROLLMENT_ALLOWED:
         raise HTTPException(status_code=403, detail="账号需要先完成动态口令绑定")
     if context.scope == SSO_PENDING_SCOPE and request.url.path not in SSO_PENDING_ALLOWED:
@@ -1244,6 +1254,24 @@ def create_session(payload: SessionCreate) -> dict[str, object]:
         "role": context.role,
         "scope": context.scope,
     }
+
+
+@app.post("/api/v1/auth/logout", status_code=204)
+def logout(context: UserContext = Depends(current_user)) -> Response:
+    """登出当前**令牌会话**：把该令牌的 jti 记入服务端撤销名单，立即失效。
+
+    仅对令牌会话有效；使用开发期头部身份（X-* 头）时没有令牌可撤销，返回 401。
+    """
+    if not context.token_id:
+        raise HTTPException(status_code=401, detail="当前会话不是令牌会话，无法登出")
+    expires_at = context.expires_at or (
+        datetime.now(UTC) + timedelta(seconds=settings.session_ttl_seconds)
+    )
+    try:
+        session_revocation_store.revoke(context.token_id, expires_at=expires_at)
+    except Exception as exc:  # noqa: BLE001 撤销失败必须报错，不能静默返回成功
+        raise HTTPException(status_code=503, detail="会话状态暂时无法更新，请稍后重试") from exc
+    return Response(status_code=204)
 
 
 @app.get("/api/v1/auth/sso/authorize")

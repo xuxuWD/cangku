@@ -21,6 +21,7 @@ from .planner.models import ToolCatalog
 from .planner.service import PlannerService
 from .planner.store import InMemoryPlanProposalStore
 from .repository import PostgresTaskRepository, TaskRepository
+from .sessions import InMemorySessionRevocationStore
 from .settings import Settings, validate_runtime_settings
 
 
@@ -294,6 +295,27 @@ def build_knowledge_access_registry(settings: Settings, *, connection=None):
             connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
         return PostgresKnowledgeAccessRegistry(connection)
     raise ValueError("不支持的知识范围仓储类型")
+
+
+def build_session_revocation_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配会话撤销名单（登出立即生效）。"""
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存会话撤销名单")
+        return InMemorySessionRevocationStore()
+    if settings.storage_backend == "postgres":
+        from .sessions import PostgresSessionRevocationStore
+
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresSessionRevocationStore(connection)
+    raise ValueError("不支持的会话撤销存储类型")
 
 
 def build_account_service(

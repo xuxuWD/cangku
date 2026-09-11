@@ -25,6 +25,10 @@ class UserContext:
     user_id: str
     role: str
     scope: str = "full"
+    # 令牌会话的标识与过期时间；由 app.auth 在验签后填入，用于服务端撤销判定。
+    # 头部身份（开发期 X-* 头）没有令牌，因此保持为空。
+    token_id: str = ""
+    expires_at: datetime | None = None
 
 
 @dataclass
