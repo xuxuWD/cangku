@@ -153,7 +153,7 @@ def test_ceo_approves_then_execution_starts(planner: PlannerService) -> None:
         json={"runtime_key": "mock", "mode": "product_manager"},
     )
     assert started.status_code == 201
-    assert started.json()["status"] == "running"
+    assert started.json()["status"] == "completed"
 
 
 def test_execution_before_approval_conflicts(planner: PlannerService) -> None:

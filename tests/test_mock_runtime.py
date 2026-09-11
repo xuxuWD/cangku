@@ -31,3 +31,19 @@ def test_cancel_and_cursor_replay_do_not_duplicate_events():
     assert runtime.stream_events(run,cursor) == []
     runtime.cancel_run(run,'用户取消')
     assert runtime.get_checkpoint(run)['status'] == 'cancelled'
+
+
+def test_mock_runtime_marks_run_completed_when_no_approvals_pending():
+    runtime=MockRuntime(RuntimeStateStore())
+    run=runtime.start_run(ctx(),AgentPlan.from_steps([{'step_id':'s1','kind':'read','tool':'knowledge.search'}]))
+    assert runtime.get_checkpoint(run)['status'] == 'completed'
+    events=runtime.stream_events(run)
+    completed=[event for event in events if event.event_type == RuntimeEventType.RUN_COMPLETED]
+    assert completed and completed[-1].payload == {'step_count': 1}
+
+
+def test_mock_runtime_stays_running_when_approval_is_required():
+    runtime=MockRuntime(RuntimeStateStore())
+    run=runtime.start_run(ctx(),AgentPlan.from_steps([{'step_id':'s1','kind':'write','tool':'file.write'}]))
+    assert runtime.get_checkpoint(run)['status'] == 'running'
+    assert not any(event.event_type == RuntimeEventType.RUN_COMPLETED for event in runtime.stream_events(run))

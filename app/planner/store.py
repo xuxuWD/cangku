@@ -22,6 +22,7 @@ class PlanProposalStore(Protocol):
     def list_for_task(self, tenant_id: str, task_id: str) -> list[PlanProposal]: ...
     def mark_approved(self, proposal_id: str, *, reviewer: str) -> PlanProposal: ...
     def mark_rejected(self, proposal_id: str, *, reason: str, reviewer: str) -> PlanProposal: ...
+    def mark_run_started(self, proposal_id: str, run_id: str) -> PlanProposal: ...
 
 
 class InMemoryPlanProposalStore:
@@ -87,6 +88,12 @@ class InMemoryPlanProposalStore:
             item.rejection_reason = reason
             return item
 
+    def mark_run_started(self, proposal_id: str, run_id: str) -> PlanProposal:
+        with self._lock:
+            item = self._by_id(proposal_id)
+            item.run_id = run_id
+            return item
+
     def _require(self, tenant_id: str, proposal_id: str) -> PlanProposal:
         item = self._items.get(proposal_id)
         if item is None or item.tenant_id != tenant_id:
@@ -105,7 +112,7 @@ class PostgresPlanProposalStore:
 
     _COLUMNS = (
         "proposal_id, task_id, tenant_id, goal, steps, generator_key, generator_model, "
-        "created_by, idempotency_key, status, created_at, reviewed_by, reviewed_at, rejection_reason"
+        "created_by, idempotency_key, status, created_at, reviewed_by, reviewed_at, rejection_reason, run_id"
     )
 
     def __init__(self, connection_or_pool) -> None:
@@ -150,6 +157,7 @@ class PostgresPlanProposalStore:
             reviewed_by=row[11],
             reviewed_at=row[12],
             rejection_reason=row[13],
+            run_id=row[14],
         )
 
     @staticmethod
@@ -175,7 +183,7 @@ class PostgresPlanProposalStore:
                     cursor.execute(
                         f"""
                         INSERT INTO workbench_plan_proposals ({self._COLUMNS})
-                        VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (tenant_id, task_id, idempotency_key) DO NOTHING
                         RETURNING {self._COLUMNS}
                         """,
@@ -194,6 +202,7 @@ class PostgresPlanProposalStore:
                             proposal.reviewed_by,
                             proposal.reviewed_at,
                             proposal.rejection_reason,
+                            proposal.run_id,
                         ),
                     )
                     row = cursor.fetchone()
@@ -279,4 +288,22 @@ class PostgresPlanProposalStore:
                         if cursor.fetchone() is None:
                             raise PlanProposalNotFound(proposal_id)
                         raise PlanProposalStateConflict("该提案当前状态不允许审批")
+        return self._hydrate(row)
+
+    def mark_run_started(self, proposal_id: str, run_id: str) -> PlanProposal:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_plan_proposals
+                        SET run_id = %s
+                        WHERE proposal_id = %s
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (run_id, proposal_id),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise PlanProposalNotFound(proposal_id)
         return self._hydrate(row)

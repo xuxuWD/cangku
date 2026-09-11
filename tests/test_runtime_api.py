@@ -20,7 +20,7 @@ def make_task(tenant='runtime-tenant'):
 def test_run_api_creates_streams_and_controls_runtime():
     task_id=make_task(); created=client.post(f'/api/v1/tasks/{task_id}/runs', headers=h(), json={'runtime_key':'mock','steps':[{'step_id':'s1','kind':'read','tool':'knowledge.search'}]})
     assert created.status_code == 201
-    body=created.json(); assert body['runtime_key']=='mock'; assert body['status']=='running'; run_id=body['run_id']
+    body=created.json(); assert body['runtime_key']=='mock'; assert body['status']=='completed'; run_id=body['run_id']
     events=client.get(f'/api/v1/runs/{run_id}/events', headers=h()); assert events.status_code == 200; assert events.json()[0]['event_type']=='plan.created'
     cursor=events.json()[-1]['cursor']; assert client.get(f'/api/v1/runs/{run_id}/events?cursor={cursor}', headers=h()).json()==[]
     paused=client.post(f'/api/v1/runs/{run_id}/pause', headers=h(), json={'reason':'等待确认'}); assert paused.status_code==200

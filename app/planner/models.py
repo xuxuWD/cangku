@@ -147,6 +147,7 @@ class PlanProposal:
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
     rejection_reason: str | None = None
+    run_id: str | None = None
 
 
 def normalize_steps(raw_steps: object, catalog: ToolCatalog, *, max_steps: int) -> tuple[PlanStepView, ...]:

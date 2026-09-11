@@ -28,6 +28,9 @@ class MockRuntime(AgentRuntimeAdapter):
                 state.usage["successful_tools"] += 1
                 state.completed_steps.append(step.step_id)
                 self._emit(state, RuntimeEventType.TOOL_RESULT, {"step_id": step.step_id, "status": "success"})
+        if not state.approvals:
+            state.status = "completed"
+            self._emit(state, RuntimeEventType.RUN_COMPLETED, {"step_count": len(plan.steps)})
         self.store.save_checkpoint(state)
         return state.run_id
 

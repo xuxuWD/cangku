@@ -111,7 +111,7 @@ def test_run_audit_detail_contains_runtime_key() -> None:
     )
 
     details = [item.detail for item in harness.audits.list_recent(None, limit=100)]
-    assert {"runtime_key": "mock"} in details
+    assert {"runtime_key": "mock", "run_id": "run-1"} in details
 
 
 def test_reject_audit_detail_carries_reason() -> None:

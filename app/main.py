@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .audit.logging import configure_audit_logging
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_planner_service, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_planner_service, build_run_metrics, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -42,6 +42,7 @@ from .accounts.rate_limit import LoginRateLimited
 from .auth import TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
 from .settings import get_settings, validate_runtime_settings
 from .runtime.policy import ApprovalRequired, PolicyDenied
+from .runtime.records import RunRecordNotFound
 from .runtime.service import RunAccessDenied, RuntimeService
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
 from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict
@@ -79,6 +80,7 @@ event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus)
 knowledge_access_registry = build_knowledge_access_registry(settings)
 runtime_service = RuntimeService(store)
+run_metrics_service = build_run_metrics(settings)
 content_service = ContentService(
     task_store=store,
     runtime_service=runtime_service,
@@ -88,7 +90,7 @@ content_service = ContentService(
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 planner_service, planner_store = build_planner_service(
-    settings, task_store=store, runtime_service=runtime_service, audit=audit_service
+    settings, task_store=store, runtime_service=runtime_service, audit=audit_service, run_metrics=run_metrics_service
 )
 account_service, _ = build_account_service(
     settings, audit=audit_service, login_limiter=login_rate_limiter
@@ -187,6 +189,22 @@ class RuntimeRunView(BaseModel):
     runtime_key: str
     policy_version: str
     status: str
+
+
+class RunMetricsView(BaseModel):
+    run_id: str
+    task_id: str
+    proposal_id: str | None
+    runtime_key: str
+    status: str
+    step_count: int
+    completed_step_count: int
+    tool_calls: int
+    successful_tools: int
+    knowledge_hits: int
+    latency_ms: int
+    started_at: datetime
+    finished_at: datetime | None
 
 
 class RuntimeApprovalCreate(BaseModel):
@@ -784,7 +802,7 @@ def start_runtime_run(task_id: str, payload: RuntimeRunCreate, context: UserCont
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=400, detail="运行时不可用") from exc
-    return RuntimeRunView(run_id=run_id, runtime_key=runtime_key, policy_version=policy_version, status="running")
+    return RuntimeRunView(run_id=run_id, runtime_key=runtime_key, policy_version=policy_version, status=runtime_service.snapshot(context, run_id).status)
 
 
 @app.get("/api/v1/runs/{run_id}/events")
@@ -796,6 +814,42 @@ def stream_runtime_events(run_id: str, cursor: str | None = None, context: UserC
         detail = str(exc)
         raise HTTPException(status_code=404 if detail == "运行不存在" else 403, detail=detail) from exc
     return [event.to_public_dict() for event in events]
+
+
+@app.get("/api/v1/runs/{run_id}/metrics", response_model=RunMetricsView)
+def get_run_metrics(run_id: str, context: UserContext = Depends(current_user)) -> RunMetricsView:
+    try:
+        record = run_metrics_service.store.get(context.tenant_id, run_id)
+    except RunRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    try:
+        store.get(context, record.task_id)
+    except TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    return RunMetricsView(
+        run_id=record.run_id,
+        task_id=record.task_id,
+        proposal_id=record.proposal_id,
+        runtime_key=record.runtime_key,
+        status=record.status,
+        step_count=record.step_count,
+        completed_step_count=record.completed_step_count,
+        tool_calls=record.tool_calls,
+        successful_tools=record.successful_tools,
+        knowledge_hits=record.knowledge_hits,
+        latency_ms=record.latency_ms,
+        started_at=record.started_at,
+        finished_at=record.finished_at,
+    )
+
+
+@app.get("/api/v1/metrics/summary")
+def get_run_metrics_summary(
+    runtime_key: str | None = None, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    if context.role not in {"ceo", "super_admin"}:
+        raise HTTPException(status_code=403, detail="只有 CEO 或超级管理员可以查看运行指标")
+    return run_metrics_service.summary(context.tenant_id, runtime_key=runtime_key)
 
 
 @app.post("/api/v1/runs/{run_id}/pause")
@@ -1208,5 +1262,5 @@ def start_plan_run(
         "run_id": run_id,
         "runtime_key": runtime_key,
         "policy_version": policy_version,
-        "status": "running",
+        "status": runtime_service.snapshot(context, run_id).status,
     }

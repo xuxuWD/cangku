@@ -109,6 +109,23 @@ def test_concurrent_add_with_same_key_creates_only_one_proposal() -> None:
     assert len(store.list_for_task("t-1", "task-1")) == 1
 
 
+def test_mark_run_started_backfills_run_id() -> None:
+    store = InMemoryPlanProposalStore()
+    saved = store.add(proposal())
+
+    updated = store.mark_run_started(saved.proposal_id, "run-1")
+
+    assert updated.run_id == "run-1"
+    assert store.get("t-1", saved.proposal_id).run_id == "run-1"
+
+
+def test_mark_run_started_rejects_unknown_proposal() -> None:
+    store = InMemoryPlanProposalStore()
+
+    with pytest.raises(PlanProposalNotFound):
+        store.mark_run_started("plan-missing", "run-1")
+
+
 def test_concurrent_approval_only_succeeds_once() -> None:
     from concurrent.futures import ThreadPoolExecutor
 

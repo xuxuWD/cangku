@@ -238,7 +238,7 @@ def build_account_service(
     )
 
 
-def build_planner_service(settings: Settings, *, audit: AuditService, task_store=None, runtime_service=None, connection=None, migrate: bool = True):
+def build_planner_service(settings: Settings, *, audit: AuditService, task_store=None, runtime_service=None, run_metrics=None, connection=None, migrate: bool = True):
     """按存储模式装配计划生成服务。"""
     validate_runtime_settings(settings)
     catalog = ToolCatalog.from_config(settings.planner_tools)
@@ -293,8 +293,31 @@ def build_planner_service(settings: Settings, *, audit: AuditService, task_store
         max_steps=settings.planner_max_steps,
         audit=audit,
         model_gateway=model_gateway,
+        run_metrics=run_metrics,
     )
     return service, store
+
+
+def build_run_metrics(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配运行记录指标服务。"""
+    validate_runtime_settings(settings)
+    from .runtime.records import InMemoryRunRecordStore, PostgresRunRecordStore
+    from .runtime.run_metrics import RunMetricsService
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存运行记录仓储")
+        return RunMetricsService(InMemoryRunRecordStore())
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return RunMetricsService(PostgresRunRecordStore(connection))
+    raise ValueError("不支持的运行记录存储类型")
 
 
 def build_audit_service(settings: Settings, *, connection=None, migrate: bool = True) -> AuditService:

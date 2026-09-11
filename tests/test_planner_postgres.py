@@ -101,6 +101,7 @@ def proposal_row(status: str = "pending_review") -> tuple:
         None,
         None,
         None,
+        None,
     )
 
 
@@ -138,7 +139,7 @@ def test_postgres_add_passes_parameters_in_column_order() -> None:
     store.add(draft)
 
     _statement, params = connection.cursor_instance.statements[0]
-    assert len(params) == 14
+    assert len(params) == 15
     assert params[0] == draft.proposal_id
     assert params[1] == "task-1"
     assert params[2] == "t-1"
@@ -257,3 +258,27 @@ def test_postgres_serialize_and_hydrate_round_trip() -> None:
     assert hydrated.steps[0].requires_approval is True
     assert hydrated.steps[0].args == {"channel": "公众号"}
     assert hydrated.steps[1].args == {}
+
+
+def test_postgres_mark_run_started_updates_and_returns_row() -> None:
+    row = list(proposal_row())
+    row[14] = "run-1"
+    connection = RecordingConnection([tuple(row)])
+    store = PostgresPlanProposalStore(connection)
+
+    updated = store.mark_run_started("plan-1", "run-1")
+
+    assert updated.proposal_id == "plan-1"
+    assert updated.run_id == "run-1"
+    statement, params = connection.cursor_instance.statements[0]
+    assert "UPDATE workbench_plan_proposals" in statement
+    assert "SET run_id = %s" in statement
+    assert params == ("run-1", "plan-1")
+
+
+def test_postgres_mark_run_started_not_found() -> None:
+    connection = RecordingConnection([None])
+    store = PostgresPlanProposalStore(connection)
+
+    with pytest.raises(PlanProposalNotFound):
+        store.mark_run_started("plan-missing", "run-1")

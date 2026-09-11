@@ -78,3 +78,8 @@ class RuntimeService:
         if actor.user_id != state.context.user_id and actor.role not in {'ceo', 'super_admin'}:
             raise RunAccessDenied('当前员工无权操作此运行')
         return key, adapter, state
+
+    def snapshot(self, actor: UserContext, run_id: str):
+        """只读运行快照；租户与归属校验与适配器选择一致。"""
+        _key, _adapter, state = self.adapter_for_task(actor, run_id)
+        return state

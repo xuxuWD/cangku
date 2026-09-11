@@ -36,6 +36,7 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "step_count",
         "generator",
         "runtime_key",
+        "run_id",
         "failure_count",
         "bootstrap",
         "tenant_assigned_at_approval",
