@@ -145,6 +145,7 @@ Phase 2a       Phase 2b      Phase 2c
 ### 项 2 · Celery Worker 实跑、Outbox 生产连接池、死信通知渠道和 staging 验收
 - **前置**：真实 Redis（独立实例/逻辑库）；Worker 运行环境；**死信通知渠道地址**（`WORKBENCH_DEAD_LETTER_WEBHOOK_URL`）+ 收件人。
 - **执行序列**：
+  0. 运行态前置预检：`py scripts/worker_preflight.py --token <管理员令牌>` → 期望无 `fail`（**已知缺口**：仓库内无 Outbox 积压的可读接口，该项固定输出 `skipped`）
   1. 配置通知渠道后启动 Worker：`celery -A app.worker:celery_app worker --loglevel=INFO`
   2. 创建任务 → 验证 Outbox 写入 → Worker 发布 → Redis Stream 消费 → 重复投递不重复生效
   3. 制造失败（外部适配器指向不可达地址），使事件重试至 `WORKBENCH_OUTBOX_MAX_ATTEMPTS` 后进死信
@@ -158,10 +159,11 @@ Phase 2a       Phase 2b      Phase 2c
   - A①（无代码缺口）：部署密钥系统可注入并轮换；真实验证器设备。
   - A②（有代码缺口）：**先实现 OIDC/SSO 客户端并合入**，再进入验收；另需 IdP 的 client id/secret 与回调域名。
 - **执行序列**：
-  1. 轮换 `WORKBENCH_AUTH_SECRET`（与 `WORKBENCH_BACKUP_ENCRYPTION_KEY` 保持不同），记录操作人与窗口
-  2. 验证旧令牌按既定策略失效、重登可获新令牌
-  3. **轮换后重跑** `py scripts/staging_preflight.py` → 仍 `pass`
-  4. A①：用真实设备验证手机号 + 口令 + TOTP 全流程；A②：与 IdP 联调首次登录绑定、失败回退到口令登录、越权拒绝
+  1. 轮换前取证：`py scripts/secret_rotation_drill.py --phase before --output .acceptance/<目录>/old-token.json`（只打印令牌指纹；**该文件含令牌原文，用完即删**）
+  2. 轮换 `WORKBENCH_AUTH_SECRET`（与 `WORKBENCH_BACKUP_ENCRYPTION_KEY` 保持不同），记录操作人与窗口
+  3. 轮换后断言：`py scripts/secret_rotation_drill.py --phase after --token-file <同一文件>` → 旧令牌 `401`、重登成功、新令牌可访问受保护接口 `200`
+  4. **轮换后重跑** `py scripts/staging_preflight.py` → 仍 `pass`
+  5. A①：用真实设备验证手机号 + 口令 + TOTP 全流程；A②：与 IdP 联调首次登录绑定、失败回退到口令登录、越权拒绝
 - **检查点/门**：轮换后预检仍 `pass`；旧令牌失效符合预期；验证器真机可用。
 - **风险**：轮换失败 → 用密钥系统回退上一版本密钥，再重跑预检。
 
@@ -200,6 +202,7 @@ Phase 2a       Phase 2b      Phase 2c
 ### 项 4 · 真实 PostgreSQL 商业化迁移、备份/恢复演练与客户管理员验收
 - **前置**：客户 staging PG；备份介质；**客户管理员账号**与联系人；维护窗口。
 - **执行序列**：
+  0. 迁移与备份/恢复演练（**默认 dry-run，加 `--execute` 才真跑**）：`py scripts/migration_backup_drill.py --phase list` → `--phase backup --execute` → 恢复到**隔离库** `--phase restore --execute` → `--phase verify`；目标库禁 localhost/sqlite，生产库需 `--confirm-production`，**输出中 DSN 口令脱敏为 `***`**
   1. `py scripts/commercial_g0_preflight.py` → `pass`
   2. 按 `docs/staging-acceptance-checklist.md` 执行顺序 4–8（租户/用量/生命周期/导出/删除冷静期/备份恢复）
   3. 客户管理员自助验收：查租户与用量、申请导出、申请删除后撤销或等冷静期
@@ -212,7 +215,7 @@ Phase 2a       Phase 2b      Phase 2c
 - **执行序列**：
   1. `py scripts/commercial_g0_preflight.py` → `pass`
   2. 容量压测：`py scripts/staging_concurrency_probe.py` 的扩容参数（`--concurrency` 提到上限、增加重复轮次）+ 用量写入压测，记录 P95/错误率/资源水位
-  3. 独立密钥轮换（同项 3 步骤 1–3）
+  3. 独立密钥轮换（同项 3 的执行序列步骤 1–4，用 `py scripts/secret_rotation_drill.py` 取证），轮换后重跑预检与冒烟
   4. 按 runbook 完成交付，逐项标注未验收能力
 - **检查点/门**：阈值以客户书面数值为准；无未解释 5xx。
 - **风险**：阈值未确认 → 该判据记「不可判定」，不得判 pass。
@@ -239,7 +242,8 @@ Phase 2a       Phase 2b      Phase 2c
   1. `py scripts/runtime_staging_preflight.py` → `pass`
   2. `py -m app.runtime.staging` → `status: pass`（仅证明适配边界与脱敏）
   3. 按 `docs/superpowers/poc-staging-runbook.md` ⑥⑦⑧：RAGFlow 两租户白名单与跨租户整批拒绝；AgentScope 健康/事件游标/暂停恢复取消/审批/usage/replay，并注入未知事件与超时
-  4. 并发压测（复用项 1 探针主机）
+  4. 跨租户隔离实测：`py scripts/cross_tenant_probe.py --base-url <staging> --token-a <A> --token-b <B> --resource task:<A的资源id>:<B的资源id>` → 全 `pass`；**含正向对照**（须先用所有者令牌读到自己的资源，否则判 `fail（用例无效）`），防止 ID 写错导致的假通过；输出只含状态码
+  5. 并发压测（复用项 1 探针主机）
 - **检查点/门**：跨租户结果**整批拒绝**；空范围拒绝；非 2xx/超时/缺运行号/事件格式错误一律判失败且无自动越权。
 - **风险**：外部服务不稳定 → 关闭注册项回退 Mock，保留事件摘要，**禁止直接重放外部副作用**。
 

@@ -146,6 +146,7 @@
   1. **死信通知渠道未实现** —— 全仓 `app/` 内 `notification` / `notify` / `webhook` / `push` 0 命中；现有 `DeadLetterStore` 只做登记与人工重放。需新增：死信产生时经配置渠道发送**脱敏**通知（失败静默降级但必须写审计）、对应 `app/settings.py` 配置项、以及测试。
   2. `docs/private-deployment-runbook.md` **未覆盖 Celery Worker / Outbox / 死信环节**，项 2 缺执行依据，需补手册章节。
 - **验收步骤**：
+  0. 运行态前置预检：`py scripts/worker_preflight.py --token <管理员令牌>`（`--offline` 只验配置）→ 期望无 `fail`。**已知缺口**：仓库内没有 Outbox 积压的可读接口，该项固定输出 `skipped`。
   1. 启动 Worker：`celery -A app.worker:celery_app worker --loglevel=INFO`（生产模式自动绑定 Outbox 发布器）。
   2. 创建任务 → 验证 Outbox 写入 → Worker 发布 → Redis Stream 消费 → **重复投递不重复生效**。
   3. 制造失败：把外部适配器指向不可达地址，使事件重试至 `WORKBENCH_OUTBOX_MAX_ATTEMPTS` 后进入死信。
@@ -164,7 +165,7 @@
 - **需要的输入**：部署密钥系统（可注入并轮换双密钥）；真实 IdP 的 client id/secret 与回调域名（若做 SSO）；真实验证器设备。
 - **验收步骤**（三小项分别判定）：
   - **3.1 设备绑定**：绑定一台设备 → 换设备/异地登录应按设计被拒或要求二次验证；替换设备走 `POST /api/v1/auth/accounts/{account_id}/totp-reset` 后重登。
-  - **3.2 密钥轮换**：用部署密钥系统轮换 `WORKBENCH_AUTH_SECRET`（与备份加密密钥保持分离且不同），验证轮换后旧令牌按既定策略失效、重登可获新令牌、且轮换期间服务可用性符合维护窗口约定；**轮换后必须重跑预检**。
+  - **3.2 密钥轮换**：用部署密钥系统轮换 `WORKBENCH_AUTH_SECRET`（与备份加密密钥保持分离且不同），验证轮换后旧令牌按既定策略失效、重登可获新令牌、且轮换期间服务可用性符合维护窗口约定；**轮换后必须重跑预检**。可机械取证：`py scripts/secret_rotation_drill.py --phase before --output .acceptance/<目录>/old-token.json` → 轮换并重启 → `--phase after --token-file <同一文件>`（断言旧令牌 `401`、重登可获新令牌且新令牌 `200`）。**证据文件含令牌原文，用完即删**（脚本只打印指纹）。
   - **3.3 统一登录**：与 IdP 联调首次登录绑定、失败回退到口令登录、越权拒绝。
 - **通过判据**：轮换后旧令牌按预期失效、新令牌可用、预检仍 `pass`；异地登录按设计被拒；SSO 首次绑定与失败回退均符合设计。
 - **证据清单**：轮换操作记录与预检原文；令牌失效的请求/响应（脱敏）；IdP 侧截图；验证器真机截图。
@@ -175,9 +176,10 @@
 - **目标**：在客户 staging 上证明商业化 G0（租户、用量、生命周期）可迁移、可备份恢复，且客户管理员能独立完成本租户操作。
 - **需要的输入**：客户 staging PostgreSQL 与凭据；备份介质；客户管理员账号与联系人；维护窗口。
 - **验收步骤**：
-  1. 用 `py scripts/commercial_g0_preflight.py` 复核（期望 `pass`）。
-  2. 按 `docs/staging-acceptance-checklist.md` 执行顺序 4–8：租户读取、客户管理员权限、创建任务与写入用量账本（含幂等重复写入）、申请导出与删除（冷静期）、**把备份恢复到隔离库验证记录可读**。
-  3. 客户管理员验收：查租户与用量、申请导出、申请删除后撤销或等冷静期；按 `docs/private-deployment-runbook.md`「客户交接」核对交付清单。
+  1. 迁移与备份/恢复演练（**默认 dry-run，加 `--execute` 才真正执行**）：`py scripts/migration_backup_drill.py --phase list`（迁移清单一致性）→ `--phase backup --execute`（`pg_dump`）→ 恢复到**隔离库** `--phase restore --execute` → `--phase verify`（迁移后冒烟）。目标库**禁止** localhost/sqlite；指向生产库需 `--confirm-production`；**输出中的 DSN 口令一律脱敏为 `***`**。
+  2. 用 `py scripts/commercial_g0_preflight.py` 复核（期望 `pass`）。
+  3. 按 `docs/staging-acceptance-checklist.md` 执行顺序 4–8：租户读取、客户管理员权限、创建任务与写入用量账本（含幂等重复写入）、申请导出与删除（冷静期）、**把备份恢复到隔离库验证记录可读**。
+  4. 客户管理员验收：查租户与用量、申请导出、申请删除后撤销或等冷静期；按 `docs/private-deployment-runbook.md`「客户交接」核对交付清单。
 - **通过判据**：租户/用量/生命周期记录可读；导出**只含授权范围**且不含密码/Cookie/令牌/原始密钥/客户原文；删除走冷静期且保留最小审计；恢复后记录一致；客户管理员可独立完成上述动作。
 - **证据清单**：预检原文；导出文件的**元数据**（不含原文）；生命周期作业记录；恢复演练记录；客户管理员验收签认。
 - **失败与回滚**：见 2.4；**严禁手工改用量账本或审计记录**。
@@ -189,7 +191,7 @@
 - **验收步骤**：
   1. `py scripts/commercial_g0_preflight.py` → `pass`。
   2. 容量压测：复用项 1 探针的扩容版（并发用户 / 任务量 / 用量写入），记录 P95 延迟、错误率与资源水位。
-  3. 独立密钥轮换（同 3.2 流程），轮换后重跑预检与冒烟。
+  3. 独立密钥轮换（同 3.2 流程，用 `py scripts/secret_rotation_drill.py --phase before` / `--phase after` 取证），轮换后重跑预检与冒烟。
   4. 按 `docs/private-deployment-runbook.md` 完成交付与客户交接，逐项标注**尚未通过真实验收的能力**（第三方发布渠道、自动化浏览器协助、外部 Runtime、GEO 适配器）。
 - **通过判据**：预检 `pass`；压测在**客户确认的**容量下无未解释 5xx 且延迟达标；轮换不影响交付约定；交付清单齐备且未验收项已如实标注。
 - **失败与回滚**：压测不达标即暂停交付，回到容量评估；轮换异常按 2.4 回退密钥。
@@ -225,7 +227,8 @@
   1. `py scripts/runtime_staging_preflight.py` → `pass`（只验证元数据，不发起网络）。
   2. 本地冒烟：`py -m app.runtime.staging`，期望 `status: pass`（只证明适配边界与脱敏规则）。
   3. 真实接入后按 `docs/superpowers/poc-staging-runbook.md` 的 ⑥⑦⑧ 执行：RAGFlow 两租户知识库白名单、引用字段、空范围拒绝、**跨租户结果整批拒绝**；AgentScope `/health`、事件游标、暂停/恢复/取消、审批、usage、replay，并注入未知事件/超时/取消确认统一失败、无自动越权、可人工接管。
-  4. 并发压测与沙箱验证（依赖项 1 的探针）。
+  4. 跨租户隔离实测：`py scripts/cross_tenant_probe.py --base-url <staging> --token-a <租户A令牌> --token-b <租户B令牌> --resource task:<A的资源id>:<B的资源id> ...` → 期望全部 `pass`。**注意本工具含正向对照**：必须先用所有者令牌读到自己的资源（`200`），否则该用例判 `fail（用例无效）`——这是防止「ID 写错 → 稳定 404 → 假通过」的空转保护。输出只含状态码与资源类型，**不含任何业务数据**。
+  5. 并发压测与沙箱验证（依赖项 1 的探针）。
 - **通过判据**：跨租户结果**整批拒绝**；空范围拒绝；非 2xx / 超时 / 缺运行号 / 事件格式错误一律判失败；无自动越权；证据不含 `Authorization`/API Key/Cookie/客户原文。
 - **证据清单**：预检原文；冒烟输出；请求摘要与脱敏响应；指标；失败回放；人工接管记录。
 - **失败与回滚**：关闭对应 Runtime 注册项回退 Mock，保留事件摘要与策略版本，**禁止直接重放外部副作用**。
@@ -321,8 +324,27 @@ py scripts/staging_preflight.py --example
 # 外部 Runtime 本地冒烟（只证明适配边界与脱敏，不代表外部服务可用）
 py -m app.runtime.staging
 
+# 异步链路运行态（项 2）：配置 + Redis + 死信运行态；--offline 只验配置
+py scripts/worker_preflight.py --token $env:WORKBENCH_ACCEPTANCE_TOKEN
+
+# 迁移与备份/恢复演练（项 4，指向隔离库；默认 dry-run，加 --execute 才真跑）
+py scripts/migration_backup_drill.py --phase list
+py scripts/migration_backup_drill.py --phase backup --execute
+py scripts/migration_backup_drill.py --phase verify
+
+# 密钥轮换演练（项 3.2 / 项 5）：轮换前取证 → 轮换重启 → 轮换后断言旧令牌失效
+py scripts/secret_rotation_drill.py --phase before --output .acceptance/secret-rotation/old-token.json
+py scripts/secret_rotation_drill.py --phase after --token-file .acceptance/secret-rotation/old-token.json
+
+# 跨租户隔离实测（项 8）：含正向对照，避免 ID 写错导致的假通过
+py scripts/cross_tenant_probe.py --base-url https://staging.example.com `
+    --token-a $env:WORKBENCH_PROBE_TOKEN_A --token-b $env:WORKBENCH_PROBE_TOKEN_B `
+    --resource task:<A的资源id>:<B的资源id>
+
 # Worker（生产模式自动绑定 Outbox 发布器）
 celery -A app.worker:celery_app worker --loglevel=INFO
 ```
 
 > 预检脚本**只验证部署元数据**：不发起网络请求、不读取也不打印密钥值、退出码为 `pass`→0 / 其余→1。**不得**把预检 `pass` 当作真实验收证据。
+>
+> 例外：`worker_preflight.py`、`secret_rotation_drill.py`、`cross_tenant_probe.py` 会**按设计**对目标环境发起真实请求（它们本身就是验收工具，需显式传入 `--base-url`/令牌）。四者都带 fail-closed 护栏（拒绝非 HTTPS、拒绝回落 localhost），且**只输出状态码与判定文案，绝不打印令牌、密钥、DSN 口令或响应正文**。
