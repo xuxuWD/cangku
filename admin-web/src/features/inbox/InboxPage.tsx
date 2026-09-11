@@ -20,7 +20,7 @@ function formatTime(value: string): string {
   return date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-export function InboxPage({ onOpenTask, onNavigate }: { onOpenTask?: (taskId: string) => void; onNavigate?: (view: AppView) => void } = {}) {
+export function InboxPage({ onOpenTask, onOpenRun, onNavigate }: { onOpenTask?: (taskId: string) => void; onOpenRun?: (runId: string) => void; onNavigate?: (view: AppView) => void } = {}) {
   const [state, setState] = useState<InboxState>(initialInboxState)
   const update = useCallback((patch: Partial<InboxState>) => setState((old) => ({ ...old, ...patch })), [])
 
@@ -64,9 +64,10 @@ export function InboxPage({ onOpenTask, onNavigate }: { onOpenTask?: (taskId: st
   const openItem = async (item: InboxItem) => {
     if (item.read_at === null) await markRead(item)
     if (item.target_type === 'task' && item.target_id) onOpenTask?.(item.target_id)
+    else if (item.target_type === 'run' && item.target_id) onOpenRun?.(item.target_id)
   }
 
-  const canOpen = (item: InboxItem) => item.read_at !== null && item.target_type === 'task' && Boolean(item.target_id)
+  const canOpen = (item: InboxItem) => item.read_at !== null && Boolean(item.target_id) && (item.target_type === 'task' || item.target_type === 'run')
 
   return <AppShell activeView="inbox" onNavigate={onNavigate}>
     <main className="main-content content-history">

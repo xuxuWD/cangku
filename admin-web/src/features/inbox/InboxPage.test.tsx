@@ -87,4 +87,20 @@ describe('InboxPage', () => {
     await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/inbox/read-all') && (call[1] as RequestInit)?.method === 'POST')).toBe(true))
     expect(await screen.findByText('未读通知 0 条')).toBeInTheDocument()
   })
+
+  it('opens the run detail for a run notification', async () => {
+    const onOpenRun = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('limit=1')) return json({ items: [], unread_count: 0 })
+      return json({ items: [readItem], unread_count: 0 })
+    }))
+
+    render(<InboxPage onOpenRun={onOpenRun} />)
+
+    await screen.findByText('发布任务运行失败')
+    await userEvent.click(screen.getByRole('button', { name: '查看' }))
+
+    expect(onOpenRun).toHaveBeenCalledWith('run-9')
+  })
 })

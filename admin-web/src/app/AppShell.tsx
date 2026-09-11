@@ -2,7 +2,7 @@ import type { IconName } from '../components/FilledIcon'
 import { FilledIcon } from '../components/FilledIcon'
 import { useUnreadCount } from '../features/inbox/useUnreadCount'
 
-export type AppView = 'workbench' | 'history' | 'knowledge' | 'dynamics' | 'inbox'
+export type AppView = 'workbench' | 'history' | 'knowledge' | 'dynamics' | 'inbox' | 'run'
 
 const navigation: Array<{ icon: IconName; label: string; view?: AppView }> = [
   { icon: 'home', label: '内容工作台', view: 'workbench' },
