@@ -15,6 +15,7 @@ from .models import (
     TotpInvalid,
     TotpNotEnrolled,
 )
+from .secrets import CIPHER_PREFIX, SecretCipher, TotpSecretError
 
 
 def _normalize_email(email: object) -> str:
@@ -174,8 +175,11 @@ class PostgresAccountRepository:
         "totp_secret, totp_confirmed_at, totp_last_step, sso_provider, sso_subject"
     )
 
-    def __init__(self, connection_or_pool) -> None:
+    def __init__(self, connection_or_pool, *, cipher: SecretCipher | None = None) -> None:
         self.connection = connection_or_pool
+        # 生产装配由 bootstrap 注入（密钥材料来自备份加密密钥的 HKDF 子密钥）；
+        # 为 None 时不加密，仅供开发与既有单测使用。
+        self.cipher = cipher
 
     @contextmanager
     def _connection(self):
@@ -186,8 +190,23 @@ class PostgresAccountRepository:
             with nullcontext(self.connection) as connection:
                 yield connection
 
-    @staticmethod
-    def _hydrate(row: tuple) -> Account:
+    def _encode_secret(self, secret: str | None) -> str | None:
+        """写入前加密；未配置密钥时原样返回（开发环境）。"""
+        if secret is None or self.cipher is None:
+            return secret
+        return self.cipher.encrypt(secret)
+
+    def _decode_secret(self, secret: object) -> str | None:
+        """读取后解密；拿到密文却没有密钥时 fail-closed。"""
+        if not isinstance(secret, str) or not secret:
+            return None
+        if self.cipher is not None:
+            return self.cipher.decrypt(secret)
+        if secret.startswith(CIPHER_PREFIX):
+            raise TotpSecretError("检测到加密的 TOTP 种子，但未配置备份加密密钥")
+        return secret
+
+    def _hydrate(self, row: tuple) -> Account:
         return Account(
             account_id=str(row[0]),
             phone=str(row[1]),
@@ -202,7 +221,7 @@ class PostgresAccountRepository:
             reviewed_at=row[10],
             reviewed_by=row[11],
             rejection_reason=row[12],
-            totp_secret=row[13],
+            totp_secret=self._decode_secret(row[13]),
             totp_confirmed_at=row[14],
             totp_last_step=row[15],
             sso_provider=row[16],
@@ -225,7 +244,7 @@ class PostgresAccountRepository:
                             account.full_name, account.email, account.role, account.tenant_id,
                             account.status.value, account.requested_at, account.reviewed_at,
                             account.reviewed_by, account.rejection_reason,
-                            account.totp_secret, account.totp_confirmed_at, account.totp_last_step,
+                            self._encode_secret(account.totp_secret), account.totp_confirmed_at, account.totp_last_step,
                             account.sso_provider, account.sso_subject,
                         ),
                     )
@@ -358,7 +377,7 @@ class PostgresAccountRepository:
                         WHERE account_id = %s
                         RETURNING {self._COLUMNS}
                         """,
-                        (secret, account_id),
+                        (self._encode_secret(secret), account_id),
                     )
                     row = cursor.fetchone()
         if row is None:

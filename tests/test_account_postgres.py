@@ -13,6 +13,7 @@ from app.accounts.models import (
 )
 from app.accounts.rate_limit import InMemoryLoginAttemptStore, LoginRateLimiter
 from app.accounts.repository import PostgresAccountRepository
+from app.accounts.secrets import CIPHER_PREFIX, SecretCipher, TotpSecretError
 from app.audit.service import AuditService
 from app.audit.store import InMemoryAuditStore
 from app.bootstrap import build_account_service
@@ -469,3 +470,70 @@ def test_postgres_record_totp_step_raises_not_found_when_account_missing() -> No
 
     with pytest.raises(AccountNotFound):
         repository.record_totp_step("acct-1", 100)
+
+
+def test_postgres_backend_wires_totp_cipher_from_backup_key() -> None:
+    _service, repository = build_account_service(
+        postgres_settings(), audit=_audit(), login_limiter=_login_limiter(), connection=object(), migrate=False
+    )
+
+    # 判定依据：生产装配必须带上 TOTP 加密封套（密钥材料来自备份加密密钥的 HKDF 子密钥），
+    # 否则种子会以明文落库。
+    assert repository.cipher is not None
+
+
+def test_postgres_set_totp_writes_ciphertext_and_reads_back_plaintext() -> None:
+    cipher = SecretCipher("k" * 40)
+    connection = RecordingConnection([totp_row(secret=cipher.encrypt("JBSWY3DPEHPK3PXP"))])
+    repository = PostgresAccountRepository(connection, cipher=cipher)
+
+    account = repository.set_totp("acct-1", "JBSWY3DPEHPK3PXP")
+
+    _statement, params = connection.cursor_instance.statements[0]
+    assert params[0].startswith(CIPHER_PREFIX)
+    assert "JBSWY3DPEHPK3PXP" not in params[0]
+    # 落库为密文，但返回给服务层的账号对象必须是明文种子。
+    assert account.totp_secret == "JBSWY3DPEHPK3PXP"
+
+
+def test_postgres_add_encrypts_totp_secret() -> None:
+    cipher = SecretCipher("k" * 40)
+    connection = RecordingConnection([account_row()])
+    repository = PostgresAccountRepository(connection, cipher=cipher)
+    draft = Account(
+        phone="13800000001",
+        password_hash="scrypt$hash",
+        position="内容运营",
+        full_name="张三",
+        totp_secret="JBSWY3DPEHPK3PXP",
+    )
+
+    repository.add(draft)
+
+    _statement, params = connection.cursor_instance.statements[0]
+    assert params[13].startswith(CIPHER_PREFIX)
+
+
+def test_postgres_hydrates_encrypted_secret_to_plaintext() -> None:
+    cipher = SecretCipher("k" * 40)
+    connection = RecordingConnection([totp_row(secret=cipher.encrypt("JBSWY3DPEHPK3PXP"))])
+    repository = PostgresAccountRepository(connection, cipher=cipher)
+
+    assert repository.get("acct-1").totp_secret == "JBSWY3DPEHPK3PXP"
+
+
+def test_postgres_hydrates_legacy_plaintext_secret_unchanged() -> None:
+    # 判定依据：历史明文行必须仍可读，否则升级当天既有管理员全部无法登录。
+    connection = RecordingConnection([totp_row(secret="JBSWY3DPEHPK3PXP")])
+    repository = PostgresAccountRepository(connection, cipher=SecretCipher("k" * 40))
+
+    assert repository.get("acct-1").totp_secret == "JBSWY3DPEHPK3PXP"
+
+
+def test_postgres_rejects_encrypted_secret_when_cipher_missing() -> None:
+    # 判定依据：拿到 v1: 密文却没有密钥时必须 fail-closed，绝不能把密文当明文交给服务层。
+    connection = RecordingConnection([totp_row(secret=f"{CIPHER_PREFIX}QUJD")])
+    repository = PostgresAccountRepository(connection)
+
+    with pytest.raises(TotpSecretError):
+        repository.get("acct-1")

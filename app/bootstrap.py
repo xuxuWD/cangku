@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .accounts.rate_limit import InMemoryLoginAttemptStore, LoginRateLimiter
 from .accounts.repository import InMemoryAccountRepository
+from .accounts.secrets import build_totp_cipher
 from .accounts.service import AccountService
 from .agent_services import ModelGateway, ProviderModel
 from .audit.service import AuditService
@@ -319,7 +320,10 @@ def build_account_service(
             connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
         if migrate:
             apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
-        repository = PostgresAccountRepository(connection)
+        # TOTP 种子静态加密：密钥材料由备份加密密钥经 HKDF 派生（生产已强制要求该密钥）。
+        repository = PostgresAccountRepository(
+            connection, cipher=build_totp_cipher(settings.backup_encryption_key)
+        )
     else:
         raise ValueError("不支持的账号存储类型")
     sso_config = build_sso_config(settings)
