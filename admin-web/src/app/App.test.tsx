@@ -7,6 +7,9 @@ describe('App', () => {
     window.history.replaceState({}, '', '/')
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input)
+      if (path.includes('/workforce/roles')) return { ok: true, json: async () => ({ items: [{ role_key: 'content-operator', name: '自媒体运营岗', description: '', status: 'active' }], total: 1, limit: 200, offset: 0 }) } as Response
+      if (path.includes('/workforce/agents')) return { ok: true, json: async () => ({ items: [], total: 0, limit: 200, offset: 0 }) } as Response
+      if (path.includes('/workforce/candidates')) return { ok: true, json: async () => ({ roles: [], agents: [] }) } as Response
       return { ok: true, json: async () => path.includes('/audits') ? [] : { binding_type: 'role', binding_key: 'content-operator', knowledge_base_ids: ['company-general'] } } as Response
     }))
   })
@@ -67,6 +70,16 @@ describe('App', () => {
 
     expect(window.location.search).toBe('?view=workforce')
     await waitFor(() => expect(screen.getByRole('heading', { name: '员工与岗位' })).toBeInTheDocument())
+  })
+
+  it('navigates to the workforce settings page from the sidebar', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByText('数字员工设置', { selector: '.nav-item' }))
+
+    expect(window.location.search).toBe('?view=workforceSettings')
+    await waitFor(() => expect(screen.getByRole('heading', { name: '数字员工设置' })).toBeInTheDocument())
   })
 
   it('falls back to the content workbench for an unknown view', async () => {

@@ -6,18 +6,13 @@ import { ObjectSelect } from '../../components/ObjectSelect'
 import { SaveButton } from '../../components/SaveButton'
 import { SegmentedControl } from '../../components/SegmentedControl'
 import { Toast } from '../../components/Toast'
-import { getKnowledgeAccess, getKnowledgeAudits, saveKnowledgeAccess } from './api'
+import { getDirectorySubjects, getKnowledgeAccess, getKnowledgeAudits, saveKnowledgeAccess, type DirectorySubjects } from './api'
 import { AuditTimeline } from './AuditTimeline'
 import { initialKnowledgeState, createIdempotencyKey } from './state'
 import { KNOWLEDGE_BASES, type ApiErrorShape, type KnowledgeAudit, type KnowledgeState, type SubjectType } from './types'
 import { KnowledgeScopeRow } from './KnowledgeScopeRow'
 import { SoundPreference } from './SoundPreference'
 import { playUiSound, type UiSound } from './sound'
-
-const subjects = {
-  role: [{ key: 'content-operator', label: '自媒体运营岗' }, { key: 'ceo', label: 'CEO 岗' }, { key: 'vibe-coding', label: 'Vibe Coding 岗' }],
-  agent: [{ key: 'content-writer', label: '内容创作数字员工' }, { key: 'geo-analyst', label: 'GEO 分析数字员工' }],
-}
 
 function asApiError(error: unknown): ApiErrorShape {
   if (typeof error === 'object' && error !== null && 'message' in error) {
@@ -32,6 +27,10 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
   const [sound, setSound] = useState(true)
   const [confirmClear, setConfirmClear] = useState(false)
   const [clearSnapshot, setClearSnapshot] = useState<string[] | null>(null)
+  // 候选岗位/数字员工来自目录（「数字员工设置」）；为空时本页无事可做，给出明确指引。
+  const [subjects, setSubjects] = useState<DirectorySubjects>({ role: [], agent: [] })
+  const [subjectsLoading, setSubjectsLoading] = useState(true)
+  const subjectsInitialised = useRef(false)
   const loadSequence = useRef(0)
   const options = subjects[state.subjectType]
 
@@ -60,7 +59,36 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
     else update({ auditsLoading: false, auditError: asApiError(auditsResult.reason) })
   }, [update])
 
-  useEffect(() => { void load('role', 'content-operator') }, [load])
+  // 目录先到：候选对象是真实存在的岗位/数字员工，不再用写死清单。
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const loaded = await getDirectorySubjects()
+        if (!cancelled) setSubjects(loaded)
+      } catch {
+        if (!cancelled) setSubjects({ role: [], agent: [] })
+      } finally {
+        if (!cancelled) setSubjectsLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // 目录就绪后只挑一次默认对象：沿用当前类型里的第一个，没有就退到另一类。
+  useEffect(() => {
+    if (subjectsLoading || subjectsInitialised.current) return
+    subjectsInitialised.current = true
+    const target = subjects[state.subjectType][0] ?? subjects[state.subjectType === 'role' ? 'agent' : 'role'][0]
+    if (!target) {
+      // 目录为空或读取失败：仍按当前标识读一次绑定，把真实错误显示出来，而不是一直转圈。
+      if (state.subjectKey) void load(state.subjectType, state.subjectKey)
+      else update({ loading: false })
+      return
+    }
+    const type: SubjectType = subjects.role.some((item) => item.key === target.key) ? 'role' : 'agent'
+    void load(type, target.key)
+  }, [subjectsLoading, subjects, state.subjectType, state.subjectKey, load, update])
   useEffect(() => {
     if (!confirmClear) return
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setConfirmClear(false) }
@@ -69,6 +97,8 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
   }, [confirmClear])
 
   const currentSubject = options.find((item) => item.key === state.subjectKey) || options[0]
+  // 目录里没有该类对象时不能切换过去（ObjectSelect 会没有可选项）。
+  const switchSubjectType = (value: SubjectType) => { const first = subjects[value][0]; if (first) void load(value, first.key) }
   const isUnauthorized = state.error?.unauthorized === true
   const canEdit = state.bindingLoaded && !isUnauthorized && !state.saving
   const canSave = state.selectedIds.join(',') !== state.initialIds.join(',')
@@ -123,12 +153,18 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
     return <NoticeBanner tone="error" title={state.error.unauthorized ? '暂时无法配置知识权限' : '知识权限读取失败'}>{state.error.message} {state.error.retryable && <button className="text-action" type="button" onClick={retryLoad}>重新尝试</button>}</NoticeBanner>
   }, [retryLoad, save, state.error, state.saveError])
 
-  if (state.loading) return <AppShell activeView="knowledge" onNavigate={onNavigate}><main className="main-content"><div className="loading-state" aria-live="polite"><span className="loading-dot" />正在读取知识权限...</div></main></AppShell>
+  if (state.loading || subjectsLoading) return <AppShell activeView="knowledge" onNavigate={onNavigate}><main className="main-content"><div className="loading-state" aria-live="polite"><span className="loading-dot" />正在读取知识权限...</div></main></AppShell>
+
+  if (subjects.role.length === 0 && subjects.agent.length === 0) return <AppShell activeView="knowledge" onNavigate={onNavigate}><main className="main-content">
+    <div className="page-head"><div><div className="eyebrow">资料访问范围</div><h1 className="page-title">知识权限管理</h1><p className="page-desc">选择这个岗位和它的数字员工可以使用的资料。未授权的内容不会被读取。</p></div></div>
+    {statusNotice}
+    <div className="empty-state"><strong>还没有可配置的岗位或数字员工</strong><span>请先在「数字员工设置」中创建岗位与数字员工，再回来配置知识范围。</span></div>
+  </main></AppShell>
 
   return <AppShell activeView="knowledge" onNavigate={onNavigate}>
     <main className="main-content">
       <div className="page-head"><div><div className="eyebrow">资料访问范围</div><h1 className="page-title">知识权限管理</h1><p className="page-desc">选择这个岗位和它的数字员工可以使用的资料。未授权的内容不会被读取。</p></div><div className="actions"><button className="button" type="button" disabled={!canEdit} onClick={clear}>清空选择</button><SaveButton saving={state.saving} disabled={!canSave || isUnauthorized || !state.bindingLoaded} onClick={() => void save()} /></div></div>
-      <div className="controls"><SegmentedControl value={state.subjectType} onChange={(value) => void load(value, subjects[value][0].key)} /><ObjectSelect value={state.subjectKey} options={options} onChange={(key) => void load(state.subjectType, key)} /><span className="role-note">{state.subjectType === 'role' ? '内容中心 · 6 名员工' : `所属岗位：${currentSubject.label}`}</span></div>
+      <div className="controls"><SegmentedControl value={state.subjectType} onChange={switchSubjectType} /><ObjectSelect value={state.subjectKey} options={options} onChange={(key) => void load(state.subjectType, key)} /><span className="role-note">{state.subjectType === 'role' ? `共 ${subjects.role.length} 个启用中的岗位` : currentSubject ? `所属岗位：${currentSubject.role_key ?? '未设置'}` : '暂无启用中的数字员工'}</span></div>
       {statusNotice}
       <section className={`knowledge-panel ${isUnauthorized ? 'panel-locked' : ''}`} aria-busy={state.saving}>
         <div className="panel-header"><h2>可以使用的知识库</h2><span>{state.selectedIds.length ? `已选择 ${state.selectedIds.length} 个` : '暂未授权'}</span></div>
