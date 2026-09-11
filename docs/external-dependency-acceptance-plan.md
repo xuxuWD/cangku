@@ -119,7 +119,13 @@
 
 - **目标**：证明 PostgreSQL 仓储在真实 PG 上的租户隔离、唯一约束、原子审批、迁移 runner 与**回滚**都正确，并证明并发下不出现越权或重复生效。
 - **需要的输入**：独立 staging PostgreSQL（非 localhost）与凭据；备份介质与独立加密密钥；维护窗口；一台能访问 staging 的探针运行主机。
-- **需先补的代码**：并发探针脚本 `scripts/staging_concurrency_probe.py`（当前不存在）。它至少覆盖三个场景：① 同一手机号并发失败登录（验证限流跨进程一致性 → 期望 `429`）；② 同一幂等键并发创建任务（期望只产生 1 条记录）；③ 同一计划提案并发审批（期望恰好 1 个 `200`，其余 `409`）。输出脱敏 JSON 统计。
+- **探针脚本（已实现）**：`scripts/staging_concurrency_probe.py` 覆盖三个场景：① 同一手机号并发失败登录（验证限流跨进程一致性 → 期望 `429`）；② 同一幂等键并发创建任务（期望只产生 1 条记录）；③ 同一计划提案并发审批（期望恰好 1 个 `200`、其余 `409`），输出脱敏 JSON 统计。真实命令示例：
+
+  ```powershell
+  py scripts/staging_concurrency_probe.py --base-url https://staging.example.com --token $env:WORKBENCH_PROBE_TOKEN --phone +8613800000000 --password $env:WORKBENCH_PROBE_PASSWORD --proposal-id <pending_review 且发起人≠令牌用户的提案 id> --concurrency 8 --timeout 10 --output .acceptance/probe.json
+  ```
+
+  说明：默认强制 HTTPS 且拒绝本地主机（越界以退出码 `2` 失败，可临时用 `--allow-insecure` / `--allow-local` 覆盖）；退出码为「配置错误 `2` / 全部非 skipped 场景 `pass` 为 `0` / 否则 `1`」。`plan_approval` 场景未提供 `--proposal-id` 时记为 `skipped` 且不影响整体判定。**该脚本只产出并发行为统计，报告仅含主机与响应码分布、不含口令/令牌，本身不构成验收证据。**
 - **验收步骤**（执行底稿：`docs/staging-acceptance-checklist.md` 执行顺序 1–9）：
   1. 跑 `py scripts/staging_preflight.py` → 必须 `pass`，留存原文。
   2. 维护窗口前做一致性备份，记录备份校验值；启动应用让迁移 runner 应用 `001`–`014`，记录实际应用的迁移版本。
