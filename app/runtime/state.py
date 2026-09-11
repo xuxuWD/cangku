@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import RLock
+from typing import Iterable
 from uuid import uuid4
 
 from .contracts import AgentPlan, RuntimeContext, RuntimeEvent
@@ -43,14 +44,19 @@ class RuntimeStateStore:
         with self._lock:
             return self._states[run_id]
 
-    def list_for_tenant(self, tenant_id: str) -> list[RuntimeState]:
-        """按租户列出运行状态。
+    def list_for_tenant(self, tenant_id: str, *, statuses: Iterable[str] | None = None) -> list[RuntimeState]:
+        """按租户列出运行状态，可选按状态过滤。
 
         注意：运行时状态本身是**进程内状态**（所有存储模式都一样），因此这里只能看到
         当前进程创建的运行；重启或多进程部署下结果不完整（已登记为已知限制）。
         """
         with self._lock:
-            return [state for state in self._states.values() if state.context.tenant_id == tenant_id]
+            states = [state for state in self._states.values() if state.context.tenant_id == tenant_id]
+        if statuses is not None:
+            selected = set(statuses)
+            states = [state for state in states if state.status in selected]
+        states.sort(key=lambda state: state.created_at, reverse=True)
+        return states
 
     def append(self, state: RuntimeState, event: RuntimeEvent) -> None:
         with self._lock:
