@@ -1,0 +1,226 @@
+:root {
+  color-scheme: light;
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  --surface: #ffffff;
+  --page: #f4f7fa;
+  --ink: #10202e;
+  --muted: #5b6b7a;
+  --brand: #123b5c;
+  --danger: #b3261e;
+  --line: #dce3ea;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  -webkit-text-size-adjust: 100%;
+}
+
+button {
+  font: inherit;
+  padding: 0.5rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--brand);
+}
+
+button[disabled] {
+  opacity: 0.55;
+}
+
+input,
+select {
+  font: inherit;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  width: 100%;
+}
+
+.login {
+  min-height: 100vh;
+  padding: calc(env(safe-area-inset-top) + 2.5rem) 1.25rem calc(env(safe-area-inset-bottom) + 1.5rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.login__title {
+  margin: 0;
+  font-size: 1.5rem;
+  color: var(--brand);
+}
+
+.login__subtitle {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+}
+
+.login__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.login__form label {
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.login__form button {
+  margin-top: 1rem;
+  background: var(--brand);
+  color: #fff;
+  border: none;
+  padding: 0.75rem;
+}
+
+.login__error {
+  margin: 0.5rem 0 0;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: calc(env(safe-area-inset-top) + 0.75rem) 1rem calc(env(safe-area-inset-bottom) + 1rem);
+}
+
+.app-shell__header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  position: sticky;
+  top: 0;
+  padding: 0.5rem 0;
+  background: var(--page);
+}
+
+.app-shell__title {
+  margin: 0;
+  font-size: 1.2rem;
+  color: var(--brand);
+  flex: 1;
+}
+
+.app-shell__badge {
+  min-width: 1.6rem;
+  text-align: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 0.85rem;
+}
+
+.approvals {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.approvals__notice,
+.approvals__loading,
+.approvals__empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.approvals__notice {
+  color: var(--brand);
+}
+
+.approvals__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  background: #fdecea;
+  color: var(--danger);
+}
+
+.approvals__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.approval-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.approval-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.approval-card__kind {
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: #e8eef4;
+  color: var(--brand);
+}
+
+.approval-card__title {
+  margin: 0.2rem 0;
+  font-size: 1.05rem;
+}
+
+.approval-card__meta,
+.approval-card__detail {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.approval-card__actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+
+.approval-card__role {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.approval-card__role label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.approval-card__reject {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.approval-card__reject label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}

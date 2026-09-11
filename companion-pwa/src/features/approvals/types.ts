@@ -1,0 +1,37 @@
+export type PendingApprovalKind = 'task_approval' | 'plan_proposal' | 'account_registration'
+
+export interface PendingApproval {
+  kind: PendingApprovalKind
+  target_id: string
+  title: string
+  requested_by: string | null
+  created_at: string
+  detail: Record<string, unknown>
+}
+
+export interface PendingApprovalCounts {
+  task_approval: number
+  plan_proposal: number
+  account_registration: number
+  total: number
+}
+
+export interface PendingApprovalsResponse {
+  items: PendingApproval[]
+  counts: PendingApprovalCounts
+}
+
+// 与服务端 app/accounts/service.py 的 _SUPPORTED_ROLES 保持一致；角色由审批人在通过时指定。
+export const APPROVABLE_ROLES = ['employee', 'department_lead', 'ceo', 'super_admin', 'customer_admin'] as const
+
+export type ApprovableRole = (typeof APPROVABLE_ROLES)[number]
+
+export const ROLE_LABELS: Record<ApprovableRole, string> = {
+  employee: '普通员工',
+  department_lead: '部门负责人',
+  ceo: 'CEO',
+  super_admin: '超级管理员',
+  customer_admin: '客户管理员',
+}
+
+export const DEFAULT_APPROVAL_ROLE: ApprovableRole = 'employee'

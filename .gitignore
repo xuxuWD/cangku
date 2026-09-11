@@ -25,6 +25,10 @@ node_modules/
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+
+# 手机伴侣 PWA 前端
+companion-pwa/node_modules/
+companion-pwa/dist/
 .idea/
 .vscode/
 *.log
