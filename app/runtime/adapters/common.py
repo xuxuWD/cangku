@@ -135,7 +135,7 @@ class ExternalAdapter(AgentRuntimeAdapter):
     def stream_events(self, run_id: str, cursor: str | None = None) -> list[RuntimeEvent]:
         remote, _context = self._runs[run_id]; raw=self.transport.events_for(self.endpoint, remote) or [{"type":"plan.created","payload":{}}]; result=[]
         for index,item in enumerate(raw,1):
-            mapping={"plan.created":RuntimeEventType.PLAN_CREATED,"step.started":RuntimeEventType.STEP_STARTED,"tool.call":RuntimeEventType.TOOL_CALL,"tool.result":RuntimeEventType.TOOL_RESULT,"approval.requested":RuntimeEventType.APPROVAL_REQUESTED,"checkpoint.saved":RuntimeEventType.CHECKPOINT_SAVED,"run.paused":RuntimeEventType.RUN_PAUSED,"run.completed":RuntimeEventType.RUN_COMPLETED,"run.failed":RuntimeEventType.RUN_FAILED}
+            mapping={"plan.created":RuntimeEventType.PLAN_CREATED,"step.started":RuntimeEventType.STEP_STARTED,"tool.call":RuntimeEventType.TOOL_CALL,"tool.result":RuntimeEventType.TOOL_RESULT,"approval.requested":RuntimeEventType.APPROVAL_REQUESTED,"approval.decided":RuntimeEventType.APPROVAL_DECIDED,"checkpoint.saved":RuntimeEventType.CHECKPOINT_SAVED,"run.paused":RuntimeEventType.RUN_PAUSED,"run.completed":RuntimeEventType.RUN_COMPLETED,"run.failed":RuntimeEventType.RUN_FAILED}
             remote_type = item.get("type")
             event_type=mapping.get(remote_type, RuntimeEventType.RUN_FAILED) if isinstance(remote_type, str) else RuntimeEventType.RUN_FAILED
             payload=item.get("payload",{})
@@ -161,6 +161,13 @@ class ExternalAdapter(AgentRuntimeAdapter):
         remote, _ = self._runs[run_id]
         result = self.transport.command(self.endpoint, remote, "approvals", {"action": action})
         return str(result.get("approval_id") or f"approval-{uuid4().hex[:8]}")
+
+    def decide_approval(self, run_id: str, approval_id: str, approved: bool) -> None:
+        """把决议下发给外部运行时；真实平台的决议协议尚未联调（与其它外部命令同一验收状态）。"""
+        remote, _ = self._runs[run_id]
+        self.transport.command(
+            self.endpoint, remote, "approval_decision", {"approval_id": approval_id, "approved": approved}
+        )
 
     def get_checkpoint(self, run_id: str) -> dict[str, Any] | None:
         return {"status": "external"} if run_id in self._runs else None

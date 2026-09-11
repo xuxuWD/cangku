@@ -21,6 +21,7 @@ class FinishReason(StrEnum):
     RUN_COMPLETED = "run_completed"
     CANCELLED_BY_USER = "cancelled_by_user"
     STEP_FAILED = "step_failed"
+    APPROVAL_REJECTED = "approval_rejected"
 
 
 @dataclass

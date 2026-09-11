@@ -17,10 +17,19 @@ class RuntimeEventType(StrEnum):
     TOOL_CALL = "tool.call"
     TOOL_RESULT = "tool.result"
     APPROVAL_REQUESTED = "approval.requested"
+    APPROVAL_DECIDED = "approval.decided"
     CHECKPOINT_SAVED = "checkpoint.saved"
     RUN_PAUSED = "run.paused"
     RUN_FAILED = "run.failed"
     RUN_COMPLETED = "run.completed"
+
+
+class ApprovalNotFound(LookupError):
+    """审批项不存在，或不属于该次运行（接口层按 404 处理）。"""
+
+
+class ApprovalAlreadyDecided(ValueError):
+    """审批项已决议过，不允许重复改判（接口层按 409 处理）。"""
 
 
 @dataclass(frozen=True)
@@ -123,6 +132,7 @@ class AgentRuntimeAdapter(Protocol):
     def resume_run(self, run_id: str) -> None: ...
     def cancel_run(self, run_id: str, reason: str) -> None: ...
     def request_approval(self, run_id: str, action: dict[str, Any]) -> str: ...
+    def decide_approval(self, run_id: str, approval_id: str, approved: bool) -> None: ...
     def get_checkpoint(self, run_id: str) -> dict[str, Any] | None: ...
     def replay_run(self, run_id: str, from_step: str | None = None) -> str: ...
     def get_usage(self, run_id: str) -> dict[str, Any]: ...

@@ -17,6 +17,13 @@ class RunAccessDenied(ValueError):
     pass
 
 
+class RunApprovalDenied(ValueError):
+    """决议运行审批的权限不满足（接口层按 403 处理）。"""
+
+
+_APPROVER_ROLES = frozenset({'ceo', 'super_admin'})
+
+
 class RuntimeService:
     def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None, run_metrics: Any = None) -> None:
         self.task_store = task_store
@@ -78,6 +85,21 @@ class RuntimeService:
         started = time.perf_counter()
         adapter.cancel_run(run_id, reason)
         self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
+
+    def decide_approval(self, actor: UserContext, run_id: str, approval_id: str, approved: bool) -> None:
+        """决议运行内的审批项：仅 CEO/超级管理员，且发起人不能自审。"""
+        key, adapter, state = self.adapter_for_task(actor, run_id)
+        self._ensure_decider(actor, state)
+        started = time.perf_counter()
+        adapter.decide_approval(run_id, approval_id, approved)
+        self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
+
+    @staticmethod
+    def _ensure_decider(actor: UserContext, state: Any) -> None:
+        if actor.role not in _APPROVER_ROLES:
+            raise RunApprovalDenied('只有 CEO 或超级管理员可以决议运行审批')
+        if actor.user_id == state.context.user_id:
+            raise RunApprovalDenied('发起人不能审批自己发起的运行')
 
     @staticmethod
     def _elapsed_ms(started: float) -> int:

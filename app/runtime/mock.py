@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import AgentPlan, AgentRuntimeAdapter, RuntimeContext, RuntimeEvent, RuntimeEventType
+from .contracts import (
+    AgentPlan,
+    AgentRuntimeAdapter,
+    ApprovalAlreadyDecided,
+    ApprovalNotFound,
+    RuntimeContext,
+    RuntimeEvent,
+    RuntimeEventType,
+)
 from .state import RuntimeState, RuntimeStateStore
 
 # 仅 Mock 运行时的失败注入约定；真实适配器不识别该前缀。
@@ -89,6 +97,39 @@ class MockRuntime(AgentRuntimeAdapter):
         state.approvals[approval_id] = "pending"
         self._emit(state, RuntimeEventType.APPROVAL_REQUESTED, {"approval_id": approval_id, "action": action})
         return approval_id
+
+    def decide_approval(self, run_id: str, approval_id: str, approved: bool) -> None:
+        """决议一个待审批项：通过则执行对应步骤，驳回则立即失败且不再执行。"""
+        state = self.store.get(run_id)
+        if approval_id not in state.approvals:
+            raise ApprovalNotFound(approval_id)
+        if state.approvals[approval_id] != "pending":
+            raise ApprovalAlreadyDecided(approval_id)
+        state.approvals[approval_id] = "approved" if approved else "rejected"
+        self._emit(
+            state,
+            RuntimeEventType.APPROVAL_DECIDED,
+            {"approval_id": approval_id, "approved": approved},
+        )
+        if not approved:
+            state.status = "failed"
+            self._emit(
+                state,
+                RuntimeEventType.RUN_FAILED,
+                {"approval_id": approval_id, "reason": "approval_rejected"},
+            )
+            self.store.save_checkpoint(state)
+            return
+        step = next((item for item in state.plan.steps if item.step_id == approval_id), None)
+        if step is not None and step.step_id not in state.completed_steps:
+            state.usage["tool_calls"] += 1
+            state.usage["successful_tools"] += 1
+            state.completed_steps.append(step.step_id)
+            self._emit(state, RuntimeEventType.TOOL_RESULT, {"step_id": step.step_id, "status": "success"})
+        if all(item != "pending" for item in state.approvals.values()):
+            state.status = "completed"
+            self._emit(state, RuntimeEventType.RUN_COMPLETED, {"step_count": len(state.plan.steps)})
+        self.store.save_checkpoint(state)
 
     def get_checkpoint(self, run_id: str) -> dict[str, object] | None:
         return self.store.get(run_id).checkpoint

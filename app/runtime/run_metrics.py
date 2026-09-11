@@ -9,13 +9,25 @@ from .records import FinishReason, RunRecord, RunRecordNotFound, RunRecordStore
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
-# 结束原因由状态单向推导，保证状态与原因不可能互相漂移。
+# 结束原因由运行状态单向推导，保证状态与原因不可能互相漂移。
 _FINISH_REASONS = {
     "completed": FinishReason.RUN_COMPLETED,
-    "failed": FinishReason.STEP_FAILED,
     "cancelled": FinishReason.CANCELLED_BY_USER,
 }
 _SUMMARY_LIMIT = 100_000
+
+
+def _finish_reason_for(state: Any) -> FinishReason | None:
+    """终态 → 受控结束原因。
+
+    `failed` 需要区分「人工驳回审批」与「步骤本身失败」，因此额外看审批状态；
+    判定只看状态机事实，不读任何自由文本。
+    """
+    if state.status == "failed":
+        if any(item == "rejected" for item in getattr(state, "approvals", {}).values()):
+            return FinishReason.APPROVAL_REJECTED
+        return FinishReason.STEP_FAILED
+    return _FINISH_REASONS.get(state.status)
 
 
 class RunMetricsService:
@@ -63,7 +75,7 @@ class RunMetricsService:
             knowledge_hits=knowledge_hits,
             latency_ms=latency_ms,
             finished_at=current if terminal else None,
-            finish_reason=_FINISH_REASONS.get(state.status),
+            finish_reason=_finish_reason_for(state),
         )
         return self.store.upsert(record)
 
