@@ -35,7 +35,8 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.ACCOUNT_SSO_MFA_REQUIRED.value == "account.sso.mfa_required"
     assert AuditAction.INBOX_WRITE_FAILED.value == "inbox.write_failed"
     assert AuditAction.RUN_NOTIFY_SKIPPED.value == "run.notify_skipped"
-    assert len(set(AuditAction)) == 32
+    assert AuditAction.RUN_APPROVAL_DECIDED.value == "run.approval_decided"
+    assert len(set(AuditAction)) == 33
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

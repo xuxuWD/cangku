@@ -45,9 +45,10 @@ from .accounts.sso import SsoError, SsoNotConfigured
 from .accounts.sso_store import SsoStateNotFound
 from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
 from .settings import get_settings, resolve_cors_options, validate_runtime_settings
+from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound
 from .runtime.policy import ApprovalRequired, PolicyDenied
-from .runtime.records import RunRecordNotFound
-from .runtime.service import RunAccessDenied
+from .runtime.records import FinishReason, RunRecordNotFound
+from .runtime.service import RunAccessDenied, RunApprovalDenied
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
 from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict, ScrapeNotConfigured
 from .content.scraper import ScrapeDenied, ScrapeFailed
@@ -950,6 +951,11 @@ def _notify_run_terminal(context: UserContext, run_id: str) -> None:
         return
     if record.status not in {"failed", "cancelled"}:
         return
+    notify_kind = (
+        "run.approval_rejected"
+        if record.finish_reason is FinishReason.APPROVAL_REJECTED
+        else f"run.{record.status}"
+    )
     try:
         task = store.get(context, record.task_id)
     except TaskNotFound:
@@ -959,7 +965,14 @@ def _notify_run_terminal(context: UserContext, run_id: str) -> None:
             actor_id=context.user_id,
             target_type="run",
             target_id=run_id,
-            detail={"kind": f"run.{record.status}", "reason": "task_unavailable"},
+            detail={"kind": notify_kind, "reason": "task_unavailable"},
+        )
+        return
+    if record.finish_reason is FinishReason.APPROVAL_REJECTED:
+        inbox_service.run_approval_rejected(
+            tenant_id=record.tenant_id,
+            recipient_id=task.created_by,
+            run_id=run_id,
         )
         return
     inbox_service.run_decided(
@@ -1068,6 +1081,79 @@ def request_runtime_approval(run_id: str, payload: RuntimeApprovalCreate, contex
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
     return {"run_id": run_id, "approval_id": approval_id, "status": "pending"}
+
+
+class RunApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approved: bool
+
+
+class RunApprovalView(BaseModel):
+    approval_id: str
+    step_id: str | None = None
+    tool: str | None = None
+    status: str
+
+
+class RunApprovalListView(BaseModel):
+    items: list[RunApprovalView]
+
+
+@app.get("/api/v1/runs/{run_id}/approvals", response_model=RunApprovalListView)
+def list_run_approvals(run_id: str, context: UserContext = Depends(current_user)) -> RunApprovalListView:
+    """列出该运行的审批项（含已决议），供审批人查看待办与结果。"""
+    try:
+        _key, _adapter, state = runtime_service.adapter_for_task(context, run_id)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    tools = {step.step_id: step.tool for step in state.plan.steps}
+    return RunApprovalListView(
+        items=[
+            RunApprovalView(
+                approval_id=approval_id,
+                step_id=approval_id if approval_id in tools else None,
+                tool=tools.get(approval_id),
+                status=status,
+            )
+            for approval_id, status in state.approvals.items()
+        ]
+    )
+
+
+@app.post("/api/v1/runs/{run_id}/approvals/{approval_id}/approval")
+def decide_run_approval(
+    run_id: str,
+    approval_id: str,
+    payload: RunApprovalDecision,
+    context: UserContext = Depends(current_user),
+) -> dict[str, str]:
+    """决议运行内的审批项；仅 CEO/超级管理员，且发起人不能自审。"""
+    try:
+        runtime_service.decide_approval(context, run_id, approval_id, payload.approved)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    except RunApprovalDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ApprovalNotFound as exc:
+        raise HTTPException(status_code=404, detail="审批不存在") from exc
+    except ApprovalAlreadyDecided as exc:
+        raise HTTPException(status_code=409, detail="审批已决议") from exc
+    audit_service.record(
+        AuditAction.RUN_APPROVAL_DECIDED,
+        tenant_id=context.tenant_id,
+        actor_id=context.user_id,
+        target_type="run",
+        target_id=run_id,
+        detail={"status": "approved" if payload.approved else "rejected"},
+    )
+    _notify_run_terminal(context, run_id)
+    return {
+        "run_id": run_id,
+        "approval_id": approval_id,
+        "status": "approved" if payload.approved else "rejected",
+        "run_status": runtime_service.snapshot(context, run_id).status,
+    }
 
 
 class RegistrationCreate(BaseModel):

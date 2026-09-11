@@ -52,6 +52,7 @@ class InboxKind(StrEnum):
     PUBLICATION_MANUAL_TAKEOVER = "publication.manual_takeover"
     RUN_FAILED = "run.failed"
     RUN_CANCELLED = "run.cancelled"
+    RUN_APPROVAL_REJECTED = "run.approval_rejected"
     ACCOUNT_REGISTRATION_APPROVED = "account.registration.approved"
 
 
@@ -65,6 +66,7 @@ _TITLES: dict[InboxKind, str] = {
     InboxKind.PUBLICATION_MANUAL_TAKEOVER: "内容发布失败，需人工接管",
     InboxKind.RUN_FAILED: "你的任务运行失败，请查看运行详情",
     InboxKind.RUN_CANCELLED: "你的任务运行已取消",
+    InboxKind.RUN_APPROVAL_REJECTED: "你的任务运行被审批驳回",
     InboxKind.ACCOUNT_REGISTRATION_APPROVED: "你的账号申请已通过审批",
 }
 
@@ -407,6 +409,16 @@ class InboxService:
             tenant_id=tenant_id,
             recipient_id=recipient_id,
             kind=kind,
+            target_type="run",
+            target_id=run_id,
+        )
+
+    def run_approval_rejected(self, *, tenant_id: str, recipient_id: str, run_id: str) -> None:
+        """运行内审批被驳回：告知提交人（与普通运行失败区分开）。"""
+        self.notify(
+            tenant_id=tenant_id,
+            recipient_id=recipient_id,
+            kind=InboxKind.RUN_APPROVAL_REJECTED,
             target_type="run",
             target_id=run_id,
         )
