@@ -2,6 +2,8 @@
 
 本清单用于客户隔离 staging 环境，不适用于本地开发环境。未满足前置条件时停止验收，不使用本地内存仓储或 fake connection 代替真实服务。
 
+> **只想做只读核对**（不改数据、不跑迁移）：用 [`docs/readonly-verification-runbook.md`](readonly-verification-runbook.md) —— 含 9 条已验证的只读 SQL、会话级只读包装、判读标准，以及明确排除的写命令清单。
+
 ## 前置条件
 
 - [ ] `WORKBENCH_ENV` 已设置为非 `development`
