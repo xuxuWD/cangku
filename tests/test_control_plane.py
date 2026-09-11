@@ -342,7 +342,18 @@ def test_collaboration_dynamics_expose_tenant_project_and_owner() -> None:
     assert item["status"] == "queued"
 
 
+def ensure_directory_role(role_key: str, name: str) -> None:
+    """阶段 2：知识范围写路径要求标识已纳管，先补目录条目（409 表示已存在，可忽略）。"""
+    client.post(
+        "/api/v1/workforce/roles",
+        headers=headers(role="super_admin", user_id="admin-knowledge"),
+        json={"role_key": role_key, "name": name},
+    )
+
+
 def test_super_admin_can_configure_role_knowledge_access() -> None:
+    ensure_directory_role("content-operator", "自媒体运营岗")
+
     response = client.put(
         "/api/v1/knowledge-access/roles/content-operator",
         headers=headers(role="super_admin", user_id="admin-knowledge"),

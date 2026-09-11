@@ -41,6 +41,39 @@ def test_memory_registry_exposes_audit_history_only_to_super_admin() -> None:
         registry.list_audits(UserContext("t-1", "u-1", "employee"))
 
 
+def test_binding_keys_are_normalized_on_write_and_lookup() -> None:
+    """口径 D5：绑定键与目录标识同口径（去空白 + 转小写），写入与查找都归一一处生效。"""
+    registry = KnowledgeAccessRegistry()
+    admin = UserContext("t-1", "admin", "super_admin")
+
+    registry.bind_role(admin, "  Content-Operator  ", {"kb-content"})
+    registry.bind_agent(admin, "Content-Writer", {"kb-brand"})
+
+    employee = UserContext("t-1", "u-1", "employee")
+    assert registry.resolve(employee, "content-operator") == {"kb-content"}
+    assert registry.resolve(employee, "CONTENT-OPERATOR") == {"kb-content"}
+    assert registry.resolve(employee, "content-operator", "content-writer") == {"kb-brand"}
+    # 审计里记录的也是归一键，避免出现同一身份的两种写法
+    assert registry.list_audits(admin)[0].binding_key == "content-operator"
+
+
+@pytest.mark.parametrize("bad_key", ["", "   "])
+def test_binding_rejects_blank_key(bad_key: str) -> None:
+    registry = KnowledgeAccessRegistry()
+
+    with pytest.raises(PolicyError):
+        registry.bind_role(UserContext("t-1", "admin", "super_admin"), bad_key, {"kb-content"})
+
+
+@pytest.mark.parametrize("bad_key", ["运营岗", "bad key", "-lead", "a" * 65])
+def test_binding_rejects_key_outside_directory_format(bad_key: str) -> None:
+    """D5 同时收紧格式：绑定键必须与目录标识同格式，否则既无法纳管也无法再改写。"""
+    registry = KnowledgeAccessRegistry()
+
+    with pytest.raises(PolicyError):
+        registry.bind_role(UserContext("t-1", "admin", "super_admin"), bad_key, {"kb-content"})
+
+
 class Cursor:
     def __init__(self, rows):
         self.rows = list(rows)
@@ -64,6 +97,20 @@ class Connection:
         return Tx()
 
     def cursor(self): return self.cursor_value
+
+
+def test_postgres_registry_normalizes_binding_key() -> None:
+    connection = Connection([[('kb-old',)], []])
+    registry = PostgresKnowledgeAccessRegistry(connection)
+
+    registry.bind_role(UserContext("t-1", "admin", "super_admin"), "  Content-Operator  ", {"kb-content"})
+
+    statements = connection.cursor_value.statements
+    deletes = [params for sql, params in statements if "DELETE FROM workbench_knowledge_access_bindings" in sql]
+    inserts = [params for sql, params in statements if "INSERT INTO workbench_knowledge_access_bindings" in sql]
+    assert deletes[0][2] == "content-operator"
+    assert inserts[0][2] == "content-operator"
+    assert inserts[0][3] == "kb-content"
 
 
 def test_postgres_registry_replaces_role_bindings_transactionally() -> None:

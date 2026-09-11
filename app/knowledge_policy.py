@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from threading import RLock
 
 from .domain import PolicyError, UserContext
+from .workforce.models import InvalidDirectoryKey, normalize_key as normalize_directory_key
 
 
 @dataclass(frozen=True)
@@ -31,25 +32,27 @@ class KnowledgeAccessRegistry:
 
     def bind_role(self, context: UserContext, role_key: str, knowledge_base_ids: set[str]) -> None:
         self._ensure_admin(context)
-        normalized = self._normalize(role_key, knowledge_base_ids)
+        scope_ids = self._normalize(role_key, knowledge_base_ids)
+        key = self.normalize_binding_key(role_key)
         with self._lock:
-            old_ids = sorted(self._role_scopes.get((context.tenant_id, role_key), set()))
-            self._role_scopes[(context.tenant_id, role_key)] = normalized
-            self._audits.append(KnowledgeAccessAudit(context.tenant_id, "role", role_key, old_ids, sorted(normalized), context.user_id))
+            old_ids = sorted(self._role_scopes.get((context.tenant_id, key), set()))
+            self._role_scopes[(context.tenant_id, key)] = scope_ids
+            self._audits.append(KnowledgeAccessAudit(context.tenant_id, "role", key, old_ids, sorted(scope_ids), context.user_id))
 
     def bind_agent(self, context: UserContext, agent_key: str, knowledge_base_ids: set[str]) -> None:
         self._ensure_admin(context)
-        normalized = self._normalize(agent_key, knowledge_base_ids)
+        scope_ids = self._normalize(agent_key, knowledge_base_ids)
+        key = self.normalize_binding_key(agent_key)
         with self._lock:
-            old_ids = sorted(self._agent_scopes.get((context.tenant_id, agent_key), set()))
-            self._agent_scopes[(context.tenant_id, agent_key)] = normalized
-            self._audits.append(KnowledgeAccessAudit(context.tenant_id, "agent", agent_key, old_ids, sorted(normalized), context.user_id))
+            old_ids = sorted(self._agent_scopes.get((context.tenant_id, key), set()))
+            self._agent_scopes[(context.tenant_id, key)] = scope_ids
+            self._audits.append(KnowledgeAccessAudit(context.tenant_id, "agent", key, old_ids, sorted(scope_ids), context.user_id))
 
     def resolve(self, context: UserContext, role_key: str, agent_key: str | None = None) -> set[str]:
         with self._lock:
             if agent_key is not None:
-                return set(self._agent_scopes.get((context.tenant_id, agent_key), set()))
-            return set(self._role_scopes.get((context.tenant_id, role_key), set()))
+                return set(self._agent_scopes.get((context.tenant_id, self._lookup_key(agent_key)), set()))
+            return set(self._role_scopes.get((context.tenant_id, self._lookup_key(role_key)), set()))
 
     def list_bindings(self, context: UserContext) -> dict[str, dict[str, list[str]]]:
         """列出本租户的岗位/数字员工知识范围绑定：{"role": {key: [ids]}, "agent": {key: [ids]}}。"""
@@ -73,9 +76,30 @@ class KnowledgeAccessRegistry:
             return [audit for audit in self._audits if audit.tenant_id == context.tenant_id][-limit:]
 
     @staticmethod
-    def _normalize(key: str, knowledge_base_ids: set[str]) -> set[str]:
-        if not key.strip():
+    def normalize_binding_key(key: str) -> str:
+        """绑定键与目录标识同口径（口径 D5）：去空白 + 转小写，并校验格式。
+
+        与目录共用同一个 `normalize_key`，避免出现两套标识规范；非法或空标识一律
+        `PolicyError`（写路径的调用方已在更早处拦截为 409，这里只作为最后一道）。
+        """
+        if not isinstance(key, str) or not key.strip():
             raise PolicyError("岗位或数字员工标识不能为空")
+        try:
+            return normalize_directory_key(key)
+        except InvalidDirectoryKey as exc:
+            raise PolicyError(str(exc)) from exc
+
+    @staticmethod
+    def _lookup_key(key: str) -> str:
+        """查找键同样归一；空键或非法格式按「查不到」处理，不把无效路径变成 5xx。"""
+        try:
+            return normalize_directory_key(key)
+        except InvalidDirectoryKey:
+            return ""
+
+    @staticmethod
+    def _normalize(key: str, knowledge_base_ids: set[str]) -> set[str]:
+        KnowledgeAccessRegistry.normalize_binding_key(key)
         return {value.strip() for value in knowledge_base_ids if value.strip()}
 
     @staticmethod
@@ -108,17 +132,18 @@ class PostgresKnowledgeAccessRegistry:
     def _bind(self, context: UserContext, binding_type: str, binding_key: str, knowledge_base_ids: set[str]) -> None:
         KnowledgeAccessRegistry._ensure_admin(context)
         normalized = KnowledgeAccessRegistry._normalize(binding_key, knowledge_base_ids)
+        key = KnowledgeAccessRegistry.normalize_binding_key(binding_key)
         with self._connection() as connection:
             with connection.transaction():
                 with connection.cursor() as cursor:
                     cursor.execute(
                         "SELECT knowledge_base_id FROM workbench_knowledge_access_bindings WHERE tenant_id = %s AND binding_type = %s AND binding_key = %s",
-                        (context.tenant_id, binding_type, binding_key),
+                        (context.tenant_id, binding_type, key),
                     )
                     old_ids = sorted(str(row[0]) for row in cursor.fetchall())
                     cursor.execute(
                         "DELETE FROM workbench_knowledge_access_bindings WHERE tenant_id = %s AND binding_type = %s AND binding_key = %s",
-                        (context.tenant_id, binding_type, binding_key),
+                        (context.tenant_id, binding_type, key),
                     )
                     for knowledge_base_id in sorted(normalized):
                         cursor.execute(
@@ -128,7 +153,7 @@ class PostgresKnowledgeAccessRegistry:
                             VALUES (%s, %s, %s, %s, %s)
                             ON CONFLICT DO NOTHING
                             """,
-                            (context.tenant_id, binding_type, binding_key, knowledge_base_id, context.user_id),
+                            (context.tenant_id, binding_type, key, knowledge_base_id, context.user_id),
                         )
                     cursor.execute(
                         """
@@ -138,14 +163,14 @@ class PostgresKnowledgeAccessRegistry:
                         VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s)
                         """,
                         (
-                            context.tenant_id, binding_type, binding_key,
+                            context.tenant_id, binding_type, key,
                             json.dumps(old_ids), json.dumps(sorted(normalized)), context.user_id,
                         ),
                     )
 
     def resolve(self, context: UserContext, role_key: str, agent_key: str | None = None) -> set[str]:
         binding_type = "agent" if agent_key is not None else "role"
-        binding_key = agent_key if agent_key is not None else role_key
+        binding_key = KnowledgeAccessRegistry._lookup_key(agent_key if agent_key is not None else role_key)
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(

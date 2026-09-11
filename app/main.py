@@ -78,6 +78,7 @@ from .workforce import (
     DirectoryConflict,
     DirectoryError,
     DirectoryNotFound,
+    DirectoryNotManaged,
     InvalidDirectoryKey,
     InvalidDirectoryName,
     JobRole,
@@ -1090,13 +1091,17 @@ def bind_role_knowledge_access(
     payload: KnowledgeAccessUpdate,
     context: UserContext = Depends(current_user),
 ) -> dict[str, object]:
+    """写路径闸门（阶段 2）：标识必须已在目录且启用，否则 `409`；权限判定优先（`403`）。"""
     try:
         _ensure_knowledge_admin(context)
-        knowledge_access_registry.bind_role(context, role_key, set(payload.knowledge_base_ids))
-        ids = knowledge_access_registry.resolve(context, role_key)
+        normalized = workforce_directory_service.ensure_role_binding_available(context, role_key)
+        knowledge_access_registry.bind_role(context, normalized, set(payload.knowledge_base_ids))
+        ids = knowledge_access_registry.resolve(context, normalized)
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return _knowledge_access_view("role", role_key, ids)
+    except DirectoryNotManaged as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _knowledge_access_view("role", normalized, ids)
 
 
 @app.get("/api/v1/knowledge-access/roles/{role_key}")
@@ -1114,13 +1119,17 @@ def bind_agent_knowledge_access(
     payload: KnowledgeAccessUpdate,
     context: UserContext = Depends(current_user),
 ) -> dict[str, object]:
+    """写路径闸门（阶段 2）：数字员工标识必须已在目录且启用，否则 `409`；权限判定优先（`403`）。"""
     try:
         _ensure_knowledge_admin(context)
-        knowledge_access_registry.bind_agent(context, agent_key, set(payload.knowledge_base_ids))
-        ids = knowledge_access_registry.resolve(context, agent_key, agent_key)
+        normalized = workforce_directory_service.ensure_agent_binding_available(context, agent_key)
+        knowledge_access_registry.bind_agent(context, normalized, set(payload.knowledge_base_ids))
+        ids = knowledge_access_registry.resolve(context, normalized, normalized)
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return _knowledge_access_view("agent", agent_key, ids)
+    except DirectoryNotManaged as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _knowledge_access_view("agent", normalized, ids)
 
 
 @app.get("/api/v1/knowledge-access/agents/{agent_key}")
