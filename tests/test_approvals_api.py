@@ -139,6 +139,7 @@ def test_employee_gets_empty_items_and_zero_counts(approvals_env) -> None:
             "task_approval": 0,
             "plan_proposal": 0,
             "account_registration": 0,
+            "run_approval": 0,
             "total": 0,
         },
     }

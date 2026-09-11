@@ -118,6 +118,7 @@ def test_employee_gets_empty_list_and_zero_counts() -> None:
         "task_approval": 0,
         "plan_proposal": 0,
         "account_registration": 0,
+        "run_approval": 0,
         "total": 0,
     }
 
@@ -164,6 +165,7 @@ def test_super_admin_sees_all_three_kinds() -> None:
         "task_approval": 1,
         "plan_proposal": 1,
         "account_registration": 1,
+        "run_approval": 0,
         "total": 3,
     }
 

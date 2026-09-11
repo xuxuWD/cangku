@@ -326,17 +326,18 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 ## 待我审批聚合
 
-把三类待审批事项聚合成一个只读列表，供工作台首屏轮询展示「待我审批」。接口**不执行任何审批动作**，只做查询与计数。
+把四类待审批事项聚合成一个只读列表，供工作台首屏轮询展示「待我审批」。接口**不执行任何审批动作**，只做查询与计数。
 
 `GET /api/v1/approvals/pending?limit=50`
 
 - `limit` 为可选查询参数，默认 `50`，取值范围 `1`~`200`；越界返回 `422`。
 - 需要登录；未认证返回 `401`。
-- **按角色过滤**：任务审批（`task_approval`）与计划提案（`plan_proposal`）仅 `ceo`/`super_admin` 可见；账号注册（`account_registration`）仅 `super_admin` 可见。
+- **按角色过滤**：任务审批（`task_approval`）、计划提案（`plan_proposal`）与运行内审批（`run_approval`）仅 `ceo`/`super_admin` 可见；账号注册（`account_registration`）仅 `super_admin` 可见。
 - 非审批角色（如 `employee`、`department_lead`）**返回 `200` 与空列表、全 0 计数**，而非报错，便于客户端直接展示「暂无待办」。
-- 计划提案中 `created_by` 与当前用户相同的会被剔除（与审批动作「发起人不能自审」保持一致）。
+- 计划提案与运行内审批中「发起人 == 当前用户」的条目会被剔除（与审批动作「发起人不能自审」保持一致）。
 - 每类最多返回 `limit` 条，合并后按 `created_at` 降序；任务数据类没有时间字段，统一用最早时间兜底排在末尾。
-- 不同租户之间数据隔离：只返回当前租户的任务与计划提案；账号注册按既有注册列表口径（超级管理员可见的未分配租户申请）。
+- 不同租户之间数据隔离：只返回当前租户的任务、计划提案与运行审批；账号注册按既有注册列表口径（超级管理员可见的未分配租户申请）。
+- **运行内审批只覆盖非终态运行**（`running`/`paused`）中仍为 `pending` 的项；已结束运行的待办不会出现（列出也点不了）。**已知限制**：运行时状态是进程内状态，重启或多进程部署下待办列表不完整。
 
 响应结构：
 
@@ -356,14 +357,15 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
     "task_approval": 1,
     "plan_proposal": 0,
     "account_registration": 0,
+    "run_approval": 0,
     "total": 1
   }
 }
 ```
 
-- `kind` 固定三取值：`task_approval`、`plan_proposal`、`account_registration`。
-- `detail` 只含既有接口已暴露的非敏感字段：任务为 `risk_level`、`employee_key`；计划提案为 `step_count`；账号注册为 `position`。
-- `counts` 四个键恒存在，无待办时为 `0`；`total` 为本次返回条目总数。账号注册的标题为脱敏手机号，不泄露超出既有注册列表接口的 PII。
+- `kind` 固定四取值：`task_approval`、`plan_proposal`、`account_registration`、`run_approval`。
+- `detail` 只含既有接口已暴露的非敏感字段：任务为 `risk_level`、`employee_key`；计划提案为 `step_count`；账号注册为 `position`；运行内审批为 `run_id`、`approval_id`、`step_id`、`tool`（客户端据此调用 `POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval`）。
+- `counts` 五个键恒存在，无待办时为 `0`；`total` 为本次返回条目总数。账号注册的标题为脱敏手机号，不泄露超出既有注册列表接口的 PII；运行内审批的标题为任务标题（任务不可见时回落为「运行审批」）。
 
 ## 站内通知（收件箱）
 
@@ -460,9 +462,9 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 - GET /api/v1/runs/{run_id}/approvals：列出该运行的审批项（含已决议），返回 `{"items":[{"approval_id","step_id","tool","status"}]}`；`status ∈ pending/approved/rejected`，`step_id`/`tool` 仅在审批项对应计划步骤时非空。跨租户或运行不存在返回 `404`。
 - POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval：决议一个审批项，请求体 `{"approved": true|false}`（不接受未知字段，否则 `422`）。**通过**则执行被批准的步骤，待该运行的审批项全部决议后运行置 `completed`；**驳回**则运行立即置 `failed` 并停止执行剩余步骤。成功返回 `{"run_id","approval_id","status","run_status"}`。
   - 权限：**仅 `ceo`/`super_admin`**，且**发起人不能审批自己发起的运行**（否则 `403`，与计划提案同一口径）。
-  - 状态码：未认证 `401`；跨租户/运行不存在 `404`「运行不存在」；`approval_id` 不属于该运行 `404`「审批不存在」；已决议过 `409`「审批已决议」。
+  - 状态码：未认证 `401`；跨租户/运行不存在 `404`「运行不存在」；`approval_id` 不属于该运行 `404`「审批不存在」；已决议过 `409`「审批已决议」；**运行已进入终态** `409`「运行已结束，无法决议」（终态即终态，不允许用剩余审批把已结束的运行复活）。
   - 决议写入审计 `run.approval_decided`（明细仅 `status`，**不含任何自由文本**）；驳回后向任务创建人发出 `run.approval_rejected` 站内通知。
-  - **已知限制**：本轮不收集驳回原因（不收自由文本）；审批人没有租户级待办入口（无租户级运行索引、无按角色查询审批人），需已知 `run_id`。
+  - **已知限制**：不收集驳回原因（不收自由文本）；运行审批的待办可见性依赖进程内运行时状态——重启或多进程部署下待办列表不完整（详见「待我审批聚合」章节及其已知限制）。
 
 开发环境默认注册 mock Runtime。DeerFlow、Codex Worker、Hermes 只能作为独立外部适配器接入，不能直连工作台数据库、Redis、GEO 或生产账号；Hermes 的成长结果只能进入待审核提案。
 

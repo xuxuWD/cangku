@@ -5,18 +5,20 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.audit.redaction import mask_phone
-from app.domain import UserContext
+from app.domain import TaskNotFound, UserContext
 
 KIND_TASK_APPROVAL = "task_approval"
 KIND_PLAN_PROPOSAL = "plan_proposal"
 KIND_ACCOUNT_REGISTRATION = "account_registration"
+KIND_RUN_APPROVAL = "run_approval"
 
 _APPROVER_ROLES = frozenset({"ceo", "super_admin"})
 _SUPER_ADMIN_ROLE = "super_admin"
 
 # 任务数据类没有 created_at：统一用可比较的最早时间兜底，保证排序不抛异常且稳定。
 _FALLBACK_CREATED_AT = datetime.min.replace(tzinfo=UTC)
-_COUNT_KEYS = (KIND_TASK_APPROVAL, KIND_PLAN_PROPOSAL, KIND_ACCOUNT_REGISTRATION)
+_FALLBACK_RUN_TITLE = "运行审批"
+_COUNT_KEYS = (KIND_TASK_APPROVAL, KIND_PLAN_PROPOSAL, KIND_ACCOUNT_REGISTRATION, KIND_RUN_APPROVAL)
 
 
 @dataclass(frozen=True)
@@ -37,16 +39,20 @@ def _as_utc(value: object) -> datetime:
 
 
 class ApprovalsService:
-    """聚合三类待审批事项：任务审批、计划提案、账号注册。
+    """聚合四类待审批事项：任务审批、计划提案、账号注册、运行内审批。
 
-    权限按角色过滤：任务与计划提案仅 ceo/super_admin；账号注册仅 super_admin。
+    权限按角色过滤：任务、计划提案与运行审批仅 ceo/super_admin；账号注册仅 super_admin。
     非审批角色返回空列表与全 0 计数，便于客户端轮询展示「暂无待办」。
     """
 
-    def __init__(self, *, task_store: Any, proposal_store: Any, account_service: Any) -> None:
+    def __init__(
+        self, *, task_store: Any, proposal_store: Any, account_service: Any, run_approvals: Any = None
+    ) -> None:
         self.task_store = task_store
         self.proposal_store = proposal_store
         self.account_service = account_service
+        # 运行审批的来源（RuntimeService）；未注入时该类不参与聚合。
+        self.run_approvals = run_approvals
 
     def pending(
         self, actor: UserContext, *, limit: int
@@ -65,6 +71,13 @@ class ApprovalsService:
                 if proposal.created_by != actor.user_id
             ]
             items.extend(self._proposal_item(proposal) for proposal in proposals)
+            # 运行内审批：只列非终态运行里仍待决议的项，并剔除发起人自审（与计划提案同一逻辑）。
+            if self.run_approvals is not None:
+                items.extend(
+                    self._run_item(actor, item)
+                    for item in self.run_approvals.list_pending_approvals(actor, limit=limit)
+                    if item.requested_by != actor.user_id
+                )
 
         if actor.role == _SUPER_ADMIN_ROLE:
             registrations = self.account_service.list_requests(actor)
@@ -108,3 +121,25 @@ class ApprovalsService:
             created_at=_as_utc(account.requested_at),
             detail={"position": account.position},
         )
+
+    def _run_item(self, actor: UserContext, item: Any) -> PendingApproval:
+        return PendingApproval(
+            kind=KIND_RUN_APPROVAL,
+            target_id=item.run_id,
+            title=self._run_title(actor, item.task_id),
+            requested_by=item.requested_by,
+            created_at=_as_utc(item.created_at),
+            detail={
+                "run_id": item.run_id,
+                "approval_id": item.approval_id,
+                "step_id": item.step_id,
+                "tool": item.tool,
+            },
+        )
+
+    def _run_title(self, actor: UserContext, task_id: str) -> str:
+        """运行审批的标题取任务标题；任务不可见或已不存在时回落为通用文案。"""
+        try:
+            return str(self.task_store.get(actor, task_id).title)
+        except TaskNotFound:
+            return _FALLBACK_RUN_TITLE
