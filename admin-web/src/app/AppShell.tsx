@@ -2,7 +2,7 @@ import type { IconName } from '../components/FilledIcon'
 import { FilledIcon } from '../components/FilledIcon'
 import { useUnreadCount } from '../features/inbox/useUnreadCount'
 
-export type AppView = 'workbench' | 'history' | 'knowledge' | 'dynamics' | 'inbox' | 'run' | 'audit' | 'workforce' | 'workforceSettings'
+export type AppView = 'workbench' | 'history' | 'knowledge' | 'dynamics' | 'inbox' | 'run' | 'audit' | 'workforce' | 'workforceSettings' | 'billing'
 
 const navigation: Array<{ icon: IconName; label: string; view?: AppView }> = [
   { icon: 'home', label: '内容工作台', view: 'workbench' },
@@ -10,7 +10,7 @@ const navigation: Array<{ icon: IconName; label: string; view?: AppView }> = [
   { icon: 'user', label: '员工与岗位', view: 'workforce' },
   { icon: 'access', label: '知识权限管理', view: 'knowledge' },
   { icon: 'agent', label: '数字员工设置', view: 'workforceSettings' },
-  { icon: 'model', label: '模型与费用' },
+  { icon: 'model', label: '用量与费用', view: 'billing' },
   { icon: 'history', label: '历史草稿', view: 'history' },
   { icon: 'project', label: '协同动态', view: 'dynamics' },
   { icon: 'check', label: '安全与审计', view: 'audit' },

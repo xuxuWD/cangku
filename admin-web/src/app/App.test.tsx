@@ -10,6 +10,7 @@ describe('App', () => {
       if (path.includes('/workforce/roles')) return { ok: true, json: async () => ({ items: [{ role_key: 'content-operator', name: '自媒体运营岗', description: '', status: 'active' }], total: 1, limit: 200, offset: 0 }) } as Response
       if (path.includes('/workforce/agents')) return { ok: true, json: async () => ({ items: [], total: 0, limit: 200, offset: 0 }) } as Response
       if (path.includes('/workforce/candidates')) return { ok: true, json: async () => ({ roles: [], agents: [] }) } as Response
+      if (path.includes('/commercial/usage')) return { ok: true, json: async () => ({ tenant_id: 'demo-tenant', units: 12, cost_cents: 340 }) } as Response
       return { ok: true, json: async () => path.includes('/audits') ? [] : { binding_type: 'role', binding_key: 'content-operator', knowledge_base_ids: ['company-general'] } } as Response
     }))
   })
@@ -80,6 +81,16 @@ describe('App', () => {
 
     expect(window.location.search).toBe('?view=workforceSettings')
     await waitFor(() => expect(screen.getByRole('heading', { name: '数字员工设置' })).toBeInTheDocument())
+  })
+
+  it('navigates to the usage and billing page from the sidebar', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByText('用量与费用', { selector: '.nav-item' }))
+
+    expect(window.location.search).toBe('?view=billing')
+    await waitFor(() => expect(screen.getByRole('heading', { name: '用量与费用' })).toBeInTheDocument())
   })
 
   it('falls back to the content workbench for an unknown view', async () => {
