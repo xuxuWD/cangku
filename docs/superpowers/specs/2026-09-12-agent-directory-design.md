@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 | 动作 | 规则 | 影响面 |
 | --- | --- | --- |
 | **读 / 检索解析** | **不变**：`resolve()` 不校验目录，存量绑定与既有任务照旧可用 | 零回归风险（事实 4：本来就无继承，本期也**不引入**继承，见 §11 Q1） |
-| **写（配置知识范围）** | `PUT /knowledge-access/roles/{role_key}`、`.../agents/{agent_key}` 要求该标识**已在目录且 `status='active'`**；未纳管标识返回 `409`「该标识尚未纳入目录，请先在「数字员工设置」中纳管」 | **破坏性变更**：既有测试与开发期数据里的自由文本绑定需先建目录（见 §12 阶段 2 与 §11 Q2） |
+| **写（配置知识范围）** | **已实施（阶段 2，2026-09-12）**：`PUT /knowledge-access/roles/{role_key}`、`.../agents/{agent_key}` 要求该标识**已在目录且 `status='active'`**；未纳管、已停用、格式非法或跨租户一律 `409`「该标识尚未纳入目录，请先在「数字员工设置」中纳管」。绑定键同时按 D5 归一（去空白 + 小写）。**判定顺序：先 `403` 后 `409`** | 实测破坏面只有 2 个 `PUT` 分支 + 1 个测试文件的 2 个用例（见 §14.1）；**无迁移、无表结构变更** |
 | **候选来源** | 前端下拉改为目录数据（替代写死清单，事实 7） | 管理台行为变更，非破坏性 |
 
 阶段划分的理由：**读路径是生产运行链路，写路径是管理配置链路**。把校验放在写路径，既能消灭「配置里出现不存在的人」这一类脏数据，又不会让历史运行记录或检索立刻失效。
@@ -213,9 +213,9 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 
 1. **命名不统一**：目录 `agent_key` vs 任务 `employee_key`（同值不同名），本期只做文档说明，不改字段。
 2. **标识一旦写错就永久留存**：不可改标识换来的是历史可追溯，代价是错标识只能停用 + 新建。
-3. **阶段 1 到阶段 2 之间仍是双轨**：目录是展示权威、写接口仍接受自由文本；这是刻意的过渡态，收敛条件见 Q2。
+3. **阶段 1 到阶段 2 之间的双轨已结束**（阶段 2 于 2026-09-12 落地）：目录是唯一候选来源，知识范围**写**路径强制先纳管；**读/检索**仍按归一键解析历史绑定。任务侧 `employee_key` 依旧是自由文本（不受写闸门约束），属已登记限制。
 4. **知识库清单仍写死在前端**（事实 8）：本期只改岗位/员工候选来源；知识库实体化属另一条线（需与 WeKnora 的库清单对齐后才能定真源）。
-5. **本文件不构成任何实现完成的声明**：阶段 1 已于 2026-09-12 落地（提交 `8f23ee6`…`4e6fff3`，CI run `34628395663` 四个 job 全绿）；**阶段 2 未做**。
+5. **本文件不构成任何实现完成的声明**：阶段 1 已于 2026-09-12 落地（提交 `8f23ee6`…`4e6fff3`，CI run `34628395663` 四个 job 全绿）；**阶段 2 亦已完成**（见 §14.5）。
 
 ### 13.6 阶段 1 落地后的实测记录（2026-09-12，本地进程内带数据）
 
@@ -255,7 +255,7 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 ### 14.2 必须先定的三条口径
 
 1. **校验层次 = 接口层**，不进 `KnowledgeAccessRegistry.bind_*`。理由：① 两个 store 方法被 14 处单测直接调用，放进仓储层等于让注册表单测被迫先建目录，并把注册表从「绑定原语」耦合上「目录」；② `app/` 内除这两个 PUT 外**没有其它写绑定的调用点**（已全仓核对），接口层足够覆盖。
-2. **顺序：先 `403`，后 `409`**。现有 `except PolicyError → 403` 包住整个 try；目录校验若复用 `PolicyError`，越权请求会拿到 `409`，直接破坏「普通用户调管理接口必得 `403`」这条安全断言（`tests/test_control_plane.py:367` 正是它）。因此需要**独立异常类型**（如 `DirectoryNotManaged` → `409`），且权限判定必须排在它前面。
+2. **顺序：先 `403`，后 `409`**。现有 `except PolicyError → 403` 包住整个 try。**实测修正（2026-09-12）**：把闸门提到鉴权之前**不会改变状态码**（目录仓储层的 `_ensure_admin` 同样抛 `PolicyError` → 仍映射为 `403`），但**会把 `detail` 泄露成「只有超级管理员可以管理岗位与数字员工目录」**，即暴露请求已经打到目录层；用**文案断言**才守得住这一点（`test_permission_check_wins_over_directory_gate`）。因此仍要求 `DirectoryNotManaged` **不继承** `PolicyError`、且鉴权排在闸门之前。
 3. **绑定键的大小写归一陷阱（不解决会死结）**：目录侧写入会 `strip().lower()`，但知识范围绑定的 `binding_key` **今天完全不归一**——`_normalize` 只拒绝空白、不规范化键本身（`app/knowledge_policy.py:75-79`），PG 的 `_bind` 原样写入（`:108-132`）。若阶段 2 要求「绑定键必须等于目录里的标识」，库里既有的 `Content-Operator` 这类绑定会**两头堵**：既不算已纳管（≠ 目录里的 `content-operator`），重写又被 `409` 拒绝。**已定（见 §4 D5）：绑定键也做 `strip().lower()` 归一**；实现时须同步改写 `roster` / `candidates` 的精确匹配口径与 `docs/api-contract.md`。
 
 ### 14.3 实现要点与回退
@@ -264,11 +264,36 @@ CREATE TABLE IF NOT EXISTS workbench_digital_employees (
 - 契约改动：`docs/api-contract.md`「知识范围」章节补 `409` 语义；「岗位与数字员工目录」章节删掉「阶段 1 不强制绑定前置」那段限制。
 - 测试改动：`tests/test_control_plane.py` 两个用例补前置目录数据（或把断言从 `403` 保持不动、只给超管那条建目录）。
 - **回退**：只改接口层分支，回退＝还原那两个 `PUT` 的校验行；无迁移、无表结构变更、无需数据修复。
-- **开工前提**仍是 §11 Q2 的「绑定侧未纳管为空」。
+- ~~**开工前提**仍是 §11 Q2 的「绑定侧未纳管为空」。~~ **2026-09-12 变更**：用户明确决定**不等真实数据验证、直接实施**阶段 2，并接受由此带来的风险——存量库中大小写/空白不一致的绑定会在**下一次保存时被归一改写**（这是 D5 的预期行为，但未经真实数据演练，已登记在 §14.5「未验证」）。
 
-### 14.4 评审结论
+### 14.4 评审结论与实施结果
 
-三条口径已定：① 校验放接口层；② 顺序先 `403` 后 `409`（需独立异常类型，不复用 `PolicyError`）；③ 绑定键归一到 `strip().lower()`（见 §4 D5）。
+三条口径已定并**全部实施完成（2026-09-12）**：① 校验放接口层；② 顺序先 `403` 后 `409`（独立异常类型 `DirectoryNotManaged`，**不继承** `PolicyError`）；③ 绑定键归一到 `strip().lower()`，并与目录**共用同一个** `normalize_key`（避免两套标识规范）。
 
-**但阶段 2 仍未开工**，因为还有一条硬前提：§11 Q2 的「**绑定侧未纳管为空**」需要在**有真实数据的环境**验证（本机内存态无法得出真实结论，见 §13.6）。该前提满足后，实施顺序为：改那 2 个 `PUT` 分支（含绑定键归一）→ 同步 `docs/api-contract.md`（409 语义 + 精确匹配口径）→ 补 `tests/test_control_plane.py` 的前置目录数据 → 全量回归。
+已执行的顺序：改那 2 个 `PUT` 分支（含绑定键归一）→ 同步 `docs/api-contract.md`（`409` 语义 + 归一/精确匹配口径）→ 补 `tests/test_control_plane.py` 的前置目录数据 → 全量回归（见 §14.5）。
+
+### 14.5 阶段 2 实施与验证记录（2026-09-12）
+
+**改动**
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/workforce/models.py` | 新增 `DirectoryNotManaged`（**不继承** `PolicyError`，否则会被 `except PolicyError → 403` 截走） |
+| `app/knowledge_policy.py` | 新增 `normalize_binding_key`（与目录共用 `normalize_key`）与容错的 `_lookup_key`；内存与 PG 的 `bind_*` / `_bind` 落库与审计均用归一键；`resolve` 按归一键查找 |
+| `app/workforce/store.py` | 新增 `role_is_active` / `agent_is_active`（内存 + PG；非法/空标识按「不可用」处理，**不抛异常**） |
+| `app/workforce/service.py` | 新增闸门 `ensure_role_binding_available` / `ensure_agent_binding_available`（返回归一键；未纳管抛 `DirectoryNotManaged`） |
+| `app/main.py` | 两个 `PUT` 分支接入闸门（鉴权 → 闸门 → 绑定），新增 `except DirectoryNotManaged → 409` |
+
+**测试**：新增 `tests/test_knowledge_access_directory_gate.py`（8 项）；`tests/test_knowledge_policy.py` 补归一与格式收紧用例（含 PG 参数断言）；`tests/test_workforce_directory_store.py` 补 2 项可用性用例（含 PG SQL/参数）；`tests/test_control_plane.py` 补前置目录数据。
+
+**反假测试（两次，均已还原）**
+
+| 故意制造的错误 | 结果 |
+| --- | --- |
+| 把闸门提到鉴权之前 | `test_permission_check_wins_over_directory_gate` 变红（`detail` 泄露成目录层文案）→ 证实「先 `403` 后 `409`」与**文案断言**有效 |
+| 去掉角色写路径的闸门 | 5 项变红（未纳管 / 已停用 / 格式非法 / 跨租户 / 归一写入）→ 证实闸门本身有效 |
+
+**回归**：后端 `pytest` exit=0、`compileall` exit=0；`admin-web` 94 passed、`companion-pwa` 37 passed、`desktop` 19 pass / 0 fail。
+
+**未验证（如实登记）**：真实 PostgreSQL 下的闸门行为（PG 的 `role_is_active` 只用假连接做了 SQL/参数断言）；未做浏览器人工闭环；存量库里若存在大小写/空白不一致的绑定，其**下一次保存**会被归一改写（口径 D5 的预期行为，未经真实数据演练）。
 

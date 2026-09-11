@@ -161,7 +161,7 @@
 | 管理台运行详情页（指标 / 事件时间线 / 审批决议） | ✅ | ✅ | ⬜ | `admin-web/src/features/runDetail/`（Vitest 20 项，含分区独立失败与自审隐藏）；入口为通知页 `run.*` 跳转与 `?view=run&run=<run_id>` 直达；事件 payload 只渲染白名单字段；**无运行列表页**（后端无租户级运行索引），**不含**暂停/恢复/取消；两端收件箱 kind 漂移已修复并由 `test_frontend_inbox_kinds.py` 守护 |
 | 管理台「员工与岗位」只读清单页 | ✅ | ✅ | ⬜ | 后端 `GET /api/v1/workforce/roster`（仅超管、严格本租户、三源并集）+ `KnowledgeAccessRegistry.list_bindings` 与 `TaskStore.count_by_employee` 双实现（`test_workforce_roster_{store,api}.py`）；前端 `admin-web/src/features/workforce/`（Vitest 12 项）；侧栏「员工与岗位」接上真实页面并删除写死的 18/42 假数据块。**限制**：不是目录管理（无实体、无增删改）、不含系统角色分布、`task_count` 为精确匹配；「数字员工设置」与「模型与费用」仍为占位项（无数据源；其中「数字员工设置」**已落地阶段 1**：见下一行） |
 
-| 管理台「数字员工设置」岗位/员工目录（阶段 1） | ✅ | ✅ | ⬜ | 迁移 `022_workforce_directory.sql`（复合外键 `(tenant_id, role_key)` 写进约束）+ `app/workforce/`（标识规范与强制小写、内存与 PG 双实现、仓储层与接口层各拦一次权限、写审计的服务层）+ 7 个接口（仅超管、严格本租户、列表分页、标识不可改、停用不删除）（`test_workforce_directory_{store,api}.py`）+ 管理台 `admin-web/src/features/workforceSettings/`（Vitest 17 项，含未纳管纳管）；**并删掉「知识权限管理」页写死的岗位/员工下拉**（改为读目录），6 个审计动作 33→39。**未做（阶段 2）**：知识范围写接口尚未强制「标识必须已在目录」，收敛条件为**「绑定侧未纳管为空」**（任务侧 `employee_key` 不参与绑定写入、不阻塞阶段 2，依据见设计文档 §11 Q2 与 §13.6 实测）；**限制**：`agent_key` 与任务 `employee_key` 同名不同值域、不含模型/Runtime/技能绑定与组织部门 |
+| 管理台「数字员工设置」岗位/员工目录（阶段 1） | ✅ | ✅ | ⬜ | 迁移 `022_workforce_directory.sql`（复合外键 `(tenant_id, role_key)` 写进约束）+ `app/workforce/`（标识规范与强制小写、内存与 PG 双实现、仓储层与接口层各拦一次权限、写审计的服务层）+ 7 个接口（仅超管、严格本租户、列表分页、标识不可改、停用不删除）（`test_workforce_directory_{store,api}.py`）+ 管理台 `admin-web/src/features/workforceSettings/`（Vitest 17 项，含未纳管纳管）；**并删掉「知识权限管理」页写死的岗位/员工下拉**（改为读目录），6 个审计动作 33→39。**未做（阶段 2）**：无 —— 阶段 2 已于 2026-09-12 完成（知识范围写路径强制「标识已在目录且启用」→ `409`，判定顺序先 `403` 后 `409`，绑定键按 D5 归一；读/检索不变）；**限制**：`agent_key` 与任务 `employee_key` 同名不同值域、不含模型/Runtime/技能绑定与组织部门 |
 
 ## K. 交付与运维
 
@@ -226,7 +226,7 @@
 20. ~~运行时状态持久化~~ ✅（已完成：迁移 `021` + PG 状态仓储 + 编解码与写入即脱敏 + postgres 强制持久化装配，见 E 节）；**E 节当前无 ❌ 项**。真实 PostgreSQL 的重启恢复仍需 staging 验收（阻塞项 1）。
 21. ~~通用审计查询接口 + 管理台审计页~~ ✅（已完成：`GET /api/v1/audits` + `admin-web/src/features/auditLog/`，见 I 节）；配套 33 个动作标签的漂移守护测试。
 22. ~~管理台「员工与岗位」只读清单页~~ ✅（已完成：`GET /api/v1/workforce/roster` + 两个只读查询 + `admin-web/src/features/workforce/`，见 J 节）；同时**删掉侧栏写死的「18 个岗位 / 42 个数字员工」假数据块**。「数字员工设置」「模型与费用」仍无数据源，属未做（见 J 节限制）。
-23. ~~岗位与数字员工目录（「数字员工设置」）立项~~ ✅（立项文档 `docs/superpowers/specs/2026-09-12-agent-directory-design.md`，4 项口径已确认）；**阶段 1 已实现**：迁移 `022` + `app/workforce/` + 7 个接口 + 管理台「数字员工设置」页，并删掉「知识权限管理」页写死的岗位/员工下拉（见 J 节）。**阶段 2 未做**：知识范围写接口强制「标识必须已在目录」，收敛条件为**「绑定侧未纳管为空」**（2026-09-12 本地带数据实测后由「未纳管列表为空」细化：任务侧 `employee_key` 会让字面条件不可达，详见设计文档 §11 Q2 与 §13.6）。「模型与费用」仍无数据源，属未做。
+23. ~~岗位与数字员工目录（「数字员工设置」）立项~~ ✅（立项文档 `docs/superpowers/specs/2026-09-12-agent-directory-design.md`，4 项口径已确认）；**阶段 1 已实现**：迁移 `022` + `app/workforce/` + 7 个接口 + 管理台「数字员工设置」页，并删掉「知识权限管理」页写死的岗位/员工下拉（见 J 节）。**阶段 2 已完成（2026-09-12）**：知识范围写路径强制「标识已在目录且启用」（未纳管/已停用/格式非法/跨租户 `409`），判定顺序先 `403` 后 `409`，绑定键按口径 D5 归一到 `strip().lower()`；读/检索解析不变。**已知限制**：目录用 `agent_key`、任务用 `employee_key`（同值不同名，未统一）；不含模型/Runtime/技能绑定与组织部门。设计见 `docs/superpowers/specs/2026-09-12-agent-directory-design.md`（实施与验证记录见 §14.5）。
 
 ## 生成时的核实记录
 
