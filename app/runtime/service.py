@@ -124,7 +124,7 @@ class RuntimeService:
         重启或多进程部署下只能看到当前进程创建的运行（已登记为已知限制）。
         """
         pending: list[PendingRunApproval] = []
-        for state in self.state_store.list_for_tenant(actor.tenant_id):
+        for state in self.state_store.list_for_tenant(actor.tenant_id, statuses=_ACTIVE_STATUSES):
             if state.status not in _ACTIVE_STATUSES:
                 continue
             tools = {step.step_id: step.tool for step in state.plan.steps}

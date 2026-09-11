@@ -537,6 +537,32 @@ def build_run_metrics(settings: Settings, *, connection=None, migrate: bool = Tr
     raise ValueError("不支持的运行记录存储类型")
 
 
+def build_runtime_state_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配运行时状态仓储。
+
+    postgres 模式强制持久化：不提供连接时自建连接池，并随启动执行迁移；
+    内存实现只在 development 允许（延续「生产禁止内存仓储」的约束）。
+    """
+    from .runtime.state import RuntimeStateStore
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存运行时状态仓储")
+        return RuntimeStateStore()
+    if settings.storage_backend == "postgres":
+        from .runtime.state_postgres import PostgresRuntimeStateStore
+
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresRuntimeStateStore(connection)
+    raise ValueError("不支持的运行时状态存储类型")
+
+
 def build_runtime_service(settings: Settings, *, store, transport_factory=None, state_store=None, run_metrics=None):
     """从裸名配置装配 Runtime 服务；未配置任何地址时只保留 Mock。"""
     validate_runtime_settings(settings)
