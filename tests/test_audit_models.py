@@ -36,7 +36,13 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.INBOX_WRITE_FAILED.value == "inbox.write_failed"
     assert AuditAction.RUN_NOTIFY_SKIPPED.value == "run.notify_skipped"
     assert AuditAction.RUN_APPROVAL_DECIDED.value == "run.approval_decided"
-    assert len(set(AuditAction)) == 33
+    assert AuditAction.WORKFORCE_ROLE_CREATED.value == "workforce.role.created"
+    assert AuditAction.WORKFORCE_ROLE_UPDATED.value == "workforce.role.updated"
+    assert AuditAction.WORKFORCE_ROLE_DISABLED.value == "workforce.role.disabled"
+    assert AuditAction.WORKFORCE_AGENT_CREATED.value == "workforce.agent.created"
+    assert AuditAction.WORKFORCE_AGENT_UPDATED.value == "workforce.agent.updated"
+    assert AuditAction.WORKFORCE_AGENT_DISABLED.value == "workforce.agent.disabled"
+    assert len(set(AuditAction)) == 39
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

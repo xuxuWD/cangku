@@ -42,6 +42,12 @@ class AuditAction(StrEnum):
     INBOX_WRITE_FAILED = "inbox.write_failed"
     RUN_NOTIFY_SKIPPED = "run.notify_skipped"
     RUN_APPROVAL_DECIDED = "run.approval_decided"
+    WORKFORCE_ROLE_CREATED = "workforce.role.created"
+    WORKFORCE_ROLE_UPDATED = "workforce.role.updated"
+    WORKFORCE_ROLE_DISABLED = "workforce.role.disabled"
+    WORKFORCE_AGENT_CREATED = "workforce.agent.created"
+    WORKFORCE_AGENT_UPDATED = "workforce.agent.updated"
+    WORKFORCE_AGENT_DISABLED = "workforce.agent.disabled"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -72,6 +78,10 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "status",
         "target",
         "receipt_id",
+        # 岗位/数字员工目录变更（标识与变更字段名都是服务端声明值，不含自由文本）
+        "role_key",
+        "agent_key",
+        "changed_fields",
     }
 )
 

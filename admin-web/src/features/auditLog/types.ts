@@ -77,6 +77,12 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'inbox.write_failed': '通知写入失败',
   'run.notify_skipped': '运行通知已跳过',
   'run.approval_decided': '运行审批已决议',
+  'workforce.role.created': '岗位已新增',
+  'workforce.role.updated': '岗位已更新',
+  'workforce.role.disabled': '岗位已停用',
+  'workforce.agent.created': '数字员工已新增',
+  'workforce.agent.updated': '数字员工已更新',
+  'workforce.agent.disabled': '数字员工已停用',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。
