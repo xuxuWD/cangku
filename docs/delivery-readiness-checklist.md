@@ -156,7 +156,7 @@
 | Staging 验收清单、证据要求与阻塞条件 | ✅ | — | — | `docs/staging-acceptance-checklist.md` |
 | 迁移回滚演练 | ❌ | ❌ | ⬜ | **未做** |
 | staging 数据库实测与真实并发压测 | ❌ | ❌ | ⬜ | **未做** |
-| 真实 staging 与真实平台账号验收 | ❌ | ❌ | ⬜ | **未做** |
+| 真实 staging 与真实平台账号验收 | ❌ | ❌ | ⬜ | **未做**。平台已确定为**公众号**（`docs/external-dependency-acceptance-plan.md` §5）；接入资料与索取表见 `docs/platform-account-onboarding.md`（含账号权限硬约束与两条落地路径） |
 | GEO 版本化适配器 | ❌ | ❌ | ⬜ | **外部依赖阻塞**：GEO 属独立仓库的外部系统，本仓库无其 API 契约/版本规则/认证方式（`app/`、`tests/` 中 GEO 零命中），无法仅靠本仓库落地。已产出契约索取表 `docs/geo-contract-request.md`（**索取草案，非已确认契约**） |
 
 ---
