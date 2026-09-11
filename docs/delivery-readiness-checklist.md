@@ -151,7 +151,7 @@
 
 | 项 | 实现 | 测试 | 验收 | 证据 |
 | --- | --- | --- | --- | --- |
-| 网页管理台（知识权限、公众号内容工作台、内容历史、协同动态、通知、安全与审计、员工与岗位、数字员工设置） | ✅ | ✅（Vitest，94 项） | ⬜ | `admin-web/`（8 个侧栏 feature 页面 + 运行详情页） |
+| 网页管理台（知识权限、公众号内容工作台、内容历史、协同动态、通知、安全与审计、员工与岗位、数字员工设置、用量与费用） | ✅ | ✅（Vitest，108 项） | ⬜ | `admin-web/`（9 个侧栏 feature 页面 + 运行详情页） |
 | 协同动态只读接口与任务权限过滤 | ✅ | ✅ | ⬜ | 门禁已勾选；响应已含租户/项目/责任人 |
 | 协同动态表现层（静态状态列表） | ✅ | ✅ | ⬜ | `admin-web/src/features/collaborationDynamics/`（页面 + 4 项 Vitest）；**已知限制**：仅呈现 `TaskStatus` 三态，文档 5 态词表无领域支撑 |
 | 伴侣端待办聚合接口 `GET /api/v1/approvals/pending` | ✅ | ✅ | ⬜ | `test_approvals_{service,store,api}.py`、`test_approvals_run_kind.py`；四类 kind（含 `run_approval`）+ 按角色过滤 + 计划提案与运行审批自审排除 + 注册标识脱敏 |
@@ -159,9 +159,11 @@
 | 手机 PWA 伴侣端（审批与提醒） | ✅ | ✅ | ⬜ | `companion-pwa/`（登录、待办轮询、四类审批、manifest 与 service worker）；Vitest 37 项 + `test_pwa_assets.py` 8 项；**提醒是轮询而非 Web Push，真机安装未验收** |
 | 员工站内通知收件箱（通知页 + 未读角标） | ✅ | ✅ | ⬜ | 后端 `app/inbox.py` + 迁移 `019_inbox_items` + 三接口（`test_inbox_{store,service,api}.py`）；管理台 `admin-web/src/features/inbox/`（含「通知」导航入口）、伴侣端 `companion-pwa/src/features/inbox/`（Vitest 8 项）；写入失败不阻断主流程并写审计 `inbox.write_failed`；十类触发点（含运行失败 `run.failed`、被取消 `run.cancelled`、审批被驳回 `run.approval_rejected`），服务端推送未实现 |
 | 管理台运行详情页（指标 / 事件时间线 / 审批决议） | ✅ | ✅ | ⬜ | `admin-web/src/features/runDetail/`（Vitest 20 项，含分区独立失败与自审隐藏）；入口为通知页 `run.*` 跳转与 `?view=run&run=<run_id>` 直达；事件 payload 只渲染白名单字段；**无运行列表页**（后端无租户级运行索引），**不含**暂停/恢复/取消；两端收件箱 kind 漂移已修复并由 `test_frontend_inbox_kinds.py` 守护 |
-| 管理台「员工与岗位」只读清单页 | ✅ | ✅ | ⬜ | 后端 `GET /api/v1/workforce/roster`（仅超管、严格本租户、三源并集）+ `KnowledgeAccessRegistry.list_bindings` 与 `TaskStore.count_by_employee` 双实现（`test_workforce_roster_{store,api}.py`）；前端 `admin-web/src/features/workforce/`（Vitest 12 项）；侧栏「员工与岗位」接上真实页面并删除写死的 18/42 假数据块。**限制**：不是目录管理（无实体、无增删改）、不含系统角色分布、`task_count` 为精确匹配；「数字员工设置」与「模型与费用」仍为占位项（无数据源；其中「数字员工设置」**已落地阶段 1**：见下一行） |
+| 管理台「员工与岗位」只读清单页 | ✅ | ✅ | ⬜ | 后端 `GET /api/v1/workforce/roster`（仅超管、严格本租户、三源并集）+ `KnowledgeAccessRegistry.list_bindings` 与 `TaskStore.count_by_employee` 双实现（`test_workforce_roster_{store,api}.py`）；前端 `admin-web/src/features/workforce/`（Vitest 12 项）；侧栏「员工与岗位」接上真实页面并删除写死的 18/42 假数据块。**限制**：不是目录管理（无实体、无增删改）、不含系统角色分布、`task_count` 为精确匹配 |
 
 | 管理台「数字员工设置」岗位/员工目录（阶段 1） | ✅ | ✅ | ⬜ | 迁移 `022_workforce_directory.sql`（复合外键 `(tenant_id, role_key)` 写进约束）+ `app/workforce/`（标识规范与强制小写、内存与 PG 双实现、仓储层与接口层各拦一次权限、写审计的服务层）+ 7 个接口（仅超管、严格本租户、列表分页、标识不可改、停用不删除）（`test_workforce_directory_{store,api}.py`）+ 管理台 `admin-web/src/features/workforceSettings/`（Vitest 17 项，含未纳管纳管）；**并删掉「知识权限管理」页写死的岗位/员工下拉**（改为读目录），6 个审计动作 33→39。**未做（阶段 2）**：无 —— 阶段 2 已于 2026-09-12 完成（知识范围写路径强制「标识已在目录且启用」→ `409`，判定顺序先 `403` 后 `409`，绑定键按 D5 归一；读/检索不变）；**限制**：`agent_key` 与任务 `employee_key` 同名不同值域、不含模型/Runtime/技能绑定与组织部门 |
+
+| 管理台「用量与费用」只读页 | ✅ | ✅ | ⬜ | 复用既有 `GET /api/v1/commercial/usage`（账本 `workbench_usage_ledger` 的租户级累计 `units` / `cost_cents`）+ `admin-web/src/features/billing/`（Vitest 14 项）；六态齐备（加载/正常/空/403/404/错误重试），金额按整数分精确换算、支持冲正负值；**不改后端、无迁移**。侧栏「模型与费用」改名「用量与费用」。**限制**：只有租户级累计（无时间/模型/任务维度）、`units` 不解释语义、`404`（未登记租户）是常见态；**模型侧未做**（需专项评审后立项） |
 
 ## K. 交付与运维
 
@@ -225,8 +227,9 @@
 19. ~~审批人的运行审批待办入口~~ ✅（已完成：聚合第 4 类 `run_approval` + 伴侣端第 4 类卡片与决议动作，见 E/J 节），**E 节原有 ❌ 项已清零**；新登记缺口「运行时状态持久化」（E 节）。
 20. ~~运行时状态持久化~~ ✅（已完成：迁移 `021` + PG 状态仓储 + 编解码与写入即脱敏 + postgres 强制持久化装配，见 E 节）；**E 节当前无 ❌ 项**。真实 PostgreSQL 的重启恢复仍需 staging 验收（阻塞项 1）。
 21. ~~通用审计查询接口 + 管理台审计页~~ ✅（已完成：`GET /api/v1/audits` + `admin-web/src/features/auditLog/`，见 I 节）；配套 33 个动作标签的漂移守护测试。
-22. ~~管理台「员工与岗位」只读清单页~~ ✅（已完成：`GET /api/v1/workforce/roster` + 两个只读查询 + `admin-web/src/features/workforce/`，见 J 节）；同时**删掉侧栏写死的「18 个岗位 / 42 个数字员工」假数据块**。「数字员工设置」「模型与费用」仍无数据源，属未做（见 J 节限制）。
+22. ~~管理台「员工与岗位」只读清单页~~ ✅（已完成：`GET /api/v1/workforce/roster` + 两个只读查询 + `admin-web/src/features/workforce/`，见 J 节）；同时**删掉侧栏写死的「18 个岗位 / 42 个数字员工」假数据块**。（该项写入时「数字员工设置」与「模型与费用」都还没有数据源，后续分别由推进项 23、24 落地。）
 23. ~~岗位与数字员工目录（「数字员工设置」）立项~~ ✅（立项文档 `docs/superpowers/specs/2026-09-12-agent-directory-design.md`，4 项口径已确认）；**阶段 1 已实现**：迁移 `022` + `app/workforce/` + 7 个接口 + 管理台「数字员工设置」页，并删掉「知识权限管理」页写死的岗位/员工下拉（见 J 节）。**阶段 2 已完成（2026-09-12）**：知识范围写路径强制「标识已在目录且启用」（未纳管/已停用/格式非法/跨租户 `409`），判定顺序先 `403` 后 `409`，绑定键按口径 D5 归一到 `strip().lower()`；读/检索解析不变。**已知限制**：目录用 `agent_key`、任务用 `employee_key`（同值不同名，未统一）；不含模型/Runtime/技能绑定与组织部门。设计见 `docs/superpowers/specs/2026-09-12-agent-directory-design.md`（实施与验证记录见 §14.5）。
+24. ~~管理台「用量与费用」只读页~~ ✅（2026-09-12 已完成：复用 `GET /api/v1/commercial/usage` + 新增 `admin-web/src/features/billing/`，**不改后端、无迁移**，见 J 节）；侧栏占位项「模型与费用」改名为「用量与费用」。**同时修正一处文档口径**：费用侧**本来就有**追加式账本与只读接口（早前笼统记为「无数据源」不准确），缺的是页面与维度；**模型侧仍未做**——模型由配置注入（`content_model_*` / `planner_model_*`），无实体表与接口，要落地必须先立项定「配置即真源还是建表并改 `ModelGateway` 取数」，属地基层面变更。
 
 ## 生成时的核实记录
 
