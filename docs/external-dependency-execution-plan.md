@@ -84,7 +84,7 @@ Phase 2a       Phase 2b      Phase 2c
 - ✅ **并发探针护栏自检**：`http://` 与非独立主机地址均被拒（退出码 `2`，文案准确），日志存 `.acceptance/2026-09-11-1-concurrency-probe/`。
 - ✅ **桌面端依赖固定**：`electron 44.3.0`、`electron-builder 26.15.3` 精确版本，已提交 `package-lock.json`（含 integrity）；本机用 `npm install --ignore-scripts` 有意跳过 Electron 二进制，`node --test` 13 项通过。
 - ⬜ **桌面端代码签名证书申请**：属**外部/人工动作**（采购 OV/EV 证书 + 可信时间戳服务），我方无法代办；它是阻塞项 7 的前置。
-- ✅ **SSO 构建块 + 服务与接口已实现**（口径 A 选②）：OIDC 客户端、一次性 state 仓储、`AccountService` 登录编排与三个接口（`/auth/sso/authorize`、`/auth/sso/callback`、`/auth/sso/verification`）均已落地，并有离线测试守护。**真实 IdP 联调属未验收**（须先拿到 IdP 的 client id/secret 与回调域名）。
+- ✅ **SSO 构建块 + 服务与接口已实现**（口径 A 选②）：OIDC 客户端、一次性 state 仓储、`AccountService` 登录编排与三个接口（`/auth/sso/authorize`、`/auth/sso/callback`、`/auth/sso/verification`）均已落地，并有离线测试守护。**本地 OIDC 兼容端到端预演已通过（进程内 WSGI，真实 RS256）**：`tests/oidc_test_idp.py` + `tests/test_sso_e2e.py`（13 项，全程无 socket）。**真实 IdP 联调仍属未验收**（须先拿到 IdP 的 client id/secret 与回调域名）。
 
 **SSO 已确认口径（2026-09-11）**：
 
@@ -164,6 +164,32 @@ Phase 2a       Phase 2b      Phase 2c
   4. A①：用真实设备验证手机号 + 口令 + TOTP 全流程；A②：与 IdP 联调首次登录绑定、失败回退到口令登录、越权拒绝
 - **检查点/门**：轮换后预检仍 `pass`；旧令牌失效符合预期；验证器真机可用。
 - **风险**：轮换失败 → 用密钥系统回退上一版本密钥，再重跑预检。
+
+#### 项 3 附：SSO 联调（口径 A② 的后续动作）
+
+> 本地已用进程内 OIDC 兼容测试 IdP（`tests/oidc_test_idp.py`，标准库 WSGI + 真实 RS256）跑通全链路预演（`tests/test_sso_e2e.py`，13 项，全程无 socket）；**这不等于真实 IdP 验收**。
+
+**需要 IdP 侧提供**：
+- `issuer`、`authorization_endpoint`、`token_endpoint`、`jwks_uri`（或一份 discovery 地址，由我方据此填四项）。
+- `client_id` / `client_secret`（经部署密钥系统注入，**不得在聊天/邮件/工单里明文传**）。
+- 回调地址登记：与 `WORKBENCH_SSO_REDIRECT_URI` **完全一致**（含 https 与路径）。
+- `email_verified` 必须为真：未验证邮箱一律拒绝登录。
+- ID Token 签名算法为 `RS256`（或 `HS256`）；算法不在允许清单时 fail-closed。
+- 明确 IdP 是否承担 MFA：承担则 `WORKBENCH_SSO_TRUST_IDP_MFA=true`（预检会输出 warn 提示），否则保持 `false` 走应用内 TOTP。
+
+**验收命令**：
+1. 配置就绪自检（不发网络）：`py scripts/sso_preflight.py --offline` → 退出码 `0`。
+2. 元数据自洽校验（默认联网，需 IdP 可达）：`py scripts/sso_preflight.py` → 退出码 `0`（不一致/不可达均 fail-closed）。
+3. 无 IdP 时的 fail-closed 演示：`py scripts/sso_preflight.py --example` → 退出码 `1`。
+
+**联调动作**（按序执行并留证）：
+1. 发起授权 → 完成回调：`GET /api/v1/auth/sso/authorize` → IdP 登录 → `POST /api/v1/auth/sso/callback`。
+2. 若回调返回 `requires_totp=true`（`scope=sso_pending`）→ 用受限令牌走 `POST /api/v1/auth/sso/verification` 换完整会话。
+3. 用完整会话访问受保护接口（如 `GET /api/v1/approvals/pending`）应成功；用受限令牌访问应 `403`。
+4. 核对审计：`account.sso.identity_bound` / `account.sso.login_succeeded`（或 `account.sso.mfa_required`）/ `account.sso.login_rejected` 齐全，且**审计中不出现邮箱原文**。
+5. 负向抽验：篡改 `state` / `code_verifier`、未验证邮箱、非允许签名算法均应被拒，且不回吐 IdP 原始响应。
+
+> 注意：`py scripts/sso_preflight.py` 只验证配置与元数据自洽，**不构成真实登录验收证据**；真实登录验收以第 1–5 步的联调证据 + `.acceptance/` 存档为准。
 
 ### 项 4 · 真实 PostgreSQL 商业化迁移、备份/恢复演练与客户管理员验收
 - **前置**：客户 staging PG；备份介质；**客户管理员账号**与联系人；维护窗口。

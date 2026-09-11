@@ -2,10 +2,10 @@
 
 > **用途**：把 `docs/delivery-gates.md` 的勾选状态摊开成可逐项追踪的底账，区分「代码在」「有测试守护」「在真实环境验收过」三种不同状态。
 >
-> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例（项 2/9 的本仓库可独立实现缺口至此闭合）；第六次：OIDC SSO 构建块 + 服务与接口）
-> **基线**：分支 `feature/planning-closure`，全量 **827 项测试通过**，`compileall` 退出码 0
+> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本）
+> **基线**：分支 `feature/planning-closure`，全量 **854 项测试通过**，`compileall` 退出码 0
 >
-> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 88 个测试文件、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
+> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 90 个测试文件、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
 
 ## 判定口径
 
@@ -25,8 +25,8 @@
 | 未勾选 | **9** |
 | 达到**真实环境验收** | **0**（部分是本地真实验证，见「本地已验证」一行） |
 | 本地已验证（真实 PostgreSQL 迁移与备份恢复演练、内容工作台内部闭环回归） | **2** |
-| 测试文件数 | **88**（`tests/`，不含 `conftest.py`） |
-| 测试用例数 | **827**（后端）+ 前端 `admin-web` 18、`companion-pwa` 24、`desktop` 13（Node `node:test`） |
+| 测试文件数 | **90**（`tests/`，不含 `conftest.py`） |
+| 测试用例数 | **854**（后端）+ 前端 `admin-web` 18、`companion-pwa` 24、`desktop` 13（Node `node:test`） |
 
 > **一句话结论**：服务端能力基本齐全，**本批次可独立实现的代码缺口已全部闭合（项 2 的死信通知渠道、项 9 的抓取器/发布器/内容安全评估、项 3 的 OIDC SSO 客户端）**；但项 3 的真实 IdP 联调与项 6 的 GEO 适配器**尚需先拿到口径/契约才能动工**，不属于本仓库可独立完成的范围。其余卡点全为外部依赖。
 
@@ -53,7 +53,7 @@
 | 自建账号注册审批、登录会话、管理员重置密码 | ✅ | ✅ | ⬜ | `test_account_{api,auth,service,repository,passwords,bootstrap,postgres}.py` |
 | 账号登录限流与失败锁定 | ✅ | ✅ | ⬜ | `test_login_rate_limit.py`、`test_account_audit.py`；门禁注明「生产并发与网关层限流仍需 staging 验收」 |
 | 生产密钥轮换、真实统一登录验收 | ❌ | ❌ | ⬜ | **口径变更**：原「设备绑定」已从该项移除（产品采用「注册申请 + 管理员审批」制，理由见 `delivery-gates.md`「门禁口径变更记录」）；SSO 客户端已实现（见下一行），密钥轮换需部署密钥系统，两者均待外部资源（TOTP 二次验证已完成，见下两行） |
-| SSO（OIDC）实现 | ✅ | ✅ | ⬜ | `app/accounts/sso.py`、`app/accounts/sso_store.py`、`AccountService` 登录编排与 `/auth/sso/{authorize,callback,verification}` 三接口；迁移 017 + 算法白名单（HS256/RS256，拒绝 `none`）+ 不自动建号；测试见 `tests/test_sso_login.py`、`tests/test_sso_blocks.py`；**真实 IdP 联调未验收** |
+| SSO（OIDC）实现 | ✅ | ✅ | ⬜ | `app/accounts/sso.py`、`app/accounts/sso_store.py`、`AccountService` 登录编排与 `/auth/sso/{authorize,callback,verification}` 三接口；迁移 017 + 算法白名单（HS256/RS256，拒绝 `none`）+ 不自动建号；测试见 `tests/test_sso_login.py`、`tests/test_sso_blocks.py`、`tests/test_sso_e2e.py`（真实 HTTP + 真实 RS256，进程内 WSGI）、夹具 `tests/oidc_test_idp.py`、预检 `scripts/sso_preflight.py`；**本地端到端预演已通过，真实 IdP 联调未验收** |
 | 口令弱口令策略（禁止纯数字与常见口令） | ✅ | ✅ | ⬜ | `test_account_password_policy.py`；**已知限制**：不校验是否含手机号/姓名、不做变形归一 |
 | 管理员动态口令二次验证（TOTP） | ✅ | ✅ | ⬜ | `test_totp.py`、`test_account_totp.py`、`test_account_totp_api.py`、`test_account_repository_totp.py`；真实部署的验证器兼容性未验收 |
 
