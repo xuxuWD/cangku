@@ -845,6 +845,92 @@ def list_knowledge_access_audits(
     ]
 
 
+class AuditRecordView(BaseModel):
+    record_id: str
+    action: str
+    actor_id: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    phone_masked: str | None = None
+    detail: dict[str, object]
+    occurred_at: datetime
+
+
+class AuditListView(BaseModel):
+    items: list[AuditRecordView]
+    total: int
+    limit: int
+    offset: int
+
+
+def _parse_audit_actions(values: list[str] | None) -> list[AuditAction] | None:
+    """把查询参数里的动作码转成枚举；未知动作码直接拒绝，不做静默忽略。"""
+    if not values:
+        return None
+    parsed: list[AuditAction] = []
+    for raw in values:
+        try:
+            parsed.append(AuditAction(raw))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"未知的审计动作：{raw}") from exc
+    return parsed
+
+
+def _require_aware(value: datetime | None, *, name: str) -> datetime | None:
+    """拒绝无时区时间：否则时间范围的含义随部署时区漂移。"""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        raise HTTPException(status_code=422, detail=f"{name} 必须带时区")
+    return value
+
+
+@app.get("/api/v1/audits", response_model=AuditListView)
+def list_audits(
+    action: list[str] | None = Query(default=None),
+    target_type: str | None = None,
+    target_id: str | None = None,
+    actor_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> AuditListView:
+    """通用审计查询：仅 CEO/超级管理员，且只返回当前租户的记录（tenant_id 为空的全局记录不返回）。"""
+    if context.role not in {"ceo", "super_admin"}:
+        raise HTTPException(status_code=403, detail="只有 CEO 或超级管理员可以查看审计日志")
+    items, total = audit_service.query(
+        context.tenant_id,
+        actions=_parse_audit_actions(action),
+        target_type=target_type,
+        target_id=target_id,
+        actor_id=actor_id,
+        since=_require_aware(since, name="since"),
+        until=_require_aware(until, name="until"),
+        limit=limit,
+        offset=offset,
+    )
+    return AuditListView(
+        items=[
+            AuditRecordView(
+                record_id=record.record_id,
+                action=record.action.value,
+                actor_id=record.actor_id,
+                target_type=record.target_type,
+                target_id=record.target_id,
+                phone_masked=record.phone_masked,
+                detail=record.detail,
+                occurred_at=record.occurred_at,
+            )
+            for record in items
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @app.get("/api/v1/collaboration-dynamics", response_model=list[CollaborationDynamicView])
 def collaboration_dynamics(
     context: UserContext = Depends(current_user),
