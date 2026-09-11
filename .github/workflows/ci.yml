@@ -1,0 +1,100 @@
+# 提交门禁：把 docs/delivery-gates.md「每次提交必须满足」的检查交给 CI 强制执行。
+#
+# 覆盖范围与本地命令逐字一致：
+#   - 后端：python -m pytest -o addopts="" 全量通过 + compileall 通过
+#   - 网页管理台 / 手机伴侣端：vitest run（必须 run，避免 watch）+ 生产构建
+#   - 桌面端：node --test（跳过 Electron 二进制下载，单测不需要运行时）
+#
+# 说明：本工作流只跑测试与编译，不引用任何密钥，权限收紧为只读。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# 同一分支的新提交取消上一次未跑完的门禁，避免排队。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端（pytest + compileall）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 与 Dockerfile 的 python:3.12-slim 对齐；满足 requires-python>=3.11
+          python-version: "3.12"
+          cache: pip
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: pytest（全量）
+        run: python -m pytest -o addopts=""
+      - name: compileall
+        run: python -m compileall -q app tests extract_pdf.py scripts
+
+  admin-web:
+    name: 网页管理台（vitest + build）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # vite 8 / vitest 5 要求 Node 22+
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: admin-web/package-lock.json
+      - name: 安装依赖（按 lockfile）
+        run: npm ci
+      - name: vitest
+        run: npx vitest run
+      - name: 生产构建
+        run: npm run build
+
+  companion-pwa:
+    name: 手机伴侣端（vitest + build）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: companion-pwa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: companion-pwa/package-lock.json
+      - name: 安装依赖（按 lockfile）
+        run: npm ci
+      - name: vitest
+        run: npx vitest run
+      - name: 生产构建
+        run: npm run build
+
+  desktop:
+    name: 桌面端（node --test）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: 安装依赖（跳过 Electron 二进制下载）
+        run: npm ci --ignore-scripts
+      - name: node --test
+        run: node --test

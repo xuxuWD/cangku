@@ -69,6 +69,8 @@
 5. 不提交 `.env`、密钥、Cookie、浏览器会话、客户原文或临时媒体。
 6. 未通过真实验收的能力不能写成“已上线”“已发布”或“已收录”。
 
+> **CI 强制范围**：第 2–4 条中机器可判定的部分由 `.github/workflows/ci.yml` 在 push / PR 上执行——后端 `pytest` + `compileall`、`admin-web` 与 `companion-pwa` 的 `vitest run` + 生产构建、`desktop` 的 `node --test`（跳过 Electron 二进制下载）。第 1、5、6 条属人工约定，CI 不覆盖。**工作流的真实执行结果尚未在本机复现**（`tests/test_ci_assets.py` 只做静态契约守护）。
+
 RAGFlow/AgentScope 当前仅完成开发期适配器契约与受控注册表验证；`FakeTransport` 测试不等于真实 staging 或真实平台账号验收。
 
 ## 门禁口径变更记录
