@@ -9,9 +9,12 @@ const { pathToFileURL } = require('node:url');
 const {
   DEFAULT_DEV_URL,
   DEFAULT_ALLOWED_ORIGINS,
+  DEFAULT_UPDATE_CHANNEL,
+  UPDATE_CHANNELS,
   resolveAppUrl,
   resolveAllowedOrigins,
   isAllowedNavigation,
+  resolveUpdateOptions,
   resolveWindowOptions,
 } = require('./config.cjs');
 
@@ -123,4 +126,86 @@ test('resolveWindowOptions 固化安全基线并原样透传 preload 路径', ()
   assert.equal(options.webPreferences.spellcheck, false);
   assert.equal(options.show, false);
   assert.equal(options.autoHideMenuBar, true);
+});
+
+test('resolveUpdateOptions 未配置更新源时 fail-closed 关闭自动更新', () => {
+  assert.deepEqual(resolveUpdateOptions({}), { enabled: false });
+  assert.deepEqual(
+    resolveUpdateOptions({ WORKBENCH_DESKTOP_UPDATE_URL: '   ' }),
+    { enabled: false },
+  );
+});
+
+test('resolveUpdateOptions 拒绝非 HTTPS 与非法地址的更新源', () => {
+  assert.deepEqual(
+    resolveUpdateOptions({ WORKBENCH_DESKTOP_UPDATE_URL: 'http://updates.example.com/' }),
+    { enabled: false },
+  );
+  assert.deepEqual(
+    resolveUpdateOptions({ WORKBENCH_DESKTOP_UPDATE_URL: 'not a url' }),
+    { enabled: false },
+  );
+});
+
+test('resolveUpdateOptions 合法 HTTPS 更新源启用并给出默认策略', () => {
+  const options = resolveUpdateOptions({
+    WORKBENCH_DESKTOP_UPDATE_URL: '  https://updates.example.com/workbench  ',
+  });
+
+  assert.equal(options.enabled, true);
+  assert.equal(options.feedUrl, 'https://updates.example.com/workbench');
+  assert.equal(options.channel, DEFAULT_UPDATE_CHANNEL);
+  assert.equal(options.allowPrerelease, false);
+  assert.equal(options.autoDownload, true);
+  assert.equal(options.autoInstallOnAppQuit, true);
+});
+
+test('resolveUpdateOptions 预发布频道才开启 allowPrerelease', () => {
+  const beta = resolveUpdateOptions({
+    WORKBENCH_DESKTOP_UPDATE_URL: 'https://updates.example.com/workbench',
+    WORKBENCH_DESKTOP_UPDATE_CHANNEL: 'beta',
+  });
+  const alpha = resolveUpdateOptions({
+    WORKBENCH_DESKTOP_UPDATE_URL: 'https://updates.example.com/workbench',
+    WORKBENCH_DESKTOP_UPDATE_CHANNEL: 'alpha',
+  });
+
+  assert.equal(beta.channel, 'beta');
+  assert.equal(beta.allowPrerelease, true);
+  assert.equal(alpha.channel, 'alpha');
+  assert.equal(alpha.allowPrerelease, true);
+  assert.deepEqual(UPDATE_CHANNELS, ['latest', 'beta', 'alpha']);
+});
+
+test('resolveUpdateOptions 频道不在允许清单内时关闭自动更新', () => {
+  for (const channel of ['nightly', 'latest2', 'HEAD']) {
+    assert.deepEqual(
+      resolveUpdateOptions({
+        WORKBENCH_DESKTOP_UPDATE_URL: 'https://updates.example.com/workbench',
+        WORKBENCH_DESKTOP_UPDATE_CHANNEL: channel,
+      }),
+      { enabled: false },
+      `频道 ${channel} 应被拒绝`,
+    );
+  }
+});
+
+test('resolveUpdateOptions 解析布尔开关并对非法值回落默认值', () => {
+  const base = { WORKBENCH_DESKTOP_UPDATE_URL: 'https://updates.example.com/workbench' };
+
+  const disabled = resolveUpdateOptions({
+    ...base,
+    WORKBENCH_DESKTOP_UPDATE_AUTO_DOWNLOAD: 'false',
+    WORKBENCH_DESKTOP_UPDATE_AUTO_INSTALL_ON_QUIT: '0',
+  });
+  assert.equal(disabled.autoDownload, false);
+  assert.equal(disabled.autoInstallOnAppQuit, false);
+
+  const fallback = resolveUpdateOptions({
+    ...base,
+    WORKBENCH_DESKTOP_UPDATE_AUTO_DOWNLOAD: 'maybe',
+    WORKBENCH_DESKTOP_UPDATE_AUTO_INSTALL_ON_QUIT: 'whatever',
+  });
+  assert.equal(fallback.autoDownload, true);
+  assert.equal(fallback.autoInstallOnAppQuit, true);
 });

@@ -19,3 +19,9 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+# 自动更新的发布源：构建时必须由 WORKBENCH_DESKTOP_UPDATE_URL 注入（HTTPS），
+# 且必须与运行时 desktop 的同名环境变量一致；electron-builder 据此生成 latest.yml。
+# 未设置该变量时 `npm run dist` 会直接报错，避免打出没有更新元数据的安装包。
+publish:
+  - provider: generic
+    url: ${env.WORKBENCH_DESKTOP_UPDATE_URL}

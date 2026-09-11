@@ -11,8 +11,23 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'http://127.0.0.1:5173',
 ];
 
+// 自动更新频道白名单：只接受 electron-updater 的既有频道名，避免拼写错误静默换源。
+const DEFAULT_UPDATE_CHANNEL = 'latest';
+const UPDATE_CHANNELS = ['latest', 'beta', 'alpha'];
+
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function parseBoolean(value, fallback) {
+  const normalized = trimmed(value).toLowerCase();
+  if (normalized === 'true' || normalized === '1') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0') {
+    return false;
+  }
+  return fallback;
 }
 
 /**
@@ -81,6 +96,50 @@ function isAllowedNavigation(targetUrl, allowedOrigins) {
 }
 
 /**
+ * 解析自动更新策略。
+ * fail-closed：未配置更新源、更新源不是 HTTPS、地址非法或频道不在白名单内时，
+ * 一律返回 `{ enabled: false }`，绝不回落到任何默认更新源。
+ */
+function resolveUpdateOptions(env = process.env) {
+  const rawUrl = trimmed(env && env.WORKBENCH_DESKTOP_UPDATE_URL);
+  if (!rawUrl) {
+    return { enabled: false };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (error) {
+    return { enabled: false };
+  }
+
+  if (parsed.protocol !== 'https:') {
+    return { enabled: false };
+  }
+
+  const channel =
+    trimmed(env && env.WORKBENCH_DESKTOP_UPDATE_CHANNEL) || DEFAULT_UPDATE_CHANNEL;
+  if (!UPDATE_CHANNELS.includes(channel)) {
+    return { enabled: false };
+  }
+
+  return {
+    enabled: true,
+    feedUrl: rawUrl,
+    channel,
+    allowPrerelease: channel !== DEFAULT_UPDATE_CHANNEL,
+    autoDownload: parseBoolean(
+      env && env.WORKBENCH_DESKTOP_UPDATE_AUTO_DOWNLOAD,
+      true,
+    ),
+    autoInstallOnAppQuit: parseBoolean(
+      env && env.WORKBENCH_DESKTOP_UPDATE_AUTO_INSTALL_ON_QUIT,
+      true,
+    ),
+  };
+}
+
+/**
  * 生成 BrowserWindow 选项，集中固化安全基线。
  */
 function resolveWindowOptions(preloadPath) {
@@ -107,8 +166,11 @@ function resolveWindowOptions(preloadPath) {
 module.exports = {
   DEFAULT_DEV_URL,
   DEFAULT_ALLOWED_ORIGINS,
+  DEFAULT_UPDATE_CHANNEL,
+  UPDATE_CHANNELS,
   resolveAppUrl,
   resolveAllowedOrigins,
   isAllowedNavigation,
+  resolveUpdateOptions,
   resolveWindowOptions,
 };
