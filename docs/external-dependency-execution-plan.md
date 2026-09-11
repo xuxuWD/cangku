@@ -278,6 +278,29 @@ Phase 2a       Phase 2b      Phase 2c
 
 > **红线**：任何凭据不得出现在聊天记录、工单正文、代码、配置文件或证据目录中。
 
+### 6.1 实际交接途径（本机执行时）
+
+**方式一（推荐，本机验收用）**：把真实值写入 `.env.staging`（SSO 相关另见 `.env.sso`）。
+
+该文件**已被 `.gitignore` 覆盖**——实测证据：`git check-ignore -v .env.staging` → `.gitignore:15:.env.*`（`.env.sso`、`.env.acceptance` 同理），因此**不会被提交**。我执行时把它加载进当前进程环境，**只读取、不打印**：预检与探针的输出只有状态与主机名，不含任何密钥值。
+
+```powershell
+# 加载本地真实配置（该文件由你创建；仓库内只有 .example 模板）
+Get-Content .env.staging | Where-Object { $_ -match '^[A-Za-z_]+=' } |
+  ForEach-Object { $k,$v = $_.Split('=',2); Set-Item -Path "Env:$($k.Trim())" -Value $v }
+py scripts/staging_preflight.py
+```
+
+**方式二（生产/staging 主机）**：由部署密钥系统注入到运行环境，我不接触明文。
+
+**可在聊天里直接给的（非密钥，属元数据）**：端点地址与主机名、固定版本号、公众号**主体类型与认证状态**、出口 IP、GEO 仓库地址、白名单域名、容量/延迟阈值。这些不属于密钥，写进文档也安全。
+
+**不可让步的三条**：
+
+1. **不要把密钥（AppSecret / access_token / 数据库口令 / API Key / IdP client_secret）贴在聊天里**——一旦贴出即视为已泄露，必须轮换后再用；
+2. 密钥不得进入代码、配置文件、证据目录或审计明细；
+3. 我不在输出中回显任何密钥值；若发现回显，按缺陷处理并修复。
+
 ---
 
 ## 7. 风险登记与分支预案
