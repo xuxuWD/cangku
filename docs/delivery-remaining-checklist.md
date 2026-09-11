@@ -27,8 +27,9 @@
 - [ ] 1.5 **只读核验清单全绿**（`docs/readonly-verification-runbook.md`）：pgvector 存在、迁移 022 已落地且复合外键存在、**归一风险 0 行**、**绑定侧未纳管为空**（`candidates.roles == []` 且 roster 绑定侧为空）
 - [ ] 1.6 **迁移回滚演练**（写操作，需授权）：`scripts/migration_backup_drill.py`
       判据：能按备份恢复到指定版本，且 `WORKBENCH_APPLIED_MIGRATIONS` 与库内一致
-- [ ] 1.7 **跨租户只读探测**（需两个不同租户的令牌）：`scripts/cross_tenant_probe.py --base-url … --token-a … --token-b …`
-      判据：全部返回 `404`/空，不泄露他租户数据
+- [ ] 1.7 **跨租户只读探测**（需两个不同租户的令牌 + **每个 KIND 在两租户各一个真实资源 ID**）：
+      `python scripts/cross_tenant_probe.py --base-url … --token-a … --token-b … --resource "task:<A_ID>:<B_ID>"`（**漏掉 `--resource` 会 `exit=2`**）
+      判据：`exit=0` 且报告 `A→A=200 B→B=200 A→B=404 B→A=404`（本机已实测通过）
 - [ ] 1.8 **并发压测**（写操作，需专用账号）：`scripts/staging_concurrency_probe.py`
       判据：登录限流、任务幂等、审批原子性三场景行为与离线断言一致
 - [ ] 1.9 **审计落 PG 的实跑验证 + 日志采集告警**

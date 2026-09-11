@@ -2,7 +2,7 @@
 
 > **用途**：在 **staging**（或经授权的真实库）上核验「数字员工设置 / 知识范围写路径闸门」的落地状态与**存量风险**。**全部命令只读**：不改数据、不改配置、不跑迁移。
 > **执行方式**：AI **不连** staging/生产。由你在服务器上执行本清单，把输出回传后由我判读。
-> **验证状态**：本清单的 **9 条 SQL、只读包装、只读角色建法与令牌获取的三种情形已于 2026-09-12 在本机一次性真实 PostgreSQL 16 上逐条验证**（样例输出见 §7），其中只读角色是以**真实 DSN（TCP + 密码）**跑通全部查询并确认写操作被拒；令牌流程以 FastAPI `TestClient`（进程内，走同一套中间件与路由）跑通全链路。**本清单本身尚未在 staging 执行过**——staging 未就绪（阻塞项 1）。
+> **验证状态**：本清单的 **9 条 SQL、只读包装、只读角色建法、令牌获取三种情形，以及 §3 API 组与 §4 跨租户探测脚本，均已于 2026-09-12 在本机验证**（样例输出见 §7）：SQL 与只读角色跑在一次性真实 PostgreSQL 16 上（只读角色以**真实 DSN（TCP + 密码）**跑通并确认写操作被拒）；**§3/§4 跑在真实 HTTP 服务（`uvicorn`）上并造了两个租户**；令牌三种情形以 FastAPI `TestClient`（进程内，走同一套中间件与路由）跑通。**本清单本身尚未在 staging 执行过**——staging 未就绪（阻塞项 1）。
 
 ## 0. 安全边界（先读）
 
@@ -240,6 +240,7 @@ curl -sS "$BASE/api/v1/workforce/roster"    -H "Authorization: Bearer $TOKEN" | 
 - **`candidates.roles` 为空** ⇔ 与 §2E 的 SQL 结果一致（两种方式应互相印证）。
 - **绑定侧未纳管为空** 的完整判据：`candidates.roles == []` **且** `roster` 中 `agent_knowledge_base_ids` 非空而该 `key` 不在员工目录里的项为空（等价于 §2F）。
 - 两者不一致时以 **SQL 结果为准**（API 走的是同一份数据，但可能存在调用方租户不同、或权限 403 的情况）。
+- **本机实测预期**（真实 HTTP 服务 + 真实令牌）：无数据时 `candidates` 返回 `{"roles": [], "agents": []}`、`roster` 返回 `total=0`；**非超管**访问 → `403`；**不带令牌** → `401`。若你在 staging 上看到 403，先按 §1.3 确认该令牌的 `scope` 是否为 `full`。
 
 ## 4. 可选：只读的既有脚本
 
@@ -253,11 +254,19 @@ python scripts/worker_preflight.py
 python scripts/sso_preflight.py
 ```
 
-跨租户只读探测（需要两个不同租户的令牌；全部为 `GET`）：
+跨租户只读探测（全部为 `GET`）——**注意：必须带 `--resource`，否则直接 `exit=2` 报「至少需要一个 --resource KIND:A_ID:B_ID」**：
 
 ```bash
-python scripts/cross_tenant_probe.py --base-url "$BASE" --token-a "$TOKEN_A" --token-b "$TOKEN_B"
+python scripts/cross_tenant_probe.py --base-url "$BASE" \
+  --token-a "$TOKEN_A" --token-b "$TOKEN_B" \
+  --resource "task:$TASK_ID_A:$TASK_ID_B"
 ```
+
+- `--resource` 可重复传多条；**可选 KIND 共 6 种**：`task`、`plan_proposal`、`content_task`、`run_metrics`、`orchestration_proposal`、`commercial_lifecycle`。
+- `A_ID` 必须属于令牌 A 的租户、`B_ID` 属于令牌 B 的租户，**且两者不同**（相同会被拒绝）。**每类资源都要在两个租户里各有一个真实存在的 ID**，否则探测无法构成对照——这是最容易白跑的一点。
+- **造对照组数据时的权限坑（本机实测踩到）**：`customer_admin` **不能创建任务**（`403`「当前岗位不能创建任务」）；可用角色为 `employee` / `department_lead` / `ceo` / `super_admin`。
+- **本机实测结果**（真实 HTTP + 两个租户各一个真实 task）：`exit=0`，报告为
+  `[pass] 隔离 task：A→A=200 B→B=200 A→B=404 B→A=404`——正向对照通过且双向都不是 200，隔离成立。
 
 ## 5. 明确排除（会写数据 / 改配置，另行授权后再跑）
 
@@ -330,4 +339,17 @@ CREATE TABLE（应被拒）-> PASS（InsufficientPrivilege）
 情形A  用【下一个】步长的码登录                             -> 200  scope=full
 情形A  full 令牌访问 /api/v1/workforce/roster               -> 200
 情形A  已绑 TOTP 但不带码                                   -> 401 「需要动态验证码」
+```
+
+§3 API 组 与 §4 跨租户探测实测——本机**真实 HTTP 服务**（`uvicorn` 端口 18765，跑完即停）+ 两个真实租户：
+
+```
+租户A 引导注册 -> 201 ；租户B 申请 -> 201，由 A 审批（role=ceo, tenant=t-b）-> 200
+§3  candidates（超管令牌）        -> 200  {"roles": [], "agents": []}
+§3  roster（超管令牌）            -> 200  total=0
+§3  非超管令牌 / 不带令牌          -> 403 / 401
+§4  A 令牌读 B 租户任务 / B 令牌读 A 租户任务 -> 404 / 404
+§4  cross_tenant_probe.py --resource "task:<A_ID>:<B_ID>" -> exit=0
+    [pass] 隔离 task：A→A=200 B→B=200 A→B=404 B→A=404：正向对照通过且双向均返回 403/404，租户隔离成立
+造数踩坑：customer_admin 建任务 -> 403「当前岗位不能创建任务」（换成 ceo 后 201）——对照组数据要用允许建任务的角色
 ```
