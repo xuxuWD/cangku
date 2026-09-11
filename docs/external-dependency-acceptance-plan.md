@@ -232,13 +232,15 @@
 
 ### 项 9 · 真实模型、网页抓取和公众号自动发布验收
 
-- **需先补的代码**：**抓取器与发布器均已实现（可测部分）**；**唯一剩余的代码缺口是③内容安全评估用例**（提示词注入 / 数据泄露 / 越权输出）。真实模型接入代码**已具备**（`OpenAICompatibleContentGenerator` + `WORKBENCH_CONTENT_GENERATION_BACKEND`），只缺真实密钥联调。
+- **需先补的代码**：**无——三项（抓取器、发布器、内容安全评估）均已实现且离线可测**。真实模型接入代码**已具备**（`OpenAICompatibleContentGenerator` + `WORKBENCH_CONTENT_GENERATION_BACKEND`），只缺真实密钥联调。
   ① **抓取器（含 robots 遵守、域名白名单、限速、合规边界）：已实现** —— `app/content/scraper.py` 与 `POST /api/v1/content-sources/scrape`，离线可测：白名单为空即关闭（`503`，不放行）、非白名单域名/robots 不允许或不可用（fail-closed）一律 `403`、非 2xx/正文为空/类型不符 `502`，成功与拒绝均写审计 `content.source.scraped`。**真实抓取仍属未验收**：需外部提供抓取白名单与合规确认后方可进入验收。
   ② **发布器（幂等、回执核对、失败进人工接管、绝不自动重发）：已实现** —— `app/content/publisher.py` + `app/content/publication_store.py`（迁移 `016_content_publications`，`(tenant_id, idempotency_key)` 唯一约束）+ `app/content/publication_service.py`，接口为 `POST /api/v1/content-tasks/{task_id}/publications`、`GET` 同路径、`POST /api/v1/content-publications/{publication_id}/verification`。未确认内容 `409`、未配置渠道 `503`、平台失败先落 `manual_takeover` 再 `502` 且**不自动重发**。**真实公众号发布仍属未验收**：需外部提供平台凭据与发布授权。
-  ③ **内容安全评估用例（提示词注入 / 数据泄露 / 越权输出）：仍未实现**，是项 9 进入验收前的最后一块代码缺口。
+  ③ **内容安全评估用例（提示词注入 / 数据泄露 / 越权输出）：已实现** —— `app/content/safety.py` + `scripts/content_safety_evaluation.py`，6 个 canary 用例覆盖指令覆盖、角色提权、摘录密钥、链接凭证、跨租户标记与良性对照；判定用合成标记 + 行为不变量，并带**反向控制**（标记未进入输入即判失败，反假测试）。方法、结论边界与运行方式见 `docs/content-safety-evaluation.md`。
+  **至此项 9 的代码缺口已全部闭合**：抓取器、发布器、内容安全评估三项均已实现且离线可测；剩余全部是外部输入（真实模型密钥、平台凭据与发布授权、抓取白名单与合规确认、回执核对人）。
+  本轮顺带修复了一个**由该评估器首次运行抓到的真实问题**：导出产物会把来源链接中的 `?access_token=` 与 `https://user:pass@` 凭证原样写进 Markdown，已在 `app/content/export.py` 按既有脱敏词元表遮蔽（并丢弃 `#fragment`）。
 - **需要的输入**：真实模型 `base_url` / `model` / `key`；目标平台开发者凭据与发布授权；抓取白名单与合规确认；回执核对人。
-- **验收步骤**：内容安全评估（注入/泄露用例全过）→ 真实模型生成质量与合规抽检 → 抓取仅限白名单且留痕 → 发布一次并核对回执 → 注入失败确认进人工接管且不重发。
-- **通过判据**：内容安全用例全过；抓取不越白名单且留痕；发布有可核对回执；失败不自动重发；无凭据泄漏。
+- **验收步骤**：配置真实内容模型后跑 `py scripts/content_safety_evaluation.py --json --output <证据目录>/report.json`（canary 用例全过）→ 真实模型生成质量与合规抽检 → 抓取仅限白名单且留痕 → 发布一次并核对回执 → 注入失败确认进人工接管且不重发。
+- **通过判据**：内容安全评估用例全过（离线通过只证明仪器可用，**真实模型结论必须重跑**）；抓取不越白名单且留痕；发布有可核对回执；失败不自动重发；无凭据泄漏。
 - **证据清单**：内容安全评估结论；抓取白名单配置与日志；发布回执与核对记录；人工接管记录。
 
 ---

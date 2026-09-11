@@ -57,7 +57,7 @@
 - [ ] GEO 版本化适配器 —— **外部依赖阻塞**：GEO 属独立仓库的外部系统，本仓库内无其 API 契约、版本规则与认证方式（`app/`、`tests/` 中 GEO 零命中）；需 GEO 侧先提供契约文档后才能实现并做契约测试
 - [ ] 真实 staging 与真实平台账号验收
 - [ ] RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证和真实外部服务验收
-- [ ] 真实模型、网页抓取和公众号自动发布验收 —— **抓取器与发布器代码已实现**：`app/content/scraper.py`（域名白名单 / robots / 限速 / 体积上限 / 留痕）与 `app/content/publisher.py` + 迁移 016（幂等键 `task:revision` + 数据库唯一约束、回执核对、失败转人工接管且绝不自动重发）；**剩余代码缺口为内容安全评估用例**（提示词注入 / 数据泄露 / 越权输出）；真实部分仍缺真实模型密钥、平台凭据与发布授权
+- [ ] 真实模型、网页抓取和公众号自动发布验收 —— **代码缺口已全部闭合**：`app/content/scraper.py`（域名白名单 / robots / 限速 / 体积上限 / 留痕）、`app/content/publisher.py` + 迁移 016（幂等键 `task:revision` + 数据库唯一约束、回执核对、失败转人工接管且绝不自动重发）、`app/content/safety.py` + `scripts/content_safety_evaluation.py`（内容安全评估：提示词注入 / 数据泄露 / 越权输出，canary 判定 + 反向控制，方法见 `docs/content-safety-evaluation.md`）；导出层已按脱敏词元表遮蔽来源链接中的凭证。真实部分仍缺真实模型密钥、平台凭据与发布授权
 
 ## 每次提交必须满足
 

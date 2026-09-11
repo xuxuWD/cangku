@@ -1,8 +1,38 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from app.audit.redaction import SENSITIVE_KEY_TOKENS, key_tokens
 
 from .models import ContentDraft
+
+
+def mask_url_credentials(url: str) -> str:
+    """遮蔽来源链接中的凭证：userinfo、敏感查询参数，并丢弃 #fragment。
+
+    素材链接由员工提供，可能夹带 `?access_token=...` 或 `https://user:pass@host`；
+    导出产物会发给外部，因此这里按现有脱敏词元表（`SENSITIVE_KEY_TOKENS`）遮蔽，
+    避免把密钥带进 Markdown。非敏感参数与路径保持原样，来源仍可追溯。
+    """
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "***"
+    netloc = parts.netloc
+    if "@" in netloc:
+        netloc = f"***@{netloc.rsplit('@', 1)[1]}"
+    query = parts.query
+    if query:
+        query = urlencode(
+            [
+                (name, "***" if key_tokens(name) & SENSITIVE_KEY_TOKENS else value)
+                for name, value in parse_qsl(query, keep_blank_values=True)
+            ]
+        )
+    return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
 
 
 class MarkdownExporter:
@@ -29,7 +59,7 @@ class MarkdownExporter:
         ]
         if draft.citations:
             for index, source in enumerate(draft.citations, 1):
-                suffix = f" - {source.url}" if source.url else ""
+                suffix = f" - {mask_url_credentials(source.url)}" if source.url else ""
                 lines.append(f"{index}. 员工提供的素材{suffix}")
         else:
             lines.append("暂无外部来源")
