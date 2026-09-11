@@ -101,6 +101,16 @@ class TaskStore:
                 raise TaskNotFound(task_id)
             return task
 
+    def count_by_employee(self, tenant_id: str) -> dict[str, int]:
+        """按数字员工标识统计本租户任务数（只读聚合，用于岗位/员工清单页）。"""
+        with self._lock:
+            counts: dict[str, int] = {}
+            for task in self._tasks.values():
+                if task.tenant_id != tenant_id:
+                    continue
+                counts[task.employee_key] = counts.get(task.employee_key, 0) + 1
+        return counts
+
     def approve(self, context: UserContext, task_id: str) -> Task:
         with self._lock:
             task = self._tasks.get(task_id)

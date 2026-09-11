@@ -51,6 +51,22 @@ class KnowledgeAccessRegistry:
                 return set(self._agent_scopes.get((context.tenant_id, agent_key), set()))
             return set(self._role_scopes.get((context.tenant_id, role_key), set()))
 
+    def list_bindings(self, context: UserContext) -> dict[str, dict[str, list[str]]]:
+        """列出本租户的岗位/数字员工知识范围绑定：{"role": {key: [ids]}, "agent": {key: [ids]}}。"""
+        self._ensure_admin(context)
+        with self._lock:
+            roles = {
+                key: sorted(ids)
+                for (tenant_id, key), ids in self._role_scopes.items()
+                if tenant_id == context.tenant_id
+            }
+            agents = {
+                key: sorted(ids)
+                for (tenant_id, key), ids in self._agent_scopes.items()
+                if tenant_id == context.tenant_id
+            }
+        return {"role": roles, "agent": agents}
+
     def list_audits(self, context: UserContext, *, limit: int = 100) -> list[KnowledgeAccessAudit]:
         self._ensure_admin(context)
         with self._lock:
@@ -142,6 +158,29 @@ class PostgresKnowledgeAccessRegistry:
                     (context.tenant_id, binding_type, binding_key),
                 )
                 return {str(row[0]) for row in cursor.fetchall()}
+
+    def list_bindings(self, context: UserContext) -> dict[str, dict[str, list[str]]]:
+        """列出本租户的岗位/数字员工知识范围绑定：{"role": {key: [ids]}, "agent": {key: [ids]}}。"""
+        KnowledgeAccessRegistry._ensure_admin(context)
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT binding_type, binding_key, knowledge_base_id
+                    FROM workbench_knowledge_access_bindings
+                    WHERE tenant_id = %s
+                    ORDER BY binding_type, binding_key, knowledge_base_id
+                    """,
+                    (context.tenant_id,),
+                )
+                rows = cursor.fetchall()
+        bindings: dict[str, dict[str, list[str]]] = {"role": {}, "agent": {}}
+        for binding_type, binding_key, knowledge_base_id in rows:
+            kind = str(binding_type)
+            if kind not in bindings:
+                continue
+            bindings[kind].setdefault(str(binding_key), []).append(str(knowledge_base_id))
+        return bindings
 
     def list_audits(self, context: UserContext, *, limit: int = 100) -> list[KnowledgeAccessAudit]:
         KnowledgeAccessRegistry._ensure_admin(context)

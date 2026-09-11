@@ -12,6 +12,7 @@ class TaskRepository(Protocol):
     def get(self, context: UserContext, task_id: str) -> Task: ...
     def approve(self, context: UserContext, task_id: str) -> Task: ...
     def list_pending_approval(self, tenant_id: str, *, limit: int) -> list[Task]: ...
+    def count_by_employee(self, tenant_id: str) -> dict[str, int]: ...
 
 
 class PostgresTaskRepository:
@@ -157,6 +158,22 @@ class PostgresTaskRepository:
                 )
                 rows = cursor.fetchall()
         return [self._row_to_task(row) for row in rows]
+
+    def count_by_employee(self, tenant_id: str) -> dict[str, int]:
+        """按数字员工标识统计本租户任务数（只读聚合，用于岗位/员工清单页）。"""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT employee_key, COUNT(*)
+                    FROM workbench_tasks
+                    WHERE tenant_id = %s
+                    GROUP BY employee_key
+                    """,
+                    (tenant_id,),
+                )
+                rows = cursor.fetchall()
+        return {str(row[0]): int(row[1]) for row in rows}
 
     @staticmethod
     def _row_to_task(row: tuple) -> Task:
