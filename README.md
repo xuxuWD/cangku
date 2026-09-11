@@ -121,8 +121,8 @@ python extract_pdf.py --input "资料路径.pdf" --output pdf_text.txt
 
 ## 客户端工程
 
-- `admin-web/`：网页管理台（知识权限、公众号内容工作台、内容历史、协同动态）。
-- `companion-pwa/`：手机端 PWA 伴侣端，提供登录、待办轮询提醒与三类审批（任务、计划提案、账号注册）。
+- `admin-web/`：网页管理台（内容工作台、通知、员工与岗位、知识权限管理、数字员工设置、用量与费用、历史草稿、协同动态、安全与审计；另有运行详情页）。
+- `companion-pwa/`：手机端 PWA 伴侣端，提供登录、待办轮询提醒与四类审批（任务、计划提案、账号注册、运行审批）。
 - `desktop/`：Windows 桌面端 Electron 安全壳，加载网页端界面；真实安装包构建、代码签名、公证与干净电脑测试属未验收项，详见 `desktop/README.md`。
 
 三个客户端都通过版本化 `/api/v1` 接口工作，不直连数据库。待办聚合接口为 `GET /api/v1/approvals/pending`。
