@@ -50,7 +50,11 @@
 会话按 `scope` 分两种：
 
 - `full`：完整会话，可访问全部有权限的接口。
-- `totp_enrollment`：**受限会话**。当 `WORKBENCH_REQUIRE_ADMIN_TOTP` 为真且 `super_admin` / `ceo` 尚未绑定动态口令时签发；有效期取 `min(WORKBENCH_SESSION_TTL_SECONDS, WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS)`（默认不超过 300 秒）。受限会话只允许访问 `POST /api/v1/auth/me/totp`、`POST /api/v1/auth/me/totp/confirmation` 与 `GET /api/v1/health`；访问其他受保护接口一律返回 `403`「账号需要先完成动态口令绑定」。
+- `totp_enrollment`：**受限会话**。当 `WORKBENCH_REQUIRE_ADMIN_TOTP` 为真且 `super_admin` / `ceo` 尚未绑定动态口令时签发；有效期取 `min(WORKBENCH_SESSION_TTL_SECONDS, WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS)`（默认不超过 300 秒）。受限会话只允许访问 `POST /api/v1/auth/me/totp`、`POST /api/v1/auth/me/totp/confirmation`、`POST /api/v1/auth/logout` 与 `GET /api/v1/health`；访问其他受保护接口一律返回 `403`「账号需要先完成动态口令绑定」。
+
+`POST /api/v1/auth/logout`
+
+登出当前会话：把该令牌的唯一号（`jti`）记入**服务端撤销名单**，同一令牌**立即失效**，不再依赖有效期兜底。成功返回 `204`，无响应体。仅对令牌会话有效——使用开发期头部身份（`X-*` 头）时没有令牌可撤销，返回 `401`；已撤销或已过期的令牌再次调用同样返回 `401`。撤销存储不可用时返回 `503`（fail-closed，绝不放行）。撤销条目只保留到该令牌自身的过期时间，到期自动失效。
 
 `PUT /api/v1/auth/me/password`
 
@@ -72,9 +76,9 @@
 
 仅超级管理员可调用，用于用户更换设备或丢失验证器后的找回：清除目标账号的动态口令绑定，之后该账号可仅凭口令登录（管理员会在下次登录时被要求重新绑定）。账号不存在返回 `404`，其他角色返回 `403`。
 
-动态口令为自建实现（RFC 4226 / RFC 6238，仅使用标准库）：6 位码、30 秒步长、校验窗口 ±1 步，并拒绝同一窗口内的重放。绑定、确认与重置分别写入审计动作 `account.totp.enrolled`、`account.totp.confirmed`、`account.totp.reset`；强制绑定提示写入 `account.totp.enrollment_required`。审计明细与结构化日志均不含种子或验证码。
+动态口令为自建实现（RFC 4226 / RFC 6238，仅使用标准库）：6 位码、30 秒步长、校验窗口 ±1 步，并拒绝同一窗口内的重放。绑定、确认与重置分别写入审计动作 `account.totp.enrolled`、`account.totp.confirmed`、`account.totp.reset`；强制绑定提示写入 `account.totp.enrollment_required`。审计明细与结构化日志均不含种子或验证码。动态口令种子在**持久化层静态加密**存储（AES-256-GCM；子密钥由 `WORKBENCH_BACKUP_ENCRYPTION_KEY` 经 HKDF-SHA256 派生，密文带 `v1:` 前缀，历史明文行只读兼容；内存仓储不落盘故不加密）——**轮换备份加密密钥会使既有种子不可解**，须先由超级管理员重置动态口令再完成轮换。
 
-会话令牌使用 HMAC-SHA256 签名，载荷包含租户、用户、角色、会话范围、签发时间、过期时间和唯一号；过期或签名错误一律返回 `401`。有效期由 `WORKBENCH_SESSION_TTL_SECONDS` 控制，默认 900 秒，范围 60–3600；受限会话有效期另受 `WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS` 约束，默认 300 秒，范围 60–900。旧令牌缺少会话范围时按 `full` 处理。本轮不提供服务端会话撤销，登出由客户端丢弃令牌并由短期有效期兜底。
+会话令牌使用 HMAC-SHA256 签名，载荷包含租户、用户、角色、会话范围、签发时间、过期时间和唯一号；过期或签名错误一律返回 `401`。有效期由 `WORKBENCH_SESSION_TTL_SECONDS` 控制，默认 900 秒，范围 60–3600；受限会话有效期另受 `WORKBENCH_TOTP_ENROLLMENT_TTL_SECONDS` 约束，默认 300 秒，范围 60–900。旧令牌缺少会话范围时按 `full` 处理。**登出立即生效**：令牌的 `jti` 记入服务端撤销名单（迁移 `018`），此后同一令牌一律 `401`；缺少 `jti` 的令牌按无效处理。
 
 ### 关键操作审计
 
@@ -148,6 +152,10 @@
 `POST /api/v1/content-tasks`
 
 请求体包含 `topic`、`sources`、`knowledge_references` 和 `idempotency_key`。来源中的正文摘录由员工粘贴，链接只保存为引用元数据，服务端不会访问链接。服务端固定创建低风险 `content-writer` 任务并启动 Mock Runtime；相同租户、用户和幂等键重放返回原任务，输入不同返回 `409`。
+
+`GET /api/v1/content-tasks`
+
+按 `status`（可选，只允许 `reviewing`、`failed`、`confirmed`，其他值返回 `400`「不支持的内容任务状态」）、`page`（默认 1）、`page_size`（默认 20，上限 100，越界返回 `400`）分页列出内容任务摘要。可见性与单条查询一致：普通员工只能看到自己创建的任务，CEO 与超级管理员可看本租户全部。返回 `items`（任务号、主题、状态、创建人、创建/更新时间、运行号）、`page`、`page_size`、`total` 与 `has_next`。
 
 `GET /api/v1/content-tasks/{task_id}`
 
@@ -357,6 +365,18 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 - `detail` 只含既有接口已暴露的非敏感字段：任务为 `risk_level`、`employee_key`；计划提案为 `step_count`；账号注册为 `position`。
 - `counts` 四个键恒存在，无待办时为 `0`；`total` 为本次返回条目总数。账号注册的标题为脱敏手机号，不泄露超出既有注册列表接口的 PII。
 
+## 运行指标（子项目②）
+
+每次运行都会写入运行记录（迁移 `013`），用于聚合指标与生成编排优化提案的样本来源。
+
+`GET /api/v1/runs/{run_id}/metrics`
+
+返回单次运行的结构化指标：`run_id`、`task_id`、`proposal_id`、`runtime_key`、`status`、`step_count`、`completed_step_count`、`tool_calls`、`successful_tools`、`knowledge_hits`、`latency_ms`、`started_at`、`finished_at`。运行记录不存在，或该运行所属任务对调用者不可见时，统一返回 `404`「运行记录不存在」（跨租户不泄露存在性）。**已知限制**：`knowledge_hits` 依赖运行时上报，Mock 运行时下恒为 0。
+
+`GET /api/v1/metrics/summary`
+
+按本租户聚合运行指标，可选 `runtime_key` 过滤。仅 CEO 或超级管理员可访问，其他角色返回 `403`「只有 CEO 或超级管理员可以查看运行指标」。
+
 ## 基于指标的编排优化提案
 
 工作台读取运行指标（子项目②），在样本充足时自动生成一条「将默认运行时切换到表现更好运行时」的**待人工审核提案**。提案只做建议与留痕，**不会自动修改任何配置**：审批通过只改变提案状态，采纳与执行必须由人按运行手册完成。全部接口仅 CEO 或超级管理员可访问，其他角色返回 `403`「只有 CEO 或超级管理员可以管理编排优化提案」。
@@ -393,7 +413,7 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 - POST /api/v1/tasks/{task_id}/runs：在指定任务下创建运行。请求可指定 runtime_key、mode 和步骤计划；服务端从任务快照重建租户、用户、岗位、项目、预算、知识/文件范围和策略版本，客户端不能覆盖这些字段。
 - GET /api/v1/runs/{run_id}/events?cursor=...：返回脱敏事件摘要，支持断点读取；内部 Harness session、凭据和原始敏感载荷不返回。
-- POST /api/v1/runs/{run_id}/pause、resume、cancel：任务创建人、CEO 或超级管理员可操作；跨租户运行统一返回 404。
+- POST /api/v1/runs/{run_id}/pause、POST /api/v1/runs/{run_id}/resume、POST /api/v1/runs/{run_id}/cancel：任务创建人、CEO 或超级管理员可操作；跨租户运行统一返回 404。
 - POST /api/v1/runs/{run_id}/approvals：登记高风险动作审批请求，返回审批号和 pending 状态，不代表已执行。
 
 开发环境默认注册 mock Runtime。DeerFlow、Codex Worker、Hermes 只能作为独立外部适配器接入，不能直连工作台数据库、Redis、GEO 或生产账号；Hermes 的成长结果只能进入待审核提案。
