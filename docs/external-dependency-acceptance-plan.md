@@ -232,9 +232,10 @@
 
 ### 项 9 · 真实模型、网页抓取和公众号自动发布验收
 
-- **需先补的代码（阻塞项）**：**网页抓取已实现（可测部分）；公众号自动发布仍未实现** —— 内容工作台 Alpha 明确「不自动发布」（`README.md`）。真实模型接入代码**已具备**（`OpenAICompatibleContentGenerator` + `WORKBENCH_CONTENT_GENERATION_BACKEND`），只缺真实密钥联调。
+- **需先补的代码**：**抓取器与发布器均已实现（可测部分）**；**唯一剩余的代码缺口是③内容安全评估用例**（提示词注入 / 数据泄露 / 越权输出）。真实模型接入代码**已具备**（`OpenAICompatibleContentGenerator` + `WORKBENCH_CONTENT_GENERATION_BACKEND`），只缺真实密钥联调。
   ① **抓取器（含 robots 遵守、域名白名单、限速、合规边界）：已实现** —— `app/content/scraper.py` 与 `POST /api/v1/content-sources/scrape`，离线可测：白名单为空即关闭（`503`，不放行）、非白名单域名/robots 不允许或不可用（fail-closed）一律 `403`、非 2xx/正文为空/类型不符 `502`，成功与拒绝均写审计 `content.source.scraped`。**真实抓取仍属未验收**：需外部提供抓取白名单与合规确认后方可进入验收。
-  需要新增：② 发布器（幂等、回执核对、失败进人工接管、**绝不自动重发**）；③ 内容安全评估用例（提示词注入 / 数据泄露 / 越权输出）。
+  ② **发布器（幂等、回执核对、失败进人工接管、绝不自动重发）：已实现** —— `app/content/publisher.py` + `app/content/publication_store.py`（迁移 `016_content_publications`，`(tenant_id, idempotency_key)` 唯一约束）+ `app/content/publication_service.py`，接口为 `POST /api/v1/content-tasks/{task_id}/publications`、`GET` 同路径、`POST /api/v1/content-publications/{publication_id}/verification`。未确认内容 `409`、未配置渠道 `503`、平台失败先落 `manual_takeover` 再 `502` 且**不自动重发**。**真实公众号发布仍属未验收**：需外部提供平台凭据与发布授权。
+  ③ **内容安全评估用例（提示词注入 / 数据泄露 / 越权输出）：仍未实现**，是项 9 进入验收前的最后一块代码缺口。
 - **需要的输入**：真实模型 `base_url` / `model` / `key`；目标平台开发者凭据与发布授权；抓取白名单与合规确认；回执核对人。
 - **验收步骤**：内容安全评估（注入/泄露用例全过）→ 真实模型生成质量与合规抽检 → 抓取仅限白名单且留痕 → 发布一次并核对回执 → 注入失败确认进人工接管且不重发。
 - **通过判据**：内容安全用例全过；抓取不越白名单且留痕；发布有可核对回执；失败不自动重发；无凭据泄漏。

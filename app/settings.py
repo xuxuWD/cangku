@@ -95,6 +95,26 @@ class Settings(BaseSettings):
         default="CompanyWorkbenchBot/0.1",
         validation_alias=AliasChoices("CONTENT_SCRAPE_USER_AGENT", "WORKBENCH_CONTENT_SCRAPE_USER_AGENT"),
     )
+    content_publish_target: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONTENT_PUBLISH_TARGET", "WORKBENCH_CONTENT_PUBLISH_TARGET"),
+    )
+    content_publish_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONTENT_PUBLISH_ENDPOINT", "WORKBENCH_CONTENT_PUBLISH_ENDPOINT"),
+    )
+    content_publish_account_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONTENT_PUBLISH_ACCOUNT_ID", "WORKBENCH_CONTENT_PUBLISH_ACCOUNT_ID"),
+    )
+    content_publish_access_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("CONTENT_PUBLISH_ACCESS_TOKEN", "WORKBENCH_CONTENT_PUBLISH_ACCESS_TOKEN"),
+    )
+    content_publish_timeout_seconds: float = Field(
+        default=15.0, ge=1, le=60,
+        validation_alias=AliasChoices("CONTENT_PUBLISH_TIMEOUT_SECONDS", "WORKBENCH_CONTENT_PUBLISH_TIMEOUT_SECONDS"),
+    )
     bootstrap_token: str = Field(
         default="",
         validation_alias=AliasChoices("BOOTSTRAP_TOKEN", "WORKBENCH_BOOTSTRAP_TOKEN"),

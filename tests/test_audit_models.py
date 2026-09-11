@@ -25,7 +25,11 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.DEAD_LETTER_NOTIFIED.value == "dead_letter.notified"
     assert AuditAction.DEAD_LETTER_NOTIFICATION_FAILED.value == "dead_letter.notification_failed"
     assert AuditAction.CONTENT_SOURCE_SCRAPED.value == "content.source.scraped"
-    assert len(set(AuditAction)) == 22
+    assert AuditAction.CONTENT_PUBLICATION_REQUESTED.value == "content.publication.requested"
+    assert AuditAction.CONTENT_PUBLICATION_SUCCEEDED.value == "content.publication.succeeded"
+    assert AuditAction.CONTENT_PUBLICATION_MANUAL_TAKEOVER.value == "content.publication.manual_takeover"
+    assert AuditAction.CONTENT_PUBLICATION_VERIFIED.value == "content.publication.verified"
+    assert len(set(AuditAction)) == 26
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

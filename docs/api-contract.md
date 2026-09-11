@@ -148,6 +148,26 @@
 
 Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入摘录中的指令性文字不会改变权限、策略或任务状态。
 
+## 内容发布（公众号）
+
+`POST /api/v1/content-tasks/{task_id}/publications`
+
+需登录且仅限可见范围（非 CEO/超级管理员仅本人创建的内容）。**只有已确认的草稿可以发布**，未确认返回 `409`。发布功能默认关闭：仅当同时配置 `CONTENT_PUBLISH_ENDPOINT`、`CONTENT_PUBLISH_ACCOUNT_ID`、`CONTENT_PUBLISH_ACCESS_TOKEN` 时可用，否则返回 `503`。
+
+**幂等与绝不自动重发**：幂等键由服务端推导为 `"{task_id}:{revision}"`，并由数据库对 `(tenant_id, idempotency_key)` 施加唯一约束。同一幂等键的重复请求**返回既有发布记录且不再次调用外部平台**，串行与并发下都不会重复发布。平台调用失败时先落库为 `manual_takeover` 再返回 `502`，交由人工接管；**重发必须由人工决定，服务端不会自动重试**。
+
+成功或幂等复用返回 `201`：`{"publication_id","task_id","revision","target","status","receipt_id","error","created_at","verified_at"}`。
+
+`GET /api/v1/content-tasks/{task_id}/publications`
+
+返回 `{"items": [...]}`，按创建时间倒序，仅限本租户与可见范围。
+
+`POST /api/v1/content-publications/{publication_id}/verification`
+
+回执核对：向平台查询该回执的当前状态并更新记录（写入 `verified_at`）。无回执或平台返回异常返回 `502`，未配置渠道返回 `503`。
+
+审计动作：`content.publication.requested`、`content.publication.succeeded`、`content.publication.manual_takeover`、`content.publication.verified`。明细仅含 `target`、`receipt_id`、`status` 等非敏感字段，**不含正文、账号密钥或访问令牌**。
+
 `POST /api/v1/tasks`
 
 创建任务。必填信息为标题、数字员工标识、风险等级、预算和幂等键，可选项目标识。高风险任务创建后状态为 `pending_approval`，其他任务状态为 `queued`。首次创建返回 `201`，相同租户、用户和幂等键重放返回同一任务并返回 `200`。

@@ -29,6 +29,10 @@ class AuditAction(StrEnum):
     DEAD_LETTER_NOTIFIED = "dead_letter.notified"
     DEAD_LETTER_NOTIFICATION_FAILED = "dead_letter.notification_failed"
     CONTENT_SOURCE_SCRAPED = "content.source.scraped"
+    CONTENT_PUBLICATION_REQUESTED = "content.publication.requested"
+    CONTENT_PUBLICATION_SUCCEEDED = "content.publication.succeeded"
+    CONTENT_PUBLICATION_MANUAL_TAKEOVER = "content.publication.manual_takeover"
+    CONTENT_PUBLICATION_VERIFIED = "content.publication.verified"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -56,6 +60,8 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "channel",
         "domain",
         "status",
+        "target",
+        "receipt_id",
     }
 )
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .audit.logging import configure_audit_logging
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_run_metrics, build_task_repository
+from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_task_repository
 from .events import EventEnvelope
 from .domain import (
     AuditEvent,
@@ -47,6 +47,9 @@ from .runtime.service import RunAccessDenied, RuntimeService
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
 from .content.service import ContentNotFound, ContentService, ExportNotAllowed, RevisionConflict, ScrapeNotConfigured
 from .content.scraper import ScrapeDenied, ScrapeFailed
+from .content.publication_service import PublicationNotAllowed
+from .content.publication_store import PublicationNotFound
+from .content.publisher import PublicationFailed, PublicationNotConfigured
 from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
 from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
@@ -87,13 +90,21 @@ dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, audit
 knowledge_access_registry = build_knowledge_access_registry(settings)
 runtime_service = RuntimeService(store)
 run_metrics_service = build_run_metrics(settings)
+content_store = build_content_store(settings)
 content_service = ContentService(
     task_store=store,
     runtime_service=runtime_service,
-    content_store=build_content_store(settings),
+    content_store=content_store,
     knowledge_registry=knowledge_access_registry,
     content_generator=build_content_generator(settings),
     scraper=build_content_scraper(settings),
+    audit=audit_service,
+)
+content_publisher = build_content_publisher(settings)
+publication_service = build_publication_service(
+    settings,
+    content_store=content_store,
+    publisher=content_publisher,
     audit=audit_service,
 )
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
@@ -544,6 +555,75 @@ def scrape_content_source(payload: ScrapeRequest, context: UserContext = Depends
         "content_type": document.content_type,
         "fetched_at": document.fetched_at,
     }
+
+
+class PublicationView(BaseModel):
+    publication_id: str
+    task_id: str
+    revision: int
+    target: str
+    status: str
+    receipt_id: str | None
+    error: str | None
+    created_at: datetime
+    verified_at: datetime | None
+
+
+def _publication_view(record) -> PublicationView:
+    return PublicationView(
+        publication_id=record.publication_id,
+        task_id=record.task_id,
+        revision=record.revision,
+        target=record.target,
+        status=record.status,
+        receipt_id=record.receipt_id,
+        error=record.error,
+        created_at=record.created_at,
+        verified_at=record.verified_at,
+    )
+
+
+@app.post("/api/v1/content-tasks/{task_id}/publications", status_code=status.HTTP_201_CREATED)
+def create_content_publication(
+    task_id: str, context: UserContext = Depends(current_user)
+) -> PublicationView:
+    try:
+        record = publication_service.publish(context, task_id)
+    except (ContentNotFound, PublicationNotFound) as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+    except PublicationNotAllowed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PublicationNotConfigured as exc:
+        raise HTTPException(status_code=503, detail="未配置发布渠道，发布功能未启用") from exc
+    except PublicationFailed as exc:
+        raise HTTPException(status_code=502, detail="发布失败，已转入人工接管，请勿自动重发") from exc
+    return _publication_view(record)
+
+
+@app.get("/api/v1/content-tasks/{task_id}/publications")
+def list_content_publications(
+    task_id: str, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    try:
+        records = publication_service.list(context, task_id)
+    except ContentNotFound as exc:
+        raise HTTPException(status_code=404, detail="内容任务不存在") from exc
+    return {"items": [_publication_view(record) for record in records]}
+
+
+@app.post("/api/v1/content-publications/{publication_id}/verification")
+def verify_content_publication(
+    publication_id: str, context: UserContext = Depends(current_user)
+) -> PublicationView:
+    try:
+        record = publication_service.verify(context, publication_id)
+    except (ContentNotFound, PublicationNotFound) as exc:
+        raise HTTPException(status_code=404, detail="发布记录不存在") from exc
+    except PublicationNotConfigured as exc:
+        raise HTTPException(status_code=503, detail="未配置发布渠道，发布功能未启用") from exc
+    except PublicationFailed as exc:
+        raise HTTPException(status_code=502, detail="回执核对失败") from exc
+    return _publication_view(record)
 
 
 @app.get("/api/v1/commercial/tenant", response_model=CommercialTenantView)

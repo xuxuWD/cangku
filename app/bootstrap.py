@@ -163,6 +163,63 @@ def build_content_scraper(settings: Settings):
     return WebScraper(policy)
 
 
+def build_content_publisher(settings: Settings):
+    """按配置装配公众号发布器；未配置则返回 None（发布功能关闭，fail-closed）。"""
+    validate_runtime_settings(settings)
+    if not (
+        settings.content_publish_endpoint
+        and settings.content_publish_account_id
+        and settings.content_publish_access_token
+    ):
+        return None
+    from .content.publisher import WechatMpPublisher
+
+    return WechatMpPublisher(
+        settings.content_publish_endpoint,
+        settings.content_publish_account_id,
+        settings.content_publish_access_token,
+        timeout_seconds=settings.content_publish_timeout_seconds,
+        name=settings.content_publish_target or "wechat_mp",
+    )
+
+
+def build_publication_service(
+    settings: Settings,
+    *,
+    content_store,
+    publisher=None,
+    audit=None,
+    connection=None,
+    migrate: bool = True,
+):
+    """按存储模式装配内容发布编排服务。"""
+    validate_runtime_settings(settings)
+    from .content.publication_service import PublicationService
+    from .content.publication_store import InMemoryPublicationStore, PostgresPublicationStore
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存发布记录仓储")
+        store = InMemoryPublicationStore()
+    elif settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        store = PostgresPublicationStore(connection)
+    else:
+        raise ValueError("不支持的发布记录存储类型")
+    return PublicationService(
+        content_store,
+        store,
+        publisher=publisher,
+        audit=audit,
+    )
+
+
 def build_outbox_publisher(
     settings: Settings, *, connection=None, redis_client=None, audit=None
 ) -> OutboxPublisher:
