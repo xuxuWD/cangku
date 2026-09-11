@@ -1,0 +1,21 @@
+# 公司数字员工工作台桌面端打包配置。
+#
+# 注意：当前**未配置代码签名与时间戳**：安装包构建需在具备证书的机器上完成，属未验收项。
+# 本仓库的开发机没有安装 Electron、也没有代码签名证书，因此真实安装包构建、
+# 代码签名、公证与干净电脑测试均尚未执行，禁止把本配置当作「已可发布」的依据。
+appId: com.company.workbench.desktop
+productName: 公司数字员工工作台
+asar: true
+directories:
+  output: release
+files:
+  - "src/**"
+  - "web/**"
+  - "package.json"
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

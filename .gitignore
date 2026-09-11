@@ -29,6 +29,11 @@ vite.config.d.ts
 # 手机伴侣 PWA 前端
 companion-pwa/node_modules/
 companion-pwa/dist/
+
+# Windows 桌面端（Electron 壳）
+desktop/node_modules/
+desktop/release/
+desktop/web/
 .idea/
 .vscode/
 *.log
