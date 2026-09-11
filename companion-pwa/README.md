@@ -36,8 +36,8 @@ npx vitest run   # 运行测试（必须加 run，否则进入 watch 模式）
 
 - **令牌存储**：会话令牌保存在 `localStorage`，存在被 XSS 读取的风险。更安全的 httpOnly Cookie 方案需要后端改造，本轮未做。
 - **提醒方式**：目前是**轮询式**（默认 30 秒），并非 Web Push。真实推送需要 HTTPS 与 VAPID 密钥，属未验收项。
-- **图标格式**：图标为 SVG；部分平台 / 低版本浏览器安装性要求位图图标（PNG），需真机验证。
-- **跨源部署**：前后端跨源部署需要后端配置 CORS（当前仅 development 开放，且未放行 `Authorization` 头），**真实跨源部署属未验收项**。
+- **图标格式**：manifest 使用位图 PNG（`192`/`512` 与 `512` maskable），并另提供 `apple-touch-icon.png`（180）；SVG 仅作浏览器 favicon。**真机安装性仍属未验收项**。
+- **跨源部署**：前后端跨源时后端需显式配置 `WORKBENCH_CORS_ALLOWED_ORIGINS`（允许头已含 `Authorization`；留空即不放行任何跨源），**真实跨源部署属未验收项**。
 
 ## 安全约定
 
