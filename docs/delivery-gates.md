@@ -69,7 +69,7 @@
 5. 不提交 `.env`、密钥、Cookie、浏览器会话、客户原文或临时媒体。
 6. 未通过真实验收的能力不能写成“已上线”“已发布”或“已收录”。
 
-> **CI 强制范围**：第 2–4 条中机器可判定的部分由 `.github/workflows/ci.yml` 在 push / PR 上执行——后端 `pytest` + `compileall`、`admin-web` 与 `companion-pwa` 的 `vitest run` + 生产构建、`desktop` 的 `node --test`（跳过 Electron 二进制下载）。第 1、5、6 条属人工约定，CI 不覆盖。**已在 GitHub Actions 实跑通过**：push 触发 run `34590744934`，4 个 job 全绿（后端 35s / 伴侣端 26s / 管理台 16s / 桌面端 11s）；门禁命令与安全约束另由 `tests/test_ci_assets.py` 静态守护。
+> **CI 强制范围**：第 2–4 条中机器可判定的部分由 `.github/workflows/ci.yml` 在 push / PR 上执行——后端 `pytest` + `compileall`、`admin-web` 与 `companion-pwa` 的 `vitest run` + 生产构建、`desktop` 的 `node --test`（跳过 Electron 二进制下载）。第 1、5、6 条属人工约定，CI 不覆盖。**已在 GitHub Actions 实跑通过**：push 触发 run `34591258934`（当前 v7 版工作流），4 个 job 全绿（后端 31s / 管理台 14s / 伴侣端 13s / 桌面端 13s）；首次实跑为 run `34590744934`。门禁命令与安全约束另由 `tests/test_ci_assets.py` 静态守护。
 
 RAGFlow/AgentScope 当前仅完成开发期适配器契约与受控注册表验证；`FakeTransport` 测试不等于真实 staging 或真实平台账号验收。
 
