@@ -2,10 +2,10 @@
 
 > **用途**：把 `docs/delivery-gates.md` 的勾选状态摊开成可逐项追踪的底账，区分「代码在」「有测试守护」「在真实环境验收过」三种不同状态。
 >
-> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照）；第十次：项 8 两处代码缺口修复（运行时认证注入、注册表接入应用装配）+ 三项接入索取表（GEO 契约/公众号账号/外部运行时）；第十一次：分支 `feature/acceptance-tooling` 快进合入 `main`，基线口径由该分支改为 `main`；第十二次：TOTP 种子静态加密（HKDF 子密钥 + AES-256-GCM）与会话令牌服务端撤销（登出立即生效，迁移 018）；第十三次：补齐契约遗漏（内容任务列表、运行指标两接口）并新增路由覆盖守护测试；第十四次：审计明细嵌套值的递归敏感键校验（防御性加固），并订正过期口径——桌面端自动更新行拆出为已完成、通知能力范围改为「仅死信运维通知渠道」、核实记录注同步；第十五次：接入提交门禁 CI（`.github/workflows/ci.yml` + 静态契约守护）；第十六次：修复两个前端依赖版本漂移——`admin-web`、`companion-pwa` 的全部依赖由 `latest` 改为精确版本，并新增 lockfile 一致性守护；第十七次：CI 首次实跑通过（run `34590744934`）、Action 升到 v7 消除弃用告警并补齐 Action 版本守护，v7 版工作流再次实跑通过（run `34591258934`，4 job 全绿）；第十八次：员工站内通知收件箱——迁移 `019_inbox_items` + `app/inbox.py`（内存/PostgreSQL 双仓储）+ 三接口 + 两端入口，写入失败不阻断仅写审计；并登记「运行终态未落盘」缺口（E 节）；第十九次：补齐运行终态落盘（`RuntimeService` 统一回写 start/pause/resume/cancel、直启与内容生成运行一并纳入）、新增受控 `finish_reason`（迁移 020）与 Mock 确定性失败路径（`fail.` 前缀），接入运行失败/取消站内通知，并把「带审批步骤的运行终态」登记为新缺口；第二十次：补齐运行内审批决议闭环（`GET/POST /api/v1/runs/{run_id}/approvals[...]`、仅 CEO/超管且发起人不能自审、通过后执行步骤并落到终态、驳回立即 failed 并新增 `finish_reason=approval_rejected`、审计 `run.approval_decided`、通知 `run.approval_rejected`），关闭上一轮登记的缺口，并把「审批人无租户级待办入口」登记为新缺口；第二十一次：管理台运行详情页（指标 / 事件时间线 / 审批决议，通知跳转与 URL 直达），并修复两端收件箱 kind 漂移 + 新增 `test_frontend_inbox_kinds.py` 守护；第二十二次：审批人的运行审批待办入口（聚合第 4 类 `run_approval` + 伴侣端第 4 类卡片与决议动作），关闭 E 节最后一条 ❌；配套修复「终态运行可被剩余审批复活」的缺陷，并把「运行时状态未持久化（待办不跨重启、多进程不完整）」首次写入文档）
-> **基线**：分支 `main`（`feature/acceptance-tooling` 已于 2026-09-11 快进合入），全量 **1115 项测试通过**，`compileall` 退出码 0
+> **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照）；第十次：项 8 两处代码缺口修复（运行时认证注入、注册表接入应用装配）+ 三项接入索取表（GEO 契约/公众号账号/外部运行时）；第十一次：分支 `feature/acceptance-tooling` 快进合入 `main`，基线口径由该分支改为 `main`；第十二次：TOTP 种子静态加密（HKDF 子密钥 + AES-256-GCM）与会话令牌服务端撤销（登出立即生效，迁移 018）；第十三次：补齐契约遗漏（内容任务列表、运行指标两接口）并新增路由覆盖守护测试；第十四次：审计明细嵌套值的递归敏感键校验（防御性加固），并订正过期口径——桌面端自动更新行拆出为已完成、通知能力范围改为「仅死信运维通知渠道」、核实记录注同步；第十五次：接入提交门禁 CI（`.github/workflows/ci.yml` + 静态契约守护）；第十六次：修复两个前端依赖版本漂移——`admin-web`、`companion-pwa` 的全部依赖由 `latest` 改为精确版本，并新增 lockfile 一致性守护；第十七次：CI 首次实跑通过（run `34590744934`）、Action 升到 v7 消除弃用告警并补齐 Action 版本守护，v7 版工作流再次实跑通过（run `34591258934`，4 job 全绿）；第十八次：员工站内通知收件箱——迁移 `019_inbox_items` + `app/inbox.py`（内存/PostgreSQL 双仓储）+ 三接口 + 两端入口，写入失败不阻断仅写审计；并登记「运行终态未落盘」缺口（E 节）；第十九次：补齐运行终态落盘（`RuntimeService` 统一回写 start/pause/resume/cancel、直启与内容生成运行一并纳入）、新增受控 `finish_reason`（迁移 020）与 Mock 确定性失败路径（`fail.` 前缀），接入运行失败/取消站内通知，并把「带审批步骤的运行终态」登记为新缺口；第二十次：补齐运行内审批决议闭环（`GET/POST /api/v1/runs/{run_id}/approvals[...]`、仅 CEO/超管且发起人不能自审、通过后执行步骤并落到终态、驳回立即 failed 并新增 `finish_reason=approval_rejected`、审计 `run.approval_decided`、通知 `run.approval_rejected`），关闭上一轮登记的缺口，并把「审批人无租户级待办入口」登记为新缺口；第二十一次：管理台运行详情页（指标 / 事件时间线 / 审批决议，通知跳转与 URL 直达），并修复两端收件箱 kind 漂移 + 新增 `test_frontend_inbox_kinds.py` 守护；第二十二次：审批人的运行审批待办入口（聚合第 4 类 `run_approval` + 伴侣端第 4 类卡片与决议动作），关闭 E 节最后一条 ❌；配套修复「终态运行可被剩余审批复活」的缺陷，并把「运行时状态未持久化（待办不跨重启、多进程不完整）」首次写入文档；第二十三次：运行时状态持久化——迁移 `021` + `PostgresRuntimeStateStore`（整行 JSONB upsert）+ 编解码与 `InvalidRuntimeState` + `build_runtime_state_store`（postgres 强制持久化、memory 仅限 development），事件 payload 写入前即脱敏，关闭「运行时状态持久化」缺口）
+> **基线**：分支 `main`（`feature/acceptance-tooling` 已于 2026-09-11 快进合入），全量 **1142 项测试通过**，`compileall` 退出码 0
 >
-> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 115 个测试模块、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
+> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 118 个测试模块、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
 
 ## 判定口径
 
@@ -20,14 +20,14 @@
 
 | 维度 | 数量 |
 | --- | --- |
-| 门禁总项数 | **60**（`delivery-gates.md`） |
-| 已勾选（实现） | **51** |
+| 门禁总项数 | **61**（`delivery-gates.md`） |
+| 已勾选（实现） | **52** |
 | 未勾选 | **9** |
 | 达到**真实环境验收**（staging / 生产 / 真实外部账号） | **0**（另有本地真实验证 2 项、CI 环境验证 1 项，见下两行） |
 | 本地已验证（真实 PostgreSQL 迁移与备份恢复演练、内容工作台内部闭环回归） | **2** |
 | CI 环境已验证（提交门禁在 GitHub Actions 实跑通过） | **1** |
-| 测试文件数 | **115** 个测试模块（`tests/`；另有 `conftest.py` 与 `oidc_test_idp.py` 两个辅助文件，不计入） |
-| 测试用例数 | **1115**（后端）+ 前端 `admin-web` 47、`companion-pwa` 37、`desktop` 19（Node `node:test`） |
+| 测试文件数 | **118** 个测试模块（`tests/`；另有 `conftest.py` 与 `oidc_test_idp.py` 两个辅助文件，不计入） |
+| 测试用例数 | **1142**（后端）+ 前端 `admin-web` 47、`companion-pwa` 37、`desktop` 19（Node `node:test`） |
 
 > **一句话结论**：服务端能力基本齐全，**本批次可独立实现的代码缺口已全部闭合（项 2 的死信通知渠道、项 9 的抓取器/发布器/内容安全评估、项 3 的 OIDC SSO 客户端）**；但项 3 的真实 IdP 联调与项 6 的 GEO 适配器**尚需先拿到口径/契约才能动工**，不属于本仓库可独立完成的范围。其余卡点全为外部依赖。
 >
@@ -99,7 +99,7 @@
 | 运行终态落盘与结束原因 | ✅ | ✅ | ⬜ | 写入者收敛到 `RuntimeService`（`start`/`pause`/`resume`/`cancel`/`decide_approval` 都回写同一记录并保留原始启动时间）；`finish_reason` 为受控枚举（含 `approval_rejected`），迁移 `020`；Mock 提供 `fail.` 前缀的确定性失败路径。测试 `test_run_finish_reason.py`、`test_runtime_lifecycle.py` |
 | 运行内审批决议闭环 | ✅ | ✅ | ⬜ | `GET /api/v1/runs/{run_id}/approvals` 列审批项、`POST .../approvals/{approval_id}/approval` 决议；仅 CEO/超管且**发起人不能自审**；通过后执行被批准步骤并落到终态，驳回立即 `failed` + `finish_reason=approval_rejected`；审计 `run.approval_decided`、通知 `run.approval_rejected`。测试 `test_run_approval.py`、`test_run_approval_api.py`；管理台运行详情页可决议（见 J 节） |
 | 审批人的运行审批待办入口 | ✅ | ✅ | ⬜ | 「待我审批」聚合新增第 4 类 `run_approval`（ceo/super_admin 可见、剔除发起人自审、`counts` 新增键、`detail` 带 `run_id`/`approval_id`）；伴侣端第 4 类卡片与通过/驳回动作（打到运行决议接口，**不会误发账号注册接口**）。测试 `test_approvals_run_kind.py`、`test_run_approval_todo.py` + 伴侣端 Vitest。**限制**：无「指派给某个审批人」概念；管理台仍无待办聚合页 |
-| 运行时状态持久化（待办跨重启 / 多进程） | ❌ | ❌ | ⬜ | **新登记缺口（此前未文档化）**：`RuntimeStateStore` 在**所有存储模式**都是进程内状态，因此运行审批待办**不跨重启**、多进程部署下不完整，且重启后旧 `run_id` 的决议/暂停/取消/查询事件都会「运行不存在」。修复需连整个运行时状态一起持久化（另一项目量级） |
+| 运行时状态持久化（待办跨重启 / 多进程） | ✅ | ✅ | ⬜ | 迁移 `021` + `PostgresRuntimeStateStore`（整行 JSONB upsert，接口与内存实现对等）+ `app/runtime/serialization.py`（编解码、损坏数据抛 `InvalidRuntimeState`）+ `build_runtime_state_store`（postgres 强制持久化、memory 仅限 development、随启动跑迁移）；事件 payload **写入前即脱敏**。测试 `test_runtime_state_{serialization,postgres,write_through}.py`。**限制**：事件与状态同存一行（长运行写放大）；并发修改最后写入获胜；敏感键为精确匹配；**真实 PostgreSQL 重启恢复仍需 staging 验收** |
 | 终态运行的审批复用（缺陷修复） | ✅ | ✅ | ✅（单测/接口） | 修复「先驳回一条审批使运行 `failed`，再批准另一条仍 `pending` 的审批会把运行**复活为 `completed`**」；新增 `RunNotDecidable` → `409`，Mock 在决议前校验终态。测试 `test_run_approval_todo.py`、`test_run_approval_api.py` |
 
 ## F. 事件与异步
@@ -219,6 +219,7 @@
 17. ~~运行内审批决议闭环~~ ✅（已完成：两个接口 + 仅 CEO/超管且发起人不能自审 + 通过/驳回驱动终态 + `finish_reason=approval_rejected` + 审计与通知，见 E 节）；新登记缺口「审批人的租户级待办入口」（E 节）。
 18. ~~管理台运行详情页~~ ✅（已完成：指标 / 事件时间线 / 审批决议，通知跳转与 URL 直达，见 J 节）；配套修复两端收件箱 kind 漂移并加守护测试。运行列表页与暂停/恢复/取消仍属未做（见 J 节限制）。
 19. ~~审批人的运行审批待办入口~~ ✅（已完成：聚合第 4 类 `run_approval` + 伴侣端第 4 类卡片与决议动作，见 E/J 节），**E 节原有 ❌ 项已清零**；新登记缺口「运行时状态持久化」（E 节）。
+20. ~~运行时状态持久化~~ ✅（已完成：迁移 `021` + PG 状态仓储 + 编解码与写入即脱敏 + postgres 强制持久化装配，见 E 节）；**E 节当前无 ❌ 项**。真实 PostgreSQL 的重启恢复仍需 staging 验收（阻塞项 1）。
 
 ## 生成时的核实记录
 
