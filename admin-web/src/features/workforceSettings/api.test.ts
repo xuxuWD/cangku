@@ -1,4 +1,4 @@
-import { createAgent, createRole, listAgents, listCandidates, listRoles, updateAgent, updateRole } from './api'
+import { createAgent, createRole, listAgents, listCandidates, listRoles, readAgentConfig, updateAgent, updateAgentConfig, updateRole } from './api'
 import { directoryErrorFromStatus } from './state'
 
 type FetchMock = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -93,5 +93,22 @@ describe('workforceSettings api', () => {
 
     vi.stubGlobal('fetch', vi.fn<FetchMock>(async () => { throw new Error('boom') }))
     await expect(listAgents()).rejects.toMatchObject({ status: 0, retryable: true })
+  })
+
+  it('reads and patches an employee config by key', async () => {
+    const config = { agent_key: 'content-writer', system_prompt: '', model_key: '', temperature: 0.2, tool_allowlist: [], memory_policy: {}, autonomy_level: 'approval_for_risky', risk_threshold: 'high', approval_timeout_minutes: 60, daily_budget_cents: 0, updated_at: null }
+    const fetchMock = vi.fn<FetchMock>(async () => ok(config))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await readAgentConfig('content-writer')
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/workforce/agents/content-writer/config')
+    expect(fetchMock.mock.calls[0][1]?.method).toBeUndefined()
+
+    await updateAgentConfig('content-writer', { system_prompt: '你是助手', model_key: '', temperature: 0.2, tool_allowlist: [], memory_policy: { short_term_enabled: true, short_term_turns: 6 }, autonomy_level: 'full_auto', risk_threshold: 'high', approval_timeout_minutes: 60, daily_budget_cents: 1234 })
+
+    const [url, init] = fetchMock.mock.calls[1]
+    expect(String(url)).toContain('/workforce/agents/content-writer/config')
+    expect(init?.method).toBe('PATCH')
+    expect(JSON.parse(String(init?.body))).toMatchObject({ memory_policy: { short_term_enabled: true, short_term_turns: 6 }, autonomy_level: 'full_auto', daily_budget_cents: 1234 })
   })
 })

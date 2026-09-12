@@ -1,5 +1,5 @@
 import { directoryErrorFromStatus } from './state'
-import { PAGE_LIMIT, type DigitalEmployee, type DirectoryList, type JobRole, type WorkforceCandidates } from './types'
+import { PAGE_LIMIT, type AgentConfig, type AgentConfigUpdate, type DigitalEmployee, type DirectoryList, type JobRole, type WorkforceCandidates } from './types'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1').replace(/\/$/, '')
 
@@ -65,4 +65,16 @@ export function updateAgent(agentKey: string, payload: { name?: string; descript
 
 export function listCandidates(): Promise<WorkforceCandidates> {
   return request<WorkforceCandidates>('/workforce/candidates')
+}
+
+// 员工配置：仅超级管理员可读写；非超管服务端一律 403。
+export function readAgentConfig(agentKey: string): Promise<AgentConfig> {
+  return request<AgentConfig>(`/workforce/agents/${encodeURIComponent(agentKey)}/config`)
+}
+
+export function updateAgentConfig(agentKey: string, payload: AgentConfigUpdate): Promise<AgentConfig> {
+  return request<AgentConfig>(`/workforce/agents/${encodeURIComponent(agentKey)}/config`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
 }

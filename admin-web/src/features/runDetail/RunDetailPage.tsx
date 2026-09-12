@@ -4,6 +4,7 @@ import { Toast } from '../../components/Toast'
 import { decideRunApproval, getRunMetrics, getTask, listRunApprovals, listRunEvents } from './api'
 import { asRunError, initialRunDetailState } from './state'
 import { approvalStatusLabel, finishReasonLabel, runEventLabel, runStatusLabel, RUN_EVENT_PAYLOAD_FIELDS, type RunApproval, type RunDetailState, type RunEvent, type RunMetrics, type RunTask } from './types'
+import { formatLocalTime } from '../../utils/time'
 
 // 与 Promise.allSettled 等价，但立即挂上处理函数，避免并发请求的拒绝变成未处理异常。
 function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
@@ -13,11 +14,6 @@ function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
   )
 }
 
-function formatLocalTime(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
-}
 
 // 只渲染白名单字段；字符串/数字/布尔以外的值一律忽略。
 function formatPayloadValue(value: unknown): string {

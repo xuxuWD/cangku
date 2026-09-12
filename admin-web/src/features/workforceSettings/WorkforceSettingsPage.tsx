@@ -1,20 +1,96 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { AppShell, type AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
-import { createAgent, createRole, listAgents, listCandidates, listRoles, updateAgent, updateRole } from './api'
+import { createAgent, createRole, listAgents, listCandidates, listRoles, readAgentConfig, updateAgent, updateAgentConfig, updateRole } from './api'
 import { asDirectoryError, initialDirectoryState } from './state'
-import { directoryStatusLabel, type DirectoryState } from './types'
+import { formatLocalTime } from '../../utils/time'
+import {
+  AUTONOMY_LEVELS,
+  AUTONOMY_LEVEL_HINTS,
+  AUTONOMY_LEVEL_LABELS,
+  CONFIG_FORBIDDEN_MESSAGE,
+  EMPTY_MODEL_KEY_LABEL,
+  FULL_AUTO_NOTICE,
+  MAX_APPROVAL_TIMEOUT_MINUTES,
+  MAX_SHORT_TERM_TURNS,
+  MAX_SYSTEM_PROMPT_LENGTH,
+  MIN_APPROVAL_TIMEOUT_MINUTES,
+  RISK_THRESHOLD_LABELS,
+  directoryStatusLabel,
+  type AgentConfig,
+  type AgentConfigUpdate,
+  type DirectoryErrorShape,
+  type DirectoryState,
+} from './types'
 
 type EditTarget = { kind: 'role' | 'agent'; key: string; name: string; description: string; role_key: string }
 
 const EMPTY_ROLE_FORM = { role_key: '', name: '', description: '' }
 const EMPTY_AGENT_FORM = { agent_key: '', name: '', role_key: '', description: '' }
 
+// 表单里数字一律先按字符串保存（用户可清空/输入中），提交前再统一换算与校验。
+interface AgentConfigForm {
+  system_prompt: string
+  model_key: string
+  temperature: string
+  tool_allowlist: string
+  short_term_enabled: boolean
+  short_term_turns: string
+  autonomy_level: string
+  risk_threshold: string
+  approval_timeout_minutes: string
+  daily_budget_yuan: string
+}
+
+function configToForm(config: AgentConfig): AgentConfigForm {
+  const memory = config.memory_policy as { short_term_enabled?: unknown; short_term_turns?: unknown }
+  return {
+    system_prompt: config.system_prompt,
+    model_key: config.model_key,
+    // 温度固定显示两位小数（0.2 → 0.20），与后端 NUMERIC(3,2) 口径一致。
+    temperature: config.temperature.toFixed(2),
+    tool_allowlist: config.tool_allowlist.join(', '),
+    short_term_enabled: memory.short_term_enabled === true,
+    short_term_turns: typeof memory.short_term_turns === 'number' ? String(memory.short_term_turns) : '0',
+    autonomy_level: config.autonomy_level,
+    risk_threshold: config.risk_threshold,
+    approval_timeout_minutes: String(config.approval_timeout_minutes),
+    daily_budget_yuan: (config.daily_budget_cents / 100).toFixed(2),
+  }
+}
+
+// 金额按「元」输入、提交前换算为**整数分**（宪法：金额不用浮点）；换算不出数字时返回 null。
+function buildConfigPayload(form: AgentConfigForm): AgentConfigUpdate | null {
+  const temperature = Number(form.temperature)
+  const turns = Number(form.short_term_turns)
+  const timeout = Number(form.approval_timeout_minutes)
+  const yuan = Number(form.daily_budget_yuan)
+  if (![temperature, turns, timeout, yuan].every((value) => Number.isFinite(value))) return null
+  return {
+    system_prompt: form.system_prompt,
+    model_key: form.model_key.trim(),
+    temperature,
+    tool_allowlist: form.tool_allowlist.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+    memory_policy: { short_term_enabled: form.short_term_enabled, short_term_turns: turns },
+    autonomy_level: form.autonomy_level,
+    risk_threshold: form.risk_threshold,
+    approval_timeout_minutes: timeout,
+    daily_budget_cents: Math.round(yuan * 100),
+  }
+}
+
 export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppView) => void }) {
   const [state, setState] = useState<DirectoryState>(initialDirectoryState)
   const [roleForm, setRoleForm] = useState(EMPTY_ROLE_FORM)
   const [agentForm, setAgentForm] = useState(EMPTY_AGENT_FORM)
   const [editing, setEditing] = useState<EditTarget | null>(null)
+  // 员工配置：展开哪个员工、读到的配置、编辑中的表单与错误。
+  const [configTarget, setConfigTarget] = useState<string | null>(null)
+  const [config, setConfig] = useState<AgentConfig | null>(null)
+  const [configForm, setConfigForm] = useState<AgentConfigForm | null>(null)
+  const [configLoading, setConfigLoading] = useState(false)
+  const [configSaving, setConfigSaving] = useState(false)
+  const [configError, setConfigError] = useState<DirectoryErrorShape | null>(null)
 
   const load = useCallback(async () => {
     setState((old) => ({ ...old, loading: true, error: null }))
@@ -42,8 +118,56 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
     }
   }, [load])
 
-  const switchTab = (tab: DirectoryState['tab']) => { setEditing(null); setState((old) => ({ ...old, tab, formError: null })) }
+  const switchTab = (tab: DirectoryState['tab']) => {
+    setEditing(null)
+    setConfigTarget(null)
+    setConfigError(null)
+    setState((old) => ({ ...old, tab, formError: null }))
+  }
   const activeRoles = state.roles.items.filter((role) => role.status === 'active')
+
+  // 读配置：仅超级管理员可读，403 时在配置区显示后端/固定中文文案。
+  const openConfig = async (agentKey: string) => {
+    setEditing(null)
+    setConfigTarget(agentKey)
+    setConfig(null)
+    setConfigForm(null)
+    setConfigError(null)
+    setConfigLoading(true)
+    try {
+      const loaded = await readAgentConfig(agentKey)
+      setConfig(loaded)
+      setConfigForm(configToForm(loaded))
+    } catch (error) {
+      // 非超管读配置是 403：给配置区一句专用文案，而不是留空或复用目录权限文案。
+      const shaped = asDirectoryError(error)
+      setConfigError(shaped.status === 403 ? { ...shaped, message: CONFIG_FORBIDDEN_MESSAGE } : shaped)
+    } finally {
+      setConfigLoading(false)
+    }
+  }
+
+  // 写配置：必须先等后端响应；422（含 D11 提示注入被拒）原样显示后端中文原因。
+  const saveConfig = async () => {
+    if (!configTarget || !configForm || configSaving) return
+    const payload = buildConfigPayload(configForm)
+    if (!payload) {
+      setConfigError({ status: 0, message: '温度、保留轮数、审批超时与每日预算必须是数字。', retryable: false })
+      return
+    }
+    setConfigSaving(true)
+    setConfigError(null)
+    try {
+      const updated = await updateAgentConfig(configTarget, payload)
+      setConfig(updated)
+      setConfigForm(configToForm(updated))
+      setState((old) => ({ ...old, toast: `数字员工 ${configTarget} 的配置已更新` }))
+    } catch (error) {
+      setConfigError(asDirectoryError(error))
+    } finally {
+      setConfigSaving(false)
+    }
+  }
 
   return <AppShell activeView="workforceSettings" onNavigate={onNavigate}>
     <main className="main-content content-history workforce-settings">
@@ -135,34 +259,54 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
         <section className="history-panel workforce-settings__panel" aria-label="数字员工列表">
           <div className="panel-header"><h2>数字员工</h2><span>{state.agents.items.length} / {state.agents.total}</span></div>
           {state.agents.items.length === 0 && <div className="empty-state"><strong>暂无数字员工</strong><span>创建数字员工后需要指定它归属的岗位。</span></div>}
-          {state.agents.items.map((employee) => editing?.kind === 'agent' && editing.key === employee.agent_key
-            ? <div className="ws-row" key={employee.agent_key}>
-              <div className="ws-row-main">
-                <label className="ws-field">中文名<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
-                <label className="ws-field">所属岗位<select value={editing.role_key} onChange={(event) => setEditing({ ...editing, role_key: event.target.value })}>{activeRoles.map((role) => <option key={role.role_key} value={role.role_key}>{role.name}（{role.role_key}）</option>)}</select></label>
-                <label className="ws-field ws-field--wide">描述<input value={editing.description} onChange={(event) => setEditing({ ...editing, description: event.target.value })} /></label>
-                <div className="history-meta"><span className="ws-code">{employee.agent_key}</span><span>标识不可修改</span></div>
-              </div>
-              <div className="history-actions">
-                <button className="button primary" type="button" disabled={state.saving} onClick={() => void submit(() => updateAgent(employee.agent_key, { name: editing.name, description: editing.description, role_key: editing.role_key }), `数字员工 ${employee.agent_key} 已更新`)}>保存</button>
-                <button className="button" type="button" onClick={() => setEditing(null)}>取消</button>
-              </div>
-            </div>
-            : <div className="ws-row" key={employee.agent_key}>
-              <div className="ws-row-main">
-                <strong>{employee.name}</strong>
-                <div className="history-meta">
-                  <span className="ws-code">{employee.agent_key}</span>
-                  <span className={`status-badge status-${employee.status}`}>{directoryStatusLabel(employee.status)}</span>
-                  <span>所属岗位：{employee.role_key}</span>
-                  {employee.description && <span>{employee.description}</span>}
+          {state.agents.items.map((employee) => (
+            <Fragment key={employee.agent_key}>
+              {editing?.kind === 'agent' && editing.key === employee.agent_key
+                ? <div className="ws-row">
+                  <div className="ws-row-main">
+                    <label className="ws-field">中文名<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
+                    <label className="ws-field">所属岗位<select value={editing.role_key} onChange={(event) => setEditing({ ...editing, role_key: event.target.value })}>{activeRoles.map((role) => <option key={role.role_key} value={role.role_key}>{role.name}（{role.role_key}）</option>)}</select></label>
+                    <label className="ws-field ws-field--wide">描述<input value={editing.description} onChange={(event) => setEditing({ ...editing, description: event.target.value })} /></label>
+                    <div className="history-meta"><span className="ws-code">{employee.agent_key}</span><span>标识不可修改</span></div>
+                  </div>
+                  <div className="history-actions">
+                    <button className="button primary" type="button" disabled={state.saving} onClick={() => void submit(() => updateAgent(employee.agent_key, { name: editing.name, description: editing.description, role_key: editing.role_key }), `数字员工 ${employee.agent_key} 已更新`)}>保存</button>
+                    <button className="button" type="button" onClick={() => setEditing(null)}>取消</button>
+                  </div>
                 </div>
-              </div>
-              <div className="history-actions">
-                <button className="button" type="button" onClick={() => setEditing({ kind: 'agent', key: employee.agent_key, name: employee.name, description: employee.description, role_key: employee.role_key })}>修改</button>
-                <button className="button" type="button" disabled={state.saving} onClick={() => void submit(() => updateAgent(employee.agent_key, { status: employee.status === 'active' ? 'disabled' : 'active' }), `数字员工 ${employee.agent_key} 已${employee.status === 'active' ? '停用' : '启用'}`)}>{employee.status === 'active' ? '停用' : '启用'}</button>
-              </div>
-            </div>)}
+                : <div className="ws-row">
+                  <div className="ws-row-main">
+                    <strong>{employee.name}</strong>
+                    <div className="history-meta">
+                      <span className="ws-code">{employee.agent_key}</span>
+                      <span className={`status-badge status-${employee.status}`}>{directoryStatusLabel(employee.status)}</span>
+                      <span>所属岗位：{employee.role_key}</span>
+                      {employee.description && <span>{employee.description}</span>}
+                    </div>
+                  </div>
+                  <div className="history-actions">
+                    <button className="button" type="button" onClick={() => void openConfig(employee.agent_key)}>配置</button>
+                    <button className="button" type="button" onClick={() => setEditing({ kind: 'agent', key: employee.agent_key, name: employee.name, description: employee.description, role_key: employee.role_key })}>修改</button>
+                    <button className="button" type="button" disabled={state.saving} onClick={() => void submit(() => updateAgent(employee.agent_key, { status: employee.status === 'active' ? 'disabled' : 'active' }), `数字员工 ${employee.agent_key} 已${employee.status === 'active' ? '停用' : '启用'}`)}>{employee.status === 'active' ? '停用' : '启用'}</button>
+                  </div>
+                </div>}
+
+              {configTarget === employee.agent_key && (
+                <AgentConfigEditor
+                  name={employee.name}
+                  agentKey={employee.agent_key}
+                  config={config}
+                  form={configForm}
+                  loading={configLoading}
+                  saving={configSaving}
+                  error={configError}
+                  onChange={setConfigForm}
+                  onSave={() => void saveConfig()}
+                  onClose={() => { setConfigTarget(null); setConfigError(null) }}
+                />
+              )}
+            </Fragment>
+          ))}
         </section>
 
         {state.candidates.agents.length > 0 && <section className="history-panel workforce-settings__panel" aria-label="未纳管员工标识">
@@ -178,4 +322,148 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
       <Toast message={state.toast} />
     </main>
   </AppShell>
+}
+
+/** 员工配置编辑区：提示词 / 模型 / 温度 / 工具白名单 / 记忆策略 / 治理字段。 */
+function AgentConfigEditor({
+  name,
+  agentKey,
+  config,
+  form,
+  loading,
+  saving,
+  error,
+  onChange,
+  onSave,
+  onClose,
+}: {
+  name: string
+  agentKey: string
+  config: AgentConfig | null
+  form: AgentConfigForm | null
+  loading: boolean
+  saving: boolean
+  error: DirectoryErrorShape | null
+  onChange: (form: AgentConfigForm) => void
+  onSave: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="ws-row ws-row--config">
+      <div className="ws-row-main">
+        <strong>{name} · 配置</strong>
+        <div className="history-meta">
+          <span className="ws-code">{agentKey}</span>
+          <span>仅超级管理员可读写</span>
+          {config?.updated_at && <span>更新于 {formatLocalTime(config.updated_at)}</span>}
+        </div>
+
+        {loading && <div className="loading-state" role="status"><span className="loading-dot" />正在读取配置…</div>}
+
+        {error && <div className="notice notice-error" role="alert"><div><strong>{config ? '配置未保存' : '配置读取失败'}</strong><p>{error.message}</p></div></div>}
+
+        {!loading && !form && !error && <div className="empty-state"><strong>暂无配置</strong><span>服务端没有返回该员工的配置。</span></div>}
+
+        {form && (
+          <div className="ws-form">
+            <label className="ws-field ws-field--wide">
+              系统提示词
+              <textarea
+                aria-label="系统提示词"
+                value={form.system_prompt}
+                rows={6}
+                maxLength={MAX_SYSTEM_PROMPT_LENGTH}
+                onChange={(event) => onChange({ ...form, system_prompt: event.target.value })}
+              />
+              <small className="ws-field-hint">前端上限 {MAX_SYSTEM_PROMPT_LENGTH} 字符，后端才是权威（超长或含「忽略 / 绕过审批」这类指令一律被拒绝）。</small>
+              <small className="ws-counter">{form.system_prompt.length} / {MAX_SYSTEM_PROMPT_LENGTH}</small>
+            </label>
+
+            <label className="ws-field">
+              模型键
+              <input aria-label="模型键" value={form.model_key} placeholder="须在模型网关注册" onChange={(event) => onChange({ ...form, model_key: event.target.value })} />
+              {form.model_key.trim() === ''
+                ? <small className="ws-field-hint">当前为「{EMPTY_MODEL_KEY_LABEL}」。</small>
+                : <small className="ws-field-hint">不在模型网关候选内的键会被后端拒绝（422）。</small>}
+            </label>
+
+            <label className="ws-field">
+              温度
+              <input aria-label="温度" type="number" min={0} max={2} step={0.05} value={form.temperature} onChange={(event) => onChange({ ...form, temperature: event.target.value })} />
+              <small className="ws-field-hint">取值范围 0.00–2.00，步进 0.05。</small>
+            </label>
+
+            <label className="ws-field ws-field--wide">
+              工具白名单
+              <input aria-label="工具白名单" value={form.tool_allowlist} placeholder="逗号分隔；留空表示不使用任何工具" onChange={(event) => onChange({ ...form, tool_allowlist: event.target.value })} />
+              <small className="ws-field-hint">P1 不会执行任何工具，白名单只存不用；白名单外的工具会被后端拒绝（422）。</small>
+            </label>
+
+            <label className="ws-field">
+              短期记忆
+              <span className="ws-check">
+                <input aria-label="启用短期记忆" type="checkbox" checked={form.short_term_enabled} onChange={(event) => onChange({ ...form, short_term_enabled: event.target.checked })} />
+                启用
+              </span>
+            </label>
+
+            <label className="ws-field">
+              短期记忆保留轮数
+              <input aria-label="短期记忆保留轮数" type="number" min={0} max={MAX_SHORT_TERM_TURNS} step={1} value={form.short_term_turns} disabled={!form.short_term_enabled} onChange={(event) => onChange({ ...form, short_term_turns: event.target.value })} />
+              <small className="ws-field-hint">0–{MAX_SHORT_TERM_TURNS} 轮。</small>
+            </label>
+
+            <label className="ws-field">
+              自治等级
+              <select aria-label="自治等级" value={form.autonomy_level} onChange={(event) => onChange({ ...form, autonomy_level: event.target.value })}>
+                {AUTONOMY_LEVELS.map((level) => (
+                  <option value={level} key={level}>{AUTONOMY_LEVEL_LABELS[level]}（{level}）</option>
+                ))}
+              </select>
+            </label>
+
+            {form.autonomy_level === 'full_auto' && (
+              <div className="notice" role="status">
+                <div><strong>免批是特权，不是默认</strong><p>{FULL_AUTO_NOTICE}</p></div>
+              </div>
+            )}
+
+            <label className="ws-field">
+              风险阈值
+              <select aria-label="风险阈值" value={form.risk_threshold} onChange={(event) => onChange({ ...form, risk_threshold: event.target.value })}>
+                {Object.entries(RISK_THRESHOLD_LABELS).map(([value, label]) => <option value={value} key={value}>{label}（{value}）</option>)}
+              </select>
+            </label>
+
+            <label className="ws-field">
+              审批超时（分钟）
+              <input aria-label="审批超时（分钟）" type="number" min={MIN_APPROVAL_TIMEOUT_MINUTES} max={MAX_APPROVAL_TIMEOUT_MINUTES} step={1} value={form.approval_timeout_minutes} onChange={(event) => onChange({ ...form, approval_timeout_minutes: event.target.value })} />
+              <small className="ws-field-hint">{MIN_APPROVAL_TIMEOUT_MINUTES}–{MAX_APPROVAL_TIMEOUT_MINUTES} 分钟。</small>
+            </label>
+
+            <label className="ws-field">
+              每日预算（元）
+              <input aria-label="每日预算（元）" type="number" min={0} step={0.01} value={form.daily_budget_yuan} onChange={(event) => onChange({ ...form, daily_budget_yuan: event.target.value })} />
+              <small className="ws-field-hint">按元填写，提交时换算为整数分（后端字段是 daily_budget_cents）。</small>
+            </label>
+
+            <div className="ws-field ws-field--wide">
+              <span>自治等级说明</span>
+              <ul className="ws-hints">
+                {AUTONOMY_LEVELS.map((level) => (
+                  <li key={level}><strong>{AUTONOMY_LEVEL_LABELS[level]}</strong>（{level}）：{AUTONOMY_LEVEL_HINTS[level]}</li>
+                ))}
+              </ul>
+              <small className="ws-field-hint">自治等级只决定「是否需要人批」，不决定「是否绕开权限判定」：免批的员工也不能做操作者本人无权做的事。</small>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="history-actions">
+        <button className="button primary" type="button" disabled={saving || !form} onClick={onSave}>保存配置</button>
+        <button className="button" type="button" onClick={onClose}>收起</button>
+      </div>
+    </div>
+  )
 }

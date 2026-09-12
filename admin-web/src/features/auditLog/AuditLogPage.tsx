@@ -3,16 +3,11 @@ import { AppShell, type AppView } from '../../app/AppShell'
 import { listAudits } from './api'
 import { asAuditError, initialAuditFilters, initialAuditLogState } from './state'
 import { AUDIT_ACTION_LABELS, auditActionLabel, auditDetailEntries, type AuditFilters, type AuditLogState, type AuditRecord } from './types'
+import { formatLocalTime } from '../../utils/time'
 
 // 动作多选取值来自标签表，按动作码排序，避免与后端枚举顺序耦合。
 const ACTION_OPTIONS = Object.keys(AUDIT_ACTION_LABELS).sort()
 const LIMIT_OPTIONS = [20, 50, 100, 200]
-
-function formatLocalTime(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
-}
 
 // datetime-local 不带时区，提交前转成 toISOString() 的 Z 形式；解析失败则视为未填。
 function toIsoValue(local: string): string {
