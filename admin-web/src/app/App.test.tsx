@@ -213,4 +213,60 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: '整理本周选题' })).toBeInTheDocument()
     expect(screen.getByText('运行概览')).toBeInTheDocument()
   })
+
+  // ---------------------------------------------------------------- 常驻外壳（D19）
+
+  it('keeps the home draft after navigating away and back', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+
+    await user.type(screen.getByLabelText('想对数字员工说的话'), '整理本周客户反馈')
+    await user.click(screen.getByText('内容工作台', { selector: '.nav-item' }))
+    await waitFor(() => expect(screen.getByRole('heading', { name: '内容工作台' })).toBeInTheDocument())
+
+    await user.click(screen.getByText('首页', { selector: '.nav-item' }))
+
+    // 切页不再卸载首页 → 草稿必须还在（这正是 D19 的目的）
+    expect(await screen.findByLabelText('想对数字员工说的话')).toHaveValue('整理本周客户反馈')
+  })
+
+  it('keeps visited views mounted and only toggles visibility', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+
+    await user.click(screen.getByText('内容工作台', { selector: '.nav-item' }))
+    await waitFor(() => expect(screen.getByRole('heading', { name: '内容工作台' })).toBeInTheDocument())
+    await user.click(screen.getByText('首页', { selector: '.nav-item' }))
+    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+
+    // 访问过的视图仍在 DOM 里（只是 hidden），当前视图不隐藏
+    const hiddenSlot = document.querySelector('.view-slot[hidden]')
+    expect(hiddenSlot?.textContent).toContain('内容工作台')
+    expect(document.querySelectorAll('.view-slot:not([hidden])')).toHaveLength(1)
+  })
+
+  it('does not mount views that were never visited', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/inbox?')) return json({ items: [], unread_count: 0 })
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+
+    const requested = () => fetchMock.mock.calls.map(([input]) => String(input))
+    // 未访问过的视图不挂载、也就不发请求（否则启动瞬间会打出十几个页面的并发请求）
+    expect(requested().some((url) => url.includes('/workforce/roster'))).toBe(false)
+    expect(requested().some((url) => url.includes('/audits'))).toBe(false)
+
+    await user.click(screen.getByText('员工与岗位', { selector: '.nav-item' }))
+
+    await waitFor(() =>
+      expect(requested().some((url) => url.includes('/workforce/roster'))).toBe(true)
+    )
+  })
 })

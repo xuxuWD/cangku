@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
 import { listInbox, markAllInboxRead, markInboxRead } from './api'
 import { asInboxError, initialInboxState } from './state'
@@ -69,7 +69,7 @@ export function InboxPage({ onOpenTask, onOpenRun, onNavigate }: { onOpenTask?: 
 
   const canOpen = (item: InboxItem) => item.read_at !== null && Boolean(item.target_id) && (item.target_type === 'task' || item.target_type === 'run')
 
-  return <AppShell activeView="inbox" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-history">
       <div className="page-head">
         <div><h1 className="page-title">通知</h1><p className="page-desc">审批结果与运行结果会记录在这里，标记已读只影响你自己的收件箱。</p></div>
@@ -84,7 +84,7 @@ export function InboxPage({ onOpenTask, onOpenRun, onNavigate }: { onOpenTask?: 
       </section>
     </main>
     <Toast message={state.toast} />
-  </AppShell>
+  </>
 }
 
 function InboxRow({ item, busy, canOpen, onOpen }: { item: InboxItem; busy: boolean; canOpen: boolean; onOpen: () => void }) {

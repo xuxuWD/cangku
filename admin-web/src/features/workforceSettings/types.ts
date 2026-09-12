@@ -101,17 +101,17 @@ export const AUTONOMY_LEVELS = ['approval_for_all', 'approval_for_risky', 'full_
 export const AUTONOMY_LEVEL_LABELS: Record<string, string> = {
   approval_for_all: '每个工具都要批',
   approval_for_risky: '只批高风险',
-  full_auto: '免批',
+  full_auto: '除极高风险外免批',
 }
 
 export const AUTONOMY_LEVEL_HINTS: Record<string, string> = {
   approval_for_all: '每个工具调用都需要人工审批通过后才执行。',
-  approval_for_risky: '只有高风险动作需要人工审批，低风险动作直接执行。',
-  full_auto: '免人工审批；但仍受权限判定与后端闸门约束，不能做操作者本人无权做的事。',
+  approval_for_risky: '只有风险不低于风险阈值的动作需要人工审批，低风险动作直接执行。',
+  full_auto: '免人工审批；但「极高（critical）」风险动作任何自治等级都必须审批，后端写死不可豁免。仍受权限判定与后端闸门约束，不能做操作者本人无权做的事。',
 }
 
 // `full_auto` 是特权而非默认：选中时必须显式提示「仅超管可设 + 写审计」，不得静默授予。
-export const FULL_AUTO_NOTICE = 'full_auto 为免批（免人工审批），仅超级管理员可设置，且该变更会写入审计；它只决定「是否需要人批」，不决定「是否绕开权限判定」。'
+export const FULL_AUTO_NOTICE = 'full_auto 除「极高（critical）」风险外免人工审批；critical 任何自治等级都必须审批，不可豁免。仅超级管理员可设置，且该变更会写入审计；它只决定「是否需要人批」，不决定「是否绕开权限判定」。'
 
 // `model_key` 为空是合法状态（后端语义 = 用默认模型），界面上要写明而不是留空。
 export const EMPTY_MODEL_KEY_LABEL = '未指定（用默认模型）'
@@ -123,6 +123,7 @@ export const RISK_THRESHOLD_LABELS: Record<string, string> = {
   low: '低',
   medium: '中',
   high: '高',
+  critical: '极高（任何自治等级都必须审批）',
 }
 
 export const DIRECTORY_STATUS_LABELS: Record<DirectoryStatus, string> = {

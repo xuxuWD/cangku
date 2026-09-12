@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { listCollaborationDynamics } from './api'
 import { COLLABORATION_DYNAMIC_STATUS_LABELS, type CollaborationDynamic } from './types'
 
@@ -28,7 +28,7 @@ export function CollaborationDynamicsPage({ onOpenTask, onNavigate }: { onOpenTa
     return () => { active = false }
   }, [])
 
-  return <AppShell activeView="dynamics" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-history">
       <div className="page-head">
         <div><h1 className="page-title">协同动态</h1><p className="page-desc">展示当前账号有权限查看的任务动态，点击「查看任务」可进入任务详情。</p></div>
@@ -41,7 +41,7 @@ export function CollaborationDynamicsPage({ onOpenTask, onNavigate }: { onOpenTa
         {!loading && !error && items.length > 0 && <div className="history-list" role="list">{items.map((item) => <DynamicRow item={item} key={item.event_id} onOpenTask={onOpenTask} />)}</div>}
       </section>
     </main>
-  </AppShell>
+  </>
 }
 
 function DynamicRow({ item, onOpenTask }: { item: CollaborationDynamic; onOpenTask: (taskId: string) => void }) {

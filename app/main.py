@@ -46,6 +46,7 @@ from .accounts.sso import SsoError, SsoNotConfigured
 from .accounts.sso_store import SsoStateNotFound
 from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
 from .settings import get_settings, resolve_cors_options, validate_runtime_settings
+from .runtime.authorization import ExecutionNotAuthorized
 from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import FinishReason, RunRecordNotFound
@@ -1585,6 +1586,12 @@ def create_task(
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    # 审批判定收敛到 workforce 服务一处（段一规格 §2.2）：有纳管员工按其治理配置，
+    # 否则回落「风险不低于 high 即审批」的既有口径。
+    requires_approval = workforce_directory_service.task_requires_approval(
+        context, agent_key=payload.employee_key, risk_level=payload.risk_level
+    )
+
     task = Task(
         tenant_id=context.tenant_id,
         project_id=payload.project_id,
@@ -1597,11 +1604,7 @@ def create_task(
         request_fingerprint=hashlib.sha256(
             json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
-        status=(
-            TaskStatus.PENDING_APPROVAL
-            if payload.risk_level == RiskLevel.HIGH
-            else TaskStatus.QUEUED
-        ),
+        status=TaskStatus.PENDING_APPROVAL if requires_approval else TaskStatus.QUEUED,
     )
     task.audits.append(AuditEvent(action="task.created", actor_id=context.user_id, actor_role=context.role))
     try:
@@ -1787,9 +1790,15 @@ def request_runtime_approval(run_id: str, payload: RuntimeApprovalCreate, contex
 
 
 class RunApprovalDecision(BaseModel):
+    """审批决议请求体。`extra="forbid"`：客户端塞 `authorized_by` 之类字段会直接 422。"""
+
     model_config = ConfigDict(extra="forbid")
 
     approved: bool
+
+
+# 执行授权位的来源**由服务端判定**，请求体不能覆盖；取值必须在 `AUTHORIZATION_SOURCES` 白名单内。
+RUN_APPROVAL_SOURCE = "user"
 
 
 class RunApprovalView(BaseModel):
@@ -1833,7 +1842,9 @@ def decide_run_approval(
 ) -> dict[str, str]:
     """决议运行内的审批项；仅 CEO/超级管理员，且发起人不能自审。"""
     try:
-        runtime_service.decide_approval(context, run_id, approval_id, payload.approved)
+        runtime_service.decide_approval(
+            context, run_id, approval_id, payload.approved, source=RUN_APPROVAL_SOURCE
+        )
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
     except RunApprovalDenied as exc:
@@ -1844,13 +1855,20 @@ def decide_run_approval(
         raise HTTPException(status_code=409, detail="审批已决议") from exc
     except RunNotDecidable as exc:
         raise HTTPException(status_code=409, detail="运行已结束，无法决议") from exc
+    except ExecutionNotAuthorized as exc:
+        # 授权位落不下或与当前计划不一致：拒绝推进执行（fail-closed）。
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     audit_service.record(
         AuditAction.RUN_APPROVAL_DECIDED,
         tenant_id=context.tenant_id,
         actor_id=context.user_id,
         target_type="run",
         target_id=run_id,
-        detail={"status": "approved" if payload.approved else "rejected"},
+        detail={
+            "status": "approved" if payload.approved else "rejected",
+            # 授权来源由服务端判定，不来自请求体（`RunApprovalDecision` 是 extra=forbid）。
+            "authorized_by_source": RUN_APPROVAL_SOURCE,
+        },
     )
     _notify_run_terminal(context, run_id)
     return {

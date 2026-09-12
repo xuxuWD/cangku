@@ -100,6 +100,8 @@ class WorkforceDirectoryStore(Protocol):
 
     def read_agent_config(self, context: UserContext, agent_key: str) -> DigitalEmployee: ...
 
+    def read_agent_governance(self, context: UserContext, agent_key: str) -> tuple[str, str] | None: ...
+
     def update_agent_config(self, context: UserContext, agent_key: str, *, system_prompt: str | None = None, model_key: str | None = None, temperature: float | None = None, tool_allowlist: tuple[str, ...] | None = None, memory_policy: dict[str, object] | None = None, autonomy_level: str | None = None, risk_threshold: str | None = None, approval_timeout_minutes: int | None = None, daily_budget_cents: int | None = None) -> DigitalEmployee: ...
 
 
@@ -211,6 +213,24 @@ class InMemoryWorkforceDirectoryStore:
             )
             self._employees[(context.tenant_id, key)] = updated
             return updated
+
+    def read_agent_governance(self, context: UserContext, agent_key: str) -> tuple[str, str] | None:
+        """只读治理两字段（自治等级、风险阈值），供任务创建等**非管理**路径使用。
+
+        与 `read_agent_config` 的区别：这里**不做角色限制**（任务创建者可以是任意可创建
+        任务的角色），但**只返回治理字段**，不暴露提示词 / 模型 / 工具白名单（最小必要）。
+        标识按目录口径**归一后精确匹配**（小写化），与「大小写不同不是两个标识」一致；
+        标识非法或员工不存在 / 已停用一律返回 `None`（= 无治理配置，由调用方回落既有口径），
+        刻意不抛异常——`employee_key` 在创建任务时本来就是不校验的自由输入。
+        """
+        key = _safe_key(agent_key)
+        if not key:
+            return None
+        with self._lock:
+            employee = self._employees.get((context.tenant_id, key))
+        if employee is None or employee.status is not DirectoryStatus.ACTIVE:
+            return None
+        return (employee.autonomy_level, employee.risk_threshold)
 
     def list_employees(self, context: UserContext, *, status: str | None = None, role_key: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[DigitalEmployee], int]:
         _ensure_admin(context)
@@ -600,6 +620,26 @@ class PostgresWorkforceDirectoryStore:
         if row is None:
             raise DirectoryNotFound(agent_key)
         return self._hydrate_agent_config(row)
+
+    def read_agent_governance(self, context: UserContext, agent_key: str) -> tuple[str, str] | None:
+        """只读治理两字段；语义与内存仓储逐条对齐（不校验角色、非法标识与停用一律 `None`）。"""
+        key = _safe_key(agent_key)
+        if not key:
+            return None
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT autonomy_level, risk_threshold
+                    FROM workbench_digital_employees
+                    WHERE tenant_id = %s AND agent_key = %s AND status = 'active'
+                    """,
+                    (context.tenant_id, key),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return (str(row[0]), str(row[1]))
 
     # ------------------------------------------------------------ 供「未纳管」计算
 

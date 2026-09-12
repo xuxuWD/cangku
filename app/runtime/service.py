@@ -7,9 +7,16 @@ from typing import Any
 
 from app.domain import PolicyError, Task, TaskNotFound, UserContext
 
+from .authorization import (
+    ExecutionAuthorization,
+    ExecutionNotAuthorized,
+    ensure_source_allowed,
+    plan_digest,
+)
 from .contracts import AgentPlan, RuntimeContext
 from .mock import MockRuntime
 from .policy import RuntimePolicy
+from .records import RunRecordNotFound
 from .registry import RuntimeRegistry
 from .state import RuntimeStateStore
 
@@ -47,6 +54,8 @@ class RuntimeService:
         self.registry = registry or RuntimeRegistry()
         self.policy = policy or RuntimePolicy('policy-1')
         self.run_metrics = run_metrics
+        # 授权位与运行记录同库同表：直接复用运行记录仓储，不另建存储通道。
+        self.run_records = getattr(run_metrics, "store", None)
         if 'mock' not in self.registry.keys():
             self.registry.register('mock', MockRuntime(self.state_store))
 
@@ -91,7 +100,9 @@ class RuntimeService:
         self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
 
     def resume(self, actor: UserContext, run_id: str) -> None:
-        key, adapter, _state = self.adapter_for_task(actor, run_id)
+        key, adapter, state = self.adapter_for_task(actor, run_id)
+        # 推进执行前过授权闸门：已登记授权位的运行，若计划与批准时不一致即拒绝恢复。
+        self.ensure_execution_authorized(actor, run_id, state.plan)
         started = time.perf_counter()
         adapter.resume_run(run_id)
         self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
@@ -102,13 +113,76 @@ class RuntimeService:
         adapter.cancel_run(run_id, reason)
         self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
 
-    def decide_approval(self, actor: UserContext, run_id: str, approval_id: str, approved: bool) -> None:
-        """决议运行内的审批项：仅 CEO/超级管理员，且发起人不能自审。"""
+    def decide_approval(
+        self, actor: UserContext, run_id: str, approval_id: str, approved: bool, *, source: str = "user"
+    ) -> None:
+        """决议运行内的审批项：仅 CEO/超级管理员，且发起人不能自审。
+
+        这里也是**授权位的写入口**：通过即登记「谁在何时批准了哪个计划」，驳回即撤销
+        既有授权。`source` 由服务端判定（**不来自请求体**）并在白名单内校验，
+        `agent` 被显式拒绝——数字员工不能批准自己要执行的动作。
+        """
         key, adapter, state = self.adapter_for_task(actor, run_id)
         self._ensure_decider(actor, state)
+        ensure_source_allowed(source)
         started = time.perf_counter()
+        if approved:
+            self._write_execution_authorization(actor, run_id, state.plan)
+        else:
+            self._clear_execution_authorization(actor, run_id)
         adapter.decide_approval(run_id, approval_id, approved)
         self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
+
+    def ensure_execution_authorized(self, actor: UserContext, run_id: str, plan: AgentPlan) -> None:
+        """推进执行前的闸门：已登记授权位的运行，其当前计划必须与授权的计划一致。
+
+        三种情形（口径见段一规格 §2.3）：
+
+        * **未装配运行记录仓储** → 闸门不生效（开发/测试装配下无授权位可存，保持既有行为）；
+        * **有仓储但查不到该运行** → **拒绝**（fail-closed：状态不一致时宁可不执行）；
+        * **有授权位但摘要不一致** → **拒绝**（授权已失效，需重新审批）；
+        * 无授权位的运行（计划里没有需要审批的步骤）→ 放行，它不是「审批驱动」的运行。
+
+        ⚠️ 段一没有真实工具，因此这里**拦不到真实副作用**。段二接入真实工具后，
+        **工具执行器必须在每次执行副作用工具前调用本方法**；届时配合「有副作用 ⇒
+        `requires_approval=True`」的工具闸门，这道校验才真正拦得住东西。
+        """
+        if self.run_records is None:
+            return
+        try:
+            record = self.run_records.get(actor.tenant_id, run_id)
+        except RunRecordNotFound as exc:
+            raise ExecutionNotAuthorized("运行记录不存在，已拒绝推进执行") from exc
+        authorization = record.execution_authorization
+        if authorization is None:
+            return
+        if authorization.plan_digest != plan_digest(plan):
+            raise ExecutionNotAuthorized("授权已失效：计划在批准之后发生了变更，需重新审批")
+
+    def _write_execution_authorization(self, actor: UserContext, run_id: str, plan: AgentPlan) -> None:
+        self._store_execution_authorization(
+            actor,
+            run_id,
+            ExecutionAuthorization(
+                authorized_by=actor.user_id,
+                plan_digest=plan_digest(plan),
+                authorized_at=datetime.now(UTC),
+            ),
+        )
+
+    def _clear_execution_authorization(self, actor: UserContext, run_id: str) -> None:
+        self._store_execution_authorization(actor, run_id, None)
+
+    def _store_execution_authorization(
+        self, actor: UserContext, run_id: str, authorization: ExecutionAuthorization | None
+    ) -> None:
+        if self.run_records is None:
+            return
+        try:
+            self.run_records.set_execution_authorization(actor.tenant_id, run_id, authorization)
+        except RunRecordNotFound as exc:
+            # 授权位必须落库；落不下就不许推进执行（fail-closed）。
+            raise ExecutionNotAuthorized("运行记录不存在，无法登记执行授权") from exc
 
     @staticmethod
     def _ensure_decider(actor: UserContext, state: Any) -> None:

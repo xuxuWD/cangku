@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
 import { decideRunApproval, getRunMetrics, getTask, listRunApprovals, listRunEvents } from './api'
 import { asRunError, initialRunDetailState } from './state'
@@ -107,7 +107,7 @@ export function RunDetailPage({ runId, onNavigate }: { runId: string; onNavigate
   const sortedEvents = [...state.events].sort((left, right) => left.sequence - right.sequence)
   const title = state.task?.title ?? `运行 ${runId}`
 
-  return <AppShell activeView="run" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-history run-detail">
       <div className="page-head">
         <div>
@@ -157,7 +157,7 @@ export function RunDetailPage({ runId, onNavigate }: { runId: string; onNavigate
       </section>
     </main>
     <Toast message={state.toast} />
-  </AppShell>
+  </>
 }
 
 function ApprovalRow({ approval, isInitiator, deciding, onDecide }: { approval: RunApproval; isInitiator: boolean; deciding: boolean; onDecide: (approved: boolean) => void }) {

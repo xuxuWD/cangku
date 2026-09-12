@@ -66,6 +66,18 @@ button, select, input, textarea { font: inherit }
   padding: 32px 36px 56px;
 }
 
+/* 常驻外壳的视图槽（D19）：访问过的视图留在 DOM 里，只切显隐。
+   `display:flex` 让槽内部保持与原来「.workspace 直接是 flex 容器」一致的布局，
+   因此页面内部一条样式都不用改；隐藏时必须真的 `display: none`（否则 flex 会盖掉 `[hidden]`）。 */
+.view-slot {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+}
+
+.view-slot[hidden] { display: none }
+
 /* ------------------------------------------------------------ 侧栏品牌 */
 
 .sidebar-brand {

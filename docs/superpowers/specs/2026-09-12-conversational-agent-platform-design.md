@@ -204,6 +204,12 @@ kpis / domain_scope / heartbeat_rrule  （本期不做）
 | **D15** | **实时流契约** | 会话消息改为**可推流**（SSE）；PG 持久化**流帧序列**（`(tenant_id, conversation_id, run_id, seq)` + `is_terminal`），**支持断线续播**。理由：没有流，前端无法做「边跑边看」 | **已定** |
 | **D16** | **过程事件（trace）契约** | 把 agent 的**工具调用 / 模型响应 / 文件改动 / 计划变更**暴露为**可订阅的过程事件**，供右侧舞台消费；事件与既有审计分离（审计记「谁改了什么」，过程事件记「agent 在做什么」） | **已定** |
 | **D17** | **D14–D16 的落地时机与拆分** | 三条线**并入 P2**（因为 P2 接上 dsh 后才有真流可推、有真 trace 可追、有真文件操作可 diff）。但 P2 原范围已很大，**必须拆为 P2a/P2b/P2c 三段**，各自独立可验收 | **已定**（本文档推导，2026-09-12） |
+| **D18** | **`full_auto` 的安全回归点：立即修** | 参照产品完整源码研读（[调研报告](file:///d:/徐徐AI学习/公司工作台/docs/evoflow-source-study-and-adaptation-plan.md) §1.1）查出：其 `full_auto` **仍须审批 `critical` 风险**（`needs_approval = risk >= threshold`，三档阈值 full_auto→critical），而我们 P1a 的 `full_auto` **完全免批且无兜底**。**立即修**：① `risk_threshold` 扩为 **4 档**（加 `critical`）；② **真正实现判定函数**（现状是字段只存不用，回归点属潜伏）；③ 写死「`risk = critical` ⇒ 必须审批，`full_auto` 不豁免」；④ 配反假测试 | **已定 + 已实现**（用户，2026-09-12） |
+| **D19** | **前端「常驻外壳」提前到 P2a** | 把「整页卸载」改为「常驻外壳 + `hidden` 切换」提前到 P2a。理由：**零后端依赖**，且能立即解决「切页就丢对话草稿与轮询状态」；它同时是 D14「对话主轴」的**物理前提** | **已定**（用户，2026-09-12） |
+| **D20** | **P2a 的实际范围** | 原计划（dsh 接入 + 自定义工具含文件/命令走路线 A + 回调审批 + `restrict` 收窄 + 隔离容器）**+** `024` 治理校正（D18）**+** 授权位机制（`execution_authorized` + 计划摘要比对 + actor 白名单）**+** 前端常驻外壳（D19） | **已定**（用户，2026-09-12）；**交付切分见 D22** |
+| **D21** | **`critical` 分级的落法** | **扩 `RiskLevel` 为四档**（`low/medium/high/critical`），全系统**单一刻度**：`risk_threshold` 与任务/动作风险同刻度。**不**另建「工具风险」第二套刻度，**不**做「组合派生 critical」。代价（属**地基变更**）：新增 `025` 迁移放宽任务表 `CHECK`；后端 3 处判定必须由「等于 high」改为「**不低于** high」（`ensure_can_create` / 任务创建 `PENDING_APPROVAL` / 规划分级映射），否则 `critical` 反而 fail-open；前端 `HomeRiskLevel` 同步；风险序下沉到 `domain.py` 以避免两处各写一份序 | **已定**（用户，2026-09-12） |
+| **D22** | **P2a 的交付切分** | P2a 拆为两段：**段一 = 治理收口段**（D21 四档 + `risk_threshold` 首次接入真实判定 + 授权位机制 + 前端常驻外壳 D19）——**零 dsh 依赖、零真实工具**，可立即独立验收；**段二 = dsh 接入段**（dsh 运行时复验 + 自定义工具含文件/命令 + 回调审批 + `restrict` 收窄 + 隔离容器）。理由：把「安全洞」与「运行时风险」解耦。段一规格见 [`2026-09-12-governance-closure-design.md`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-governance-closure-design.md) | **已定**（用户，2026-09-12） |
+| **D23** | **文件与命令工具的开启时机** | **本批（段一）不开启**。维持 §15 #9 的硬门禁不变：D8 路线 A 未实现、隔离容器未就绪前，文件与命令能力**不得开启**。收口时机 = 段二 | **已定**（用户，2026-09-12） |
 
 ---
 
@@ -302,7 +308,7 @@ ALTER TABLE workbench_digital_employees
     ADD COLUMN IF NOT EXISTS autonomy_level    TEXT NOT NULL DEFAULT 'approval_for_risky'
         CHECK (autonomy_level IN ('approval_for_all', 'approval_for_risky', 'full_auto')),
     ADD COLUMN IF NOT EXISTS risk_threshold    TEXT NOT NULL DEFAULT 'high'
-        CHECK (risk_threshold IN ('low', 'medium', 'high')),
+        CHECK (risk_threshold IN ('low', 'medium', 'high')),  -- 023 原样；024 扩为 4 档，见下
     ADD COLUMN IF NOT EXISTS approval_timeout_minutes INTEGER NOT NULL DEFAULT 60
         CHECK (approval_timeout_minutes BETWEEN 5 AND 10080),
     ADD COLUMN IF NOT EXISTS daily_budget_cents BIGINT NOT NULL DEFAULT 0
@@ -316,8 +322,8 @@ ALTER TABLE workbench_digital_employees
 | `temperature` | 温度 | `0.00–2.00`，`CHECK` 约束（此处是参数不是金额，允许 `NUMERIC`） |
 | `tool_allowlist` | 允许调用的工具名数组 | 必须是 `ToolCatalog` 白名单的子集，否则 `422` |
 | `memory_policy` | 记忆策略（启用哪些层、保留期） | JSONB；第一期只做「短期开 / 关 + 保留轮数」 |
-| **`autonomy_level`** | **自治等级**。`approval_for_all` = 每个工具都要批；`approval_for_risky` = 只有风险 ≥ `risk_threshold` 的才批（**默认**）；`full_auto` = 免批（**仅允许 `super_admin` 设置，且必须写审计**） | 枚举 `CHECK`；`full_auto` 的授予动作本身要进审批（§8） |
-| **`risk_threshold`** | 触发审批的风险阈值，对齐既有 `RiskLevel`（`low/medium/high`） | 枚举 `CHECK`；`approval_for_risky` 时生效 |
+| **`autonomy_level`** | **自治等级**。`approval_for_all` = 每个工具都要批；`approval_for_risky` = 只有风险 ≥ `risk_threshold` 的才批（**默认**）；`full_auto` = 除 `critical` 外免批（**仅允许 `super_admin` 设置，且必须写审计**） | 枚举 `CHECK`；**`full_auto` 不豁免 `critical`（D18）**；`full_auto` 的授予动作本身要进审批（§8） |
+| **`risk_threshold`** | 触发审批的风险阈值。**023 只有 `low/medium/high` 三档；`024` 扩为 `low/medium/high/critical` 四档**（D18：补上最高档，让 `full_auto` 有兜底） | 枚举 `CHECK`；`approval_for_risky` 时生效；判定见 `app/workforce/models.py::needs_approval` |
 | **`approval_timeout_minutes`** | 待批超时后的自动行为时间上限 | `5–10080`；**超时语义 = 拒绝（fail-closed）**，不是自动放行 |
 | **`daily_budget_cents`** | 每日预算熔断（整数分，对齐既有 `usage_ledger` 口径） | `>= 0`；`0` 表示「用租户默认」；**超限直接拒绝，不降级** |
 
@@ -437,10 +443,11 @@ ALTER TABLE workbench_digital_employees
 | --- | --- | --- |
 | **P0** | 本立项文档评审（**当前阶段**） | — |
 | **P1** | 数字员工配置 + 对话层 + 首页改造。**Harness 用 `MockRuntime`，不执行任何真实工具**（D7） | P0 通过；无阻塞 |
-| **P2a** | 接入 dsh：自定义工具（**含文件读写与命令，走 D8 路线 A**）+ 回调审批 + `restrict` 收窄工具集 + **隔离容器执行环境**。产出仍是**现有的非流式对话页** | P1 稳定；**dsh 契约必须在运行时复验**（本轮只做静态勘察）；**隔离容器就绪**（D8 ②） |
-| **P2b** | **实时流 + 过程事件**（D15 / D16）：SSE 推流契约 + PG 流帧存储与断线续播；工具调用 / 模型响应 / 文件改动 / 计划变更作为可订阅过程事件 | P2a 稳定；**必须先有真实 agent 调用可流可追**（否则是空壳） |
+| **P2a-1** | **治理收口段**（D22）：`RiskLevel` 扩四档（D21）+ `risk_threshold` 首次接入真实判定 + 授权位机制 + 前端常驻外壳（D19）。**零 dsh 依赖、零真实工具** | P1 稳定；无阻塞。规格：[`2026-09-12-governance-closure-design.md`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-governance-closure-design.md)（**待评审**） |
+| **P2a-2** | **dsh 接入段**（D22）：接入 dsh + 自定义工具（**含文件读写与命令，走 D8 路线 A**）+ 回调审批 + `restrict` 收窄工具集 + **隔离容器执行环境**。产出仍是**现有的非流式对话页** | P2a-1 稳定；**dsh 契约必须在运行时复验**（本轮只做静态勘察）；**隔离容器就绪**（D8 ②） |
+| **P2b** | **实时流 + 过程事件**（D15 / D16）：SSE 推流契约 + PG 流帧存储与断线续播；工具调用 / 模型响应 / 文件改动 / 计划变更作为可订阅过程事件 | P2a-2 稳定；**必须先有真实 agent 调用可流可追**（否则是空壳） |
 | **P2c** | **前端交互模型改造**（D14）：对话主轴 + 右侧舞台 + 侧栏信息架构重组；消费 P2b 的流与过程事件 | P2b 契约冻结；**不照抄任何外部产品界面**（许可与外观版权约束，只借信息架构与交互模式） |
-| **P3** | 记忆层（短期 → 长期）+ 个人知识库接上 pgvector（含 `vector` 列 `ALTER` 与索引） | P2a；**embedding 模型需在 P3 开工前定**（D12） |
+| **P3** | 记忆层（短期 → 长期）+ 个人知识库接上 pgvector（含 `vector` 列 `ALTER` 与索引） | P2a-2；**embedding 模型需在 P3 开工前定**（D12） |
 | **P4** | 技能层（`SKILL.md` + 注册表 + MCP 客户端 + 白名单审计）+ 沙箱加固 | P3 |
 | **P5** | CRM 模块（客户/联系人/商机/跟进 + 规则分 + LLM 解读与跟进计划） | 可与 P3/P4 并行；Q5 答复 |
 | **P6** | 自进化闭环（**FlowEvo 范式** + SkillOpt 门禁 + Langfuse 灰度回滚，三方分工见下） | **必须最后**；Q6 答复 |
@@ -485,6 +492,7 @@ ALTER TABLE workbench_digital_employees
 10. **P1 不执行任何真实工具**（D7 是 `MockRuntime`），所以**切勿把「P1 已完成」理解成「文件与命令已可用」**——该能力 P2 才生效。
 11. **已登记缺口：创建会话时不校验 `agent_key` 是否在目录里存在且启用**（2026-09-12 P1a 实现时确认）。理由：§7.1 已定「`agent_key` 刻意不加外键」，加校验属规格未要求的行为变更；且 P1 无真实执行，typo 的后果要 P2 才显现。**收口时机 = P2**（`agent_key` 开始路由到真实执行时），届时按知识范围写路径闸门的同一口径收紧（复用 `ensure_agent_binding_available`），并保留「已停用员工的历史会话仍可读」。
 12. **已登记限制：mock 模式下任何非空 `model_key` 都会 `422`**。因为 `ModelGateway` 仅在 `planner_backend=openai_compatible` 时注册模型，默认 mock 模式注册集合为空 → 校验 fail-closed。**这是正确行为**，但意味着本地开发无法配置模型键，需先配好模型后端。
+13. **🔴 D18 的兜底目前是「空转」的**（2026-09-12 实现时确认，必须在 P2a 收口）。两件事叠加导致 `full_auto` 当下仍等效全免批：① **`risk_threshold` 字段至今没有被任何判定消费**（只存储与校验；`conversation/service.py:34-37` 明确写了「刻意不参与权限判定」），它要 P2a 接真工具时才接上判定；② **全系统的风险刻度还产不出 `critical`**——领域枚举 `RiskLevel`（`app/domain.py:10`）只有 `low/medium/high` 三档，而 `planner/classification.py` 对未知档 fail-closed（`ValueError` 拒绝规划）。所以 `needs_approval` 的契约虽然正确，但今天不会有任何动作被判为 `critical`。**P2a 必须同时做两件事**：把 `risk_threshold` 接进真实判定，并让工具风险分级能产出 `critical`。是否顺带扩 `RiskLevel` 属**地基变更**（触及任务创建、规划分级、任务表 `CHECK`、≥5 处调用点），需专项评审后另行决定。**2026-09-12 已答复：扩为四档（D21），并入 P2a 段一一起做（D22），规格见 [`2026-09-12-governance-closure-design.md`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-governance-closure-design.md)（待评审）。**
 
 ---
 
@@ -559,6 +567,23 @@ ALTER TABLE workbench_digital_employees
 - **同会话并发发消息**未测
 - **浏览器人工闭环**未做
 - 测试脚本退出时 `psycopg_pool.ConnectionPool.__del__` 报 `PythonFinalizationError`，属**测试驱动未关闭连接池**的产物，非应用缺陷（应用由 FastAPI lifespan 管理连接池）。
+
+### 16.6 迁移 `024` 真实 PostgreSQL 回归（2026-09-12，本机一次性容器）
+
+> **环境**：`pgvector/pgvector:pg16`（PostgreSQL 16.15），端口 55435，容器 `workbench-pg-024`，**跑完即删**。与 §16 同口径，**不是 staging**。
+
+| # | 检查 | 结果 |
+| --- | --- | --- |
+| 1 | 从零应用迁移 | **24 条**，`001_initial` → `024_governance_risk_levels` |
+| 2 | 幂等 | 重复应用 **0** 条 |
+| 3 | 约束是否只剩一个 | `workbench_digital_employees_risk_threshold_check` **1 条**（023 的 3 档约束已被替换，无残留） |
+| 4 | 约束定义 | `CHECK (risk_threshold = ANY (ARRAY['low','medium','high','critical']))` |
+| 5 | `024` 的 DDL 可重复执行 | `DROP CONSTRAINT IF EXISTS` + `ADD`，连跑两次无错 |
+| 6 | **四档全部允许** | `low` / `medium` / `high` / `critical` 写入成功 |
+| 7 | **非法取值被拦** | `extreme` / `CRITICAL`（大小写不匹配）/ 空串 → **`CheckViolation`** |
+| 8 | 存量行默认值 | `('approval_for_risky', 'high', 60, 0, 0.20)`，符合预期 |
+
+**仍未覆盖**：staging / 生产未验收（同 §16.5）。
 
 ---
 

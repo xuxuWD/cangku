@@ -94,6 +94,8 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "stub",
         # 配置被拒时记录被拒字段名
         "rejected_fields",
+        # 运行审批的授权来源（服务端判定的受控枚举，非自由文本）
+        "authorized_by_source",
     }
 )
 

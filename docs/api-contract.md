@@ -217,7 +217,13 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 `POST /api/v1/tasks`
 
-创建任务。必填信息为标题、数字员工标识、风险等级、预算和幂等键，可选项目标识。高风险任务创建后状态为 `pending_approval`，其他任务状态为 `queued`。首次创建返回 `201`，相同租户、用户和幂等键重放返回同一任务并返回 `200`。
+创建任务。必填信息为标题、数字员工标识、风险等级、预算和幂等键，可选项目标识。
+
+- `risk_level` 取值 `low | medium | high | critical`（迁移 `025` 起扩为四档），非法值或大小写不符一律 `422`。
+- **`critical` 只能由 `ceo` / `super_admin` 发起**：其他角色（含 `department_lead` 与 `employee`）返回 `403`。该档创建后**一律**进入 `pending_approval`（最高风险档任何自治等级都不得免批）。
+- `high` 及以上仍受既有的员工预算闸门约束（`employee` + 不低于 `high` + 预算 > 1000 → `403`），判定用「**不低于**」而不是「等于」，避免更高档绕过闸门。
+- 其余任务的状态由**该数字员工的治理配置**决定（段一规格 §2.2）：`autonomy_level=approval_for_all` 一律待审批；`approval_for_risky` 按该员工的 `risk_threshold` 判定；`full_auto` 除 `critical` 外直接入队。**标识不存在或员工已停用**时回落到 `high` 及以上的既有口径。
+- 首次创建返回 `201`，相同租户、用户和幂等键重放返回同一任务并返回 `200`。
 
 `GET /api/v1/tasks/{task_id}`
 
@@ -580,9 +586,10 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 - GET /api/v1/runs/{run_id}/approvals：列出该运行的审批项（含已决议），返回 `{"items":[{"approval_id","step_id","tool","status"}]}`；`status ∈ pending/approved/rejected`，`step_id`/`tool` 仅在审批项对应计划步骤时非空。跨租户或运行不存在返回 `404`。
 - POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval：决议一个审批项，请求体 `{"approved": true|false}`（不接受未知字段，否则 `422`）。**通过**则执行被批准的步骤，待该运行的审批项全部决议后运行置 `completed`；**驳回**则运行立即置 `failed` 并停止执行剩余步骤。成功返回 `{"run_id","approval_id","status","run_status"}`。
   - 权限：**仅 `ceo`/`super_admin`**，且**发起人不能审批自己发起的运行**（否则 `403`，与计划提案同一口径）。
-  - 状态码：未认证 `401`；跨租户/运行不存在 `404`「运行不存在」；`approval_id` 不属于该运行 `404`「审批不存在」；已决议过 `409`「审批已决议」；**运行已进入终态** `409`「运行已结束，无法决议」（终态即终态，不允许用剩余审批把已结束的运行复活）。
-  - 决议写入审计 `run.approval_decided`（明细仅 `status`，**不含任何自由文本**）；驳回后向任务创建人发出 `run.approval_rejected` 站内通知。
-  - **已知限制**：不收集驳回原因（不收自由文本）；同一次运行的并发决议以最后写入获胜。
+  - **执行授权位**（迁移 `026`）：**通过**时按服务端认证态登记「谁在何时批准了哪个计划摘要」（`execution_authorized_at/by` + `authorized_plan_digest`），**驳回**时撤销既有授权。授权来源由服务端判定（HTTP 入口固定为 `user`，白名单 `user/system/api/ui/automation`，**`agent` 被显式拒绝**）；请求体塞 `authorized_by` 会 `422`。
+  - 状态码：未认证 `401`；跨租户/运行不存在 `404`「运行不存在」；`approval_id` 不属于该运行 `404`「审批不存在」；已决议过 `409`「审批已决议」；**运行已进入终态** `409`「运行已结束，无法决议」（终态即终态，不允许用剩余审批把已结束的运行复活）；**授权位落不下或与当前计划摘要不一致** `409`（`resume` 推进执行时同样校验：已登记授权的运行，计划在批准后变更即拒绝推进）。
+  - 决议写入审计 `run.approval_decided`（明细仅 `status` 与 `authorized_by_source`，**不含任何自由文本**）；驳回后向任务创建人发出 `run.approval_rejected` 站内通知。
+  - **已知限制**：不收集驳回原因（不收自由文本）；同一次运行的并发决议以最后写入获胜；**未授权的运行（计划里没有需要审批的步骤）不在此闸门范围内**——段一没有真实工具，该闸门**拦不到真实副作用**，其硬拦截在 P2a 段二接入真实工具后生效。
 
 开发环境默认注册 mock Runtime。DeerFlow、Codex Worker、Hermes 只能作为独立外部适配器接入，不能直连工作台数据库、Redis、GEO 或生产账号；Hermes 的成长结果只能进入待审核提案。
 

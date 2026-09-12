@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
 import { createAgent, createRole, listAgents, listCandidates, listRoles, readAgentConfig, updateAgent, updateAgentConfig, updateRole } from './api'
 import { asDirectoryError, initialDirectoryState } from './state'
@@ -169,7 +169,7 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
     }
   }
 
-  return <AppShell activeView="workforceSettings" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-history workforce-settings">
       <div className="page-head">
         <div>
@@ -321,7 +321,7 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
 
       <Toast message={state.toast} />
     </main>
-  </AppShell>
+  </>
 }
 
 /** 员工配置编辑区：提示词 / 模型 / 温度 / 工具白名单 / 记忆策略 / 治理字段。 */

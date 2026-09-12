@@ -79,6 +79,27 @@ describe('HomePage', () => {
     })
   })
 
+  it('offers the critical risk level added in migration 025 and posts it verbatim', async () => {
+    const calls = stub((url) =>
+      url.endsWith('/tasks')
+        ? json({ id: 'task-10', title: '删库演练', status: 'pending_approval', risk_level: 'critical' })
+        : baseRoute(url)
+    )
+    const user = userEvent.setup()
+    render(<HomePage onOpenConversation={vi.fn()} />)
+
+    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await user.click(screen.getByRole('button', { name: '或直接建任务' }))
+    await user.type(screen.getByLabelText('任务描述'), '删库演练')
+    await user.selectOptions(screen.getByLabelText('风险等级'), 'critical')
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+
+    await waitFor(() => {
+      const posted = calls.find((call) => String(call.url).endsWith('/tasks'))
+      expect(JSON.parse(String(posted?.init?.body))).toMatchObject({ risk_level: 'critical' })
+    })
+  })
+
   it('cannot start a conversation without a message', async () => {
     stub(baseRoute)
     render(<HomePage onOpenConversation={vi.fn()} />)

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { listContentTasks } from '../contentWorkbench/api'
 import type { ContentStatus, ContentTaskSummary } from '../contentWorkbench/types'
 
@@ -46,7 +46,7 @@ export function ContentHistoryPage({ onOpenTask, onNavigate }: { onOpenTask: (ta
 
   const changeStatus = (value: ContentStatus | '') => { setStatus(value); setPage(1) }
 
-  return <AppShell activeView="history" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-history">
       <div className="page-head">
         <div><h1 className="page-title">历史草稿</h1><p className="page-desc">查看并继续处理已创建的内容任务。</p></div>
@@ -64,7 +64,7 @@ export function ContentHistoryPage({ onOpenTask, onNavigate }: { onOpenTask: (ta
         <div className="history-pagination"><button className="button" type="button" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button><span>第 {page} 页</span><button className="button" type="button" disabled={loading || !hasNext} onClick={() => setPage((value) => value + 1)}>下一页</button></div>
       </section>
     </main>
-  </AppShell>
+  </>
 }
 
 function HistoryRow({ item, onOpenTask }: { item: ContentTaskSummary; onOpenTask: (taskId: string) => void }) {

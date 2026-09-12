@@ -145,6 +145,8 @@ class RecordingConnection:
 
 
 def run_row(status: str = "completed") -> tuple:
+    # 列顺序与 `PostgresRunRecordStore._COLUMNS` 一致；最后三列是授权位（026），
+    # 本文件不涉及授权，一律给 None（数据库侧由 CHECK 保证三列同生同灭）。
     return (
         "run-1",
         "t-1",
@@ -159,6 +161,9 @@ def run_row(status: str = "completed") -> tuple:
         1,
         120,
         datetime(2026, 9, 11, tzinfo=UTC),
+        None,
+        None,
+        None,
         None,
         None,
     )

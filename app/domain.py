@@ -8,9 +8,26 @@ from uuid import uuid4
 
 
 class RiskLevel(StrEnum):
+    """任务与动作的风险刻度。**声明顺序即由低到高**，`RISK_ORDER` 据此生成。"""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    CRITICAL = "critical"
+
+
+# 风险的序：由 `RiskLevel` 的声明顺序生成，全系统**唯一一份**。
+# 上层模块（如 `workforce`）一律从这里导入，不得另写第二份序——两份序必然漂移。
+RISK_ORDER: dict[str, int] = {level.value: index for index, level in enumerate(RiskLevel)}
+
+
+def risk_at_least(risk_level: RiskLevel, floor: RiskLevel) -> bool:
+    """风险是否**不低于** `floor`。
+
+    安全闸门一律用它，**禁止**写成 `risk_level == RiskLevel.X`：等值判断在新增更高
+    风险档时会变成 fail-open（更高档反而绕过闸门，`critical` 就是这样一个档）。
+    """
+    return RISK_ORDER[risk_level.value] >= RISK_ORDER[floor.value]
 
 
 class TaskStatus(StrEnum):
@@ -142,7 +159,11 @@ def ensure_can_create(context: UserContext, risk_level: RiskLevel, budget: float
         raise PolicyError("当前岗位不能创建任务")
     if budget < 0:
         raise PolicyError("预算不能小于 0")
-    if risk_level == RiskLevel.HIGH and context.role == "employee" and budget > 1000:
+    # `critical` 是最高风险档：仅负责人可发起（段一规格 X3）；创建后仍一律走人工审批。
+    if risk_level is RiskLevel.CRITICAL and context.role not in {"ceo", "super_admin"}:
+        raise PolicyError("critical 风险任务只能由 CEO 或超级管理员发起")
+    # 「不低于 high」而不是「等于 high」：否则 critical 反而绕过这条预算闸门（fail-open）。
+    if risk_at_least(risk_level, RiskLevel.HIGH) and context.role == "employee" and budget > 1000:
         raise PolicyError("普通员工的高风险任务预算不能超过 1000")
 
 

@@ -9,6 +9,8 @@ _RISK_CLASSIFICATION: dict[RiskLevel, DataClassification] = {
     RiskLevel.LOW: DataClassification.INTERNAL,
     RiskLevel.MEDIUM: DataClassification.CONFIDENTIAL,
     RiskLevel.HIGH: DataClassification.RESTRICTED,
+    # `critical` 是最严档：与 `high` 同为 RESTRICTED（分级只有三档，不再另造一级）。
+    RiskLevel.CRITICAL: DataClassification.RESTRICTED,
 }
 
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { Icon } from '../../components/Icon'
 import { NoticeBanner } from '../../components/NoticeBanner'
 import { ObjectSelect } from '../../components/ObjectSelect'
@@ -153,15 +153,15 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
     return <NoticeBanner tone="error" title={state.error.unauthorized ? '暂时无法配置知识权限' : '知识权限读取失败'}>{state.error.message} {state.error.retryable && <button className="text-action" type="button" onClick={retryLoad}>重新尝试</button>}</NoticeBanner>
   }, [retryLoad, save, state.error, state.saveError])
 
-  if (state.loading || subjectsLoading) return <AppShell activeView="knowledge" onNavigate={onNavigate}><main className="main-content"><div className="loading-state" aria-live="polite"><span className="loading-dot" />正在读取知识权限...</div></main></AppShell>
+  if (state.loading || subjectsLoading) return <><main className="main-content"><div className="loading-state" aria-live="polite"><span className="loading-dot" />正在读取知识权限...</div></main></>
 
-  if (subjects.role.length === 0 && subjects.agent.length === 0) return <AppShell activeView="knowledge" onNavigate={onNavigate}><main className="main-content">
+  if (subjects.role.length === 0 && subjects.agent.length === 0) return <><main className="main-content">
     <div className="page-head"><div><h1 className="page-title">知识权限管理</h1><p className="page-desc">选择这个岗位和它的数字员工可以使用的资料。未授权的内容不会被读取。</p></div></div>
     {statusNotice}
     <div className="empty-state"><strong>还没有可配置的岗位或数字员工</strong><span>请先在「数字员工设置」中创建岗位与数字员工，再回来配置知识范围。</span></div>
-  </main></AppShell>
+  </main></>
 
-  return <AppShell activeView="knowledge" onNavigate={onNavigate}>
+  return <>
     <main className="main-content">
       <div className="page-head"><div><h1 className="page-title">知识权限管理</h1><p className="page-desc">选择这个岗位和它的数字员工可以使用的资料。未授权的内容不会被读取。</p></div><div className="actions"><button className="button" type="button" disabled={!canEdit} onClick={clear}>清空选择</button><SaveButton saving={state.saving} disabled={!canSave || isUnauthorized || !state.bindingLoaded} onClick={() => void save()} /></div></div>
       <div className="toolbar"><SegmentedControl value={state.subjectType} onChange={switchSubjectType} /><ObjectSelect value={state.subjectKey} options={options} onChange={(key) => void load(state.subjectType, key)} /><span className="role-note">{state.subjectType === 'role' ? `共 ${subjects.role.length} 个启用中的岗位` : currentSubject ? `所属岗位：${currentSubject.role_key ?? '未设置'}` : '暂无启用中的数字员工'}</span></div>
@@ -177,5 +177,5 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
     <aside className="audit-panel"><AuditTimeline audits={state.audits as KnowledgeAudit[]} loading={state.auditsLoading} error={state.auditError} onRetry={() => void refreshAudits()} /><SoundPreference enabled={sound} onChange={setSound} /></aside>
     <Toast message={state.toast} actionLabel={clearSnapshot ? '撤销' : undefined} onAction={clearSnapshot ? undoClear : undefined} />
     {confirmClear && <div className="modal-backdrop" role="presentation" onMouseDown={() => setConfirmClear(false)}><section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="clear-dialog-title" onMouseDown={(event) => event.stopPropagation()}><div className="modal-icon"><Icon name="warning" label="注意" /></div><h2 id="clear-dialog-title">确认清空已选范围？</h2><p>这会取消「{currentSubject.label}」当前选择的 {state.selectedIds.length} 个知识库。清空只会先保存在本地，点击“保存调整”后才会生效。</p><div className="modal-actions"><button className="button" type="button" onClick={() => setConfirmClear(false)}>保留当前选择</button><button className="button danger" type="button" onClick={confirmClearSelection}>清空并继续</button></div></section></div>}
-  </AppShell>
+  </>
 }

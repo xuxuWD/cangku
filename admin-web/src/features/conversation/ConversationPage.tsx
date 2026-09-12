@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { Icon } from '../../components/Icon'
 import { Toast } from '../../components/Toast'
 import {
@@ -151,7 +151,7 @@ export function ConversationPage({
   const detail = state.detail
 
   return (
-    <AppShell activeView="conversation" onNavigate={onNavigate}>
+    <>
       <main className="main-content content-history conversation">
         <div className="page-head">
           <div>
@@ -359,6 +359,6 @@ export function ConversationPage({
         )}
       </main>
       <Toast message={state.toast} />
-    </AppShell>
+    </>
   )
 }

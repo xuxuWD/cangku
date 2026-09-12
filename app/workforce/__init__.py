@@ -19,6 +19,7 @@ from .models import (
     InvalidDirectoryName,
     JobRole,
     RoleNotAvailable,
+    needs_approval,
 )
 from .service import WorkforceDirectoryService
 from .store import (
@@ -47,6 +48,7 @@ __all__ = [
     "RoleNotAvailable",
     "WorkforceDirectoryService",
     "WorkforceDirectoryStore",
+    "needs_approval",
     "scan_system_prompt",
     "validate_agent_config",
 ]

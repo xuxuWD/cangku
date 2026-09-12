@@ -167,6 +167,8 @@ def test_postgres_upsert_persists_finish_reason() -> None:
         "run-1", "t-1", "task-1", "plan-1", "mock", "failed",
         1, 0, 1, 0, 0, 7,
         NOW, NOW, "step_failed",
+        # 授权位（026）三列：无授权即三列皆 NULL（数据库 CHECK 保证同生同灭）
+        None, None, None,
     )
     connection = RecordingConnection([row])
     store = PostgresRunRecordStore(connection)
@@ -180,5 +182,6 @@ def test_postgres_upsert_persists_finish_reason() -> None:
 
     statement, params = connection.cursor_instance.statements[0]
     assert "finish_reason" in statement
-    assert params[-1] == "step_failed"
+    # 尾四参 = finish_reason + 授权位三列；本用例未授权，后三参必须是 None。
+    assert params[-4:] == ("step_failed", None, None, None)
     assert saved.finish_reason is FinishReason.STEP_FAILED

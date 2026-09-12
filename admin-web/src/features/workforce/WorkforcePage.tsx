@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { fetchWorkforceRoster } from './api'
 import { asWorkforceError, initialWorkforceState } from './state'
 import { scopeLabel, type WorkforceRosterItem, type WorkforceState } from './types'
@@ -19,7 +19,7 @@ export function WorkforcePage({ onNavigate }: { onNavigate?: (view: AppView) => 
 
   useEffect(() => { void load() }, [load])
 
-  return <AppShell activeView="workforce" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-history workforce">
       <div className="page-head">
         <div>
@@ -44,7 +44,7 @@ export function WorkforcePage({ onNavigate }: { onNavigate?: (view: AppView) => 
         </table>}
       </section>
     </main>
-  </AppShell>
+  </>
 }
 
 function WorkforceRow({ item }: { item: WorkforceRosterItem }) {

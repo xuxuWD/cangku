@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { getUsageSummary } from './api'
 import { asBillingError, formatCents, initialBillingState } from './state'
 import type { BillingState } from './types'
@@ -23,7 +23,7 @@ export function UsageBillingPage({ onNavigate }: { onNavigate?: (view: AppView) 
   const isEmpty = usage !== null && usage.units === 0 && usage.cost_cents === 0
   const notRegistered = state.error?.status === 404
 
-  return <AppShell activeView="billing" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-history usage-billing">
       <div className="page-head">
         <div>
@@ -71,5 +71,5 @@ export function UsageBillingPage({ onNavigate }: { onNavigate?: (view: AppView) 
 
       <p className="usage-billing__footnote">模型清单尚未实现：模型由配置注入（内容侧与规划侧两套），没有实体表与接口，属下一期立项。按时间 / 模型 / 任务的花费维度、预算与告警、冲正入口同样未做。</p>
     </main>
-  </AppShell>
+  </>
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { createContentTask, confirmContentTask, downloadMarkdown, getContentTask, regenerateContentTask, updateDraft } from './api'
 import { createIdempotencyKey, createRegenerationIdempotencyKey } from './state'
 import type { ContentDraft, ContentSource, ContentTask, ContentStatus } from './types'
@@ -88,7 +88,7 @@ export function ContentWorkbenchPage({ taskId, onNavigate }: { taskId?: string; 
 
   const editable = task?.status === 'reviewing'
 
-  return <AppShell activeView="workbench" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-workbench">
       <div className="page-head">
         <div>
@@ -159,5 +159,5 @@ export function ContentWorkbenchPage({ taskId, onNavigate }: { taskId?: string; 
         </section>
       </div>
     </main>
-  </AppShell>
+  </>
 }

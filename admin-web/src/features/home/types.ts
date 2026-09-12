@@ -2,7 +2,8 @@
 // 会话类型直接复用 features/conversation 的契约类型，避免两处字段漂移。
 import type { Conversation, ConversationErrorShape } from '../conversation/types'
 
-export type HomeRiskLevel = 'low' | 'medium' | 'high'
+// 风险刻度与后端 `RiskLevel` 一致（迁移 025 起为四档）；前端只做提示，判定一律以后端为准。
+export type HomeRiskLevel = 'low' | 'medium' | 'high' | 'critical'
 
 export interface HomeEmployee {
   agent_key: string
@@ -49,6 +50,7 @@ export const RISK_LABELS: Record<HomeRiskLevel, string> = {
   low: '低',
   medium: '中',
   high: '高',
+  critical: '极高（仅负责人可发起）',
 }
 
 // 首页只展示最近几条会话，与后端的 limit 分页口径一致。

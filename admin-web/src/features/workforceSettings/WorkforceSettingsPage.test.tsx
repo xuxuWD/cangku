@@ -215,7 +215,9 @@ describe('WorkforceSettingsPage', () => {
     expect(screen.getByLabelText('温度')).toHaveValue(0.2)
     expect(screen.getByLabelText('温度')).toHaveAttribute('step', '0.05')
     expect(screen.getByText(/每个工具调用都需要人工审批通过后才执行/)).toBeInTheDocument()
-    expect(screen.getByText(/免人工审批；但仍受权限判定与后端闸门约束/)).toBeInTheDocument()
+    expect(screen.getByText(/免人工审批；但「极高（critical）」风险动作任何自治等级都必须审批/)).toBeInTheDocument()
+    // D18：风险阈值必须能选到最高档 critical（否则 full_auto 的兜底无从表达）。
+    expect(screen.getByRole('option', { name: /critical/ })).toBeInTheDocument()
     // 配置的更新时间必须本地化，不得把后端原始 ISO 串直接摊到界面上。
     expect(screen.queryByText(/2026-09-12T07:28:57/)).not.toBeInTheDocument()
     expect(screen.getByText(/更新于 \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/)).toBeInTheDocument()

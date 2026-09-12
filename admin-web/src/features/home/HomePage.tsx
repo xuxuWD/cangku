@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { Icon } from '../../components/Icon'
 import { Toast } from '../../components/Toast'
 import { createHomeConversation, createHomeTask, listHomeConversations, listHomeEmployees, newIdempotencyKey, sendHomeMessage } from './api'
@@ -7,7 +7,7 @@ import { asHomeError, initialHomeState } from './state'
 import { HOME_CONVERSATION_LIMIT, RISK_LABELS, type HomeRiskLevel, type HomeState } from './types'
 import { conversationStatusLabel, conversationTitle, formatMessageTime } from '../conversation/types'
 
-const RISK_OPTIONS: HomeRiskLevel[] = ['low', 'medium', 'high']
+const RISK_OPTIONS: HomeRiskLevel[] = ['low', 'medium', 'high', 'critical']
 
 export function HomePage({
   onOpenConversation,
@@ -94,7 +94,7 @@ export function HomePage({
   }
 
   return (
-    <AppShell activeView="home" onNavigate={onNavigate}>
+    <>
       <main className="main-content home">
         <section className="home-hero" aria-label="与数字员工对话">
           <h1 className="home-title">数字员工，我帮你</h1>
@@ -260,6 +260,6 @@ export function HomePage({
         </section>
       </main>
       <Toast message={state.toast} />
-    </AppShell>
+    </>
   )
 }

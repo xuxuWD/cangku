@@ -7,8 +7,15 @@
 from __future__ import annotations
 
 from ..audit.models import AuditAction
-from ..domain import UserContext
-from .models import DigitalEmployee, DirectoryNotManaged, DirectoryStatus, JobRole, normalize_key
+from ..domain import RISK_ORDER, RiskLevel, UserContext
+from .models import (
+    DigitalEmployee,
+    DirectoryNotManaged,
+    DirectoryStatus,
+    JobRole,
+    needs_approval,
+    normalize_key,
+)
 from .store import WorkforceDirectoryStore
 
 
@@ -103,6 +110,24 @@ class WorkforceDirectoryService:
 
     def list_employees(self, context: UserContext, *, status: str | None = None, role_key: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[DigitalEmployee], int]:
         return self.store.list_employees(context, status=status, role_key=role_key, limit=limit, offset=offset)
+
+    # ------------------------------------------------------------ 任务创建的治理判定
+
+    def task_requires_approval(self, context: UserContext, *, agent_key: str, risk_level: RiskLevel) -> bool:
+        """任务创建时是否必须人工审批（段一规格 §2.2 的**唯一消费点**）。
+
+        * 有纳管且启用的数字员工 → 按其治理配置（自治等级 + 风险阈值）判定；
+        * 否则回落**既有口径**：风险不低于 `high` 即需审批。该回落值与 023 的列默认值
+          （`risk_threshold='high'` + `autonomy_level='approval_for_risky'`）完全一致，
+          因此「无治理配置」与「按默认配置」结果相同，既不放宽也不收紧。
+
+        判定逻辑只有 `needs_approval` 一处实现，这里只负责「取配置 + 回落」。
+        """
+        governance = self.store.read_agent_governance(context, agent_key)
+        if governance is None:
+            return RISK_ORDER[risk_level.value] >= RISK_ORDER[RiskLevel.HIGH.value]
+        autonomy_level, risk_threshold = governance
+        return needs_approval(autonomy_level, risk_level.value, risk_threshold)
 
     # ------------------------------------------------------------ 阶段 2 写路径闸门
 

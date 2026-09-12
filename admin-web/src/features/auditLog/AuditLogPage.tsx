@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AppShell, type AppView } from '../../app/AppShell'
+import type { AppView } from '../../app/AppShell'
 import { listAudits } from './api'
 import { asAuditError, initialAuditFilters, initialAuditLogState } from './state'
 import { AUDIT_ACTION_LABELS, auditActionLabel, auditDetailEntries, type AuditFilters, type AuditLogState, type AuditRecord } from './types'
@@ -46,7 +46,7 @@ export function AuditLogPage({ onNavigate }: { onNavigate?: (view: AppView) => v
   const canPrev = !state.loading && filters.offset > 0
   const canNext = !state.loading && filters.offset + filters.limit < state.total
 
-  return <AppShell activeView="audit" onNavigate={onNavigate}>
+  return <>
     <main className="main-content content-history audit-log">
       <div className="page-head">
         <div>
@@ -87,7 +87,7 @@ export function AuditLogPage({ onNavigate }: { onNavigate?: (view: AppView) => v
         </div>
       </section>
     </main>
-  </AppShell>
+  </>
 }
 
 function AuditRow({ record }: { record: AuditRecord }) {
