@@ -3,7 +3,7 @@
 > **性质**：**开工门禁**，不是建议清单。**全部条目必须有证据才能开工**；任一条未过，段二不得动第一行代码。
 > **上位真源**：[立项文档](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md) §14.1 P2a-2 前置、§15 #9（🔴 风险最高决策）、§2.3（dsh 静态勘察）、§15 #11/#13；[段一规格](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-governance-closure-design.md) §8.5。
 > **日期**：2026-09-12
-> **状态**：**待逐条过闸**。段二自身**还没有规格**（§C1），因此本清单只解决「能不能开工」，不解决「怎么建」。
+> **状态**：**待逐条过闸**。段二**已有规格**（`docs/superpowers/specs/2026-09-12-dsh-integration-design.md`，状态：待评审）并已于 2026-09-12 完成一轮专项评审（结论：**不予放行**，记录见 `docs/dsh-integration-review-record.md`）；本清单解决「能不能开工」，规格解决「怎么建」。
 
 ---
 
@@ -104,11 +104,16 @@
 
 **决议（2026-09-12，规格 §7 X4）**：**本段不做**，已写入段二规格 §1.2「不做什么」第 6 条；成本三级熔断完整口径属 **P6**。本项**已闭环**，不再作为开工前置。
 
-### B13 许可证逐包核对
+### B13 许可证逐包核对 —— ✅ 核对已闭环（2026-09-12 二次核对）
 
-- **已核实**：`@deepseek-ai/dsh` 主包 **MIT**。
-- **未核实**：其余 **245 个 `@deepseek-ai/*` 子包**的许可证（含 `cordis`、`cosmokit`、`schemastery` 等非 dsh 前缀包）。
-- **判据**：逐包核对是否可商用 / 是否要求开源 / 是否需署名（宪法第九章）；**不整项目全升**，也不靠「主包 MIT」推断全树。
+- **核对方式**：lockfile 口径全量扫描（`_dsh-verify/package-lock.json`，`lockfileVersion 3`，**583 条目**）+ 磁盘安装树交叉核对（550 个 `package.json`），并逐项复现 §F5 的数字（见 §F5 的 R1–R7）。
+- **结论①（可商用）**：`@deepseek-ai/*` **246 条 = 241 MIT + 5 BSD-3-Clause**，**全为宽松许可**；全树**无 GPL / AGPL 等强传染性许可证** → 与 [D1](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md) 无冲突。
+- **结论②（唯一义务来源）**：**14 个 LGPL 条目全部来自 `sharp` 生态**——`@img/sharp-libvips-*@1.3.3`（LGPL-3.0-or-later，10 个）与 `@img/sharp-win32-{arm64,ia32,x64}` / `@img/sharp-wasm32`（组合式含 LGPL，4 个）。**`sharp` 本体与 `@img/sharp-linux-*` 均为 Apache-2.0，不是 LGPL**。
+- **结论③（关键，决定义务是否触发）**：`sharp` 及其平台二进制/libvips **全部是 `optional` 条目**，但其**本体是非 optional 的传递依赖**——依赖链 `@deepseek-ai/dsh` → `@deepseek-ai/dsh-base` → `@deepseek-ai/dsh-attachment-local@0.1.5-rc.2` → `sharp@^0.35.3`。**结论（2026-09-12 第三次核对更正）**：**LGPL 义务无法靠"不启用附件功能"归零**——只要镜像里装了 `dsh-base`（核心包，无法不用），npm 就会装上 `sharp`；Linux 下 `sharp` 运行必须依赖 `@img/sharp-libvips-linux-*`（LGPL-3.0-or-later）。**唯一的减范围手段**是用 `--os/--cpu/--libc` 过滤掉**非目标平台**的 12 个包，把随镜像的 LGPL 条目从 14 个压到**2 个**（`@img/sharp-linux-x64` + `@img/sharp-libvips-linux-x64`），**但义务依然存在，必须产出 `THIRD-PARTY-NOTICES`**。**"物理剔除 libvips 让义务归零"是否可行**（即 dsh 能否在不含该二进制的镜像里启动并跑通主流程）属**段二-1 实测项**，未测前不得当作可选项。
+- **判据**：逐包核对是否可商用 / 是否要求开源 / 是否需署名（宪法第九章）；**不整项目全升**，也不靠「主包 MIT」推断全树。**已满足**。
+- **交付物（2026-09-12 决议：纳入段二交付物）**：`THIRD-PARTY-NOTICES` —— 其内容取决于最终镜像集合（结论③的取舍），**须在镜像定义冻结后产出**；并**须在镜像内复跑一次同样的扫描**，以镜像内实际集合为准（本机 Windows 树不含 Linux 平台包）。
+- **决议（2026-09-12）**：**保留 `sharp`**，并把随镜像的 LGPL 条目**瘦身到 2 条**（镜像构建用 `--os`/`--cpu`/`--libc` 过滤非目标平台包）；`THIRD-PARTY-NOTICES` 须含这 2 条的 **LGPL-3.0-or-later 全文 + 可重链接说明 + 源码获取途径**；"物理剔除 libvips 使义务归零"属段二-1 实测项，**本轮不作为方案**。
+- **遗留（属段二实施期，不影响本项"核对已闭环"的判定）**：① 未逐包比对许可证**正文**与声明值（583 条目；仅确认相关包随带 LICENSE 文件，`@img/sharp-win32-x64` 的 LICENSE 是写 NOTICES 的引用来源）；② `THIRD-PARTY-NOTICES` 未产出；③ 镜像内二次扫描未做。
 
 ---
 
@@ -116,9 +121,9 @@
 
 | # | 事项 | 判据 |
 | --- | --- | --- |
-| **C1** | **段二规格（专项评审）** | 段二新增「工具执行链路 + 容器 + 危险命令」，属**地基级**改动，必须先有规格并通过评审（与段一同流程） |
-| **C2** | `docs/api-contract.md` 新增工具/执行章节 | **已成稿（2026-09-12）**：`## 工具执行（P2a 段二）` 已追加（**契约先行 · 未实现**），含三处既有契约变更点、九步闸门→HTTP 语义、审计与落库口径。**该节自身仍有 Y1–Y3 未决**（工具目录对外端点、运行/审批归属、`tool.executed` 明细字段名单） |
-| **C3** | 「禁止事项」与验收标准写清（三类用例 + 反假测试 + 真实容器回归） | 否则无法验收 |
+| **C1** | **段二规格（专项评审）** | 段二新增「工具执行链路 + 容器 + 危险命令」，属**地基级**改动，必须先有规格并通过评审（与段一同流程）。**2026-09-12 进展：首轮评审结论「不予放行」→ 规格已按评审记录 §6 完成修订（状态「已修订 · 待重审」，见规格 §9）→ 待重审**。记录见 [`dsh-integration-review-record.md`](file:///d:/徐徐AI学习/公司工作台/docs/dsh-integration-review-record.md)。**重审通过方视为 C1 过** |
+| **C2** | `docs/api-contract.md` 新增工具/执行章节 | **已完成（2026-09-12）**：`## 工具执行（P2a 段二）` 已追加（**契约先行 · 未实现**），含**五处**既有契约变更点、九步闸门→HTTP 语义（含审批后重跑口径）、审计与落库口径；Y1–Y3 已于同日定案。**评审后已回改**：撤销 `origin=conversation`、`agent_key` 校验落点改到执行入口、⑦ 删除「授权来源」、`AuditAction` 扩键改为硬要求、`reason` 受控枚举、落库落点明确、补 `message_id` 幂等与单次执行硬上限 |
+| **C3** | 「禁止事项」与验收标准写清（三类用例 + 反假测试 + 真实容器回归） | 规格 §1.2（禁止事项）与 §5/§6（测试计划与验收标准）**已随本轮修订补齐**：用例扩到 21 条并补 P0/P1 分级与「必须红」构造（含幂等重放、参数变更 409、可执行文件来源、审批后重跑、容器加固、同步硬上限、审计枚举）；§6 增前端四态、合规交付物、清理纪律、验收分离与「一条聚合命令」要求 |
 
 ---
 
@@ -131,10 +136,10 @@
 ## E. 本清单自身尚未核实之项（如实登记）
 
 1. **dsh 在 Linux 容器里的实际可运行性未测**：本机是 Windows，容器是 Linux；静态勘察的沙箱/审批结论**可能不适用**（见 B3 ④）。
-2. **245 个子包许可证未核**（B13）。
-3. **A5 的黑名单条目已于 2026-09-12 定案**（规格 §7 **X2** → 已写入 §3.2.1：R1–R3 判定口径 + A/B/C 三层条目 + Q1–Q4 锁定值；§5 用例 4/11/12 附「必须红」样本）。**A2 的成本安排亦已于同日定案（接受分主机，规格 §7 X3）**。
+2. **子包许可证**（B13）：**核查已闭环**（lockfile 583 条目全量扫描 + 磁盘树交叉核对）：`@deepseek-ai/*` 246 条全为宽松许可（241 MIT + 5 BSD-3）；**14 个 LGPL 全来自 `sharp` 生态且全部是 `optional`**；`sharp` 是否进镜像决定义务是否触发；**已决议纳入段二交付物并产出 `THIRD-PARTY-NOTICES`**（§B13）。**遗留**：NOTICES 未产出、镜像内二次扫描未做、未逐包比对许可证正文。
+3. **A5 的黑名单条目已于 2026-09-12 定案**（规格 §7 **X2** → 已写入 §3.2.1：R1–R4 判定口径 + A1–A12 + B/C 三层条目 + Q1–Q4 锁定值；首轮评审后补强 A11 包装器、A12 裸解释器、参数形态与路径族、C 类匹配算法）。**A2 的成本安排亦已于同日定案（接受分主机，规格 §7 X3）**。
 4. **Q7/Q8/Q10 与段二无关**（分别拦 P2b / P2b / P2c），本清单不涉及。
-5. **本文件不构成任何「段二可开工」的结论**：§A 决策已答复、规格 §7 的 **X1–X5 已全部定案**（含 2026-09-12 定稿的危险命令黑名单 §3.2.1），但 **§B 中除 B12（决策项，已闭环）外的开工前置尚未取证，且 §C 三项文档前置未完成（C1 规格评审未过、C2 已成稿但 Y1–Y3 未定、C3 未写）之前，段二不得开工**。
+5. **本文件不构成任何「段二可开工」的结论**：§A 决策已答复、规格 §7 的 **X1–X5 / Y1–Y3 / P1–P2 / LGPL 已全部定案**，但 **§B 中除 B12（决策项，已闭环）外的开工前置尚未取证，且 §C 文档前置未完成——C1 首轮评审结论为「不予放行」，规格已按 [`dsh-integration-review-record.md`](file:///d:/徐徐AI学习/公司工作台/docs/dsh-integration-review-record.md) §6 完成修订（**待重审**）、C2 已回改、C3 已补齐——在此之前，段二不得开工**。
 
 ---
 
@@ -252,6 +257,8 @@ job_list / job_output / job_kill / list_agents / send_message / interrupt_agent
 
 ### F5 B13 许可证逐包核对 —— ✅ 已取证（查出非宽松许可证）
 
+> **口径（2026-09-12 二次核对时明确）**：本表为 **lockfile 口径**（`_dsh-verify/package-lock.json`，`lockfileVersion 3`，**583 条目**），**不是**磁盘安装树口径（本机 Windows 树 550 个 `package.json`，含 24 个子路径目录 + 7 个父包子路径条目，均非独立依赖）。**两个口径的数字不得混用。**
+
 | 许可证 | 数量 |
 | --- | --- |
 | MIT | 459 |
@@ -271,6 +278,23 @@ job_list / job_output / job_kill / list_agents / send_message / interrupt_agent
 - **无 GPL / AGPL 等强传染性许可证** → 不与 [D1](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md) 冲突。
 - **LGPL 全部来自 `sharp`（图像处理）**：**服务端自用（不分发）义务很轻**；但**一旦对外分发容器镜像或打进桌面产物，就触发 LGPL 义务**（需可重链接 + 声明 + 源码获取途径）。段二若把 sharp 打进交付镜像，必须产出 `THIRD-PARTY-NOTICES`。
 - **顺带发现（供应链瘦身）**：默认安装把**10 个平台**的 libvips 二进制全装进来了（我们只需目标平台一个）→ 安装时应用 `--os`/`--cpu`/`--libc` 过滤或 `--omit=optional`，否则镜像体积与攻击面都被放大。
+
+**二次核对复现与新增事实（2026-09-12，探针目录 `d:\徐徐AI学习\_dsh-verify\`）**：
+
+| # | 复核项 | 结果 |
+| --- | --- | --- |
+| R1 | 复现上表数字 | ✅ **逐项复现**（459 MIT / 75 Apache-2.0 / 19 BSD-3-Clause / 10 LGPL-3.0-or-later / 10 ISC / 3+1 组合 / 2 BSD-2 / Python-2.0 / Unlicense / 0BSD = 583 条目） |
+| R2 | **`@deepseek-ai/*` 自身的许可证分布**（原表未拆分，本轮补） | ✅ **246 条 = 241 MIT + 5 BSD-3-Clause → 全为宽松许可，无任何 copyleft**。即 **dsh 全树可商用，与 D1 无冲突** |
+| R3 | **那 14 个 LGPL 条目的安装属性**（原表未标注，本轮补） | ⚠️ **全部 `optional: true`**：10 个 `@img/sharp-libvips-*@1.3.3`（LGPL-3.0-or-later）+ 3 个 `@img/sharp-win32-*@0.35.4` + 1 个 `@img/sharp-wasm32@0.35.4`（组合式含 LGPL） |
+| R4 | **`sharp` 本体与平台二进制的许可证归属** | `sharp@0.35.4` = **Apache-2.0**；`@img/sharp-**linux**-{x64,arm64,…}` = **Apache-2.0**（**不是** LGPL）；**LGPL 只来自配套的 libvips 二进制** `@img/sharp-libvips-*` |
+| R5 | **Linux 镜像是否真会带上 LGPL** | ⚠️ **会**。Linux 下 `sharp` 运行需要 `@img/sharp-libvips-linux-{x64,libc…}`（LGPL-3.0-or-later）→ **只要镜像里有可用的 `sharp`，LGPL 义务就触发**，无法靠"选对平台包"规避 |
+| R6 | **规避路径是否成立** | ❌ **原判断错误，已更正（2026-09-12 第三次核对）**：`sharp` **不是**可选平台包，而是 **`dsh-base` 的普通（非 optional）传递依赖**——依赖链 `@deepseek-ai/dsh` → **`@deepseek-ai/dsh-base`** → `@deepseek-ai/dsh-attachment-local@0.1.5-rc.2` → `sharp@^0.35.3`。因此**不能"整棵排除"**：`--omit=optional` 只能去掉**非目标平台**的二进制，**目标平台的 `@img/sharp-linux-x64` + `@img/sharp-libvips-linux-x64` 仍必须安装**。**故 LGPL 义务在段二镜像里基本无法归零，只能走 `THIRD-PARTY-NOTICES` 路径** |
+| R7 | 磁盘树口径下的"缺 license"现象 | 550 个 `package.json` 中有 **24 个无名子路径目录**（如 `zod/v4`、`@modelcontextprotocol/sdk/dist/cjs`）与 **7 个父包子路径条目**（`@google/genai/node|web`、`web-streams-polyfill{,-es2018,-es6}`、`web-streams-ponyfill*`）——**均非独立依赖**，其许可证跟随父包（`@google/genai` = Apache-2.0、`web-streams-polyfill` = MIT），**不构成风险**（原表「缺 license = 0」在 lockfile 口径下成立） |
+
+**仍未核（如实登记）**：
+- **未逐包比对许可证正文与声明值**（583 条目）：仅确认 `sharp`、`@img/sharp-win32-x64`、`@deepseek-ai/dsh`、`@google/genai`、`web-streams-polyfill` **随包带 LICENSE 文件**（`@img/sharp-win32-x64` 的 LICENSE 是写 NOTICES 时的引用来源）。
+- **未扫 Linux 容器内的实际安装树**（本机 Windows 树只装 win32 平台包）→ **构建镜像后必须在镜像内再跑一次同样的扫描**，以镜像内实际集合为准。
+- **`THIRD-PARTY-NOTICES` 尚未产出**：其内容取决于最终镜像集合（R6 的取舍），属段二交付物（规格 §4/§6）。
 
 ### F6 §B 剩余项的状态
 
