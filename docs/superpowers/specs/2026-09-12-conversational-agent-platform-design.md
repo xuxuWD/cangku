@@ -9,6 +9,7 @@
 > **配套材料**：
 > - 开源平台调研（既有，2026-09-09）：[open-source-agent-platform-research.md](file:///d:/徐徐AI学习/公司工作台/docs/open-source-agent-platform-research.md)
 > - 本轮三路联网调研（Agent 平台与 Harness / 记忆技能与自进化 / 开源 CRM）、仓库能力盘点、**「EvoFlow」命名冲突专项调研**，结论已摘入 §2.2、§2.3、§2.4
+> - **参照产品完整源码研读与修改方案**：[evoflow-source-study-and-adaptation-plan.md](file:///d:/徐徐AI学习/公司工作台/docs/evoflow-source-study-and-adaptation-plan.md)（2026-09-12，完整克隆 107.7 MB / 4750 文件，6 域并行深读）——**该文件推导出的改动待评审后回写本节 §4**
 
 ---
 
