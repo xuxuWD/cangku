@@ -118,6 +118,67 @@
 - **②③④ 先于 ⑤⑦**：先做「能不能执行」，再做「该不该执行」。若顺序颠倒，被批准的动作仍可能带上 `../` 或黑名单命令。
 - **不依赖 dsh 任何审批能力**（§2.1）：dsh 只是执行宿主，闸门全在**我们这一侧**。
 
+### 3.2.1 危险命令黑名单（**已定**，2026-09-12；口径经用户确认）
+
+**判定口径（三条，缺一即可绕过）**
+
+| # | 规则 |
+| --- | --- |
+| R1 | 判定对象是**结构化命令**（`executable` 的 basename + 规范化后的参数序列），**不是 shell 原始字符串**；参数须先规范化：去引号、拆分合并短选项（`-rf` → `-r -f`）、解析 `--` 终止符 |
+| R2 | basename 先做 **realpath 解析**（防 `/usr/bin/rm`、符号链接改名 `myrm`），再**大小写不敏感**比较（兼容 Windows 侧 `pwsh`/`cmd`） |
+| R3 | **命中即拒，先于风险定档与授权位**（④ 先于 ⑤⑦）；**不提供「审批后放行」豁免**——用例 4 就是这个不变式 |
+
+**A. 可执行名黑名单（命中即拒）**
+
+| 类 | 条目 | 理由 |
+| --- | --- | --- |
+| A1 文件系统破坏 | `rm` `rmdir` `shred` `dd` `truncate` `mkfs*` `mke2fs` `wipefs` `fdisk` `parted` `sgdisk` `mkswap` `swapon` `swapoff` `chattr` `setfattr` | 不可逆破坏；工作卷内容属交付物 |
+| A2 提权与身份 | `sudo` `su` `doas` `pkexec` `runuser` `setcap` `usermod` `useradd` `groupadd` `passwd` `chsh` `visudo` `newgrp` `chown` `chgrp` | 越权与身份语义变更；容器内本就非 root |
+| A3 进程/服务控制 | `kill` `killall` `pkill` `systemctl` `service` `crontab` `at` `batch` `nohup` `screen` `tmux` `shutdown` `reboot` `halt` `poweroff` `init` `telinit` | 生命周期只能由容器层控制（§3.3：超时=拒绝并终止容器） |
+| A4 网络与外联 | `curl` `wget` `nc` `ncat` `netcat` `socat` `telnet` `ssh` `scp` `sftp` `ftp` `tftp` `ping` `traceroute` `dig` `nslookup` `host` `ntpdate` `iptables` `nft` `ip` `ifconfig` `route` `tcpdump` | 与 `--network none` 冲突；联网只能由工作台侧发起，任何外联即绕过归口 |
+| A5 逃逸原语 | `docker` `podman` `nerdctl` `ctr` `crictl` `kubectl` `nsenter` `unshare` `chroot` `mount` `umount` `losetup` `pivot_root` `modprobe` `insmod` `rmmod` `sysctl` `systemd-nspawn` `machinectl` | 禁挂 `docker.sock` / 禁 `--privileged` 的兜底 |
+| A6 包管理 | `apt` `apt-get` `dpkg` `yum` `dnf` `rpm` `apk` `pacman` `zypper` `pip` `pip3` `npm` `yarn` `pnpm` `cargo` `gem` `composer` `conda` `brew` | 安装即引入不可控供应链；依赖由镜像构建期钉死（§4 精确版本） |
+| A7 shell 解释 | `sh` `bash` `zsh` `dash` `ksh` `pwsh` `powershell` `cmd` `wsl` | 直接违反「禁止 shell 解释」，并堵住 `bash -c "任意"` |
+| A8 解释器内联代码 | `python -c` `node -e` / `-p` `perl -e` `ruby -e` `php -r` `lua -e`；`awk` 在可写文件时 | 等于把结构化闸门降级为字符串执行 |
+| A9 调试与注入 | `gdb` `lldb` `dlv` `strace` `ltrace` `ptrace` `valgrind` | 可读写其它进程内存；调试能力应与执行环境分离 |
+| A10 资源耗尽 | `yes`、fork bomb（`:(){...}`）、`while true` 无限输出 | 容器有 pids/内存限额，仍需拒明显耗尽模式以保可观测 |
+
+**B. 参数级黑名单（可执行名合法，参数命中即拒）**
+
+| 规则 | 理由 |
+| --- | --- |
+| `find` + `-delete` / `-exec` / `-execdir` | 绕过 A1 与任意命令执行 |
+| `sed` + `-i` | 原地改写文件 |
+| `tar` / `unzip` + `--absolute-names`、`-C /`、含 `..` 的路径 | 解包逃出工作卷 |
+| `git` + `config --global` / 写 `remote` / `alias` 以 `!` 开头 | 持久化配置注入与命令执行 |
+| 任意命令 + 重定向 / `tee` 写入允许目录之外 | 与 ③ 同源，④ 再兜一次 |
+| 任意参数 realpath 后落在允许目录外 | 同上 |
+| `chmod` + `777` / `666` / `+s` | 权限放宽与 setuid |
+
+**C. 路径黑名单（读或写均拒）**
+
+| 条目 | 理由 |
+| --- | --- |
+| `/etc/shadow` `/etc/sudoers` `/root/**` `/proc/*/environ` | 凭据与提权配置 |
+| `~/.ssh/**` `~/.aws/**` `~/.config/gcloud/**` `/var/run/secrets/**` | 凭据目录（§3.3：容器内不得持有任何长寿命密钥） |
+| `.env` `.npmrc` `.pypirc` `.docker/config.json` `*.pem` `*.key` `id_rsa*` | 密钥文件 |
+
+**四个口径开口的锁定值（保守分支，2026-09-12 用户确认）**
+
+| # | 开口 | 锁定 |
+| --- | --- | --- |
+| Q1 | 是否允许脚本执行（`python app.py`、`node script.js`） | **本段整体禁止**。否则黑名单看不到脚本内部，A/B/C 三层形同虚设 |
+| Q2 | 只读工具是否保留 | **只保留白名单最小只读集**（`ls` `cat` `head` `tail` `wc` `stat` `file`），且受 C 类路径约束；`grep` / `rg` / `find` 本段不开放 |
+| Q3 | 管道 / `xargs` | **整体禁止**：一次工具调用只接受**一条**结构化命令，不支持管道组合 |
+| Q4 | 黑名单维护形态 | **代码常量 + 启动期断言**（与 §3.5 剖面口径一致）；不作外置热改配置 |
+
+**如实登记的局限（不得据此放宽其它防线）**
+
+1. 黑名单**看不到脚本内部**：一旦允许执行脚本，参数级判定即失效——这是 Q1 锁为「禁止」的原因。
+2. 语言运行时自带文件与网络能力（python / node 标准库）→ 允许运行脚本等于放弃 A/B/C 三层。
+3. 别名与符号链接须经 R2 的 realpath 归一，否则改名即绕过。
+4. 黑名单是**兜底**，主防线仍是白名单 + 容器边界；**安全性不得寄托在它上面**。
+
 ### 3.3 容器执行环境（照 A2/A3/A4 落地）
 
 | 项 | 要求 |
@@ -188,13 +249,15 @@
 | 1 | 白名单：组装时过滤 **且** 执行入口再校验（只改一处必须被拦） | 正常 | 去掉执行入口校验 → 必须红 |
 | 2 | 结构化参数：未知字段 / 类型不符 → 拒绝 | 正常 | — |
 | 3 | 路径逃逸：`../../etc/passwd`、符号链接指向目录外 → 拒绝 | 异常 | 去掉 realpath 校验 → 必须红 |
-| 4 | 黑名单**先于**授权：已批准的黑名单命令仍被拒 | 异常 | 把黑名单挪到授权之后 → 必须红 |
+| 4 | 黑名单**先于**授权：已批准的黑名单命令仍被拒。样本至少含 `rm -rf /workspace/x`、`/usr/bin/rm`（realpath 归一）、`bash -c "..."`、`python -c "..."`、`find . -delete`、`sed -i`、`chmod 777` | 异常 | 把黑名单挪到授权之后 → 必须红 |
 | 5 | 风险定档 → `needs_approval`：`full_auto` + `critical` 工具 → 仍要审批 | 正常 | 绕过 `needs_approval` 自写判定 → 必须红 |
 | 6 | 授权位：未授权/摘要不符 → 拒绝执行 | 异常 | 去掉摘要比对 → 必须红（与段一同口径） |
 | 7 | 结果落库：grep 不到文件正文 | 正常 | 直接落原文 → 必须红 |
 | 8 | `agent_key`：不存在/已停用 → 拒绝路由到执行 | 异常 | — |
 | 9 | 容器负向：`--network none` 真断网、只读根真只读、非 root、看不到 PG/Redis/MinIO | 边界 | 与前置清单 B4 共用同一组判据 |
 | 10 | 回滚开关：切回 mock 后全量全绿 | 正常 | — |
+| 11 | **路径黑名单（C 类）**：读 `.env` / `~/.ssh/id_rsa` / `/etc/shadow` / `/proc/self/environ` → 拒绝 | 异常 | 去掉 C 类路径判定 → 必须红 |
+| 12 | **§3.2.1 锁定值**：`python app.py`（Q1 禁脚本）、管道组合（Q3）、`grep`（Q2 不在最小只读集）→ 全部拒绝 | 异常 | 放开任一锁定值 → 必须红 |
 
 **反假测试纪律**：标「必须红」的每条都要**真的改坏跑一遍确认变红**再还原，并把结果写进汇报。
 
@@ -221,12 +284,12 @@
 | # | 问题 | 决议 / 状态 |
 | --- | --- | --- |
 | **X1** | §1.4 的子段划分是否采纳？ | **已定（采纳）**：段二拆为段二-1~4；D20 措辞已同步追加该决议，P2a-2 交付表已指向四个子段 |
-| **X2** | 危险命令黑名单**具体条目** | **待办（我方起草 → 用户逐条确认）**：A5 机制已定；我方起草带逐条理由的草案，确认后写入 §3.2 ④。**时间点 = 段二-2 开工前**（测试用例 4「黑名单先于授权」需要它） |
+| **X2** | 危险命令黑名单**具体条目** | **已定（2026-09-12）**：草案经用户确认，已写入 §3.2.1——含 R1–R3 判定口径、A/B/C 三层条目与理由、Q1–Q4 锁定值；§5 用例 4/11/12 附「必须红」样本 |
 | **X3** | A2 的**成本安排**（生产分主机） | **已定（接受分主机）**：维持 §3.3「与工作台分主机」硬约束（不同宿主、不同 Docker 网络/编排域，只经一个受控执行接口） |
 | **X4** | 单轮预算（前置清单 B12）本段做不做？ | **已定（本段不做）**：已写入 §1.2「不做什么」第 6 条；成本三级熔断完整口径属 P6 |
 | **X5** | 是否需要「工具调用记录表」？ | **已定（不建）**：走既有 append-only 审计；§3.4 与 §4 迁移口径已同步为「无新迁移」 |
 
-> X2 是唯一仍未闭环的决策项，但**不阻断段二-1**（只读勘察段）；它必须在段二-2 之前闭环。
+> **X1–X5 已全部闭环**（2026-09-12）。段二能否开工，取决于前置清单 [§B 开工前置与 §C 文档前置](file:///d:/徐徐AI学习/公司工作台/docs/dsh-integration-preflight-checklist.md)，不再取决于本规格的决策项。
 
 ---
 
