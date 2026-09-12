@@ -49,7 +49,10 @@ CREATE INDEX IF NOT EXISTS idx_workbench_conversation_messages_conversation
 ALTER TABLE workbench_digital_employees
     ADD COLUMN IF NOT EXISTS system_prompt     TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS model_key         TEXT NOT NULL DEFAULT '',
-    ADD COLUMN IF NOT EXISTS temperature       NUMERIC(3,2) NOT NULL DEFAULT 0.20,
+    -- temperature 的 CHECK 是必须的：NUMERIC(3,2) 只把范围限到 ±9.99，不拦 9.99 / -1.00。
+    -- 应用层已校验 0.00–2.00，这里是第二道防线（防止绕过接口的直接 SQL 写入）。
+    ADD COLUMN IF NOT EXISTS temperature       NUMERIC(3,2) NOT NULL DEFAULT 0.20
+        CHECK (temperature >= 0.00 AND temperature <= 2.00),
     ADD COLUMN IF NOT EXISTS tool_allowlist    JSONB NOT NULL DEFAULT '[]'::jsonb,
     ADD COLUMN IF NOT EXISTS memory_policy     JSONB NOT NULL DEFAULT '{}'::jsonb,
     -- 治理字段：参照 EvovexAI EvoFlow 的员工级治理设计（§2.4），金额按宪法用整数分

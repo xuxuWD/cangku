@@ -473,3 +473,77 @@ ALTER TABLE workbench_digital_employees
 10. **P1 不执行任何真实工具**（D7 是 `MockRuntime`），所以**切勿把「P1 已完成」理解成「文件与命令已可用」**——该能力 P2 才生效。
 11. **已登记缺口：创建会话时不校验 `agent_key` 是否在目录里存在且启用**（2026-09-12 P1a 实现时确认）。理由：§7.1 已定「`agent_key` 刻意不加外键」，加校验属规格未要求的行为变更；且 P1 无真实执行，typo 的后果要 P2 才显现。**收口时机 = P2**（`agent_key` 开始路由到真实执行时），届时按知识范围写路径闸门的同一口径收紧（复用 `ensure_agent_binding_available`），并保留「已停用员工的历史会话仍可读」。
 12. **已登记限制：mock 模式下任何非空 `model_key` 都会 `422`**。因为 `ModelGateway` 仅在 `planner_backend=openai_compatible` 时注册模型，默认 mock 模式注册集合为空 → 校验 fail-closed。**这是正确行为**，但意味着本地开发无法配置模型键，需先配好模型后端。
+
+---
+
+## 16. 迁移 023 真实 PostgreSQL 回归（2026-09-12，本机一次性容器）
+
+> **环境**：Docker `pgvector/pgvector:pg16`（PostgreSQL 16.15），端口 55434，容器 `workbench-pg-023`，**跑完即删**。
+> **这不是 staging**：无独立主机 / TLS / 独立密钥 / 回滚演练，仅用于消除「PG 仓储只用假连接断言」这一缺口。
+
+### 16.1 迁移链与结构声明
+
+| # | 检查 | 结果 |
+| --- | --- | --- |
+| 1 | 从零应用迁移 | **23 条**，`001_initial` → `023_conversational_agent`；`vector` 扩展 0.8.6 由 001 装好 |
+| 2 | 幂等性 | 重复执行新应用 **0** 条，记录表 23 条 |
+| 3 | 会话表主键 | `PRIMARY KEY (tenant_id, conversation_id)` |
+| 4 | 消息表主键 | `PRIMARY KEY (tenant_id, message_id)` |
+| 5 | 消息表外键 | `FOREIGN KEY (tenant_id, conversation_id) REFERENCES workbench_conversations(...)` |
+| 6 | 消息表是否有 `updated_at` | **无**（append-only 成立） |
+| 7 | 会话表是否加外键指向数字员工 | **无**（符合「停用不删除、历史可解析」） |
+| 8 | 新增列 | **9 列**全部 `NOT NULL` 且带默认值，类型正确（`numeric(3,2)` / `jsonb` / `integer` / `bigint`） |
+| 9 | **D12 是否被违反** | **全库 `vector` 列 = 0**；名为 `embedding_meta` 的列 = 0 |
+| 10 | 存量行默认值 | 只写原列后读新列 = `('', '', 0.20, [], {}, 'approval_for_risky', 'high', 60, 0)`，全部符合预期 |
+
+### 16.2 约束真的拦人（负向测试）
+
+每条插入都补齐了合法字段，**唯一可能的违规点就是被断言的那条约束**：
+
+| 用例 | 结果 |
+| --- | --- |
+| 会话 `status` 非法值 | `CheckViolation` |
+| 消息 `role` 非法值 | `CheckViolation` |
+| 消息指向不存在的会话 | `ForeignKeyViolation` |
+| **消息跨租户引用他租户会话** | **`ForeignKeyViolation`** ← 复合外键在**数据库层**强制租户隔离 |
+| 数字员工 `autonomy_level` / `risk_threshold` 非法 | `CheckViolation` |
+| 审批超时越界（1 分钟） | `CheckViolation` |
+| 每日预算负数 | `CheckViolation` |
+| 数字员工指向不存在岗位 | `ForeignKeyViolation` |
+
+### 16.3 本次回归查出并修复的缺陷（1 处）
+
+**`temperature` 缺 CHECK 约束**。规格 §7.2 明确要求 `0.00–2.00` 的 `CHECK`，但实现漏了；而 `NUMERIC(3,2)` 只把范围限到 ±9.99，**实测 9.99 与 -1.00 都能写入**（数据库层未拦）。
+
+已修复：在 `023` 给该列补 `CHECK (temperature >= 0.00 AND temperature <= 2.00)`，作为应用层校验之外的**第二道防线**（防绕过接口的直接 SQL 写入）。修复后在同一容器重建并复验：`0.00` / `2.00` 允许，`2.01` / `9.99` / `-1.00` 均 `CheckViolation`。
+
+> 因该迁移此前**从未在任何真实库执行过**，直接改 `023` 是安全的（无需新增 `024`）。若已有库执行过 023，则必须另开 `024` 补约束。
+
+### 16.4 应用层对真实 PG 的端到端验证
+
+以 `WORKBENCH_STORAGE_BACKEND=postgres` + 真实 DSN 起 `TestClient`：
+
+| # | 用例 | 结果 |
+| --- | --- | --- |
+| 1 | 创建会话 | `201` |
+| 2 | 发消息 | `201`，`stub = true`（**桩回复显式标注**，未伪装成真实模型） |
+| 3 | 会话列表 | `200`，`total = 1` |
+| 4 | 会话详情 | `200`，消息 2 条 |
+| 5 | 跨租户读会话 | **`404`**（未探测存在性） |
+| 6 | 改他人会话 | **`404`** |
+| 7 | 归档 | `200` |
+| 8 | 提示注入提示词 | `422`，中文原因正确 |
+| 9 | 温度越界（应用层） | `422` |
+| 10 | 跨租户读员工配置 | `404`（配置路由同样有租户隔离） |
+| 11 | 非超管改配置 | `403` |
+
+**查库核对**（宪法要求：正常流程必须查库，不只看 200）：会话行状态为 `archived`；消息表 2 行（`user` + `assistant` 桩回复）；审计 6 行 = `conversation.created` / `conversation.message.sent` ×2 / `conversation.archived` / **`workforce.agent.config.rejected` ×2（被拒也写审计）**。
+
+**隐私核对**：审计 `detail` 仅含标识、角色、状态与拒绝原因 —— **不含消息正文、不含提示词正文、不含桩回复文本**。
+
+### 16.5 本次回归仍未覆盖
+
+- **staging / 生产未验收**（无独立主机、TLS、独立密钥、回滚演练）
+- **同会话并发发消息**未测
+- **浏览器人工闭环**未做
+- 测试脚本退出时 `psycopg_pool.ConnectionPool.__del__` 报 `PythonFinalizationError`，属**测试驱动未关闭连接池**的产物，非应用缺陷（应用由 FastAPI lifespan 管理连接池）。
