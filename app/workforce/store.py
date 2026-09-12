@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from threading import RLock
@@ -27,6 +28,45 @@ from .models import (
 )
 
 MAX_LIMIT = 200
+
+# 配置字段名（§7.2）；未提交（值为 None）的字段保持原值
+CONFIG_FIELDS = (
+    "system_prompt",
+    "model_key",
+    "temperature",
+    "tool_allowlist",
+    "memory_policy",
+    "autonomy_level",
+    "risk_threshold",
+    "approval_timeout_minutes",
+    "daily_budget_cents",
+)
+
+
+def _clean_config_changes(changes: dict[str, object]) -> dict[str, object]:
+    """丢弃未提交字段并归一容器类型（服务层已完成取值校验）。"""
+    clean = {name: value for name, value in changes.items() if value is not None}
+    if "tool_allowlist" in clean:
+        clean["tool_allowlist"] = tuple(str(item) for item in clean["tool_allowlist"])  # type: ignore[union-attr]
+    if "memory_policy" in clean:
+        clean["memory_policy"] = dict(clean["memory_policy"])  # type: ignore[arg-type]
+    return clean
+
+
+def _as_str_tuple(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = json.loads(value)
+    return tuple(str(item) for item in value)  # type: ignore[union-attr]
+
+
+def _as_dict(value: object) -> dict[str, object]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        value = json.loads(value)
+    return dict(value)  # type: ignore[arg-type]
 
 
 def _safe_key(value: str) -> str:
@@ -57,6 +97,10 @@ class WorkforceDirectoryStore(Protocol):
     def role_is_active(self, context: UserContext, role_key: str) -> bool: ...
 
     def agent_is_active(self, context: UserContext, agent_key: str) -> bool: ...
+
+    def read_agent_config(self, context: UserContext, agent_key: str) -> DigitalEmployee: ...
+
+    def update_agent_config(self, context: UserContext, agent_key: str, *, system_prompt: str | None = None, model_key: str | None = None, temperature: float | None = None, tool_allowlist: tuple[str, ...] | None = None, memory_policy: dict[str, object] | None = None, autonomy_level: str | None = None, risk_threshold: str | None = None, approval_timeout_minutes: int | None = None, daily_budget_cents: int | None = None) -> DigitalEmployee: ...
 
 
 def _ensure_admin(context: UserContext) -> None:
@@ -182,6 +226,41 @@ class InMemoryWorkforceDirectoryStore:
             ]
         return matched[offset : offset + _clamp(limit)], len(matched)
 
+    # ------------------------------------------------------------ 配置读写（仅 super_admin）
+
+    def read_agent_config(self, context: UserContext, agent_key: str) -> DigitalEmployee:
+        _ensure_admin(context)
+        key = normalize_key(agent_key)
+        with self._lock:
+            employee = self._employees.get((context.tenant_id, key))
+        if employee is None:
+            raise DirectoryNotFound(agent_key)
+        return employee
+
+    def update_agent_config(self, context: UserContext, agent_key: str, *, system_prompt: str | None = None, model_key: str | None = None, temperature: float | None = None, tool_allowlist: tuple[str, ...] | None = None, memory_policy: dict[str, object] | None = None, autonomy_level: str | None = None, risk_threshold: str | None = None, approval_timeout_minutes: int | None = None, daily_budget_cents: int | None = None) -> DigitalEmployee:
+        _ensure_admin(context)
+        key = normalize_key(agent_key)
+        changes = _clean_config_changes(
+            {
+                "system_prompt": system_prompt,
+                "model_key": model_key,
+                "temperature": temperature,
+                "tool_allowlist": tool_allowlist,
+                "memory_policy": memory_policy,
+                "autonomy_level": autonomy_level,
+                "risk_threshold": risk_threshold,
+                "approval_timeout_minutes": approval_timeout_minutes,
+                "daily_budget_cents": daily_budget_cents,
+            }
+        )
+        with self._lock:
+            existing = self._employees.get((context.tenant_id, key))
+            if existing is None:
+                raise DirectoryNotFound(agent_key)
+            updated = replace(existing, updated_at=now(), **changes)
+            self._employees[(context.tenant_id, key)] = updated
+            return updated
+
     # ------------------------------------------------------------ 供「未纳管」计算
 
     def known_keys(self, context: UserContext) -> tuple[set[str], set[str]]:
@@ -227,6 +306,11 @@ class PostgresWorkforceDirectoryStore:
 
     _ROLE_COLUMNS = "tenant_id, role_key, name, description, status, created_by, created_at, updated_at"
     _EMPLOYEE_COLUMNS = "tenant_id, agent_key, name, description, role_key, status, created_by, created_at, updated_at"
+    # 配置读写在既有列之后追加 §7.2 字段；既有 CRUD/列表仍用 _EMPLOYEE_COLUMNS（其默认值由数据类补齐）
+    _AGENT_CONFIG_COLUMNS = (
+        f"{_EMPLOYEE_COLUMNS}, system_prompt, model_key, temperature, tool_allowlist, "
+        "memory_policy, autonomy_level, risk_threshold, approval_timeout_minutes, daily_budget_cents"
+    )
 
     def __init__(self, connection_or_pool) -> None:
         self.connection = connection_or_pool
@@ -265,6 +349,29 @@ class PostgresWorkforceDirectoryStore:
             created_by=str(row[6]),
             created_at=row[7],
             updated_at=row[8],
+        )
+
+    @staticmethod
+    def _hydrate_agent_config(row: tuple) -> DigitalEmployee:
+        return DigitalEmployee(
+            tenant_id=str(row[0]),
+            agent_key=str(row[1]),
+            name=str(row[2]),
+            description=str(row[3]),
+            role_key=str(row[4]),
+            status=DirectoryStatus(str(row[5])),
+            created_by=str(row[6]),
+            created_at=row[7],
+            updated_at=row[8],
+            system_prompt=str(row[9] or ""),
+            model_key=str(row[10] or ""),
+            temperature=float(row[11]) if row[11] is not None else 0.20,
+            tool_allowlist=_as_str_tuple(row[12]),
+            memory_policy=_as_dict(row[13]),
+            autonomy_level=str(row[14]),
+            risk_threshold=str(row[15]),
+            approval_timeout_minutes=int(row[16]),
+            daily_budget_cents=int(row[17]),
         )
 
     # ------------------------------------------------------------ 岗位
@@ -415,6 +522,84 @@ class PostgresWorkforceDirectoryStore:
                 cursor.execute(f"SELECT COUNT(*) FROM workbench_digital_employees WHERE {where}", tuple(params))
                 count_row = cursor.fetchone()
         return [self._hydrate_employee(row) for row in rows], int(count_row[0]) if count_row is not None else 0
+
+    # ------------------------------------------------------------ 配置读写（仅 super_admin）
+
+    def read_agent_config(self, context: UserContext, agent_key: str) -> DigitalEmployee:
+        _ensure_admin(context)
+        key = normalize_key(agent_key)
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._AGENT_CONFIG_COLUMNS} FROM workbench_digital_employees WHERE tenant_id = %s AND agent_key = %s",
+                    (context.tenant_id, key),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            raise DirectoryNotFound(agent_key)
+        return self._hydrate_agent_config(row)
+
+    def update_agent_config(self, context: UserContext, agent_key: str, *, system_prompt: str | None = None, model_key: str | None = None, temperature: float | None = None, tool_allowlist: tuple[str, ...] | None = None, memory_policy: dict[str, object] | None = None, autonomy_level: str | None = None, risk_threshold: str | None = None, approval_timeout_minutes: int | None = None, daily_budget_cents: int | None = None) -> DigitalEmployee:
+        _ensure_admin(context)
+        key = normalize_key(agent_key)
+        changes = _clean_config_changes(
+            {
+                "system_prompt": system_prompt,
+                "model_key": model_key,
+                "temperature": temperature,
+                "tool_allowlist": tool_allowlist,
+                "memory_policy": memory_policy,
+                "autonomy_level": autonomy_level,
+                "risk_threshold": risk_threshold,
+                "approval_timeout_minutes": approval_timeout_minutes,
+                "daily_budget_cents": daily_budget_cents,
+            }
+        )
+        tool_allowlist_json = (
+            json.dumps(list(changes["tool_allowlist"]), ensure_ascii=False)  # type: ignore[arg-type]
+            if "tool_allowlist" in changes
+            else None
+        )
+        memory_policy_json = (
+            json.dumps(changes["memory_policy"], ensure_ascii=False) if "memory_policy" in changes else None
+        )
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_digital_employees
+                        SET system_prompt = COALESCE(%s, system_prompt),
+                            model_key = COALESCE(%s, model_key),
+                            temperature = COALESCE(%s, temperature),
+                            tool_allowlist = COALESCE(%s::jsonb, tool_allowlist),
+                            memory_policy = COALESCE(%s::jsonb, memory_policy),
+                            autonomy_level = COALESCE(%s, autonomy_level),
+                            risk_threshold = COALESCE(%s, risk_threshold),
+                            approval_timeout_minutes = COALESCE(%s, approval_timeout_minutes),
+                            daily_budget_cents = COALESCE(%s, daily_budget_cents),
+                            updated_at = now()
+                        WHERE tenant_id = %s AND agent_key = %s
+                        RETURNING {self._AGENT_CONFIG_COLUMNS}
+                        """,
+                        (
+                            changes.get("system_prompt"),
+                            changes.get("model_key"),
+                            changes.get("temperature"),
+                            tool_allowlist_json,
+                            memory_policy_json,
+                            changes.get("autonomy_level"),
+                            changes.get("risk_threshold"),
+                            changes.get("approval_timeout_minutes"),
+                            changes.get("daily_budget_cents"),
+                            context.tenant_id,
+                            key,
+                        ),
+                    )
+                    row = cursor.fetchone()
+        if row is None:
+            raise DirectoryNotFound(agent_key)
+        return self._hydrate_agent_config(row)
 
     # ------------------------------------------------------------ 供「未纳管」计算
 

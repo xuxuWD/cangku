@@ -42,7 +42,13 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.WORKFORCE_AGENT_CREATED.value == "workforce.agent.created"
     assert AuditAction.WORKFORCE_AGENT_UPDATED.value == "workforce.agent.updated"
     assert AuditAction.WORKFORCE_AGENT_DISABLED.value == "workforce.agent.disabled"
-    assert len(set(AuditAction)) == 39
+    assert AuditAction.CONVERSATION_CREATED.value == "conversation.created"
+    assert AuditAction.CONVERSATION_ARCHIVED.value == "conversation.archived"
+    assert AuditAction.CONVERSATION_MESSAGE_SENT.value == "conversation.message.sent"
+    assert AuditAction.WORKFORCE_AGENT_CONFIG_READ.value == "workforce.agent.config.read"
+    assert AuditAction.WORKFORCE_AGENT_CONFIG_UPDATED.value == "workforce.agent.config.updated"
+    assert AuditAction.WORKFORCE_AGENT_CONFIG_REJECTED.value == "workforce.agent.config.rejected"
+    assert len(set(AuditAction)) == 45
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

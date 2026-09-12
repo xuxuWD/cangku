@@ -597,3 +597,28 @@ RAGFlow 适配器只提供租户内的只读知识检索。请求为 `POST {endp
 AgentScope 适配器只承接受控执行，以下均为外部服务协议：`POST /runs` 创建运行，`GET /runs/{id}/events` 读取事件，`POST /runs/{id}/pause`、`resume`、`cancel`、`approvals`、`replay` 和 `usage` 执行生命周期、审批、重放及用量命令，另有 `GET /health` 健康检查。外部服务不能覆盖工作台从任务快照重建的租户、用户、岗位、项目、预算、知识/文件范围、策略版本、审批结果或最终任务状态。
 
 外部事件只能映射到统一事件类型；未知事件统一映射为 `run.failed`，并仅保留脱敏后的失败原因和安全的外部类型。RAGFlow 与 AgentScope 的认证头、API Key 和 Cookie 应由部署环境注入传输层，不能进入任务载荷、事件或日志；认证注入在开发期尚未实现或验证。开发期使用 `FakeTransport` 只验证适配器契约，不等于真实 RAGFlow/AgentScope staging 验收；真实外部服务、密钥注入、跨租户实测、并发压测和沙箱验证仍需单独完成。
+
+## 对话式 AI 员工平台（P1）
+
+口径：`docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md`。租户语义 100% 落在本项目的 `workbench_conversations`（迁移 `023_conversational_agent`）；会话消息表 **append-only**（不提供编辑/删除；第一期不做物理删除、会话分享、多员工协同）。
+
+**P1 的对话语义**：Harness 使用 `MockRuntime`，**不做任何真实工具调用、不接真实模型**。助手回复是**确定性桩**，并在响应体显式标注 `stub: true`，绝不伪装成真实模型输出。会话与消息的数据模型、权限、审计、分页都是真实的。第一期**不开通文件读写与命令执行**（那是 P2 的能力，D8），配置里的 `tool_allowlist` 只存不用。
+
+**权限与隔离**（与 §8 一致）：
+- 可用对话入口的岗位：`employee` / `department_lead` / `ceo` / `super_admin`；`customer_admin` 返回 `403`。
+- 普通岗位只能读写**自己发起**的会话；`ceo` / `super_admin` 可读本租户内他人会话。
+- **跨租户**访问、以及**修改他人会话**（发消息 / 归档）一律返回 `404`（而非 `403`，避免探测存在性）。
+- 全部接口：未认证 `401`；越权 `403`；只返回本租户数据；响应不含账号 PII（会话视图不含 `operator_id` 与 `dsh_session_id`）。
+- **权限收敛**：对话入口与表单入口对同一动作共用同一套 `ensure_can_create` / `ensure_can_approve` 判定，对话路径不复制判定逻辑。**自治等级只决定「是否需要人批」，不决定「是否绕开权限判定」**：`full_auto` 的员工仍不能做其操作者无权做的事。
+
+**分页口径**：会话列表与会话详情内的消息都使用 `limit`（1–200，默认 50）+ `offset`（≥0，默认 0），并返回命中总数。
+
+- `POST /api/v1/conversations`：新建会话。请求体 `{"agent_key"?: string, "title"?: string}`（未知字段 `422`）。`agent_key` 缺省为默认员工；`agent_key` 只做标识归一，**不校验其在目录中是否启用**——历史会话在数字员工停用后仍必须可解析。成功 `201`，返回会话视图。
+- `GET /api/v1/conversations`：会话列表，**必须分页**。可选 `status=active|archived`（非法值 `422`）。返回 `{"items":[...],"total","limit","offset"}`。
+- `GET /api/v1/conversations/{conversation_id}`：会话详情（含消息）。消息同样以 `limit`/`offset` 分页，返回 `messages`、`messages_total`、`messages_limit`、`messages_offset`。跨租户或不属于当前操作者的会话返回 `404`。
+- `POST /api/v1/conversations/{conversation_id}/messages`：发送一条用户消息，落库用户消息与**确定性桩回复**。请求体 `{"content": string}`（空/纯空白 `422`，超长 `422`，未知字段 `422`）。成功 `201`，返回 `{"message_id","conversation_id","stub": true, "reply": {...}}`，其中 `reply.stub=true`。向**已归档**会话发消息返回 `409`。审计动作 `conversation.message.sent`（只记标识与角色，**不记消息正文**）。
+- `POST /api/v1/conversations/{conversation_id}/archive`：归档会话（不删除）。成功返回更新后的会话视图（`status=archived`）；改他人会话返回 `404`。审计动作 `conversation.archived`。
+- `GET /api/v1/workforce/agents/{agent_key}/config`：读数字员工配置。**仅 `super_admin`**（其他角色 `403`）；跨租户或不存在返回 `404`。返回提示词、模型键、温度、工具白名单、记忆策略与治理字段（`autonomy_level` / `risk_threshold` / `approval_timeout_minutes` / `daily_budget_cents`）。
+- `PATCH /api/v1/workforce/agents/{agent_key}/config`：改配置，**仅 `super_admin`**。请求体各字段可选、未知字段 `422`。校验失败一律 `422`：非法 `model_key`（不在模型网关注册候选内）、越界 `temperature`（须 0.00–2.00）、`tool_allowlist` 含白名单外工具、`system_prompt` 超 8000 字符、`autonomy_level` / `risk_threshold` 非法枚举、`approval_timeout_minutes` 不在 5–10080、`daily_budget_cents` 为负、`memory_policy` 含未知字段。
+  - **D11 提示词防护**：`system_prompt` 在**写入阶段**扫描试图改变权限判定的指令（如「忽略/绕过/跳过 审批/权限/限制」、`ignore previous instructions`、`skip approval`），命中返回 `422` 并给出明确中文原因；扫描已考虑大小写、全角/半角与常见分隔符绕过。被拒绝的尝试写入审计 `workforce.agent.config.rejected`（记录被拒字段名与原因，**不记录提示词正文**）。
+  - 成功写入审计 `workforce.agent.config.updated`（明细为 `agent_key` 与变更字段名，不含字段正文）；读取写入 `workforce.agent.config.read`。

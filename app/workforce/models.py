@@ -17,6 +17,15 @@ KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MAX_NAME_LENGTH = 60
 MAX_DESCRIPTION_LENGTH = 200
 
+# 数字员工配置（§7.2 / D11）
+MAX_SYSTEM_PROMPT_LENGTH = 8000
+AUTONOMY_LEVELS = ("approval_for_all", "approval_for_risky", "full_auto")
+RISK_THRESHOLDS = ("low", "medium", "high")
+MIN_APPROVAL_TIMEOUT_MINUTES = 5
+MAX_APPROVAL_TIMEOUT_MINUTES = 10080
+DEFAULT_TEMPERATURE = 0.20
+DEFAULT_APPROVAL_TIMEOUT_MINUTES = 60
+
 
 class DirectoryError(ValueError):
     """目录操作失败的基类；接口层按子类映射到 4xx。"""
@@ -48,6 +57,17 @@ class RoleNotAvailable(DirectoryError):
 
 class DirectoryNotFound(LookupError):
     pass
+
+
+class InvalidAgentConfig(DirectoryError):
+    """数字员工配置校验失败（含 D11 提示词防护）→ 422。
+
+    `fields` 记录被拒的字段名，供审计记录「被拒绝的尝试」，不携带字段正文。
+    """
+
+    def __init__(self, message: str, *, fields: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.fields = tuple(fields)
 
 
 class DirectoryStatus(StrEnum):
@@ -82,6 +102,16 @@ class DigitalEmployee:
     created_by: str = ""
     created_at: datetime | None = field(default_factory=now)
     updated_at: datetime | None = field(default_factory=now)
+    # 配置字段（§7.2 / D11）；默认值即「fail-closed」：用默认模型、无提示词、无工具
+    system_prompt: str = ""
+    model_key: str = ""
+    temperature: float = DEFAULT_TEMPERATURE
+    tool_allowlist: tuple[str, ...] = ()
+    memory_policy: dict[str, object] = field(default_factory=dict)
+    autonomy_level: str = "approval_for_risky"
+    risk_threshold: str = "high"
+    approval_timeout_minutes: int = DEFAULT_APPROVAL_TIMEOUT_MINUTES
+    daily_budget_cents: int = 0
 
 
 def normalize_key(value: str) -> str:

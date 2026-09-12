@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -85,6 +85,16 @@ from .workforce import (
     RoleNotAvailable,
     WorkforceDirectoryService,
 )
+from .conversation import (
+    Conversation,
+    ConversationMessage,
+    ConversationNotFound,
+    ConversationStateConflict,
+    ConversationStatus,
+    InvalidConversation,
+    MessageRole,
+    ensure_can_converse,
+)
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
@@ -109,6 +119,13 @@ workforce_directory_service = WorkforceDirectoryService(
     audit=audit_service,
     knowledge_registry=knowledge_access_registry,
     task_store=store,
+)
+conversation_store = build_conversation_store(settings)
+conversation_service = build_conversation_service(
+    settings, store=conversation_store, audit=audit_service
+)
+agent_config_service = build_agent_config_service(
+    settings, store=workforce_directory_store, audit=audit_service
 )
 run_metrics_service = build_run_metrics(settings)
 runtime_state_store = build_runtime_state_store(settings)
@@ -1075,6 +1092,283 @@ def workforce_candidates(context: UserContext = Depends(current_user)) -> Workfo
     _require_workforce_directory_admin(context)
     result = workforce_directory_service.candidates(context)
     return WorkforceCandidatesView(roles=result["roles"], agents=result["agents"])
+
+
+# ------------------------------------------------------------ 对话层（P1，D7：桩回复）
+
+
+def _raise_conversation_http(exc: Exception) -> NoReturn:
+    """把对话领域异常映射成 HTTP 语义；子类先判，避免被基类截走。"""
+    if isinstance(exc, ConversationStateConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, InvalidConversation):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, ConversationNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, PolicyError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    raise exc
+
+
+def _conversation_status_query(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value not in ("active", "archived"):
+        raise HTTPException(status_code=422, detail="状态只能是 active 或 archived")
+    return value
+
+
+class ConversationView(BaseModel):
+    """会话视图：刻意不含 `operator_id` 与 `dsh_session_id`（账号 PII 与内部映射不外泄）。"""
+
+    conversation_id: str
+    agent_key: str | None = None
+    title: str
+    status: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ConversationListView(BaseModel):
+    items: list[ConversationView]
+    total: int
+    limit: int
+    offset: int
+
+
+class MessageView(BaseModel):
+    message_id: str
+    conversation_id: str
+    role: str
+    content: str
+    # P1 的助手消息都是确定性桩；显式标注，绝不伪装成真实模型输出
+    stub: bool = False
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    created_at: datetime | None = None
+
+
+class ConversationDetailView(ConversationView):
+    messages: list[MessageView]
+    messages_total: int
+    messages_limit: int
+    messages_offset: int
+
+
+class ConversationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_key: str | None = Field(default=None, max_length=64)
+    title: str = Field(default="", max_length=120)
+
+
+class MessageCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=8000)
+
+
+class MessageCreateResponse(BaseModel):
+    message_id: str
+    conversation_id: str
+    stub: bool
+    reply: MessageView
+
+
+class AgentConfigView(BaseModel):
+    agent_key: str
+    system_prompt: str
+    model_key: str
+    temperature: float
+    tool_allowlist: list[str]
+    memory_policy: dict[str, object]
+    autonomy_level: str
+    risk_threshold: str
+    approval_timeout_minutes: int
+    daily_budget_cents: int
+    updated_at: datetime | None = None
+
+
+class AgentConfigUpdateRequest(BaseModel):
+    """`agent_key` 是身份、不可改；未知字段因 `extra=forbid` 直接 422。"""
+
+    model_config = ConfigDict(extra="forbid")
+    system_prompt: str | None = None
+    model_key: str | None = None
+    temperature: float | None = None
+    tool_allowlist: list[str] | None = None
+    memory_policy: dict[str, object] | None = None
+    autonomy_level: str | None = None
+    risk_threshold: str | None = None
+    approval_timeout_minutes: int | None = None
+    daily_budget_cents: int | None = None
+
+
+def _conversation_view(conversation: Conversation) -> ConversationView:
+    return ConversationView(
+        conversation_id=conversation.conversation_id,
+        agent_key=conversation.agent_key,
+        title=conversation.title,
+        status=conversation.status.value,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+    )
+
+
+def _message_view(message: ConversationMessage) -> MessageView:
+    return MessageView(
+        message_id=message.message_id,
+        conversation_id=message.conversation_id,
+        role=message.role.value,
+        content=message.content,
+        stub=message.role == MessageRole.ASSISTANT,
+        tool_name=message.tool_name,
+        tool_call_id=message.tool_call_id,
+        created_at=message.created_at,
+    )
+
+
+def _agent_config_view(employee: DigitalEmployee) -> AgentConfigView:
+    return AgentConfigView(
+        agent_key=employee.agent_key,
+        system_prompt=employee.system_prompt,
+        model_key=employee.model_key,
+        temperature=employee.temperature,
+        tool_allowlist=list(employee.tool_allowlist),
+        memory_policy=dict(employee.memory_policy),
+        autonomy_level=employee.autonomy_level,
+        risk_threshold=employee.risk_threshold,
+        approval_timeout_minutes=employee.approval_timeout_minutes,
+        daily_budget_cents=employee.daily_budget_cents,
+        updated_at=employee.updated_at,
+    )
+
+
+@app.post("/api/v1/conversations", response_model=ConversationView, status_code=status.HTTP_201_CREATED)
+def create_conversation(
+    payload: ConversationCreateRequest, context: UserContext = Depends(current_user)
+) -> ConversationView:
+    """新建会话；`agent_key` 可选（缺省用默认员工）。"""
+    try:
+        ensure_can_converse(context)
+        conversation = conversation_service.create_conversation(
+            context, agent_key=payload.agent_key, title=payload.title
+        )
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return _conversation_view(conversation)
+
+
+@app.get("/api/v1/conversations", response_model=ConversationListView)
+def list_conversations(
+    conversation_status: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> ConversationListView:
+    """会话列表：普通岗位只列本人在本租户发起的会话；CEO/超级管理员可列本租户全部；必须分页。"""
+    try:
+        ensure_can_converse(context)
+        items, total = conversation_service.list_conversations(
+            context, status=_conversation_status_query(conversation_status), limit=limit, offset=offset
+        )
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return ConversationListView(
+        items=[_conversation_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
+
+
+@app.get("/api/v1/conversations/{conversation_id}", response_model=ConversationDetailView)
+def get_conversation(
+    conversation_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> ConversationDetailView:
+    """会话详情（含消息，消息同样分页）。跨租户与改他人会话一律 404。"""
+    try:
+        ensure_can_converse(context)
+        conversation = conversation_service.get_conversation(context, conversation_id)
+        messages, messages_total = conversation_service.list_messages(
+            context, conversation_id, limit=limit, offset=offset
+        )
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    view = _conversation_view(conversation)
+    return ConversationDetailView(
+        **view.model_dump(),
+        messages=[_message_view(item) for item in messages],
+        messages_total=messages_total,
+        messages_limit=limit,
+        messages_offset=offset,
+    )
+
+
+@app.post(
+    "/api/v1/conversations/{conversation_id}/messages",
+    response_model=MessageCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def send_conversation_message(
+    conversation_id: str, payload: MessageCreateRequest, context: UserContext = Depends(current_user)
+) -> MessageCreateResponse:
+    """发送一条用户消息并返回确定性桩回复（`stub=true`）；向已归档会话发消息返回 409。"""
+    try:
+        ensure_can_converse(context)
+        user_message, reply = conversation_service.send_message(
+            context, conversation_id, content=payload.content
+        )
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return MessageCreateResponse(
+        message_id=user_message.message_id,
+        conversation_id=user_message.conversation_id,
+        stub=True,
+        reply=_message_view(reply),
+    )
+
+
+@app.post("/api/v1/conversations/{conversation_id}/archive", response_model=ConversationView)
+def archive_conversation(
+    conversation_id: str, context: UserContext = Depends(current_user)
+) -> ConversationView:
+    """归档会话（不删除）；改他人会话返回 404。"""
+    try:
+        ensure_can_converse(context)
+        conversation = conversation_service.archive_conversation(context, conversation_id)
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return _conversation_view(conversation)
+
+
+@app.get("/api/v1/workforce/agents/{agent_key}/config", response_model=AgentConfigView)
+def read_workforce_agent_config(
+    agent_key: str, context: UserContext = Depends(current_user)
+) -> AgentConfigView:
+    """读数字员工配置；仅超级管理员，跨租户按不存在处理（404）。"""
+    _require_workforce_directory_admin(context)
+    try:
+        employee = agent_config_service.read_config(context, agent_key)
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return _agent_config_view(employee)
+
+
+@app.patch("/api/v1/workforce/agents/{agent_key}/config", response_model=AgentConfigView)
+def update_workforce_agent_config(
+    agent_key: str, payload: AgentConfigUpdateRequest, context: UserContext = Depends(current_user)
+) -> AgentConfigView:
+    """改提示词 / 模型 / 温度 / 技能白名单 / 记忆策略 / 治理字段；仅超级管理员。
+
+    D11：提示词在写入阶段即扫描，命中「忽略/绕过审批」这类指令一律 422 并写审计。
+    """
+    _require_workforce_directory_admin(context)
+    try:
+        employee = agent_config_service.update_config(
+            context, agent_key, changes=payload.model_dump(exclude_unset=True)
+        )
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return _agent_config_view(employee)
 
 
 def _knowledge_access_view(binding_type: str, binding_key: str, knowledge_base_ids: set[str]) -> dict[str, object]:

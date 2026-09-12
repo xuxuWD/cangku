@@ -720,3 +720,59 @@ def build_login_rate_limiter(settings: Settings, *, connection=None, migrate: bo
         window_seconds=settings.login_window_seconds,
         lock_seconds=settings.login_lock_seconds,
     )
+
+
+def build_conversation_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配对话仓储（表 `workbench_conversations` /
+    `workbench_conversation_messages`，迁移 023）。"""
+    validate_runtime_settings(settings)
+    from .conversation.store import InMemoryConversationStore, PostgresConversationStore
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存对话仓储")
+        return InMemoryConversationStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresConversationStore(connection)
+    raise ValueError("不支持的对话存储类型")
+
+
+def build_conversation_service(settings: Settings, *, store, audit=None):
+    """装配对话服务（P1 使用确定性桩回复，不接真实模型，D7）。"""
+    validate_runtime_settings(settings)
+    from .conversation.service import ConversationService
+
+    return ConversationService(store, audit=audit)
+
+
+def registered_model_keys(settings: Settings) -> frozenset[str]:
+    """模型网关注册的候选键（与 `build_planner_service` 装配 `ModelGateway` 的口径一致）。"""
+    keys: set[str] = set()
+    if settings.planner_backend == "openai_compatible" and settings.planner_model_name.strip():
+        keys.add(settings.planner_model_name.strip())
+    return frozenset(keys)
+
+
+def allowed_tool_names(settings: Settings) -> frozenset[str]:
+    """服务端工具白名单的工具名集合（与 `build_planner_service` 同一 `ToolCatalog`）。"""
+    return frozenset(ToolCatalog.from_config(settings.planner_tools).names())
+
+
+def build_agent_config_service(settings: Settings, *, store, audit=None):
+    """装配数字员工配置闸门：模型键与工具白名单都取自服务端已注册集合（fail-closed）。"""
+    validate_runtime_settings(settings)
+    from .workforce.config import AgentConfigService
+
+    return AgentConfigService(
+        store,
+        audit=audit,
+        allowed_model_keys=registered_model_keys(settings),
+        allowed_tools=allowed_tool_names(settings),
+    )

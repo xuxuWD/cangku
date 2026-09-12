@@ -48,6 +48,12 @@ class AuditAction(StrEnum):
     WORKFORCE_AGENT_CREATED = "workforce.agent.created"
     WORKFORCE_AGENT_UPDATED = "workforce.agent.updated"
     WORKFORCE_AGENT_DISABLED = "workforce.agent.disabled"
+    CONVERSATION_CREATED = "conversation.created"
+    CONVERSATION_ARCHIVED = "conversation.archived"
+    CONVERSATION_MESSAGE_SENT = "conversation.message.sent"
+    WORKFORCE_AGENT_CONFIG_READ = "workforce.agent.config.read"
+    WORKFORCE_AGENT_CONFIG_UPDATED = "workforce.agent.config.updated"
+    WORKFORCE_AGENT_CONFIG_REJECTED = "workforce.agent.config.rejected"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -82,6 +88,12 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "role_key",
         "agent_key",
         "changed_fields",
+        # 对话层（只记标识与角色，绝不记消息正文或提示词正文）
+        "conversation_id",
+        "message_id",
+        "stub",
+        # 配置被拒时记录被拒字段名
+        "rejected_fields",
     }
 )
 
