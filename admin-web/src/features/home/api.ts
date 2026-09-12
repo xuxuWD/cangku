@@ -1,5 +1,6 @@
 import { homeErrorFromStatus } from './state'
-import type { HomeCreatedTask, HomeDraftList, HomeEmployeeList, HomeRiskLevel } from './types'
+import type { Conversation, ConversationList } from '../conversation/types'
+import type { HomeCreatedTask, HomeEmployeeList, HomeRiskLevel } from './types'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1').replace(/\/$/, '')
 
@@ -40,10 +41,26 @@ export function listHomeEmployees(): Promise<HomeEmployeeList> {
   return request<HomeEmployeeList>('/workforce/agents?limit=50&offset=0')
 }
 
-export function listHomeDrafts(pageSize: number): Promise<HomeDraftList> {
-  return request<HomeDraftList>(`/content-tasks?page=1&page_size=${pageSize}`)
+export function listHomeConversations(limit: number): Promise<ConversationList> {
+  return request<ConversationList>(`/conversations?limit=${limit}&offset=0`)
 }
 
+// 首页第一句话 = 建会话；`agent_key` 缺省即用默认员工。
+export function createHomeConversation(payload: { agentKey?: string; title: string }): Promise<Conversation> {
+  return request<Conversation>('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ agent_key: payload.agentKey, title: payload.title }),
+  })
+}
+
+export function sendHomeMessage(conversationId: string, content: string): Promise<{ conversation_id: string; stub: boolean }> {
+  return request<{ conversation_id: string; stub: boolean }>(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+}
+
+// 次要入口「或直接建任务」保留：POST /tasks 在整个前端只有首页在用。
 export function createHomeTask(payload: {
   title: string
   employeeKey: string

@@ -6,11 +6,13 @@ export const initialHomeState: HomeState = {
   employees: [],
   employeesLoading: true,
   employeesError: null,
-  drafts: [],
-  draftsLoading: true,
-  draftsError: null,
+  conversations: [],
+  conversationsLoading: true,
+  conversationsError: null,
   submitting: false,
   submitError: null,
+  taskSubmitting: false,
+  taskError: null,
   toast: null,
 }
 
@@ -18,8 +20,9 @@ export const initialHomeState: HomeState = {
 export function homeErrorFromStatus(status: number, detail?: string | null): HomeErrorShape {
   if (status === 403) return { status, message: detail || '当前岗位不能创建任务，请联系管理员调整权限。', retryable: false }
   if (status === 401) return { status, message: '登录态已失效，请重新登录。', retryable: false }
+  if (status === 404) return { status, message: detail || '目标不存在，或不属于当前账号。', retryable: false }
   if (status === 409) return { status, message: detail || '同一请求已提交过，请勿重复创建。', retryable: false }
-  if (status === 422) return { status, message: detail || '任务描述或执行人不符合要求，请检查后重试。', retryable: false }
+  if (status === 422) return { status, message: detail || '请求内容不符合要求，请检查后重试。', retryable: false }
   if (status === 0 || status >= 500) return { status, message: DEFAULT_HOME_ERROR, retryable: true }
   return { status, message: detail || `请求未被接受（${status}）。`, retryable: false }
 }

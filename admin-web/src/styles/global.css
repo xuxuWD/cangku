@@ -1226,3 +1226,126 @@ button, select, input, textarea { font: inherit }
 @media (prefers-reduced-motion: reduce) {
   *, *:before, *:after { animation-duration: .01ms !important; transition-duration: .01ms !important }
 }
+
+/* ------------------------------------------------------------ 对话 */
+
+.conversation { max-width: 1180px }
+
+.conversation-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.conversation-item { cursor: pointer; align-items: flex-start }
+.conversation-item.active { background: var(--bg-hover) }
+.conversation-item:focus-visible { outline: none; box-shadow: var(--ring) }
+.conversation-item .status-badge { flex: none }
+
+.conversation-messages {
+  display: grid;
+  gap: 12px;
+  padding: 0 20px 20px;
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.conversation-message {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--bg-inset);
+}
+
+.conversation-message--assistant { background: var(--bg-card) }
+/* 用户与助手两种角色必须一眼可分：用户消息用强调色左边条 + 浅强调底，深浅主题都取语义令牌。 */
+.conversation-message--user {
+  background: var(--accent-soft);
+  border-color: var(--border-soft);
+  border-left: 3px solid var(--accent);
+}
+
+.conversation-message__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.conversation-message__body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--fg-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.conversation-composer { padding: 0 20px 20px }
+.conversation-composer .notice { margin-top: 12px }
+
+/* -------------------------------------------------- 首页：次要入口 */
+
+.home-secondary {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 760px;
+  margin-top: 12px;
+}
+
+/* -------------------------------------------- 员工配置（数字员工设置） */
+
+.ws-row--config { flex-direction: column; align-items: stretch; background: var(--bg-inset) }
+
+.ws-field textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--bg-inset);
+  color: var(--fg-primary);
+  font-size: 12px;
+  line-height: 1.7;
+  resize: vertical;
+  outline: none;
+}
+
+.ws-field textarea:focus { border-color: var(--accent); box-shadow: var(--ring) }
+.ws-field textarea:disabled { background: var(--bg-subtle); color: var(--fg-muted) }
+
+.ws-field-hint { font-size: 11px; font-weight: 400; line-height: 1.6; color: var(--fg-muted) }
+.ws-counter { font-size: 11px; font-weight: 400; color: var(--fg-muted); font-variant-numeric: tabular-nums }
+.ws-check { display: flex; align-items: center; gap: 8px; font-weight: 400; color: var(--fg-secondary) }
+.ws-check input { width: auto }
+
+.ws-hints {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+
+.ws-hints strong { color: var(--fg-secondary); font-weight: 650 }
+
+@media (max-width: 900px) {
+  .conversation-layout { grid-template-columns: 1fr }
+}
+
+@media (max-width: 720px) {
+  .conversation-messages { padding: 0 14px 16px; max-height: none }
+  .conversation-composer { padding: 0 14px 16px }
+  .ws-row--config { padding: 14px }
+}

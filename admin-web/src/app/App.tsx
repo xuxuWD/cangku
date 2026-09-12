@@ -8,6 +8,7 @@ import { AuditLogPage } from '../features/auditLog/AuditLogPage'
 import { WorkforcePage } from '../features/workforce/WorkforcePage'
 import { WorkforceSettingsPage } from '../features/workforceSettings/WorkforceSettingsPage'
 import { UsageBillingPage } from '../features/billing/UsageBillingPage'
+import { ConversationPage } from '../features/conversation/ConversationPage'
 import { HomePage } from '../features/home/HomePage'
 import type { AppView } from './AppShell'
 import { useEffect, useState } from 'react'
@@ -16,6 +17,7 @@ import { useEffect, useState } from 'react'
 const VIEW_QUERY: Record<Exclude<AppView, 'run'>, string> = {
   home: '',
   workbench: '?view=workbench',
+  conversation: '?view=conversation',
   history: '?view=history',
   knowledge: '?view=knowledge',
   dynamics: '?view=dynamics',
@@ -32,6 +34,7 @@ interface Route {
   view: AppView
   taskId?: string
   runId?: string
+  conversationId?: string
 }
 
 function routeFromLocation(): Route {
@@ -39,8 +42,11 @@ function routeFromLocation(): Route {
   const view = params.get('view')
   const runId = params.get('run') || undefined
   const taskId = params.get('task') || undefined
+  const conversationId = params.get('conversation') || undefined
   // 运行详情必须带 run 参数，否则视为未知视图。
   if (view === 'run' && runId) return { view: 'run', runId, taskId }
+  // 对话支持 URL 直达某个会话：?view=conversation&conversation=<id>，刷新后仍停留在该会话。
+  if (view === 'conversation') return { view: 'conversation', conversationId }
   if (view && DIRECT_VIEWS.includes(view as AppView)) return { view: view as AppView, taskId }
   // 只带 task 参数时归到内容工作台（历史草稿与通知的跳转都走这条）。
   if (taskId) return { view: 'workbench', taskId }
@@ -61,13 +67,17 @@ export default function App() {
     window.dispatchEvent(new PopStateEvent('popstate'))
   }
 
-  const navigate = (view: AppView, taskId?: string, runId?: string) => {
+  const navigate = (view: AppView, taskId?: string, runId?: string, conversationId?: string) => {
     if (view === 'run') return go(`?view=run&run=${encodeURIComponent(runId ?? '')}`)
+    if (view === 'conversation') {
+      return go(conversationId ? `?view=conversation&conversation=${encodeURIComponent(conversationId)}` : VIEW_QUERY.conversation)
+    }
     if (view === 'workbench' && taskId) return go(`?task=${encodeURIComponent(taskId)}`)
     return go(VIEW_QUERY[view])
   }
 
-  if (route.view === 'home') return <HomePage onOpenTask={(taskId) => navigate('workbench', taskId)} onNavigate={navigate} />
+  if (route.view === 'home') return <HomePage onOpenConversation={(conversationId) => navigate('conversation', undefined, undefined, conversationId)} onNavigate={navigate} />
+  if (route.view === 'conversation') return <ConversationPage conversationId={route.conversationId} onSelectConversation={(conversationId) => navigate('conversation', undefined, undefined, conversationId)} onNavigate={navigate} />
   if (route.view === 'knowledge') return <KnowledgeAccessPage onNavigate={navigate} />
   if (route.view === 'dynamics') return <CollaborationDynamicsPage onOpenTask={(taskId) => navigate('workbench', taskId)} onNavigate={(view) => navigate(view)} />
   if (route.view === 'history') return <ContentHistoryPage onOpenTask={(taskId) => navigate('workbench', taskId)} onNavigate={(view) => navigate(view)} />

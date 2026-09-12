@@ -7,6 +7,7 @@ import { THEME_LABELS, THEME_MODES, useThemeMode } from './theme'
 export type AppView =
   | 'home'
   | 'workbench'
+  | 'conversation'
   | 'history'
   | 'knowledge'
   | 'dynamics'
@@ -19,6 +20,7 @@ export type AppView =
 
 const navigation: Array<{ icon: IconName; label: string; view: AppView }> = [
   { icon: 'home', label: '首页', view: 'home' },
+  { icon: 'chat', label: '对话', view: 'conversation' },
   { icon: 'sparkle', label: '内容工作台', view: 'workbench' },
   { icon: 'bell', label: '通知', view: 'inbox' },
   { icon: 'history', label: '历史草稿', view: 'history' },
@@ -32,8 +34,8 @@ const navigation: Array<{ icon: IconName; label: string; view: AppView }> = [
 
 /** 侧栏分组标签：只是把入口归类，不引入任何统计数字。 */
 const SECTIONS: Array<{ label: string; from: number; to: number }> = [
-  { label: '工作台', from: 0, to: 5 },
-  { label: '管理', from: 5, to: navigation.length },
+  { label: '工作台', from: 0, to: 6 },
+  { label: '管理', from: 6, to: navigation.length },
 ]
 
 const ROLE_LABELS: Record<string, string> = {

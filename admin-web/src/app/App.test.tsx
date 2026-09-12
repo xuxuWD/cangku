@@ -13,6 +13,7 @@ function stubApi() {
     if (path.includes('/content-tasks')) return json({ items: [], page: 1, page_size: 4, total: 0, has_next: false })
     if (path.includes('/workforce/roles')) return json({ items: [{ role_key: 'content-operator', name: '自媒体运营岗', description: '', status: 'active' }], total: 1, limit: 200, offset: 0 })
     if (path.includes('/workforce/candidates')) return json({ roles: [], agents: [] })
+    if (path.includes('/conversations?')) return json({ items: [], total: 0, limit: 4, offset: 0 })
     if (path.includes('/commercial/usage')) return json({ tenant_id: 'demo-tenant', units: 12, cost_cents: 340 })
     return json(path.includes('/audits') ? [] : { binding_type: 'role', binding_key: 'content-operator', knowledge_base_ids: ['company-general'] })
   }))
@@ -30,7 +31,7 @@ describe('App', () => {
     render(<App />)
 
     expect(await screen.findByRole('heading', { name: '数字员工，我帮你' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '创建任务' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '开始对话' })).toBeInTheDocument()
   })
 
   it('navigates to the content workbench from the sidebar', async () => {
@@ -114,6 +115,37 @@ describe('App', () => {
 
     expect(window.location.search).toBe('?view=billing')
     await waitFor(() => expect(screen.getByRole('heading', { name: '用量与费用' })).toBeInTheDocument())
+  })
+
+  it('navigates to the conversation page from the sidebar', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+
+    await user.click(screen.getByText('对话', { selector: '.nav-item' }))
+
+    expect(window.location.search).toBe('?view=conversation')
+    await waitFor(() => expect(screen.getByRole('heading', { name: '对话' })).toBeInTheDocument())
+  })
+
+  it('opens the conversation named in the URL and keeps it after a reload', async () => {
+    window.history.replaceState({}, '', '/?view=conversation&conversation=conv-1')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/inbox?')) return json({ items: [], unread_count: 0 })
+      if (url.includes('/conversations/conv-1')) return json({
+        conversation_id: 'conv-1', agent_key: 'agent-ops', title: '整理客户反馈', status: 'active', created_at: null, updated_at: null,
+        messages: [{ message_id: 'msg-1', conversation_id: 'conv-1', role: 'assistant', content: '（P1 桩回复）已收到你的消息。', stub: true, tool_name: null, tool_call_id: null, created_at: null }],
+        messages_total: 1, messages_limit: 50, messages_offset: 0,
+      })
+      return json({ items: [{ conversation_id: 'conv-1', agent_key: 'agent-ops', title: '整理客户反馈', status: 'active', created_at: null, updated_at: null }], total: 1, limit: 20, offset: 0 })
+    }))
+
+    render(<App />)
+
+    expect(window.location.search).toBe('?view=conversation&conversation=conv-1')
+    expect(await screen.findByText('（P1 桩回复）已收到你的消息。')).toBeInTheDocument()
+    expect(screen.getByText('桩回复', { selector: '.status-badge' })).toBeInTheDocument()
   })
 
   it('falls back to the home page for an unknown view', async () => {
