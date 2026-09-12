@@ -23,7 +23,7 @@
 - [x] 知识范围变更审计（旧范围/新范围/操作者/时间）
 - [x] 超级管理员知识范围审计查询接口
 - [x] 开发期 RAGFlow/AgentScope 适配器契约与受控注册表
-- [x] RAGFlow/AgentScope staging 前置预检脚本与验收证据要求（不替代真实联调）
+- [x] 外部 Runtime staging 前置预检脚本（五类 Runtime：RAGFlow/AgentScope + DeerFlow/Codex Worker/Hermes）与验收证据要求（不替代真实联调）
 - [x] staging 独立主机部署模板与统一前置预检（基础设施隔离 + 商业化 G0 + 外部 Runtime）
 - [x] 应用容器化（Dockerfile 非 root、健康检查走标准库、密钥仅从环境注入）—— 静态资产校验通过；真实镜像构建与容器运行需在具备 Docker 的环境验收
 - [x] 攻击面八类检查正式报告（docs/security-attack-surface-report.md）—— 基于本机 TestClient 实测；真实 staging、真实 PostgreSQL 与真实外部平台验收仍未完成

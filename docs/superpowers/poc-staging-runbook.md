@@ -24,7 +24,7 @@ python -m app.runtime.staging
 python scripts/runtime_staging_preflight.py
 ```
 
-预检必须为 `pass`，并确认非 development 环境、独立 staging 标识、RAGFlow/AgentScope HTTPS 地址、固定版本、认证注入标记和网络白名单均已配置。该脚本不发起网络请求、不读取密钥值，不能替代真实服务验收。
+预检必须为 `pass`，并确认非 development 环境、独立 staging 标识、网络白名单，以及五类 Runtime 均已登记：RAGFlow/AgentScope 用 HTTPS 地址 + 固定版本 + 非空能力白名单 + 认证注入标记；DeerFlow/Codex Worker/Hermes 为本地独立进程，地址允许 `http`、认证可选，但固定版本与非空能力白名单同样必填。上述 Runtime 变量裸名与 `WORKBENCH_` 前缀名均可，两者同时存在时以裸名为准。该脚本不发起网络请求、不读取密钥值，不能替代真实服务验收。
 
 真实 staging 使用 `HttpRuntimeTransport` 注入到对应适配器，Runtime 地址只允许来自受控配置；认证头通过部署环境注入，不写入 YAML、任务载荷、事件或日志。外部服务必须提供 `/runs`、`/runs/{id}/events`、生命周期动作和 `/health`，任何非 2xx、超时、缺少运行号或事件格式错误都视为失败。
 

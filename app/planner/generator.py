@@ -64,6 +64,11 @@ class OpenAICompatiblePlanGenerator:
         self.timeout_seconds = timeout_seconds
         self._transport = transport or self._http_transport
 
+    @property
+    def url(self) -> str:
+        """与内容模型同一套语义：地址带不带 `/v1` 都请求 `/v1/chat/completions`。"""
+        return f"{self.base_url}/chat/completions" if self.base_url.endswith("/v1") else f"{self.base_url}/v1/chat/completions"
+
     def generate(self, goal: str, *, catalog: ToolCatalog, max_steps: int) -> list[dict[str, Any]]:
         catalog.require_configured()
         allowed = ", ".join(catalog.names())
@@ -85,7 +90,7 @@ class OpenAICompatiblePlanGenerator:
         }
         try:
             response = self._transport(
-                f"{self.base_url}/chat/completions",
+                self.url,
                 {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
                 payload,
                 self.timeout_seconds,

@@ -32,6 +32,8 @@ runtimes:
     capabilities: [memory_proposal, skill_proposal]
 
 # staging 预检：python scripts/runtime_staging_preflight.py
-# RAGFLOW_ENDPOINT、AGENTSCOPE_ENDPOINT 和版本登记必须来自受控部署配置。
+# RAGFLOW_ENDPOINT、AGENTSCOPE_ENDPOINT（外部云服务，须 HTTPS 且声明认证注入）
+# 与 DEERFLOW_ENDPOINT、CODEX_WORKER_ENDPOINT、HERMES_ENDPOINT（本地独立进程，http 亦可、认证可选）
+# 及其版本登记必须来自受控部署配置；五类的版本都必须是固定版本，能力白名单不得为空。
 # 密钥必须通过部署环境注入，不写入此文件；预检只检查注入标记，不读取密钥值。
 # 所有运行时只接收脱敏 RuntimeContext 和短期运行授权。

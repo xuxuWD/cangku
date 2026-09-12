@@ -89,7 +89,7 @@
 | 运行时契约、注册表、策略、Mock 执行器 | ✅ | ✅ | ⬜ | `test_runtime_{contracts,registry_config,policy,evaluation}.py`、`test_mock_runtime.py` |
 | 运行时 HTTP 传输与适配器（DeerFlow / Codex Worker / Hermes） | ✅ | ✅ | ⬜ | `test_runtime_http_transport.py`、`test_runtime_adapters.py` |
 | 开发期 RAGFlow/AgentScope 适配器契约与受控注册表 | ✅ | ✅ | ⬜ | `test_ragflow_adapter.py`、`test_runtime_adapters.py` |
-| RAGFlow/AgentScope staging 前置预检脚本 | ✅ | ✅ | ⬜ | `test_runtime_staging_preflight.py`；门禁注明「不替代真实联调」 |
+| 外部 Runtime staging 前置预检脚本（五类 Runtime） | ✅ | ✅ | ⬜ | `test_runtime_staging_preflight.py`；门禁注明「不替代真实联调」 |
 | RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证、真实外部服务验收 | ❌ | ❌ | ⬜ | **仅剩外部资源**：认证注入与注册表装配两处代码缺口已于 2026-09-11 修复（`docs/external-dependency-acceptance-plan.md` §6 第 5、6 条）。接入资料与索取表见 `docs/runtime-onboarding-request.md` |
 | 真实模型、网页抓取、公众号自动发布验收 | ❌ | ❌ | ⬜ | **未做** |
 | 计划生成与审核闸门（目标→`AgentPlan`→服务端风险推导→审批→复用 Runtime） | ✅ | ✅ | ⬜ | `test_planner_{api,service,models,generator,store,audit,bootstrap,postgres}.py` |

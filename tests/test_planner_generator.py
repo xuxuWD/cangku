@@ -83,6 +83,33 @@ def test_openai_generator_parses_steps_from_model_response() -> None:
     assert generator.model_name == "planner-small"
 
 
+def _url_for_base_url(base_url: str) -> str:
+    captured: dict[str, object] = {}
+
+    def transport(url, headers, payload, timeout):
+        captured["url"] = url
+        return {"choices": [{"message": {"content": json.dumps({"steps": []})}}]}
+
+    generator = OpenAICompatiblePlanGenerator(
+        base_url=base_url,
+        model_name="planner-small",
+        api_key="secret-key",
+        timeout_seconds=5,
+        transport=transport,
+    )
+    generator.generate("目标", catalog=catalog(), max_steps=5)
+    return str(captured["url"])
+
+
+def test_openai_generator_appends_v1_when_base_url_omits_it() -> None:
+    """与内容模型同一套语义：地址不带 /v1 时由客户端补齐，不会打到 /chat/completions。"""
+    assert _url_for_base_url("https://model.example") == "https://model.example/v1/chat/completions"
+
+
+def test_openai_generator_does_not_duplicate_v1_suffix() -> None:
+    assert _url_for_base_url("https://model.example/v1/") == "https://model.example/v1/chat/completions"
+
+
 def test_openai_generator_does_not_dictate_kind_or_approval() -> None:
     def transport(url, headers, payload, timeout):
         return {

@@ -11,7 +11,13 @@ from app.settings import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 SSO_TEMPLATE = ROOT / ".env.sso.example"
+STAGING_TEMPLATE = ROOT / ".env.staging.example"
 GITIGNORE = ROOT / ".gitignore"
+
+# 与 app/bootstrap.py 的 _RUNTIME_KEYS 同一口径：五个可外部注册的 Runtime。
+RUNTIME_KEYS = ("ragflow", "agentscope", "deerflow", "codex_worker", "hermes")
+# 外部云服务必须声明认证注入；本地独立进程（deerflow/codex_worker/hermes）认证可选，不强制登记。
+AUTH_MARKER_KEYS = ("ragflow", "agentscope")
 
 
 def template_keys(path: Path) -> set[str]:
@@ -75,3 +81,44 @@ def test_sso_template_is_not_gitignored() -> None:
     # 判定依据：`.env.*` 默认被忽略，模板必须显式取反，否则改完模板却提交不上去。
     assert ".env.*" in entries
     assert "!.env.sso.example" in entries
+
+
+def test_staging_template_covers_every_runtime_metadata_field() -> None:
+    """staging 模板必须覆盖全部可注册 Runtime 的地址、固定版本与能力白名单。
+
+    背景：注册表与 `app/bootstrap.py` 支持五个 Runtime，但模板曾只登记 RAGFlow 与
+    AgentScope，导致 DeerFlow / Codex Worker / Hermes 无"照抄"的字段形状可循，
+    预检也无从发现缺项。
+    """
+    keys = template_keys(STAGING_TEMPLATE)
+
+    missing = [
+        f"{key}_{suffix}"
+        for key in RUNTIME_KEYS
+        for suffix in ("endpoint", "version", "capabilities")
+        if not (declared_env_names(f"{key}_{suffix}") & keys)
+    ]
+
+    assert missing == []
+
+
+def test_staging_template_declares_auth_markers_for_external_runtimes() -> None:
+    """外部云服务（RAGFlow/AgentScope）必须登记认证注入标记；本地进程不强制。"""
+    keys = template_keys(STAGING_TEMPLATE)
+
+    missing = [
+        f"{key}_auth_injected"
+        for key in AUTH_MARKER_KEYS
+        if not (declared_env_names(f"{key}_auth_injected") & keys)
+    ]
+
+    assert missing == []
+
+
+def test_staging_template_states_secret_values_are_not_written() -> None:
+    """模板只能登记元数据：真实令牌一律由部署密钥系统注入。"""
+    content = STAGING_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "部署密钥系统注入" in content
+    assert "AUTH_TOKEN" in content
+

@@ -91,7 +91,7 @@
 
 `app/runtime/registry.py` 的 `_validate_version`（L95-103）：值经 `strip` 后，若**非字符串、为空、或（大小写不敏感）等于 `latest`/`main`/`head`** → 抛 `RuntimeConfigError("{key} Runtime 需要固定版本")`。同一规则在预检脚本中独立复刻：
 
-- `scripts/runtime_staging_preflight.py` `_fixed_version`（L44-45）；
+- `scripts/runtime_staging_preflight.py` `_fixed_version`（L71）；
 - `scripts/commercial_g0_preflight.py`（L116-127，对 `WORKBENCH_RUNTIME_VERSIONS` 逐项判固定）。
 
 ### 1.7 注册表构造与「未配置时 fail-closed」
@@ -117,6 +117,8 @@
 
 **未配置不外呼**：未配置或未启用的外部 Runtime 不会被自动调用（`docs/api-contract.md` L399、L403）。
 
+**预检覆盖范围（2026-09-12 更新）**：`scripts/runtime_staging_preflight.py` 现覆盖五类 Runtime——RAGFlow/AgentScope 按**外部云服务**口径校验（HTTPS 地址、固定版本、非空能力白名单、认证注入标记），DeerFlow/Codex Worker/Hermes 按**本地独立进程**口径校验（地址允许 `http`、认证可选，固定版本与非空能力白名单同样必填）。上述变量裸名与 `WORKBENCH_` 前缀名均可，两者同时存在时以裸名为准（与 `Settings` 的 `AliasChoices` 顺序一致）。
+
 ### 1.8 认证与令牌传递
 
 - **认证头注入（已于 2026-09-11 实现）**：`HttpRuntimeTransport` 支持注入认证头，默认形如 `Authorization: Bearer <token>`，头名与前缀可配置（`<KEY>_AUTH_HEADER` / `<KEY>_AUTH_SCHEME`，后者允许显式置空以发送裸令牌）。凭据来自 `<KEY>_AUTH_TOKEN`（**由部署密钥系统注入**）。
@@ -131,13 +133,13 @@
 
 | # | 事项 | 为什么必需（判据） | 依据 | 填写 |
 |---|---|---|---|---|
-| E1 | **RAGFlow HTTPS 地址** | 预检要求 `https://` 且非空；注册表要求 `http(s)://` | `scripts/runtime_staging_preflight.py` L48-49、L64；`registry.py` L77-82 | |
-| E2 | **RAGFlow 契约固定版本号** | 拒绝 `latest`/`main`/`head` 浮动值 | `registry.py` L95-103；`runtime_staging_preflight.py` L44-45 | |
+| E1 | **RAGFlow HTTPS 地址** | 预检要求 `https://` 且非空；注册表要求 `http(s)://` | `scripts/runtime_staging_preflight.py` `_https_endpoint`（L75）、`run_preflight`（L103-137）；`registry.py` L77-82 | |
+| E2 | **RAGFlow 契约固定版本号** | 拒绝 `latest`/`main`/`head` 浮动值 | `registry.py` L95-103；`runtime_staging_preflight.py` `_fixed_version`（L71） | |
 | E3 | **AgentScope HTTPS 地址** | 同 E1 | 同 E1 | |
 | E4 | **AgentScope 契约固定版本号** | 同 E2 | 同 E2 | |
 | E5 | **认证方式与凭据注入途径** | 工作台要求凭据**仅经部署密钥系统注入传输层**，不入载荷/事件/日志；代码层尚无注入实现（§1.8） | `docs/api-contract.md` L411；`README.md` L55 | |
-| E6 | **两个隔离测试账号（须分属两个不同租户）** | 跨租户实测需两套令牌做双向交叉访问 | `scripts/cross_tenant_probe.py` 前置条件 L29-33；`.env.staging.example` L41-43（就绪标记键） | |
-| E7 | **网络白名单**（工作台出口 IP / 可达域名） | 预检要求 `WORKBENCH_RUNTIME_NETWORK` 非空 | `runtime_staging_preflight.py` L70-71；`.env.staging.example` L39 | |
+| E6 | **两个隔离测试账号（须分属两个不同租户）** | 跨租户实测需两套令牌做双向交叉访问 | `scripts/cross_tenant_probe.py` 前置条件 L29-33；`.env.staging.example` L58-59（就绪标记键） | |
+| E7 | **网络白名单**（工作台出口 IP / 可达域名） | 预检要求 `WORKBENCH_RUNTIME_NETWORK` 非空 | `runtime_staging_preflight.py` `run_preflight`（L103-137）；`.env.staging.example` L55 | |
 | E8 | **平台侧限流 / 额度** | 并发压测与长跑不得触限 | `scripts/staging_concurrency_probe.py` 前置条件 | |
 | E9 | **由谁在外部侧创建隔离知识库 / 命名空间** | `knowledge_scope` 由工作台从 `RuntimeContext` 解析传入，外部侧须存在对应知识库；RAGFlow 只读、不提供写入/删除/索引 | `adapters/ragflow.py` L68-99；`docs/api-contract.md` L407 | |
 | E10 | **沙箱能力声明**（`health.sandbox` 取值语义） | 健康摘要会透传 `sandbox` 字符串；沙箱验证需要外部侧可声明其隔离语义 | `registry.py` L61；`common.py` L182-183 | |

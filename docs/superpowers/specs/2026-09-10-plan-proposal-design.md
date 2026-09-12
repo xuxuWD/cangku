@@ -98,6 +98,7 @@
 
 - `WORKBENCH_PLANNER_BACKEND`：`mock`（默认）或 `openai_compatible`。
 - `WORKBENCH_PLANNER_MODEL_BASE_URL`、`WORKBENCH_PLANNER_MODEL_NAME`、`WORKBENCH_PLANNER_MODEL_API_KEY`、`WORKBENCH_PLANNER_MODEL_TIMEOUT_SECONDS`：连接信息与内容工作台分开配置，避免耦合。
+- 地址带不带 `/v1` 均可：客户端在末尾无 `/v1` 时自动补齐，统一请求 `POST {base_url}/v1/chat/completions`，不会重复拼接。这与内容工作台的 OpenAI 兼容后端（`2026-09-07-content-model-provider-adapter-design.md`）是同一套语义，两个后端只需记一种写法。
 - `WORKBENCH_PLANNER_MAX_STEPS`：默认 `10`，允许范围 `1`–`50`，越界时应用拒绝启动。
 - 选择 `openai_compatible` 但缺少地址、模型名或密钥时，启动即失败，不静默回退到 Mock。
 

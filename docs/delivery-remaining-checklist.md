@@ -22,8 +22,8 @@
 - [ ] 1.1.1 只读账号已建（**怎么建：见 [`readonly-verification-runbook.md`](readonly-verification-runbook.md) §1.1**，含已在真实 PG 上验证的 `CREATE ROLE` + `pg_read_all_data` 语句，该角色可自动覆盖未来迁移新建的表）
 - [ ] 1.2 填好生产/预发配置（**不进仓库**）：`WORKBENCH_ENV≠development`、`WORKBENCH_STORAGE_BACKEND=postgres`、`WORKBENCH_DATABASE_URL`、`WORKBENCH_AUTH_SECRET`（≥32）、`WORKBENCH_BACKUP_ENCRYPTION_KEY`（与前者分离）、从目标库读出的 `WORKBENCH_APPLIED_MIGRATIONS`
 - [ ] 1.3 `python scripts/staging_preflight.py` → `pass`
-      本期实测（未配置环境）会输出 24 条 `fail`，可当作「你需要准备哪些配置」的清单
-- [ ] 1.4 `python scripts/runtime_staging_preflight.py` → `pass`（未配置环境实测输出 11 条 `fail`）
+      本期实测（未配置环境）会输出 32 条 `fail`（另有 3 条 `blocked`），可当作「你需要准备哪些配置」的清单
+- [ ] 1.4 `python scripts/runtime_staging_preflight.py` → `pass`（未配置环境实测输出 20 条 `fail`；五类 Runtime 各 3 条 + 环境/标识/网络白名单）
 - [ ] 1.4.1 `python scripts/worker_preflight.py --offline` → `pass`（本机实测输出 7 条，含「迁移清单不一致」；联网校验另需 `--base-url` 与 `--token`）
 - [ ] 1.5 **只读核验清单全绿**（`docs/readonly-verification-runbook.md`）：pgvector 存在、迁移 022 已落地且复合外键存在、**归一风险 0 行**、**绑定侧未纳管为空**（`candidates.roles == []` 且 roster 绑定侧为空）
 - [ ] 1.6 **迁移回滚演练**（写操作，需授权）：`scripts/migration_backup_drill.py`

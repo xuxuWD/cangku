@@ -20,7 +20,7 @@
 | --- | --- | --- | --- |
 | `scripts/staging_preflight.py` | 聚合：基础设施隔离 + 商业化 G0 + 外部 Runtime 元数据 | `pass`→0，其余→1 | **否** |
 | `scripts/commercial_g0_preflight.py` | 非开发环境、PostgreSQL、双密钥、迁移一致、保留策略、Runtime 版本 | `pass`→0，其余→1 | **否** |
-| `scripts/runtime_staging_preflight.py` | RAGFlow/AgentScope 的地址、固定版本、认证注入标记、网络白名单 | 全 `pass`→0，否则 1 | **否** |
+| `scripts/runtime_staging_preflight.py` | 五类 Runtime 的地址、固定版本、能力白名单、网络白名单；RAGFlow/AgentScope 另校验 HTTPS 与认证注入标记（DeerFlow/Codex Worker/Hermes 为本地独立进程，允许 http、认证可选） | 全 `pass`→0，否则 1 | **否** |
 
 > **三条硬约束**：① 三者都**只校验部署元数据**，不发起任何网络请求、不读取也不打印密钥值，**不能替代真实验收**；② 全部 **fail-closed**：变量缺失即判 `fail`/`blocked`，不会静默跳过；③ 输出为逐行文本 `[status] 名称：消息`，**没有 JSON 模式**，请保存原文作为预检证据。
 

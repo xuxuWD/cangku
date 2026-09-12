@@ -70,6 +70,19 @@ def test_openai_compatible_generator_posts_structured_request_without_leaking_co
     assert result.provider == "openai_compatible"
 
 
+def test_openai_compatible_generator_appends_v1_when_base_url_omits_it():
+    """地址不带 /v1 时由客户端补齐；带 /v1 时不重复拼接（与规划模型同一套语义）。"""
+    transport = FakeHttpTransport([fake_success_response()])
+    generator = OpenAICompatibleContentGenerator(
+        base_url="https://model.internal", model_name="company-text", api_key="secret",
+        timeout_seconds=3, max_retries=0, client=transport, sleep=lambda _: None,
+    )
+
+    generator.generate(sample_input())
+
+    assert transport.requests[0]["url"] == "https://model.internal/v1/chat/completions"
+
+
 def test_openai_compatible_generator_retries_timeout_and_does_not_retry_4xx():
     retry_transport = FakeHttpTransport([TimeoutError(), TimeoutError(), fake_success_response()])
     assert make_generator(retry_transport, max_retries=2).generate(sample_input()).title == "模型标题"
