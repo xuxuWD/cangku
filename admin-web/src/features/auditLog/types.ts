@@ -42,7 +42,7 @@ export interface AuditLogState {
   error: AuditErrorShape | null
 }
 
-// 审计动作中文标签；键必须覆盖后端 AuditAction 的全部 45 个取值（有漂移守护测试）。
+// 审计动作中文标签；键必须覆盖后端 AuditAction 的全部 47 个取值（有漂移守护测试）。
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'account.registration.requested': '注册申请已提交',
   'account.registration.approved': '注册申请已通过',
@@ -89,6 +89,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'workforce.agent.config.read': '数字员工配置已查看',
   'workforce.agent.config.updated': '数字员工配置已更新',
   'workforce.agent.config.rejected': '数字员工配置被拒绝',
+  'tool.executed': '工具已执行',
+  'tool.blocked': '工具执行被拦截',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

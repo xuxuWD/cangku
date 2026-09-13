@@ -54,6 +54,9 @@ class AuditAction(StrEnum):
     WORKFORCE_AGENT_CONFIG_READ = "workforce.agent.config.read"
     WORKFORCE_AGENT_CONFIG_UPDATED = "workforce.agent.config.updated"
     WORKFORCE_AGENT_CONFIG_REJECTED = "workforce.agent.config.rejected"
+    # 段二（dsh 接入段）工具执行：⑨ 成功 / 被拒（含黑名单、路径、参数拒）
+    TOOL_EXECUTED = "tool.executed"
+    TOOL_BLOCKED = "tool.blocked"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -96,6 +99,9 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "rejected_fields",
         # 运行审批的授权来源（服务端判定的受控枚举，非自由文本）
         "authorized_by_source",
+        # 工具执行（Y3 最小集：工具标识与风险档，均为服务端声明的受控值）
+        "tool_key",
+        "risk_level",
     }
 )
 
