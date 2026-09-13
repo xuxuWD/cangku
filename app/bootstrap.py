@@ -587,8 +587,21 @@ def build_runtime_state_store(settings: Settings, *, connection=None, migrate: b
     raise ValueError("不支持的运行时状态存储类型")
 
 
-def build_runtime_service(settings: Settings, *, store, transport_factory=None, state_store=None, run_metrics=None):
-    """从裸名配置装配 Runtime 服务；未配置任何地址时只保留 Mock。"""
+def build_runtime_service(
+    settings: Settings,
+    *,
+    store,
+    transport_factory=None,
+    state_store=None,
+    run_metrics=None,
+    tool_actions=None,
+):
+    """从裸名配置装配 Runtime 服务；未配置任何地址时只保留 Mock。
+
+    `tool_actions` 为 027 待批动作仓储：必须与 `build_tool_execution` 复用**同一个实例**
+    （§4.1.6-2「不得建两个实例」），由 `app/main.py` 按同一实例传入；未启用真实执行时为
+    `None`（保持既有行为，仅比对运行级摘要，§4.1.7-5）。
+    """
     validate_runtime_settings(settings)
     from .runtime.registry import build_runtime_registry
     from .runtime.service import RuntimeService
@@ -600,7 +613,37 @@ def build_runtime_service(settings: Settings, *, store, transport_factory=None, 
         transport_factory=transport_factory,
         state_store=shared_state_store,
     )
-    return RuntimeService(store, registry=registry, state_store=shared_state_store, run_metrics=run_metrics)
+    return RuntimeService(
+        store,
+        registry=registry,
+        state_store=shared_state_store,
+        run_metrics=run_metrics,
+        tool_actions=tool_actions,
+    )
+
+
+_UNSET = object()
+
+
+def build_tool_action_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """公开装配 `workbench_tool_actions`（027）仓储，供 `RuntimeService` 与
+    `ToolExecutionService` 共用**同一实例**（§4.1.6-2）。
+
+    - `WORKBENCH_AGENT_RUNTIME_BACKEND != dsh`（默认 `mock`）→ `None`（真实执行未启用，无 027）；
+    - 装配失败（缺件 / 配置非法）→ 记 `error` 并返回 `None`，即"拒绝启用真实执行，但不拒绝
+      整个服务进程启动"（§4.1.6-3），与 `build_tool_execution` 的失败口径一致。
+    """
+    validate_runtime_settings(settings)
+    if settings.agent_runtime_backend != "dsh":
+        return None
+    from .tool_execution.errors import ToolExecutionConfigError
+    from .tool_execution.log import get_logger
+
+    try:
+        return _build_tool_action_store(settings, connection=connection, migrate=migrate)
+    except ToolExecutionConfigError as exc:
+        get_logger().error("段二真实执行装配失败，已拒绝启用：%s", exc)
+        return None
 
 
 def build_tool_execution(
@@ -611,12 +654,15 @@ def build_tool_execution(
     connection=None,
     migrate: bool = True,
     runtime_service=None,
+    tool_actions=_UNSET,
 ):
     """按 backend 装配段二工具执行服务（规格 §4.1.6-2）。
 
     - `WORKBENCH_AGENT_RUNTIME_BACKEND=mock`（默认）时**必须**返回 `None`；
     - 装配失败（缺件 / 配置非法）**不抛进程级异常**：记 `error` 告警并返回 `None`，
-      即"拒绝启用真实执行，但不拒绝整个服务进程启动"（§4.1.6-3）。
+      即"拒绝启用真实执行，但不拒绝整个服务进程启动"（§4.1.6-3）；
+    - `tool_actions` 由 `app/main.py` 传入与 `RuntimeService` 共用的**同一 027 仓储实例**；
+      未显式传入（`_UNSET`，如单测直连）时才在内部装配。
     """
     validate_runtime_settings(settings)
     if settings.agent_runtime_backend != "dsh":
@@ -635,7 +681,8 @@ def build_tool_execution(
     run_records = getattr(run_metrics, "store", None)
     try:
         catalog = build_tool_spec_catalog()
-        tool_actions = _build_tool_action_store(settings, connection=connection, migrate=migrate)
+        if tool_actions is _UNSET:
+            tool_actions = _build_tool_action_store(settings, connection=connection, migrate=migrate)
         body_cipher = BodyCipher.from_base64(settings.body_encryption_key)
         executor = ContainerExecutor.from_settings(settings)
         workspace = WorkspaceManager(settings.exec_workspace_root)

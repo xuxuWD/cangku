@@ -110,15 +110,36 @@ class DeterministicFakeExecutor:
     - 只返回**摘要**（工具键 + 结果计数），**不回传参数原文与宿主路径**；
     - 真实容器执行属段二-3（`ContainerExecutor.execute`）。
     按 §6「清理纪律」，本类属需在用户确认后删除的一次性测试桩。
+
+    另暴露**只读**调用计数与调用记录（`call_count` / `calls`），仅用于 §5 用例 29①「打桩断言
+    执行器被调用一次」的可判定性；**不改执行语义**。
     """
 
     def __init__(self, *, ok: bool = True, timed_out: bool = False) -> None:
         self.ok = ok
         self.timed_out = timed_out
+        self._calls: list[dict[str, object]] = []
+
+    @property
+    def call_count(self) -> int:
+        """本桩被调用次数（只读）。"""
+        return len(self._calls)
+
+    @property
+    def calls(self) -> tuple[dict[str, object], ...]:
+        """本桩的调用记录（只读快照；仅含工具键、工作卷路径与参数个数，不含参数原文）。"""
+        return tuple(self._calls)
 
     def execute(
         self, *, tool_key: str, params, workspace_path: str, spec: ContainerSpec | None = None
     ) -> ExecutionOutcome:
+        self._calls.append(
+            {
+                "tool_key": tool_key,
+                "workspace_path": workspace_path,
+                "param_count": len(params) if params is not None else 0,
+            }
+        )
         summary: dict[str, object] = {
             "tool_key": tool_key,
             "status": "ok" if (self.ok and not self.timed_out) else "failed",

@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
+from typing import Any
 
 from .contracts import AgentPlan
 
@@ -36,6 +37,74 @@ class ExecutionAuthorization:
     authorized_by: str
     plan_digest: str
     authorized_at: datetime
+
+
+# 8 字段只读投影的字段清单（顺序即 §5 用例 29③ 的逐个非空断言顺序）。
+AUTHORIZATION_ACTION_FIELDS = (
+    "action_id",
+    "approval_id",
+    "step_id",
+    "tool_key",
+    "args_digest",
+    "plan_digest",
+    "risk_level",
+    "requires_approval",
+)
+
+
+@dataclass(frozen=True)
+class AuthorizationAction:
+    """⑦ 需要的**待判动作只读投影**——8 个字段与 §4.1.1 表「与判定相关列」一一对应。
+
+    **命名说明（🔴 命名冲突的显式处置）**：规格 §4.1.7-5 把这条投影也称为 `ToolAction`；
+    但本仓库 `app/tool_execution/store.py` 已有**同名的 21 字段整行** `ToolAction`（迁移 `027`
+    的一行）。为遵守「不得 shadow、不得复用同一个类」，此处改名为 `AuthorizationAction`，
+    **待规格同步**（已在 §8 U18 收口汇报中点名）。
+
+    * **不含参数原文，也不含 `args_json`**——判定只需摘要投影；
+    * `args_digest` 由 §4.1.4 算法产出；
+    * **8 个字段均须非空**（§5 用例 29③）；任一为空即 fail-closed。
+    """
+
+    action_id: str
+    approval_id: str
+    step_id: str
+    tool_key: str
+    args_digest: str
+    plan_digest: str
+    risk_level: str
+    requires_approval: bool
+
+    @classmethod
+    def from_row(cls, row: Any) -> "AuthorizationAction":
+        """从 `store.py` 的整行 `ToolAction` 投影出只读视图（duck-typed，避免层级耦合）。"""
+        risk = getattr(row, "risk_level", None)
+        return cls(
+            action_id=str(getattr(row, "action_id", "") or ""),
+            approval_id=str(getattr(row, "approval_id", "") or ""),
+            step_id=str(getattr(row, "step_id", "") or ""),
+            tool_key=str(getattr(row, "tool_key", "") or ""),
+            args_digest=str(getattr(row, "args_digest", "") or ""),
+            plan_digest=str(getattr(row, "plan_digest", "") or ""),
+            risk_level=str(getattr(risk, "value", risk)) if risk is not None else "",
+            requires_approval=bool(getattr(row, "requires_approval", False)),
+        )
+
+    def missing_fields(self) -> tuple[str, ...]:
+        """返回为空（含 `False`）的字段名；供 §5 用例 29③ 的逐个非空断言复用。"""
+        return tuple(name for name in AUTHORIZATION_ACTION_FIELDS if not getattr(self, name))
+
+
+def validate_authorization_action(action: AuthorizationAction) -> None:
+    """8 字段逐个非空；任一为空即 fail-closed（`ExecutionNotAuthorized`）。"""
+    missing = action.missing_fields()
+    if missing:
+        raise ExecutionNotAuthorized("待判动作投影字段不完整：" + "、".join(missing))
+
+
+def authorization_action_field_names() -> tuple[str, ...]:
+    """投影的字段名集合（不含 `args_json` 与任何参数原文列）。"""
+    return tuple(field.name for field in fields(AuthorizationAction))
 
 
 def ensure_source_allowed(source: str) -> str:

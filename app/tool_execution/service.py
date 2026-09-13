@@ -26,6 +26,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from ..audit.models import AuditAction
+from ..runtime.authorization import AuthorizationAction
 from ..workforce.models import DEFAULT_APPROVAL_TIMEOUT_MINUTES, needs_approval
 from .args_digest import args_digest
 from .blacklist import CommandDenied, CommandGate
@@ -399,7 +400,8 @@ class ToolExecutionService:
         plan: Any,
     ) -> None:
         """⑦ 逐项校验 + 既有运行级闸门。"""
-        for row in self.tool_actions.list_for_run(request.tenant_id, request.run_id):
+        rows = self.tool_actions.list_for_run(request.tenant_id, request.run_id)
+        for row in rows:
             if row.requires_approval and row.status is not ToolActionStatus.APPROVED:
                 self._fail(
                     request,
@@ -410,8 +412,17 @@ class ToolExecutionService:
                 )
         if self.authorize_execution is None or actor is None or plan is None:
             return
+        # §4.1.7-5：**显式传入**待判动作只读投影（8 字段，不含参数原文与 args_json）。
+        # 无待判动作（⑤ 判定无需审批路径）→ 传 None（缺省，仅退化为运行级摘要比对）。
+        pending_actions = [
+            AuthorizationAction.from_row(row)
+            for row in rows
+            if bool(getattr(row, "requires_approval", False))
+        ]
         try:
-            self.authorize_execution(actor, request.run_id, plan)
+            self.authorize_execution(
+                actor, request.run_id, plan, actions=(pending_actions or None)
+            )
         except Exception as exc:  # noqa: BLE001 - 既有闸门抛出的受控异常一律映射为 409
             self._fail(request, spec, key="not_authorized", action=action, cause=exc)
 

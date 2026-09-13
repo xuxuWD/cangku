@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_execution, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -130,8 +130,15 @@ agent_config_service = build_agent_config_service(
 )
 run_metrics_service = build_run_metrics(settings)
 runtime_state_store = build_runtime_state_store(settings)
+# 027 待批动作仓储：RuntimeService 与 tool_execution 复用**同一实例**（§4.1.6-2 不得建两个实例）；
+# backend=mock（默认）时为 None——不存在真实执行，RuntimeService 保持既有行为（§4.1.7-5）。
+tool_action_store = build_tool_action_store(settings)
 runtime_service = build_runtime_service(
-    settings, store=store, run_metrics=run_metrics_service, state_store=runtime_state_store
+    settings,
+    store=store,
+    run_metrics=run_metrics_service,
+    state_store=runtime_state_store,
+    tool_actions=tool_action_store,
 )
 # 段二（dsh 接入段）：backend=mock 时为 None；backend=dsh 且缺件时记 error 但不退进程（§4.1.6-2/-3）。
 tool_execution_service = build_tool_execution(
@@ -139,6 +146,7 @@ tool_execution_service = build_tool_execution(
     run_metrics=run_metrics_service,
     audit=audit_service,
     runtime_service=runtime_service,
+    tool_actions=tool_action_store,
 )
 content_store = build_content_store(settings)
 content_service = ContentService(

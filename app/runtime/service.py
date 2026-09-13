@@ -3,15 +3,17 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Sequence
 
 from app.domain import PolicyError, Task, TaskNotFound, UserContext
 
 from .authorization import (
+    AuthorizationAction,
     ExecutionAuthorization,
     ExecutionNotAuthorized,
     ensure_source_allowed,
     plan_digest,
+    validate_authorization_action,
 )
 from .contracts import AgentPlan, RuntimeContext
 from .mock import MockRuntime
@@ -48,7 +50,7 @@ class PendingRunApproval:
 
 
 class RuntimeService:
-    def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None, run_metrics: Any = None) -> None:
+    def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None, run_metrics: Any = None, tool_actions: Any = None) -> None:
         self.task_store = task_store
         self.state_store = state_store or RuntimeStateStore()
         self.registry = registry or RuntimeRegistry()
@@ -56,6 +58,9 @@ class RuntimeService:
         self.run_metrics = run_metrics
         # 授权位与运行记录同库同表：直接复用运行记录仓储，不另建存储通道。
         self.run_records = getattr(run_metrics, "store", None)
+        # 027 待批动作仓储（可选）：仅用于 ⑦ 的「待判动作序列」投影与「是否需审批路径」判定。
+        # 未装配（段一路径）→ 保持既有行为（仅比对运行级摘要）。
+        self.tool_actions = tool_actions
         if 'mock' not in self.registry.keys():
             self.registry.register('mock', MockRuntime(self.state_store))
 
@@ -101,8 +106,11 @@ class RuntimeService:
 
     def resume(self, actor: UserContext, run_id: str) -> None:
         key, adapter, state = self.adapter_for_task(actor, run_id)
-        # 推进执行前过授权闸门：已登记授权位的运行，若计划与批准时不一致即拒绝恢复。
-        self.ensure_execution_authorized(actor, run_id, state.plan)
+        # 推进执行前过授权闸门：**显式传入**从 027 投影的待判动作序列（§4.1.7-5；
+        # 未装配 027 的段一路径传 None，退化为仅比对运行级摘要）。
+        self.ensure_execution_authorized(
+            actor, run_id, state.plan, actions=self._authorization_actions(actor.tenant_id, run_id)
+        )
         started = time.perf_counter()
         adapter.resume_run(run_id)
         self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
@@ -133,16 +141,29 @@ class RuntimeService:
         adapter.decide_approval(run_id, approval_id, approved)
         self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
 
-    def ensure_execution_authorized(self, actor: UserContext, run_id: str, plan: AgentPlan) -> None:
-        """推进执行前的闸门：已登记授权位的运行，其当前计划必须与授权的计划一致。
+    def ensure_execution_authorized(
+        self,
+        actor: UserContext,
+        run_id: str,
+        plan: AgentPlan,
+        actions: Sequence[AuthorizationAction] | None = None,
+    ) -> None:
+        """推进执行前的闸门：需审批路径必须逐项持有 027 授权（规格 §4.1.7-5）。
 
-        三种情形（口径见段一规格 §2.3）：
+        三种情形（口径见段一规格 §2.3 与段二 §4.1.7-5）：
 
         * **未装配运行记录仓储** → **拒绝**（fail-closed）：无授权位可查时宁可不执行（段二规格 §3.2
           「两条必须收窄的既有实现」明令**不得**沿用 `run_records is None → return` 的 fail-open 行为）；
-        * **有仓储但查不到该运行** → **拒绝**（fail-closed：状态不一致时宁可不执行）；
-        * **有授权位但摘要不一致** → **拒绝**（授权已失效，需重新审批）；
-        * 无授权位的运行（计划里没有需要审批的步骤）→ 放行，它不是「审批驱动」的运行。
+        * **有仓储但查不到该运行** → **拒绝**（fail-closed：状态不一致时宁可不执行）。
+
+        `actions`（待判动作只读投影序列）的**缺省语义定死**（§4.1.7-5，不得自行放宽）：
+
+        * `actions` 缺省（`None` / 空序列）**只允许**出现在「⑤ 判定**无需审批**」路径；该路径**只退化
+          为运行级摘要比对**（`026` 路径，仅比对粒度退化、**不含** fail-open），并在完成 ②③④ 后进入 ⑧；
+        * `actions` 缺省却处于「⑤ 判定**需审批**」路径（本运行在 `027` 中存在 `requires_approval` 的行）
+          → **必须拒绝**（接口层 409）；**不得**把缺省当作「跳过 ⑥⑦ 直接执行」的开关；
+        * `actions` **显式提供** → ⑦ 逐项校验：每个投影 8 字段非空且 `plan_digest` 与当前计划一致；
+          仍叠加运行级摘要比对。
 
         ⚠️ 段一没有真实工具，因此这里**拦不到真实副作用**。段二接入真实工具后，
         **工具执行器必须在每次执行副作用工具前调用本方法**；届时配合「有副作用 ⇒
@@ -156,11 +177,54 @@ class RuntimeService:
             record = self.run_records.get(actor.tenant_id, run_id)
         except RunRecordNotFound as exc:
             raise ExecutionNotAuthorized("运行记录不存在，已拒绝推进执行") from exc
+
         authorization = record.execution_authorization
-        if authorization is None:
+        current_digest = plan_digest(plan)
+
+        if not actions:
+            # 缺省（None / 空序列）：只允许「⑤ 判定无需审批」路径。
+            if self._is_approval_driven(actor.tenant_id, run_id):
+                raise ExecutionNotAuthorized(
+                    "需审批路径必须显式传入待判动作序列，actions 缺省不被允许（fail-closed，接口层 409）"
+                )
+            # 该路径只退化为运行级摘要比对（026 路径），不跳过 ②③④。
+            if authorization is not None and authorization.plan_digest != current_digest:
+                raise ExecutionNotAuthorized("授权已失效：计划在批准之后发生了变更，需重新审批")
             return
-        if authorization.plan_digest != plan_digest(plan):
+
+        # actions 显式提供 → ⑦ 逐项校验（逐行核 8 字段非空 + 计划摘要一致）。
+        for action in actions:
+            validate_authorization_action(action)
+            if action.plan_digest != current_digest:
+                raise ExecutionNotAuthorized(
+                    "授权已失效：待判动作的计划摘要与当前计划不一致，需重新审批"
+                )
+        if authorization is not None and authorization.plan_digest != current_digest:
             raise ExecutionNotAuthorized("授权已失效：计划在批准之后发生了变更，需重新审批")
+
+    def _is_approval_driven(self, tenant_id: str, run_id: str) -> bool:
+        """本运行是否处于「⑤ 判定需审批」路径：`027` 中是否存在 `requires_approval` 的行。
+
+        未装配 `027`（段一路径）→ `False`：保持既有行为（仅比对运行级摘要），不误伤段一测试。
+        """
+        if self.tool_actions is None:
+            return False
+        rows = self.tool_actions.list_for_run(tenant_id, run_id)
+        return any(bool(getattr(row, "requires_approval", False)) for row in rows)
+
+    def _authorization_actions(
+        self, tenant_id: str, run_id: str
+    ) -> list[AuthorizationAction] | None:
+        """从 `027` 投影待判动作序列；未装配 `027` 或无待判动作 → `None`（缺省）。"""
+        if self.tool_actions is None:
+            return None
+        rows = self.tool_actions.list_for_run(tenant_id, run_id)
+        projected = [
+            AuthorizationAction.from_row(row)
+            for row in rows
+            if bool(getattr(row, "requires_approval", False))
+        ]
+        return projected or None
 
     def _write_execution_authorization(self, actor: UserContext, run_id: str, plan: AgentPlan) -> None:
         self._store_execution_authorization(

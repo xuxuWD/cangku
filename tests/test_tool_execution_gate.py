@@ -15,9 +15,19 @@ from datetime import UTC, datetime
 import pytest
 
 from app.audit.models import AuditAction
-from app.domain import RiskLevel, UserContext
-from app.runtime.authorization import ExecutionNotAuthorized
+from app.domain import RiskLevel, Task, TaskStatus, TaskStore, UserContext
+from app.runtime.authorization import (
+    AUTHORIZATION_ACTION_FIELDS,
+    AuthorizationAction,
+    ExecutionNotAuthorized,
+    authorization_action_field_names,
+    plan_digest,
+    validate_authorization_action,
+)
 from app.runtime.contracts import AgentPlan
+from app.runtime.records import InMemoryRunRecordStore
+from app.runtime.run_metrics import RunMetricsService
+from app.runtime.service import RuntimeService
 from app.tool_execution.args_digest import args_digest
 from app.tool_execution.blacklist import (
     READ_ONLY_WHITELIST,
@@ -37,6 +47,8 @@ from app.tool_execution.service import (
     GATE_EXEC_NAME,
     GATE_EXEC_SOURCE,
     GATE_EXECUTE,
+    GATE_PARAMS,
+    GATE_PATH,
     GATE_PERSIST,
     GATE_WHITELIST,
     ToolExecutionRequest,
@@ -72,10 +84,12 @@ class ExplodingStore(InMemoryToolActionStore):
 class RecordingAuthorizer:
     def __init__(self, *, allow: bool = True) -> None:
         self.allow = allow
-        self.calls: list[tuple] = []
+        self.calls: list[dict] = []
 
-    def __call__(self, actor, run_id, plan) -> None:
-        self.calls.append((actor, run_id, plan))
+    def __call__(self, actor, run_id, plan, *, actions=None) -> None:
+        self.calls.append(
+            {"actor": actor, "run_id": run_id, "plan": plan, "actions": actions}
+        )
         if not self.allow:
             raise ExecutionNotAuthorized("模拟既有闸门拒绝")
 
@@ -526,7 +540,13 @@ def test_resume_calls_existing_ensure_execution_authorized(tmp_path) -> None:
         tenant_id="t-1", run_id="run-1", approval_id="appr-1", actor=ACTOR, plan=PLAN
     )
     assert result.outcome == "executed"
-    assert authorizer.calls == [(ACTOR, "run-1", PLAN)]
+    assert len(authorizer.calls) == 1
+    call = authorizer.calls[0]
+    assert (call["actor"], call["run_id"], call["plan"]) == (ACTOR, "run-1", PLAN)
+    # §4.1.7-5：审批后重跑（需审批路径）必须**显式传入**待判动作投影，不得留空。
+    assert call["actions"] is not None
+    assert len(call["actions"]) == 1
+    assert isinstance(call["actions"][0], AuthorizationAction)
 
 
 def test_resume_rejected_by_existing_gate_is_409(tmp_path) -> None:
@@ -675,3 +695,162 @@ def test_resume_reruns_steps_1_to_4_and_leaves_trace(tmp_path) -> None:
         assert service.gate_calls[step] >= 2, step
     # ⑧ 只在审批通过后的重跑里发生一次（首次执行停在 ⑥）。
     assert service.gate_calls[GATE_EXECUTE] == 1
+
+
+# --------------------------------------------- 用例 29：`actions` 缺省语义 + 投影（P0）
+
+_RUNTIME_STEPS = [
+    {"step_id": "s1", "kind": "read", "tool": "knowledge.search"},
+    {"step_id": "s2", "kind": "write", "tool": "file.write"},
+]
+_DECIDER = UserContext("t-1", "ceo-1", "ceo")
+
+
+def _runtime_task(task_store: TaskStore) -> Task:
+    task = Task(
+        tenant_id="t-1",
+        project_id=None,
+        created_by="u-1",
+        employee_key="content-operator",
+        title="用例 29",
+        risk_level=RiskLevel.LOW,
+        budget=1,
+        idempotency_key="case-29",
+        request_fingerprint="fp",
+        status=TaskStatus.QUEUED,
+    )
+    task_store.create(ACTOR, task)
+    return task
+
+
+def build_runtime_service(*, tool_actions=None):
+    task_store = TaskStore()
+    task = _runtime_task(task_store)
+    record_store = InMemoryRunRecordStore()
+    service = RuntimeService(
+        task_store,
+        run_metrics=RunMetricsService(record_store),
+        tool_actions=tool_actions,
+    )
+    return service, record_store, task
+
+
+def _start_runtime_run(service: RuntimeService, task: Task) -> str:
+    run_id, _key, _version = service.start(
+        ACTOR, task.id, "mock", _RUNTIME_STEPS, "product_manager"
+    )
+    return run_id
+
+
+def _approval_row(run_id: str, **overrides) -> ToolAction:
+    return approved_action(
+        tool_key="fs.list",
+        params={"path": "/workspace"},
+        args_json={"path": "/workspace"},
+        run_id=run_id,
+        **overrides,
+    )
+
+
+def test_use_case_29_1_default_actions_executes_once_on_no_approval_path(tmp_path) -> None:
+    """① `actions` 缺省 + 「⑤ 判定无需审批」路径 → 只退化为运行级摘要比对，且进入 ⑧（执行器被调用一次）。"""
+    executor = DeterministicFakeExecutor()
+    authorizer = RecordingAuthorizer()
+    service, _trusted, _ws = build_service(
+        tmp_path, executor=executor, authorize_execution=authorizer
+    )
+
+    result = service.execute(request("fs.list", {"path": "/workspace"}), actor=ACTOR, plan=PLAN)
+
+    assert result.outcome == "executed"
+    assert result.code == 201
+    # 打桩断言：执行器被调用**一次**。
+    assert executor.call_count == 1
+    assert len(executor.calls) == 1
+    assert executor.calls[0]["tool_key"] == "fs.list"
+    # ②③④ 的判定留痕存在（§4.1.6-6）。
+    for step in (GATE_PARAMS, GATE_PATH, GATE_EXEC_BLACKLIST):
+        assert step in service.gate_trace, step
+    # 缺省 → 既有闸门收到 actions=None（只退化为运行级摘要比对，不含 fail-open）。
+    assert authorizer.calls[0]["actions"] is None
+
+
+def test_use_case_29_1_default_actions_is_run_level_digest_only() -> None:
+    """① 缺省在无需审批路径只做**运行级摘要比对**：计划与授权一致→放行；变更→拒绝。"""
+    service, _record_store, task = build_runtime_service(tool_actions=InMemoryToolActionStore())
+    run_id = _start_runtime_run(service, task)
+    service.decide_approval(_DECIDER, run_id, "s2", True)
+    state = service.snapshot(_DECIDER, run_id)
+
+    # 一致 → 放行（动作缺省，仅比对运行级摘要）。
+    service.ensure_execution_authorized(_DECIDER, run_id, state.plan)
+
+    changed = AgentPlan.from_steps(
+        [
+            {"step_id": "s1", "kind": "read", "tool": "knowledge.search"},
+            {"step_id": "s2", "kind": "delete", "tool": "file.delete"},
+        ]
+    )
+    with pytest.raises(ExecutionNotAuthorized):
+        service.ensure_execution_authorized(_DECIDER, run_id, changed)
+
+
+def test_use_case_29_2_default_actions_on_approval_path_is_refused() -> None:
+    """② `actions` 缺省却处于「⑤ 判定需审批」路径 → 必须拒绝（接口层 409）。"""
+    store = InMemoryToolActionStore()
+    service, _record_store, task = build_runtime_service(tool_actions=store)
+    run_id = _start_runtime_run(service, task)
+    state = service.snapshot(_DECIDER, run_id)
+    store.upsert(_approval_row(run_id, plan_digest=plan_digest(state.plan)))
+
+    with pytest.raises(ExecutionNotAuthorized) as excinfo:
+        service.ensure_execution_authorized(_DECIDER, run_id, state.plan)  # 缺省
+
+    assert "缺省" in str(excinfo.value)
+    # 对照：显式传入投影则放行 —— 证明拒绝原因是「缺省」而非其它。
+    row = store.list_for_run("t-1", run_id)[0]
+    service.ensure_execution_authorized(
+        _DECIDER, run_id, state.plan, actions=[AuthorizationAction.from_row(row)]
+    )
+
+
+def test_use_case_29_3_projection_has_exactly_eight_non_empty_fields() -> None:
+    """③ 投影 8 字段逐个非空；`args_digest` 与 §4.1.4 一致；不含参数原文与 `args_json`。"""
+    spec = ToolSpecCatalog(default_tool_specs()).get("fs.list")
+    params = {"path": "/workspace"}
+    row = approved_action(tool_key="fs.list", params=params, args_json={"path": "/workspace"})
+
+    action = AuthorizationAction.from_row(row)
+
+    # 逐字段：恰好 8 个、逐个非空，字段集合不含 args_json。
+    assert authorization_action_field_names() == AUTHORIZATION_ACTION_FIELDS
+    assert len(AUTHORIZATION_ACTION_FIELDS) == 8
+    assert "args_json" not in authorization_action_field_names()
+    for name in AUTHORIZATION_ACTION_FIELDS:
+        assert getattr(action, name), name
+    assert action.missing_fields() == ()
+    assert validate_authorization_action(action) is None
+
+    # args_digest 与 §4.1.4 算法一致。
+    assert action.args_digest == args_digest(params, path_params=path_param_names(spec))
+
+    # 反例：投影中不含参数原文与 args_json（整行才有 args_json，投影刻意没有）。
+    assert not hasattr(action, "args_json")
+    assert hasattr(row, "args_json")
+    assert "args_json" not in repr(action)
+    assert "/workspace" not in repr(action)
+    assert "content" not in repr(action)
+    # 且投影**不是** store 的整行 ToolAction（命名冲突显式改名，未 shadow / 未复用同一类）。
+    assert type(action) is AuthorizationAction
+    assert not isinstance(action, ToolAction)
+
+
+def test_use_case_29_3_missing_field_fails_closed() -> None:
+    """③ 反例：投影任一字段为空 → fail-closed（不得静默通过）。"""
+    row = approved_action(tool_key="fs.list", params={"path": "/workspace"})
+    for name in AUTHORIZATION_ACTION_FIELDS:
+        empty = False if name == "requires_approval" else ""
+        broken = replace(AuthorizationAction.from_row(row), **{name: empty})
+        assert name in broken.missing_fields(), name
+        with pytest.raises(ExecutionNotAuthorized):
+            validate_authorization_action(broken)
