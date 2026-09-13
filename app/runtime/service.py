@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Sequence
 
 from app.domain import PolicyError, Task, TaskNotFound, UserContext
+from app.tool_execution.store import ReasonCode, ToolActionStatus
 
 from .authorization import (
     AuthorizationAction,
@@ -139,7 +140,47 @@ class RuntimeService:
         else:
             self._clear_execution_authorization(actor, run_id)
         adapter.decide_approval(run_id, approval_id, approved)
+        # 段二 §3.2 / §4.1.6-4：决议必须**同时**落 `027`（唯一授权权威）——否则审批通过后
+        # `ToolExecutionService.resume` 从 `027` 取不到 `approved` 行，重跑永不可达。未装配 `027`
+        # （段一路径）时为 no-op，既有行为不变。写在适配器决议**之后**：适配器拒绝（404/409）时
+        # 不留下「027 已 approved 但决议未生效」的错位。
+        self._decide_tool_actions(actor, run_id, approval_id, approved, source=source)
         self._sync_run_record(actor, run_id, key, latency_ms=self._elapsed_ms(started))
+
+    def _decide_tool_actions(
+        self,
+        actor: UserContext,
+        run_id: str,
+        approval_id: str,
+        approved: bool,
+        *,
+        source: str,
+    ) -> None:
+        """把 `027` 中与该决议入口键对应的待批动作置为 `approved` / `rejected`（逐项授权的前提）。"""
+        if self.tool_actions is None:
+            return
+        rows = self.tool_actions.list_for_run(actor.tenant_id, run_id)
+        row = next(
+            (item for item in rows if item.approval_id == approval_id), None
+        )
+        # 非工具执行审批（段一 / 计划步审批）在 `027` 中没有对应行 → no-op。
+        if row is None or row.status is not ToolActionStatus.PENDING:
+            return
+        decided = replace(
+            row,
+            status=ToolActionStatus.APPROVED if approved else ToolActionStatus.REJECTED,
+            decided_by=actor.user_id,
+            decided_at=datetime.now(UTC),
+            decision_source=source,
+            # 驳回原因用受控枚举码（不得写自由文本）。
+            reason_code=None if approved else ReasonCode.APPROVAL_DENIED,
+            # **通过时保留正文密文**：审批后的重跑（§4.1.6-4）必须从 `body_ciphertext` 解密还原正文参数，
+            # 提前清空会让重跑落到「解密失败」行（502）。驳回时不再执行 → 即时清空两列
+            # （`body_check` 要求同有同无）；通过后的密文由与审批同寿的 TTL 清理任务收尾（§4.1.5）。
+            body_ciphertext=None if not approved else row.body_ciphertext,
+            body_expires_at=None if not approved else row.body_expires_at,
+        )
+        self.tool_actions.upsert(decided)
 
     def ensure_execution_authorized(
         self,
