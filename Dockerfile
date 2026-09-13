@@ -10,7 +10,8 @@
 # - 以非 root 用户运行。
 # - 生产模式下应用启动时会自动应用 migrations/ 下的迁移。
 
-FROM python:3.12-slim
+# 基础镜像按 digest 钉死（非 tag）：tag 可变、digest 不可变；与段二规格 §4 的 WORKBENCH_EXEC_IMAGE_DIGEST 口径一致
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -18,9 +19,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /srv/workbench
 
-# 先只复制依赖清单并安装，利用层缓存
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# 先只复制锁定清单并安装，利用层缓存
+# 依赖版本与哈希全部钉死（requirements.lock；--require-hashes 强制校验）⇒ 构建可复现、且被篡改会 fail-closed
+COPY requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # 运行用户（非 root）
 RUN groupadd --system workbench \

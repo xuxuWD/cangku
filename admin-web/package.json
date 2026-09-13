@@ -2,6 +2,7 @@
   "name": "company-workbench-admin-web",
   "private": true,
   "version": "0.1.0",
+  "engines": {"node": ">=22"},
   "type": "module",
   "scripts": {"dev":"vite","build":"tsc -b && vite build","test":"vitest","test:watch":"vitest"},
   "dependencies": {

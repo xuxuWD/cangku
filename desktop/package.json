@@ -2,6 +2,7 @@
   "name": "company-workbench-desktop",
   "private": true,
   "version": "0.1.0",
+  "engines": {"node": ">=22"},
   "description": "公司数字员工工作台 Windows 桌面端外壳（Electron 安全壳）",
   "main": "src/main.cjs",
   "scripts": {

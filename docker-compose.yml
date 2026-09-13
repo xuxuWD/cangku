@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: pgvector/pgvector:0.8.0-pg16
+    # 按 digest 钉死（2026-09-13）：tag 可变、digest 不可变；与 Dockerfile / minio 同口径。
+    image: pgvector/pgvector:0.8.0-pg16@sha256:a132765ec351c65111b5b675928a3a0515a466a40f97277329db8b8209ad8bc9
     environment:
       POSTGRES_DB: workbench
       POSTGRES_USER: workbench
@@ -11,21 +12,41 @@ services:
       - workbench-postgres:/var/lib/postgresql/data
 
   redis:
-    image: redis:7.4-alpine
+    # 换实现 + digest 钉死（2026-09-13，用户裁决）：Redis 自 7.4 起为 RSALv2/SSPLv1（source-available，非 OSI 开源），
+    # 按"不引入 copyleft"原则改用 Valkey（BSD-3-Clause，协议兼容，已实测 Streams 语义一致）；tag 供人读、digest 保证不可变。
+    # 注：服务名仍为 redis（compose 内主机名），因为 WORKBENCH_REDIS_URL=redis://redis:6379/0 等配置依赖它。
+    image: valkey/valkey:8-alpine@sha256:d2e18f3410b6f616de1417f570fa55261af2898b9c5b2cfb6781ce2373ea43d1
     ports:
       - "127.0.0.1:${WORKBENCH_REDIS_PORT:-6379}:6379"
     volumes:
       - workbench-redis:/data
 
-  minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data --console-address ":9001"
+  # 对象存储：SeaweedFS（2026-09-13 换实现，用户裁决）
+  # 为什么换：MinIO 是 GNU AGPLv3；按已定原则"不引入 copyleft"换成 Apache-2.0 的 SeaweedFS。
+  #   · 许可证据：上游 LICENSE @ tag 4.46 = Apache-2.0（blob c9c58bb5…）；镜像自报构建 commit d997fba15 与 tag 4.46 的 commit 一致。
+  #   · 服务名由 minio 改为 seaweedfs（docker-compose.app.yml 里的 URL 已同步）。
+  #   · 环境变量名（WORKBENCH_MINIO_*）与卷名（workbench-minio）**沿用旧名**：改名会牵动 app 配置 / preflight / 测试 / 文档，属另一件事。
+  #   · 遥测：SeaweedFS 的 -master.telemetry 默认 true 且发往 https://telemetry.seaweedfs.com/api/collect ⇒ 这里**显式关闭**，不留默认外发通道。
+  #   · 另关闭两个本项目用不到的附加目录服务（Iceberg REST 8181 / Lance 9101，上游默认开启）以缩小暴露面。
+  #   · S3 端口对齐 9000（上游默认 8333），使 WORKBENCH_OBJECT_STORAGE_URL 与 .env 的端口保持不变。
+  #   · 凭据：SeaweedFS 用 s3.json（非环境变量），故启动时由环境变量生成到容器内 /tmp，**不落仓库、不进镜像**。
+  #     注意：凭据须为 JSON 安全字符（不含 " 或 \），否则生成的文件非法、SeaweedFS 启动失败（fail-closed，不会静默降级）。
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.46@sha256:08d516132314207d10c8e37cbffc1f32b147d870169688734cc61c6231625b62
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        cat > /tmp/s3.json <<JSON
+        {"identities":[{"name":"$$WORKBENCH_MINIO_USER","credentials":[{"accessKey":"$$WORKBENCH_MINIO_USER","secretKey":"$$WORKBENCH_MINIO_PASSWORD"}],"actions":["Admin","Read","Write"]}]}
+        JSON
+        exec /entrypoint.sh server -s3 -s3.port=9000 -s3.config=/tmp/s3.json -master.telemetry=false -s3.port.iceberg=0 -s3.port.lance=0
     environment:
-      MINIO_ROOT_USER: ${WORKBENCH_MINIO_USER:?set WORKBENCH_MINIO_USER in .env}
-      MINIO_ROOT_PASSWORD: ${WORKBENCH_MINIO_PASSWORD:?set WORKBENCH_MINIO_PASSWORD in .env}
+      WORKBENCH_MINIO_USER: ${WORKBENCH_MINIO_USER:?set WORKBENCH_MINIO_USER in .env}
+      WORKBENCH_MINIO_PASSWORD: ${WORKBENCH_MINIO_PASSWORD:?set WORKBENCH_MINIO_PASSWORD in .env}
     ports:
       - "127.0.0.1:${WORKBENCH_MINIO_PORT:-9000}:9000"
-      - "127.0.0.1:${WORKBENCH_MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${WORKBENCH_MINIO_CONSOLE_PORT:-9001}:8888"
     volumes:
       - workbench-minio:/data
 
