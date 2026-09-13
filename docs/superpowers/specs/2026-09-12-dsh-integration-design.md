@@ -463,13 +463,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_tool_actions_approval
 ```sql
 -- 复合外键需要父表侧唯一约束。013 只建了 PRIMARY KEY (run_id)，
 -- 故补 UNIQUE (run_id, tenant_id)：否则只能用单列外键，丢租户维度（跨租户可达）。
--- 与 024/025/026 同写法：先 DROP IF EXISTS 再 ADD，可重复执行。
-
-ALTER TABLE workbench_run_records
-    DROP CONSTRAINT IF EXISTS workbench_run_records_run_tenant_unique;
-
-ALTER TABLE workbench_run_records
-    ADD CONSTRAINT workbench_run_records_run_tenant_unique UNIQUE (run_id, tenant_id);
+--
+-- 🔴 **写法更正（2026-09-13 真库演练发现；本节原口径作废）**：原写"与 024/025/026 同写法：
+--    先 DROP IF EXISTS 再 ADD，可重复执行"——**该写法在 027 不成立**：两张新表
+--    （workbench_tool_actions / workbench_execution_idempotency）持有指向该唯一约束的复合外键，
+--    整组重跑时 DROP CONSTRAINT 会因依赖对象存在而失败：
+--      ERROR: cannot drop constraint workbench_run_records_run_tenant_unique
+--             because other objects depend on it
+--    实现改用 **DO 块按 `pg_constraint` 判定后增补**（PostgreSQL 无 `ADD CONSTRAINT IF NOT EXISTS`），
+--    且**不使用 CASCADE**（否则连带删掉两张表的复合外键）。
+--    **落地文件 `migrations/027_dsh_tool_execution.sql` 为唯一实现来源。**
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'workbench_run_records_run_tenant_unique'
+          AND conrelid = 'workbench_run_records'::regclass
+    ) THEN
+        ALTER TABLE workbench_run_records
+            ADD CONSTRAINT workbench_run_records_run_tenant_unique UNIQUE (run_id, tenant_id);
+    END IF;
+END
+$$;
 ```
 
 **影响面与回退**：只新增一个唯一约束，**不改列、不改既有查询语义**；`run_id` 本就是主键，既有数据在 `(run_id, tenant_id)` 上必然唯一，**无需回填**。回退见 §4.1.5（`DROP CONSTRAINT`）。**这是对既有地基表的变更，须在变更记录中登记（宪法 1.4）**，不得"偷偷用单列外键"。
@@ -550,7 +565,7 @@ CREATE INDEX IF NOT EXISTS idx_workbench_execution_idempotency_run
 | 并发 | 同一 `run+step` 并发落库由部分唯一索引收敛；**并发审批为「首写获胜」——重复决议返回 `409`**（与实码 `app/runtime/mock.py` 的 `ApprovalAlreadyDecided` 一致；R4-3 已同步契约 `:592`，原「最后写入获胜」口径作废） |
 | 回退 | 先停真实执行（切回 `WORKBENCH_AGENT_RUNTIME_BACKEND=mock`）→ `DROP TABLE workbench_tool_actions` → `DROP TABLE workbench_execution_idempotency` → `DROP CONSTRAINT workbench_run_records_run_tenant_unique` → 删除 `workbench_schema_migrations` 中 `027` 的记账行 |
 | 前进兼容 | 两张新表**不回填、无需回填**；唯一约束为纯增补；回退后 `026` 快照与段一行为不受影响 |
-| 迁移工程约定 | 迁移按 `sorted(glob)` 顺序执行并记账于 `workbench_schema_migrations`，**无自动回滚**（`app/migrations.py`）→ 文件名须 `027_` 且排在 `026` 之后；DDL 一律 `IF NOT EXISTS` / `DROP … IF EXISTS` + `ADD`（与 024/025/026 同写法，可重复执行）；**须同步 `.env.staging.example` 的迁移清单登记**（`tests/test_staging_assets.py` 对模板与 `migrations/*.sql` 做逐条相等断言，漏登则 staging 预检永远 `blocked`）；**须补 `027` 的静态契约测试**（沿用 `tests/test_persistence_contract.py` 同口径） |
+| 迁移工程约定 | 迁移按 `sorted(glob)` 顺序执行并记账于 `workbench_schema_migrations`，**无自动回滚**（`app/migrations.py`）→ 文件名须 `027_` 且排在 `026` 之后；DDL 一律 `IF NOT EXISTS` / `DROP … IF EXISTS` + `ADD`（与 024/025/026 同写法，可重复执行）。**⚠️ 例外（2026-09-13 真库演练发现）**：§4.1.2 对 `workbench_run_records` 的唯一约束增补**不得**用 `DROP … IF EXISTS` + `ADD`——两张新表持有指向它的**复合外键**，整组重跑时 DROP 必失败（*other objects depend on it*）→ 改用 **DO 块按 `pg_constraint` 判定**（见 §4.1.2 更正块）；**须同步 `.env.staging.example` 的迁移清单登记**（`tests/test_staging_assets.py` 对模板与 `migrations/*.sql` 做逐条相等断言，漏登则 staging 预检永远 `blocked`）；**须补 `027` 的静态契约测试**（沿用 `tests/test_persistence_contract.py` 同口径） |
 | 清理策略（**幂等表**） | 本段**不做**清理（无 TTL）；保留策略属后续段次，登记于 §8 U12 |
 | 清理策略（**受控正文密文列**，J7 = 丙案） | **强制 TTL，不再是"不做清理"**（与上条区分）：① 审批落定（`approved`/`rejected`/`expired`）→ **同一事务内清空**该列；② 审批未落定 → **到期即清**（到期时刻 = 审批超时时刻）；③ 清理由**启动时 + 周期**执行（周期 = `WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS`，P3 新增；与 §3.3 孤儿容器回收同口径）；④ **清理失败必须告警并登记**；⑤ 清理只记「已清理 / 清理失败」的**计数与既有动作码**，**不新增动作码**、**不落正文**；⑥ **本项属本段必做**（与幂等表保留策略不同——后者仍属后续段次）；⑦ 清理异常**不得**影响既有读路径与段一行为。**判据见 §5 用例 32③④**（P8 双向引用）；**到期置 `expired` 的执行方见 §4.1.6-8**（P6） |
 

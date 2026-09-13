@@ -12,15 +12,16 @@
 
 | 项 | 内容 |
 | --- | --- |
-| **时间** | 2026-09-13（**设计登记**；DDL **尚未落地**——规格 §4.1 仍待独立复核通过） |
-| **变更** | `ALTER TABLE workbench_run_records ADD CONSTRAINT workbench_run_records_run_tenant_unique UNIQUE (run_id, tenant_id)`；可重复执行写法：`DROP CONSTRAINT IF EXISTS …` 后 `ADD CONSTRAINT …` |
+| **时间** | 2026-09-13（设计登记）→ **同日已落地并完成真库演练**（见下「执行与演练」行） |
+| **变更** | `ALTER TABLE workbench_run_records ADD CONSTRAINT workbench_run_records_run_tenant_unique UNIQUE (run_id, tenant_id)`；**可重复执行写法（已更正）**：**DO 块按 `pg_constraint` 判定后增补**——原写「`DROP CONSTRAINT IF EXISTS …` 后 `ADD CONSTRAINT …`」在真库演练中**证明不可用**（两张新表持有指向该约束的复合外键，重跑时 DROP 报 *other objects depend on it*） |
+| **执行与演练** | **执行日期**：2026-09-13；**执行人**：AI 助手（用户裁决「过闸，落 027」后执行）；**落地物**：`migrations/027_dsh_tool_execution.sql`。**真实库演练**（独立 `pgvector/pgvector:0.8.0-pg16@sha256:a132765…` 容器，**非生产**）：① 27 个迁移**整组连跑 3 遍全部 OK**（可重复执行）；② **回退演练**：`DROP` 两表 + `DROP` 约束 → 对象数归 0 → **重跑 `027` 前滚成功**（31 列；`run_tenant_unique` + 两张表的 `pkey`/`fkey`/4 个 `CHECK` 全部就位）；③ 回归 **1445 passed**、`compileall` exit 0。**演练发现并修正 1 处实现缺陷**（即本行「变更」列所记写法问题），**未使用 `CASCADE`**；规格 §4.1.2 / §4.1.5 已回改 |
 | **原因** | 迁移 `027` 的两张新表需用**复合外键 `(tenant_id, run_id)`** 把租户隔离「写进约束」（与 `migrations/023` 同思路）；而 `migrations/013` 只建了 `PRIMARY KEY (run_id)`，**父表侧缺唯一约束** → 复合外键无法成立；若退化为单列外键则**丢失租户维度**（跨租户可达） |
 | **影响面** | ① 仅**新增一个唯一约束**，不改列、不改既有查询语义；② `run_id` 本就是主键 → 既有数据在 `(run_id, tenant_id)` 上必然唯一，**无需回填**；③ 同文件内**必须先执行本条、再建 `workbench_tool_actions` / `workbench_execution_idempotency`**（否则 PostgreSQL 建外键时报 *there is no unique constraint matching given keys for referenced table*） |
 | **回退方式** | 先停真实执行（`WORKBENCH_AGENT_RUNTIME_BACKEND=mock`）→ `DROP TABLE workbench_tool_actions` → `DROP TABLE workbench_execution_idempotency` → `DROP CONSTRAINT workbench_run_records_run_tenant_unique` → 删除 `workbench_schema_migrations` 中 `027` 的记账行 |
 | **评审状态** | **未通过**：随段二规格 §4.1 一并送审。**第四轮**独立复核判「不予放行」（阻断项 R4-1 即本条的**语句顺序**）→ 修订 → **第五/第六轮**独立复核仍判「不予放行」（第六轮为 R6-1/R6-2/R6-3，见评审记录 §12）→ **已按 J7 = 丙案 + J8/J9 定死完成第六轮修订**（规格 §9.5）→ **第七轮定点复核未通过**（R6-1/R6-2 表面闭合等）→ 已按 **P1–P11** 打补丁（规格 §9.6）→ **补丁确认未通过 → Q1–Q3 → 再次确认「部分真闭合」→ R1–R3 → 最后一次补丁确认：R1/R2/R3 全部真闭合** → **规格已评审通过（附记录）· 2026-09-13** |
 | **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §4.1.2 / §4.1.5；评审记录 [`dsh-integration-review-record.md`](dsh-integration-review-record.md) §9 |
 
-> **口径**：本条为**设计登记**，**不代表已执行**；`migrations/027_*.sql` 落地前不得视为生效。落地时须补：执行日期、执行人、真实库上的升级与回退演练结果。
+> **口径**：本条为**设计登记**，**不代表已执行**；`migrations/027_*.sql` 落地前不得视为生效。**〔2026-09-13 更新：已按第 1 条的「执行与演练」行补齐——执行日期、执行人、真实库升级与回退演练结果均已登记；`027` 已落地生效。〕**
 
 ### 2026-09-13 · 新增表 `workbench_tool_actions`（随迁移 `027`）
 
@@ -28,7 +29,7 @@
 
 | 项 | 内容 |
 | --- | --- |
-| **时间** | 2026-09-13（**设计登记**；DDL **尚未落地**——规格 §4.1 仍待独立复核通过） |
+| **时间** | 2026-09-13（设计登记）→ **同日已落地并完成真库演练**（执行与演练记录见第 1 条） |
 | **变更** | 新建表 `workbench_tool_actions`（待批动作 = 授权项，同行同表；`PRIMARY KEY (tenant_id, action_id)`；含 `approval_id` / `args_digest` / **`args_json`** / **`body_ciphertext` + `body_expires_at`**（**J7 = 丙案的受控正文密文列**）/ `plan_digest` / `risk_level` / `status` / 决议四列；**2 个 CHECK**——`decision_check`「决议字段全有或全无」与 `body_check`「密文与到期时刻同有同无」；2 个部分唯一索引 + 1 个普通索引）。完整 DDL 见规格 §4.1.1 |
 | **原因** | 段一「逐项授权」只有**单一摘要列**（`026`），无法表达逐项；③ 需要「**待批动作与授权项是同一行的两个状态**」以从结构上消除「批准 A、执行 B」；`026` 为运行级快照，**不得单独放行工具执行**（裁决 R7） |
 | **影响面** | ① **纯新增表**，不改既有表、不改既有查询；② **必须排在 §4.1.2 的 `ALTER` 之后**（复合外键依赖父表唯一约束）；③ 与 `workbench_execution_idempotency` 有先后无依赖（各自引用既有父表）；④ **正文边界（J7 = 丙案）**：`args_json` **只落控制参数**；`body` 原文**默认不落库**，**唯一例外** = 本表 **`body_ciphertext`**（**AEAD 密文、密钥不落库、TTL 与审批同寿、审批落定即清、不导出、审计不落**，规格 §3.4 / §4.1.5） |
@@ -40,7 +41,7 @@
 
 | 项 | 内容 |
 | --- | --- |
-| **时间** | 2026-09-13（**设计登记**；DDL **尚未落地**） |
+| **时间** | 2026-09-13（设计登记）→ **同日已落地并完成真库演练**（执行与演练记录见第 1 条） |
 | **变更** | 新建表 `workbench_execution_idempotency`（执行幂等；`PRIMARY KEY (tenant_id, actor_id, conversation_id, idempotency_key)`；含 `message_id`（**可空**）、`run_id`（可空）、**`approval_id`**（J-4：重建 `202` 响应体所需）、`outcome`（4 值 CHECK）、**`http_status`**（R5-2 新增）、**`result_check`**（J-5：`outcome` ↔ `http_status` 合法组合约束）；3 个复合外键 + 1 个部分索引）。完整 DDL 见规格 §4.1.3 |
 | **原因** | 执行幂等键已定为请求头 `Idempotency-Key`（裁决 R2），需**持久化首次结果**以保证重放「不新增消息 / 不新增承载任务 / 不新增运行 / 不二次执行」；`message_id` 由 `append_message` 每次新建，**不能**承担幂等键 |
 | **影响面** | ① **纯新增表**；② 三外键分别引用 `workbench_conversations` / `workbench_conversation_messages`（`migrations/023` 复合主键）与 `workbench_run_records`（**依赖 §4.1.2 的 `ALTER`**）；③ `message_id` / `run_id` 可空 → 被拒与首次失败场景亦能写行；④ **`body` 原文不落本表**（同 §4.1.1 边界） |
