@@ -92,3 +92,36 @@ class ContainerExecutor:
         raise NotImplementedError(
             "真实容器执行属后续步骤（§4.1.6-4 的 ⑧，段二-3）；本步骤只交付参数装配"
         )
+
+
+@dataclass(frozen=True)
+class ExecutionOutcome:
+    """一次执行的**确定性**结果摘要（供 ⑨ 落摘要 / 用例断言；不含正文与宿主路径）。"""
+
+    ok: bool
+    summary: dict[str, object]
+    timed_out: bool = False
+
+
+class DeterministicFakeExecutor:
+    """⑧ 的**一次性假执行器**（段二-2 离线验收用，§1.4）。
+
+    - **确定性**：同一入参恒返回同一结果（不使用时间 / 随机 / 网络 / 容器）；
+    - 只返回**摘要**（工具键 + 结果计数），**不回传参数原文与宿主路径**；
+    - 真实容器执行属段二-3（`ContainerExecutor.execute`）。
+    按 §6「清理纪律」，本类属需在用户确认后删除的一次性测试桩。
+    """
+
+    def __init__(self, *, ok: bool = True, timed_out: bool = False) -> None:
+        self.ok = ok
+        self.timed_out = timed_out
+
+    def execute(
+        self, *, tool_key: str, params, workspace_path: str, spec: ContainerSpec | None = None
+    ) -> ExecutionOutcome:
+        summary: dict[str, object] = {
+            "tool_key": tool_key,
+            "status": "ok" if (self.ok and not self.timed_out) else "failed",
+            "param_count": len(params) if params is not None else 0,
+        }
+        return ExecutionOutcome(ok=self.ok, timed_out=self.timed_out, summary=summary)

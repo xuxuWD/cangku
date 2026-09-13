@@ -42,6 +42,14 @@ class WorkspaceManager:
             raise WorkspaceError("工作目录创建失败") from exc
         return str(path)
 
+    def path_for(self, tenant_id: str, run_id: str) -> str:
+        """返回该 run 的工作卷路径（**不创建**；供 ③ 做 realpath 落点判定）。"""
+        return str(self._path(tenant_id, run_id))
+
+    @property
+    def root(self) -> str:
+        return str(self._root)
+
     def destroy(self, tenant_id: str, run_id: str) -> None:
         path = self._path(tenant_id, run_id)
         try:

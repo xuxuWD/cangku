@@ -610,6 +610,7 @@ def build_tool_execution(
     audit=None,
     connection=None,
     migrate: bool = True,
+    runtime_service=None,
 ):
     """按 backend 装配段二工具执行服务（规格 §4.1.6-2）。
 
@@ -646,6 +647,16 @@ def build_tool_execution(
             tool_actions=tool_actions,
             run_records=run_records,
             audit=audit,
+            # ① 组装工具面过滤：`artifact.export` 默认不装配（fail-closed，§4）。
+            artifact_export_enabled=settings.artifact_export_enabled,
+            # ④-0 受信任可执行根来自外置配置（不使用 PATH 解析）。
+            trusted_roots=settings.exec_trusted_roots,
+            # ⑦ 复用既有 `RuntimeService.ensure_execution_authorized`（不另造一套）。
+            authorize_execution=(
+                runtime_service.ensure_execution_authorized
+                if runtime_service is not None
+                else None
+            ),
         )
     except ToolExecutionConfigError as exc:
         get_logger().error("段二真实执行装配失败，已拒绝启用：%s", exc)

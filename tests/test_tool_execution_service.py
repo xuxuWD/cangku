@@ -66,11 +66,11 @@ def _executor() -> ContainerExecutor:
     )
 
 
-def _service(tmp_path, *, store=None, cipher=None, audit=None) -> ToolExecutionService:
+def _service(tmp_path, *, store=None, cipher=None, audit=None, executor=None) -> ToolExecutionService:
     return ToolExecutionService(
         catalog=ToolSpecCatalog(default_tool_specs()),
         body_cipher=cipher or BodyCipher.from_base64(_key()),
-        executor=_executor(),
+        executor=executor or _executor(),
         workspace=WorkspaceManager(str(tmp_path)),
         tool_actions=store or InMemoryToolActionStore(),
         run_records=InMemoryRunRecordStore(),
@@ -173,15 +173,20 @@ def test_resume_without_approved_row_is_not_authorized(tmp_path) -> None:
     assert excinfo.value.reason_code is ReasonCode.NOT_AUTHORIZED
 
 
-def test_resume_gate_pipeline_is_not_implemented(tmp_path) -> None:
-    """①–⑨ 全流程未实现：参数可还原时也必须显式 NotImplementedError，不得假装成功。"""
+def test_resume_recomputes_args_digest_and_rejects_mismatch(tmp_path) -> None:
+    """⑦ 前置：按完整参数重算 `args_digest` 与本行比对，不一致 → 409（§4.1.6-4 / -5）。"""
     store = InMemoryToolActionStore()
     store.upsert(
         _approved_action(tool_key="fs.list", args_json={"path": "/workspace"})
     )
-    service = _service(tmp_path, store=store)
-    with pytest.raises(NotImplementedError):
+    audit = RecordingAudit()
+    service = _service(tmp_path, store=store, audit=audit)
+    with pytest.raises(ToolExecutionError) as excinfo:
         service.resume(tenant_id="t-1", run_id="run-1", approval_id="appr-1")
+    assert excinfo.value.http_status == 409
+    assert excinfo.value.reason_code is ReasonCode.NOT_AUTHORIZED
+    assert [action for action, _ in audit.calls] == [AuditAction.TOOL_BLOCKED]
+    assert store.get("t-1", "act-1").status is ToolActionStatus.APPROVED
 
 
 def test_failure_code_table_matches_spec() -> None:

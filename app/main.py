@@ -135,7 +135,10 @@ runtime_service = build_runtime_service(
 )
 # 段二（dsh 接入段）：backend=mock 时为 None；backend=dsh 且缺件时记 error 但不退进程（§4.1.6-2/-3）。
 tool_execution_service = build_tool_execution(
-    settings, run_metrics=run_metrics_service, audit=audit_service
+    settings,
+    run_metrics=run_metrics_service,
+    audit=audit_service,
+    runtime_service=runtime_service,
 )
 content_store = build_content_store(settings)
 content_service = ContentService(
