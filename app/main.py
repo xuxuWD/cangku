@@ -48,6 +48,7 @@ from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_a
 from .settings import get_settings, resolve_cors_options, validate_runtime_settings
 from .runtime.authorization import ExecutionNotAuthorized
 from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable
+from .tool_execution.errors import ToolExecutionError
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import FinishReason, RunRecordNotFound
 from .runtime.service import RunAccessDenied, RunApprovalDenied
@@ -1886,6 +1887,20 @@ def decide_run_approval(
         },
     )
     _notify_run_terminal(context, run_id)
+    # 段二（dsh 接入段）§4.1.6-4：审批**通过**且装配了工具执行入口时，在同一请求内触发「审批后重跑」。
+    # 调用位置在 `decide_approval`（【事务 A】写 027 决议 + 026 快照 + 适配器决议）**提交之后**，
+    # **不在其事务内**——依据 §4.1.6-5「授权位不回滚」（重跑失败不撤销已批准的授权）与 §4.1.6-4 调用链
+    # （`resume` 与【事务 A】并列，非其中一步）。`backend=mock`（`tool_execution_service is None`）时
+    # 本分支不进入，端点行为与返回值与改动前完全一致（§4.1.6-2）。
+    # 注：§4.1.6-7 未实现 —— 成功路径响应体**暂不**携带执行结局（不新增 `execution` 字段、不改契约、不动前端）。
+    if payload.approved and tool_execution_service is not None:
+        try:
+            tool_execution_service.resume(
+                tenant_id=context.tenant_id, run_id=run_id, approval_id=approval_id
+            )
+        except ToolExecutionError as exc:
+            # §4.1.6-5 重跑失败语义：按受控异常携带的 HTTP 语义原样映射（409 / 422 / 403 / 502 / 504）。
+            raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
     return {
         "run_id": run_id,
         "approval_id": approval_id,

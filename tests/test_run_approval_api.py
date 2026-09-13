@@ -14,6 +14,7 @@ from app.main import app
 from app.runtime.records import InMemoryRunRecordStore
 from app.runtime.run_metrics import RunMetricsService
 from app.runtime.service import RuntimeService
+from app.tool_execution.errors import ToolExecutionError
 
 client = TestClient(app)
 TWO_STEPS = [
@@ -184,3 +185,86 @@ def test_terminal_run_cannot_be_decided_again() -> None:
 
     assert again.status_code == 409
     assert client.get(f"/api/v1/runs/{run_id}/metrics", headers=headers()).json()["status"] == "failed"
+
+
+# ------------------------------------------------------------------ 段二接线（§4.1.6-4 / §4.1.6-5）
+# 决议端点接入 `tool_execution_service`：仅 approved 且入口存在时在同一请求内 `resume`；
+# 失败按受控异常携带的 HTTP 语义映射；`backend=mock`（None）时行为与改动前一致。
+
+
+class RecordingToolExecution:
+    """打桩的工具执行入口：记录 `resume` 调用，可令其抛出受控异常。"""
+
+    def __init__(self, error: ToolExecutionError | None = None) -> None:
+        self.calls: list[dict[str, str]] = []
+        self._error = error
+
+    def resume(
+        self, *, tenant_id: str, run_id: str, approval_id: str, actor=None, plan=None
+    ):
+        self.calls.append(
+            {"tenant_id": tenant_id, "run_id": run_id, "approval_id": approval_id}
+        )
+        if self._error is not None:
+            raise self._error
+        return None
+
+
+def test_mock_backend_approval_response_unchanged(monkeypatch) -> None:
+    """(a) `tool_execution_service is None`（backend=mock）→ 端点返回体形状与改动前完全一致。"""
+    monkeypatch.setattr(main, "tool_execution_service", None)
+    run_id = start_run()
+
+    decided = client.post(
+        f"/api/v1/runs/{run_id}/approvals/s2/approval", headers=ceo(), json={"approved": True}
+    )
+
+    assert decided.status_code == 200
+    # 不得新增 `execution` 字段（§4.1.6-7 未实现）。
+    assert set(decided.json().keys()) == {"run_id", "approval_id", "status", "run_status"}
+
+
+def test_approved_triggers_resume_once(monkeypatch) -> None:
+    """(b) approved 且执行入口存在 → `resume` 被调用一次，参数为 (run_id, approval_id)。"""
+    recorder = RecordingToolExecution()
+    monkeypatch.setattr(main, "tool_execution_service", recorder)
+    run_id = start_run()
+
+    decided = client.post(
+        f"/api/v1/runs/{run_id}/approvals/s2/approval", headers=ceo(), json={"approved": True}
+    )
+
+    assert decided.status_code == 200
+    assert recorder.calls == [
+        {"tenant_id": "t-1", "run_id": run_id, "approval_id": "s2"}
+    ]
+
+
+@pytest.mark.parametrize("http_status", [409, 422, 403, 502, 504])
+def test_resume_failure_maps_to_http_status(monkeypatch, http_status: int) -> None:
+    """(c) `resume` 抛受控异常 → 端点返回对应状态码（§4.1.6-5）。"""
+    recorder = RecordingToolExecution(
+        error=ToolExecutionError("执行被拒绝", http_status=http_status)
+    )
+    monkeypatch.setattr(main, "tool_execution_service", recorder)
+    run_id = start_run()
+
+    decided = client.post(
+        f"/api/v1/runs/{run_id}/approvals/s2/approval", headers=ceo(), json={"approved": True}
+    )
+
+    assert decided.status_code == http_status
+
+
+def test_rejected_does_not_trigger_resume(monkeypatch) -> None:
+    """(d) 非 approved（rejected）→ 不得调用 `resume`。"""
+    recorder = RecordingToolExecution()
+    monkeypatch.setattr(main, "tool_execution_service", recorder)
+    run_id = start_run()
+
+    decided = client.post(
+        f"/api/v1/runs/{run_id}/approvals/s2/approval", headers=ceo(), json={"approved": False}
+    )
+
+    assert decided.status_code == 200
+    assert recorder.calls == []
