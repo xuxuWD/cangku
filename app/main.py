@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_control_plane_binding_verifier, build_dead_letter_store, build_event_bus, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -98,6 +98,7 @@ from .conversation import (
     MessageRole,
     ensure_can_converse,
 )
+from .conversation.execution import ConversationExecutionError
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
@@ -156,6 +157,22 @@ orphan_cleanup_task = build_orphan_cleanup_task(settings, tool_execution_service
 if orphan_cleanup_task is not None:
     app.add_event_handler("startup", orphan_cleanup_task.start)
     app.add_event_handler("shutdown", orphan_cleanup_task.stop)
+# 段二-4 对话入口路由（§3.7 Y2 / §3.2 第四条）：幂等行落 027 的 `workbench_execution_idempotency`。
+execution_idempotency_store = build_execution_idempotency_store(settings)
+conversation_execution_service = build_conversation_execution_service(
+    settings,
+    conversations=conversation_service,
+    conversation_store=conversation_store,
+    task_store=store,
+    runtime_service=runtime_service,
+    tool_execution=tool_execution_service,
+    idempotency=execution_idempotency_store,
+    audit=audit_service,
+    directory_store=workforce_directory_store,
+)
+# 段二-4 控制面绑定校验器（§3.5 P1 第 3 条 ②④）：规格所述回调场景尚未存在 → 当前无调用方；
+# 先装配组件与判据（§5 用例 35），**接入真实回调端点前不得声称「②④ 已强制」**。
+control_plane_binding_verifier = build_control_plane_binding_verifier(settings, audit=audit_service)
 content_store = build_content_store(settings)
 content_service = ContentService(
     task_store=store,
@@ -1329,26 +1346,31 @@ def get_conversation(
 
 @app.post(
     "/api/v1/conversations/{conversation_id}/messages",
-    response_model=MessageCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def send_conversation_message(
-    conversation_id: str, payload: MessageCreateRequest, context: UserContext = Depends(current_user)
-) -> MessageCreateResponse:
-    """发送一条用户消息并返回确定性桩回复（`stub=true`）；向已归档会话发消息返回 409。"""
+    conversation_id: str,
+    payload: MessageCreateRequest,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    """发送一条用户消息。
+
+    缺 `Idempotency-Key`（或未启用真实执行）⇒ 既有确定性桩回复（`stub=true`），不触发真实执行；
+    带键 ⇒ 触发真实工具执行 + 幂等（`201` 已执行 / `202` 待批 / 拒绝码 / 失败码，见契约「工具执行」）。
+    """
     try:
         ensure_can_converse(context)
-        user_message, reply = conversation_service.send_message(
-            context, conversation_id, content=payload.content
+        result = conversation_execution_service.handle_message(
+            context, conversation_id, content=payload.content, idempotency_key=idempotency_key
         )
     except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
         _raise_conversation_http(exc)
-    return MessageCreateResponse(
-        message_id=user_message.message_id,
-        conversation_id=user_message.conversation_id,
-        stub=True,
-        reply=_message_view(reply),
-    )
+    except ConversationExecutionError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    response.status_code = result.http_status
+    return result.body
 
 
 @app.post("/api/v1/conversations/{conversation_id}/archive", response_model=ConversationView)
@@ -1862,7 +1884,7 @@ def decide_run_approval(
     approval_id: str,
     payload: RunApprovalDecision,
     context: UserContext = Depends(current_user),
-) -> dict[str, str]:
+) -> dict[str, object]:
     """决议运行内的审批项；仅 CEO/超级管理员，且发起人不能自审。"""
     try:
         runtime_service.decide_approval(
@@ -1899,21 +1921,32 @@ def decide_run_approval(
     # **不在其事务内**——依据 §4.1.6-5「授权位不回滚」（重跑失败不撤销已批准的授权）与 §4.1.6-4 调用链
     # （`resume` 与【事务 A】并列，非其中一步）。`backend=mock`（`tool_execution_service is None`）时
     # 本分支不进入，端点行为与返回值与改动前完全一致（§4.1.6-2）。
-    # 注：§4.1.6-7 未实现 —— 成功路径响应体**暂不**携带执行结局（不新增 `execution` 字段、不改契约、不动前端）。
+    # §4.1.6-7：成功路径在既有字段之上**新增可选字段** `execution: {outcome, code?, message_id?}`；
+    # **既有字段一个都不改**；响应体**不含**参数原文 / 宿主路径 / 凭据（`ToolExecutionResult` 本身即无这些）。
+    execution: dict[str, object] | None = None
     if payload.approved and tool_execution_service is not None:
         try:
-            tool_execution_service.resume(
+            result = tool_execution_service.resume(
                 tenant_id=context.tenant_id, run_id=run_id, approval_id=approval_id
             )
         except ToolExecutionError as exc:
             # §4.1.6-5 重跑失败语义：按受控异常携带的 HTTP 语义原样映射（409 / 422 / 403 / 502 / 504）。
             raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
-    return {
+        if result is not None:
+            execution = {"outcome": result.outcome}
+            if result.code is not None:
+                execution["code"] = result.code
+            if result.message_id is not None:
+                execution["message_id"] = result.message_id
+    body: dict[str, object] = {
         "run_id": run_id,
         "approval_id": approval_id,
         "status": "approved" if payload.approved else "rejected",
         "run_status": runtime_service.snapshot(context, run_id).status,
     }
+    if execution is not None:
+        body["execution"] = execution
+    return body
 
 
 class RegistrationCreate(BaseModel):

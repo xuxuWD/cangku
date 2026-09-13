@@ -59,6 +59,8 @@ class ConversationStore(Protocol):
 
     def list_messages(self, context: UserContext, conversation_id: str, *, limit: int = 50, offset: int = 0) -> tuple[list[ConversationMessage], int]: ...
 
+    def get_message(self, context: UserContext, conversation_id: str, message_id: str) -> ConversationMessage: ...
+
 
 class InMemoryConversationStore:
     """开发期内存实现（`memory` 存储模式，仅限 development）。"""
@@ -151,6 +153,15 @@ class InMemoryConversationStore:
             matched = list(self._messages.get((context.tenant_id, conversation.conversation_id), []))
         matched.sort(key=lambda item: _sort_key(item.created_at, item.message_id))
         return matched[offset : offset + _clamp(limit)], len(matched)
+
+    def get_message(self, context: UserContext, conversation_id: str, message_id: str) -> ConversationMessage:
+        """按标识反查单条消息（幂等重放重建首次响应所需）；不属于该会话一律「未找到」。"""
+        conversation = self.get_conversation(context, conversation_id)
+        with self._lock:
+            for message in self._messages.get((context.tenant_id, conversation.conversation_id), []):
+                if message.message_id == message_id:
+                    return message
+        raise ConversationNotFound(message_id)
 
 
 class PostgresConversationStore:
@@ -380,3 +391,20 @@ class PostgresConversationStore:
                 )
                 count_row = cursor.fetchone()
         return [self._hydrate_message(row) for row in rows], int(count_row[0]) if count_row is not None else 0
+
+    def get_message(self, context: UserContext, conversation_id: str, message_id: str) -> ConversationMessage:
+        """按标识反查单条消息（幂等重放重建首次响应所需）；归属校验走 `get_conversation`。"""
+        conversation = self.get_conversation(context, conversation_id)
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT {self._MESSAGE_COLUMNS} FROM workbench_conversation_messages
+                    WHERE tenant_id = %s AND conversation_id = %s AND message_id = %s
+                    """,
+                    (context.tenant_id, conversation.conversation_id, str(message_id)),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            raise ConversationNotFound(message_id)
+        return self._hydrate_message(row)

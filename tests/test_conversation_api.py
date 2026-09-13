@@ -11,6 +11,7 @@ from app.audit.service import AuditService
 from app.audit.store import InMemoryAuditStore
 from app.conversation.service import ConversationService
 from app.conversation.store import InMemoryConversationStore
+from app.conversation.execution import ConversationExecutionService
 from app.domain import PolicyError, RiskLevel, UserContext, ensure_can_create
 from app.main import app
 
@@ -23,8 +24,22 @@ def _isolate(monkeypatch):
     audit_store = InMemoryAuditStore()
     audit = AuditService(audit_store)
     service = ConversationService(store, audit=audit)
+    # 消息端点现经 `conversation_execution_service` 分发（缺键 ⇒ 既有 stub 通路）；
+    # 该协作者按 §3.2 应复用同一 `conversation_service`，故测试隔离必须一并替换。
+    execution = ConversationExecutionService(
+        conversations=service,
+        conversation_store=store,
+        task_store=None,
+        runtime_service=None,
+        tool_execution=None,
+        idempotency=None,
+        catalog=None,
+        audit=audit,
+        directory_store=None,
+    )
     monkeypatch.setattr(main, "conversation_store", store)
     monkeypatch.setattr(main, "conversation_service", service)
+    monkeypatch.setattr(main, "conversation_execution_service", execution)
     monkeypatch.setattr(main, "audit_service", audit)
     return store, audit_store
 

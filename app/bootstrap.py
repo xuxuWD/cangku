@@ -889,6 +889,80 @@ def build_conversation_service(settings: Settings, *, store, audit=None):
     return ConversationService(store, audit=audit)
 
 
+def build_execution_idempotency_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配执行幂等仓储（表 `workbench_execution_idempotency`，迁移 027）。"""
+    validate_runtime_settings(settings)
+    from .conversation.idempotency import (
+        InMemoryExecutionIdempotencyStore,
+        PostgresExecutionIdempotencyStore,
+    )
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存执行幂等仓储")
+        return InMemoryExecutionIdempotencyStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresExecutionIdempotencyStore(connection)
+    raise ValueError("不支持的执行幂等存储类型")
+
+
+def build_conversation_execution_service(
+    settings: Settings,
+    *,
+    conversations,
+    conversation_store,
+    task_store,
+    runtime_service,
+    tool_execution=None,
+    idempotency=None,
+    audit=None,
+    directory_store=None,
+    catalog=None,
+):
+    """装配对话入口路由（段二-4，规格 §3.7 Y2 / §3.2 第四条）。
+
+    `tool_execution=None`（`backend=mock`）时服务仍装配，但**只走既有 `stub=true` 通路**
+    （缺键语义与「未启用真实执行」同构，不创建承载任务 / 运行）。
+    """
+    validate_runtime_settings(settings)
+    from .conversation.execution import ConversationExecutionService
+
+    if catalog is None and tool_execution is not None:
+        from .tool_execution.catalog import build_tool_spec_catalog
+
+        catalog = build_tool_spec_catalog()
+    return ConversationExecutionService(
+        conversations=conversations,
+        conversation_store=conversation_store,
+        task_store=task_store,
+        runtime_service=runtime_service,
+        tool_execution=tool_execution,
+        idempotency=idempotency,
+        catalog=catalog,
+        audit=audit,
+        directory_store=directory_store,
+    )
+
+
+def build_control_plane_binding_verifier(settings: Settings, *, audit=None):
+    """装配「短期令牌控制面绑定校验器」（规格 §3.5 P1 第 3 条 ②④）。
+
+    ⚠️ 当前**无调用方**：规格所述回调场景（导出产物 / 请求授权）尚未存在。用户裁决「本期做」
+    故先交付组件与判据（§5 用例 35）；接入真实回调端点前**不得声称「②④ 已强制」**。
+    """
+    validate_runtime_settings(settings)
+    from .tool_execution.token_binding import ControlPlaneBindingVerifier, TokenBindingStore
+
+    return ControlPlaneBindingVerifier(store=TokenBindingStore(), audit=audit)
+
+
 def registered_model_keys(settings: Settings) -> frozenset[str]:
     """模型网关注册的候选键（与 `build_planner_service` 装配 `ModelGateway` 的口径一致）。"""
     keys: set[str] = set()
