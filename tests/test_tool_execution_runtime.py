@@ -1,7 +1,8 @@
 """`WorkspaceManager` 与 `ContainerExecutor` 的装配口径（规格 §3.3 / §4.1.6-1）。
 
-判据：工作目录「生成即空、运行结束销毁」；容器执行器**只做参数装配**，
-真实 docker 调用不在本步骤范围（显式 `NotImplementedError`）。
+判据：工作目录「生成即空、运行结束销毁」；容器执行器按 §3.3 加固口径装配并**真实执行**
+（夹具在 `tests/test_container_executor.py`）。本文件覆盖**装配期**口径：镜像 digest 必须钉死、
+参数映射正确、Docker 不可用时**fail-closed**（不再有 `NotImplementedError` 占位）。
 """
 
 from __future__ import annotations
@@ -63,16 +64,38 @@ def test_container_executor_maps_settings_to_args() -> None:
     assert spec.timeout_seconds == 120
 
 
-def test_container_executor_execute_is_not_implemented(tmp_path) -> None:
+def test_container_executor_execute_fails_closed_without_docker(tmp_path) -> None:
+    """真实执行已落地（段二-3）：不再抛 `NotImplementedError`；Docker 不可用时 fail-closed。"""
+
+    def no_docker():
+        raise ToolExecutionConfigError("Docker 守护进程不可用")
+
     executor = ContainerExecutor(
         image_digest="registry.local/dsh@sha256:abc",
         pids_limit=64,
         memory_mb=512,
         cpu_quota=1.5,
         timeout_seconds=120,
+        client_factory=no_docker,
     )
-    with pytest.raises(NotImplementedError):
-        executor.execute(executor.build_spec(), workspace_path=str(tmp_path))
+    with pytest.raises(ToolExecutionConfigError):
+        executor.execute(
+            tool_key="cmd.run",
+            params={"executable": "python", "args": ["-c", "print(1)"]},
+            workspace_path=str(tmp_path),
+        )
+
+
+def test_container_executor_rejects_tag_image(tmp_path) -> None:
+    """§3.3：镜像必须按 digest 钉死，浮动 tag 一律拒绝。"""
+    with pytest.raises(ToolExecutionConfigError):
+        ContainerExecutor(
+            image_digest="registry.local/dsh:latest",
+            pids_limit=64,
+            memory_mb=512,
+            cpu_quota=1.5,
+            timeout_seconds=120,
+        )
 
 
 def test_container_executor_requires_image_digest() -> None:
