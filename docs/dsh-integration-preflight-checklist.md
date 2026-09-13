@@ -1,9 +1,9 @@
 # P2a 段二（dsh 接入段）开工前置核查清单
 
 > **性质**：**开工门禁**，不是建议清单。**全部条目必须有证据才能开工**；任一条未过，段二不得动第一行代码。
-> **上位真源**：[立项文档](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md) §14.1 P2a-2 前置、§15 #9（🔴 风险最高决策）、§2.3（dsh 静态勘察）、§15 #11/#13；[段一规格](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-governance-closure-design.md) §8.5。
-> **日期**：2026-09-12
-> **状态**：**待逐条过闸**。段二**已有规格**（`docs/superpowers/specs/2026-09-12-dsh-integration-design.md`，状态：待评审）并已于 2026-09-12 完成一轮专项评审（结论：**不予放行**，记录见 `docs/dsh-integration-review-record.md`）；本清单解决「能不能开工」，规格解决「怎么建」。
+> **上位真源**：[立项文档](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md) §14.1 P2a-2 前置、§15 #9（🔴 风险最高决策）、§2.3（dsh 静态勘察）、§15 #11/#13；[段一规格](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-governance-closure-design.md) §8.5。**功能清单 = [`docs/feature-inventory.md`](file:///d:/徐徐AI学习/公司工作台/docs/feature-inventory.md)**（宪法 2.1 真源三件套六要素；2026-09-13 裁决 R8——**推翻** 2026-09-12「以立项 §14.1 充当、不另建文档」的裁决，原裁决自该决议起失效）。
+> **日期**：2026-09-12（2026-09-13 随**评审闭环**同步）
+> **状态**：**待逐条过闸**。段二**已有规格**（`docs/superpowers/specs/2026-09-12-dsh-integration-design.md`，状态：**已评审（附记录） · 2026-09-13**）：首轮评审「不予放行」→ 一轮修订 → 重审仍「不予放行」→ 二轮修订 → **第三轮独立复核仍「不予放行」**（`027` 地基变更评审信息不足等）→ 第三轮修订 → **第四轮独立复核「不予放行」**（8 阻断）→ 第四轮修订 → **第五轮独立复核「不予放行」**（9 阻断：`args_json` 落点缺失 / 幂等表缺结果码 / 规范化判据无编号 / 新增语义无用例 / 变更记录漏登新表 / 许可证据链 / 跨文档状态漂移 / 新增文档互斥 / 规约与契约行为冲突）→ 第五轮修订 → **第六轮独立复核「不予放行」**（R6-1/R6-2/R6-3 → **甲案本体不可实现**）→ **用户裁决 J7 = 丙案** + J8/J9 定死 → 六轮修订 → **第七轮「定点复核」未通过（部分闭合）**（R6-3 真闭合；R6-1/R6-2 表面闭合：`param_roles` 默认值 **fail-open**、加解密组件与密钥/清理周期无落点、用例 32② 不可判定；另 8 处状态漂移 + 本清单 §C3 条数事实错误）→ **用户裁决 P1/P3/P11 + 其余 8 条 → 第七轮补丁已完成**（规格 §9.6）→ **补丁确认未通过**（P7/P8 表面闭合）→ **Q1–Q3 修订** → **再次补丁确认「部分真闭合」** → **R1–R3 修订** → **最后一次补丁确认：R1/R2/R3 全部真闭合** → **规格已评审通过（附记录）**（规格 §9.6 第十次更新）。记录见 `docs/dsh-integration-review-record.md`（§2–§6 首轮 / §7 重审 / §8 第三轮 / §9 第四轮 / §10 第五轮 / §12 第六轮 / §13 第七轮修订 / §15 第七轮定点复核 / §16 补丁留痕 / §17 补丁确认 / §19 再次补丁确认 / **§21 最后一次补丁确认**）。**⚠️ 规格通过评审 ≠ 本清单过闸**：本清单解决「能不能开工」，**§B 取证仍必须逐条完成**。
 
 ---
 
@@ -36,7 +36,7 @@
 ### B1 依赖版本必须钉死 —— ⚠️ 已查出真实隐患
 
 - **实测事实**：探针目录 `d:\徐徐AI学习\_dsh-verify\` 里 `package.json` 写的是 `^0.1.5-rc.1`（**范围，不是精确版本**）。
-- **实测事实（更严重）**：lockfile 里主包解析为 `@deepseek-ai/dsh@0.1.5-rc.1`，但**其余 245 个 `@deepseek-ai/*` 子包全部是 `0.1.5-rc.2`** —— **锁了主包并不等于锁住整套 harness**。
+- **实测事实（更严重）**：lockfile 里主包解析为 `@deepseek-ai/dsh@0.1.5-rc.1`，但**其余子包版本与主包不一致**——实测 `@deepseek-ai/*` 共 **246 条**：`0.1.5-rc.2` **230 条**、主包 `rc.1` 1 条、另有 5 条 `node-addon-system*@0.1.2` 与 `cordis/cosmokit/schemastery` 等自有版本线（**原稿「245 个子包全部是 rc.2」为笔误，已按 §F1 实测更正**）——**锁了主包并不等于锁住整套 harness**。
 - **判据**：段二的依赖清单必须(a) 主包写**精确版本**；(b) 逐项核对 `@deepseek-ai/*` 是否存在跨版本混用，并在规格里**如实记录**混用事实与影响；(c) 升级只能是「一个升级单元」一次。
 
 ### B2 运行时版本必须钉死
@@ -109,11 +109,59 @@
 - **核对方式**：lockfile 口径全量扫描（`_dsh-verify/package-lock.json`，`lockfileVersion 3`，**583 条目**）+ 磁盘安装树交叉核对（550 个 `package.json`），并逐项复现 §F5 的数字（见 §F5 的 R1–R7）。
 - **结论①（可商用）**：`@deepseek-ai/*` **246 条 = 241 MIT + 5 BSD-3-Clause**，**全为宽松许可**；全树**无 GPL / AGPL 等强传染性许可证** → 与 [D1](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md) 无冲突。
 - **结论②（唯一义务来源）**：**14 个 LGPL 条目全部来自 `sharp` 生态**——`@img/sharp-libvips-*@1.3.3`（LGPL-3.0-or-later，10 个）与 `@img/sharp-win32-{arm64,ia32,x64}` / `@img/sharp-wasm32`（组合式含 LGPL，4 个）。**`sharp` 本体与 `@img/sharp-linux-*` 均为 Apache-2.0，不是 LGPL**。
-- **结论③（关键，决定义务是否触发）**：`sharp` 及其平台二进制/libvips **全部是 `optional` 条目**，但其**本体是非 optional 的传递依赖**——依赖链 `@deepseek-ai/dsh` → `@deepseek-ai/dsh-base` → `@deepseek-ai/dsh-attachment-local@0.1.5-rc.2` → `sharp@^0.35.3`。**结论（2026-09-12 第三次核对更正）**：**LGPL 义务无法靠"不启用附件功能"归零**——只要镜像里装了 `dsh-base`（核心包，无法不用），npm 就会装上 `sharp`；Linux 下 `sharp` 运行必须依赖 `@img/sharp-libvips-linux-*`（LGPL-3.0-or-later）。**唯一的减范围手段**是用 `--os/--cpu/--libc` 过滤掉**非目标平台**的 12 个包，把随镜像的 LGPL 条目从 14 个压到**2 个**（`@img/sharp-linux-x64` + `@img/sharp-libvips-linux-x64`），**但义务依然存在，必须产出 `THIRD-PARTY-NOTICES`**。**"物理剔除 libvips 让义务归零"是否可行**（即 dsh 能否在不含该二进制的镜像里启动并跑通主流程）属**段二-1 实测项**，未测前不得当作可选项。
+- **结论③（关键，决定义务是否触发）**：`sharp` 及其平台二进制/libvips **全部是 `optional` 条目**，但其**本体是非 optional 的传递依赖**——依赖链 `@deepseek-ai/dsh` → `@deepseek-ai/dsh-base` → `@deepseek-ai/dsh-attachment-local@0.1.5-rc.2` → `sharp@^0.35.3`。**结论（2026-09-12 第三次核对更正）**：**LGPL 义务无法靠"不启用附件功能"归零**——只要镜像里装了 `dsh-base`（核心包，无法不用），npm 就会装上 `sharp`；Linux 下 `sharp` 运行必须依赖 `@img/sharp-libvips-linux-*`（LGPL-3.0-or-later）。**唯一的减范围手段**是用 `--os/--cpu/--libc` 过滤掉**非目标平台**的 12 个包，把随镜像的 LGPL 条目从 14 个压到 **1 个**（仅 `@img/sharp-libvips-linux-x64`；**注意** `@img/sharp-linux-x64` 是 **Apache-2.0，不是 LGPL**——重审指出原稿「压到 2 个 LGPL」构成错误，已更正），**但义务依然存在，必须产出 `THIRD-PARTY-NOTICES`**。**"物理剔除 libvips 让义务归零"是否可行**（即 dsh 能否在不含该二进制的镜像里启动并跑通主流程）属**段二-1 实测项**，未测前不得当作可选项。
 - **判据**：逐包核对是否可商用 / 是否要求开源 / 是否需署名（宪法第九章）；**不整项目全升**，也不靠「主包 MIT」推断全树。**已满足**。
 - **交付物（2026-09-12 决议：纳入段二交付物）**：`THIRD-PARTY-NOTICES` —— 其内容取决于最终镜像集合（结论③的取舍），**须在镜像定义冻结后产出**；并**须在镜像内复跑一次同样的扫描**，以镜像内实际集合为准（本机 Windows 树不含 Linux 平台包）。
-- **决议（2026-09-12）**：**保留 `sharp`**，并把随镜像的 LGPL 条目**瘦身到 2 条**（镜像构建用 `--os`/`--cpu`/`--libc` 过滤非目标平台包）；`THIRD-PARTY-NOTICES` 须含这 2 条的 **LGPL-3.0-or-later 全文 + 可重链接说明 + 源码获取途径**；"物理剔除 libvips 使义务归零"属段二-1 实测项，**本轮不作为方案**。
+- **决议（2026-09-12）**：**保留 `sharp`**，并把随镜像的 LGPL 条目**瘦身到 1 个**（随镜像 `@img/*` 包共 2 个，LGPL 仅 1 个；镜像构建用 `--os`/`--cpu`/`--libc` 过滤非目标平台包）；`THIRD-PARTY-NOTICES` 须含该 LGPL 条目的 **LGPL-3.0-or-later 全文 + 可重链接说明 + 源码获取途径**；"物理剔除 libvips 使义务归零"属段二-1 实测项，**本轮不作为方案**。
+- 🔴 **决议更正（D-B，2026-09-13 段二-1 实测，见 §F7.4）**：上述"随镜像 `@img/*` 包共 2 个、LGPL 仅 1 个"**与实测不符** —— Linux 实际安装树（`--os=linux --cpu=x64 --libc=glibc`）为 **`@img/*` 4 个**：`colour`(MIT)、`sharp-linux-x64`(Apache-2.0)、`sharp-libvips-linux-x64`(**LGPL-3.0-or-later**)、**`sharp-wasm32`(Apache-2.0 AND LGPL-3.0-or-later AND MIT)** ⇒ **含 LGPL 的条目为 2 条**。原因：`@img/sharp-wasm32` 由 `sharp-freebsd-wasm32` / `sharp-webcontainers-wasm32` 依赖，**平台过滤只滤掉后两者、滤不掉它**。
+  - ⇒ **`THIRD-PARTY-NOTICES` 必须包含 2 条 LGPL**（不是一个）。
+  - ⇒ **可能的进一步瘦身（列为实施期实测项，不在本轮结论内）**：镜像构建后**删除 `node_modules/@img/sharp-wasm32`**，并**实测 `sharp` 功能仍可用**（`sharp-linux-x64` + `sharp-libvips-linux-x64` 在位时不应回退 wasm）→ 可把 LGPL 降回 1 条。
 - **遗留（属段二实施期，不影响本项"核对已闭环"的判定）**：① 未逐包比对许可证**正文**与声明值（583 条目；仅确认相关包随带 LICENSE 文件，`@img/sharp-win32-x64` 的 LICENSE 是写 NOTICES 的引用来源）；② `THIRD-PARTY-NOTICES` 未产出；③ 镜像内二次扫描未做。
+
+### B14 dsh 进程位置与模型凭据来源（U1）—— **取证清单与判据**（2026-09-13 新增）
+
+> **来源**：[OpenMausBot 源码研读报告](file:///d:/徐徐AI学习/公司工作台/docs/openmausbot-source-study-and-adaptation-plan.md) §6。**本条把段二规格 §8 U1 从"待核实"改写成可判定的取证模板**，作为**段二-1 的交付判据**；**在判据四条同时成立之前，不得声称「容器内不持有模型密钥」**（规格 §3.5）。
+
+**判据（四条必须同时成立）**：① 出站连接发起方在**容器外**；② **清空宿主侧模型凭据后 turn 立即失败**；③ **容器内不存在指向供应商域名的连接**（**C′**；原「`--network none` 下 turn 仍成功」口径已于 2026-09-13 裁决路径①后**正式作废**，见 §F8.2）；④ 容器内**无密钥明文**（env / argv / 容器 spec / 镜像层 / 日志）。
+
+| # | 现象（怎么取） | 判据 | 成立边界 | 不成立边界 |
+| --- | --- | --- | --- | --- |
+| A | 真实 turn 期间，容器内与宿主上同时抓**指向供应商域名的出站连接** | 连接恒来自容器外 PID，容器命名空间内无该连接 | 发起方 PID 不在容器 PID 命名空间、父链指向工作台/适配器 | 发起方在容器内 → §3.3「模型调用由工作台侧发起」前提失效，**须改设计** |
+| B | 同一 turn 内：容器 `env` 全量、`/proc/*/environ` 全量、`inspect` hooks/mounts、容器内全盘 grep 密钥值 | 四处**均无**该密钥 | 四处皆无 **且**清空宿主密钥后 turn 立即失败（因果证据） | 任一处命中；或清空宿主密钥后仍成功（容器有独立凭据） |
+| **C′** | **容器内不得存在指向供应商域名的连接**（**原判据 C「`--network none` 下 turn 仍成功」已作废** —— 2026-09-13 裁决**路径①**：它要求"模型调用完全在容器外发起"，与 `dsh --profile sdk` 的架构**不相容**，见 **§F8.2**）。取证方式：真实 turn 进行中，**在容器命名空间内**抓出站连接，确认**无**指向供应商域名的连接；**指向模型网关的内网连接是允许且预期的** | 容器内**无**供应商域名连接；**网关侧**可见到该出站连接 | 容器内出现指向供应商域名的连接 → 判 **A 亦不成立**（凭据与调用都在容器内） |
+| **D**（**2026-09-13 按路径①重述**） | 容器内 `/proc` 的 PID 树里能否找到 dsh / node 进程；**并核对该进程持有的是「供应商密钥」还是「短期网关令牌」** | 「**谁持凭据**」——**路径①下 dsh 允许且必须在容器内**（它要驱动 agent 循环，见 §F8.2），因此判据**从"dsh 是否在容器内"移到"它持有什么凭据"** | dsh 在容器 PID 树内**且**其 env / argv / 容器内文件**均无供应商密钥**（只含**短期网关令牌**） | dsh 进程**持有供应商密钥**（env / argv / 文件 任一处命中）→ 与供应商密钥同处一个信任域，**须重新论证** |
+| **E**（**2026-09-13 按路径①重述**） | 容器与宿主分别读 `/proc/<pid>/cmdline`、`/proc/<pid>/environ`、容器 spec | 「**argv / env 在 `ps` 里可见即为漏洞**」——**禁止项是「供应商密钥」**；`baseURL`（**仅指向网关的内网地址**）是**预期注入物**，不算违规 | argv / env / 容器 spec **均无供应商密钥**；不含工作台控制端点或其凭据 | **供应商密钥**出现在任何 cmdline / env / 容器 spec → **立即判不成立** |
+| F | 执行侧回调工作台（导出产物 / 请求授权）时拿到什么凭据、生命周期多长、kill turn 后是否立即失效 | 短期凭据六条：每 turn 新铸 / 绑死租户·会话·代次 / 服务端为准 / constant-time 比对 / 终态同步吊销 / 孤儿上限 | 满足六条 **且不持有任何供应商 API Key** | 拿到**开机固定的共享令牌** → 不成立 |
+| G | 容器内能否自行联网；`web_*` 是否真禁用；容器 env 是否有任一供应商 key | 清单 §F3.2 已实测：`dsh-web-search-deepseek` 读 `DEEPSEEK_API_KEY`，**容器里只要有它就能自行联网** | 容器 env 不存在任何供应商 key，且容器**无外网出口**（`--internal`，见规格 §3.3，2026-09-13 路径①）下 `web_*` 真实调用不可用 | 存在任一供应商 key → **同时**违反 A4 与 U1 |
+
+**三条统一红线（任一命中即判「不成立」）**：
+1. **清空宿主侧模型凭据后，真实 turn 仍成功**。
+2. **容器 PID 命名空间内存在一个持有「供应商模型凭据」的进程**（不论它叫不叫 dsh）——**2026-09-13 按路径①重述**：容器内 dsh 进程持有**短期网关令牌**属**预期**、**不算命中**（dsh 必须在容器内驱动 agent 循环，见 §F8.2）；命中条件改为「持有**供应商密钥**」或「存在**不经网关**的外网通道」。
+3. **密钥以明文出现在任何 `argv` / `env` / 容器 spec / 镜像层 / 日志**，或**容器内可触达供应商域名**（2026-09-13 修正：原写"`--network none` 下仍能触达"，因网络面口径已改为「仅内网桥 + 仅网关可达」）。
+
+**纪律**：任一只有静态证据、无运行期证据的条目，按规格 §8 纪律标「**未核实**」，**不得计入成立**。
+
+### B15 新增配置的落点与守护（**实现前必办** · 2026-09-13 新增）
+
+- **事实**（第四轮复核 N3/P4；**第七轮 P3 后由 10 项增至 12 项**；**2026-09-13 裁决路径①后由 12 项增至 18 项**）：规格 §4 列出的 **18 项**新增配置（`WORKBENCH_AGENT_RUNTIME_BACKEND`、`WORKBENCH_EXEC_IMAGE_DIGEST`、`WORKBENCH_EXEC_WORKSPACE_ROOT`、`WORKBENCH_EXEC_TRUSTED_ROOTS`、`WORKBENCH_EXEC_TIMEOUT_SECONDS`、`WORKBENCH_EXEC_PIDS_LIMIT`、`WORKBENCH_EXEC_MEMORY_MB`、`WORKBENCH_EXEC_CPU_QUOTA`、`WORKBENCH_DSH_VERSION`、`WORKBENCH_ARTIFACT_EXPORT_ENABLED`、`WORKBENCH_BODY_ENCRYPTION_KEY`、`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS`、**路径①网关六项**：`WORKBENCH_MODEL_GATEWAY_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_TIMEOUT_SECONDS`、`WORKBENCH_MODEL_GATEWAY_MAX_RETRIES`）在 `app/settings.py`、`.env.staging.example`、`tests/test_env_templates.py` **三处零命中**。
+- **判据（实现前必须闭环）**：
+  1. **18 项全部进 `app/settings.py`**（含类型与默认值；**`WORKBENCH_BODY_ENCRYPTION_KEY` 必填非空且不进仓库；`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY` 同口径（上游供应商密钥，只在网关侧）；`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS` 与 `WORKBENCH_EXEC_TIMEOUT_SECONDS` 的默认值须先定死——见规格 §8 U11/U16**；**新增的 `WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS` 须与之协调：TTL ≥ 执行超时**）；
+  2. 全部进 **`.env.staging.example`**；
+  3. **`tests/test_env_templates.py` 扩至覆盖全部新增项**（现仅覆盖 `sso_*` 与 5 个 Runtime 的元数据）；
+  4. **`WORKBENCH_EXEC_TIMEOUT_SECONDS` 的默认值必须先定死**（规格 §8 **U11 仍开放**；未定值前用例 18 只能用临时值跑，默认值口径永久悬空）。
+- **未闭环前**：**不得声称"配置已被守护"**。
+
+### B16 关键依赖可自主控制（归档 + 断网构建演练）—— **不阻断开工，但阻断上线**
+
+- **背景**：用户提出「上游哪天不开源了，适配器还有什么用」；本项目 **4 处**文档早已要求"退出方案"（[POC 计划 `:113`/`:122`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/plans/2026-09-06-agent-runtime-poc.md)、[commercial-g0 设计 `:163`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-06-commercial-g0-design.md)、[POC 设计 `:165`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-06-agent-runtime-poc-design.md)），**一次也没落地**。
+- **承接文件**：[`docs/key-dependency-autonomy-plan.md`](file:///d:/徐徐AI学习/公司工作台/docs/key-dependency-autonomy-plan.md)（含"自主可控"四条件、分层策略、四问退出方案模板、P0 执行项）。
+- **判据（上线前必须闭环）**：① `dsh` 的钉死版本**源码/镜像归档**到内网受控位置（含校验和、不依赖上游仓库可访问）；② **断网演练**通过（断网下构建出可运行产物并跑通最小链路，留存原始输出）；③ 7 项关键依赖**各有退出方案**（候选替换目标 ≥1、迁移成本、触发条件）。
+- **状态（2026-09-13）**：**P0-1 / P0-3 / P0-4 已完成** —— P0-4（7 项四问）见 [自主可控方案 §9](file:///d:/徐徐AI学习/公司工作台/docs/key-dependency-autonomy-plan.md)，**P0-3 断网演练记录见同文 §10**；**P0-2 ⏸ 已挂起**（归档包**已就绪**：`dsh-0.1.5-rc.1-offline-archive.tar.gz`，52 MiB，sha256 `3ceb0178…e811`；**仍存于本机**，见下条）。
+  - **按判据逐条对齐**：**① 未闭环**（"落到内网受控位置"未做）；**② ✅ 已闭环（对 `dsh`）**——`--network none` 下纯离线装出 522 包、最小链路 exit 0 / 352 行、**输出与期望逐字节一致**，原始输出已留存；**③ ✅ 已闭环**——7 项退出方案（候选 ≥1、迁移成本、触发条件）已补，**但候选许可多数"待核"**。
+  - ⛔ **整条第 0 层仍未闭环（卡在 ①）** ⇒ **未闭环前不得宣称"关键依赖可自主控制 / 不依赖上游开源状态"**。
+  - ⏸ **2026-09-13 用户裁决（选项 D）**：**P0-2 暂时挂起**（归档包已就绪并存于**本机**，**真源不标"已受控"**）；**恢复条件 = 用户指定一个受控归档位置**（内网 NAS/制品库，或云对象存储——后者属**口径变更**）；**P0-5 随之挂起**。⚠️ **判据 ① 未闭环 ⇒ 上线自检必含本项**。**本机无内网受控位置的三轮排查证据**见 [`key-dependency-autonomy-plan.md` §8 第 1 项](file:///d:/徐徐AI学习/公司工作台/docs/key-dependency-autonomy-plan.md)。
+  - 🔴 **其余 6 项依赖的第 0 层：已完成侦察（2026-09-13，见 [同文 §11](file:///d:/徐徐AI学习/公司工作台/docs/key-dependency-autonomy-plan.md)）** —— **判据 ① 对它们同样未闭环**，且**新查出 3 个必须先修的缺口**：**① 后端无 lockfile** → ✅ **已完全闭环（2026-09-13，选项 C + E + F）：新增 [`requirements.lock`](file:///d:/徐徐AI学习/公司工作台/requirements.lock)（49 包全锁定 + 835 条 `--hash`），`Dockerfile` 已改为消费它（`--require-hashes`）；构建通过、镜像内 49/49 版本逐条一致、反假测试（改坏全部哈希必须失败）通过；**按 CI 原命令在锁定依赖下跑后端全量 ⇒ `1434 passed`（0 failed）+ `compileall` 通过，与文档基线逐数一致****（详见方案 §11.5 ~ §11.7）；**② `redis:7.4-alpine` / MinIO 钉死版本机缺失** → ✅ **已修复（2026-09-13）**：Redis 已拉取并记 digest；**MinIO 当时已按选项①换源到 `quay.io/minio/minio` 并按 digest 钉死**（纯换源、不动版本）—— ⚠️ **该组件已于同日被替换为 SeaweedFS（Apache-2.0），见本行后半句**。⚠️ **同时暴露一条许可事实**：MinIO 镜像自述 **`GNU AGPLv3`**，而项目许可清单**从未覆盖基础设施组件** ⇒ ✅ **已记入许可清单（2026-09-13）**：[`poc-license-checklist.md`](superpowers/poc-license-checklist.md) 新增 **【基础设施组件纳管】**（MinIO=AGPLv3〔镜像 banner〕/ PG+pgvector=PostgreSQL License〔**镜像内原文取证**〕/ **Redis 7.4.11=RSALv2+SSPLv1〔上游 LICENSE 原文取证 @tag 7.4.11〕** / MinIO 备选实现=未核）；⚠️ **"是否接受 AGPL / source-available 组件进生产"**：**已裁决并落地（2026-09-13）—— 方向为"不引入 copyleft"** ⇒ **Redis 已按路径④替换完成**：compose 换为 `valkey/valkey:8-alpine@sha256:d2e18f34…43d1`（Valkey 8.1.10），**用项目自身代码实测 Streams 语义 `10/10 PASS`**（含反假与对照组）、回归 `1434 passed`；许可证据 @**tag `8.1.10`** = **BSD 3-Clause，无 copyleft**（见方案 §11.11）；⚠️ **`1434` 不覆盖 Streams**（CI 无服务容器），兼容性以兼容套件为准；**MinIO（AGPLv3）已于 2026-09-13 替换为 SeaweedFS（`chrislusf/seaweedfs:4.46@sha256:08d51613…5b62`，**Apache-2.0**）：服务名 `minio`→`seaweedfs`、S3 端口保持 9000、**遥测默认开启已显式关闭**、Iceberg/Lance 附加服务已关；**S3 真实冒烟（boto3）全部通过**（见方案 §11.12）**；**③ 基础镜像用 tag 非 digest、前端未声明 Node 版本** → ✅ **已修**：`Dockerfile` 改 digest 钉死（含反假测试：错 digest 必失败）、三端 `package.json` 声明 `engines.node>=22`、重建通过；**`docker-compose.yml` 三个镜像亦已全部改为 `tag@sha256`**（postgres/redis 补钉 + minio 换源钉死，均已真起服务验证）（见方案 §11.9 / §11.10）。**#2/#3/#4（RAGFlow/AgentScope、WeKnora、DeerFlow/Codex/Hermes）未接入真实服务 ⇒ 无版本可归档**（属"接入时同步钉死 + 同步归档"）；**#5 GEO 为业务对端系统，第 0 层不适用**。**上述 3 个缺口：① 已完全闭环；② 已修（MinIO 换源完成，另留一条 AGPL 合规待判）；③ 已修。**
+- **与开工门禁的关系**：**本条不阻断段二评审与开工**；但**未闭环前不得宣称"关键依赖可自主控制/不依赖上游开源状态"**，且**上线自检必须包含它**。
 
 ---
 
@@ -121,9 +169,9 @@
 
 | # | 事项 | 判据 |
 | --- | --- | --- |
-| **C1** | **段二规格（专项评审）** | 段二新增「工具执行链路 + 容器 + 危险命令」，属**地基级**改动，必须先有规格并通过评审（与段一同流程）。**2026-09-12 进展：首轮评审结论「不予放行」→ 规格已按评审记录 §6 完成修订（状态「已修订 · 待重审」，见规格 §9）→ 待重审**。记录见 [`dsh-integration-review-record.md`](file:///d:/徐徐AI学习/公司工作台/docs/dsh-integration-review-record.md)。**重审通过方视为 C1 过** |
-| **C2** | `docs/api-contract.md` 新增工具/执行章节 | **已完成（2026-09-12）**：`## 工具执行（P2a 段二）` 已追加（**契约先行 · 未实现**），含**五处**既有契约变更点、九步闸门→HTTP 语义（含审批后重跑口径）、审计与落库口径；Y1–Y3 已于同日定案。**评审后已回改**：撤销 `origin=conversation`、`agent_key` 校验落点改到执行入口、⑦ 删除「授权来源」、`AuditAction` 扩键改为硬要求、`reason` 受控枚举、落库落点明确、补 `message_id` 幂等与单次执行硬上限 |
-| **C3** | 「禁止事项」与验收标准写清（三类用例 + 反假测试 + 真实容器回归） | 规格 §1.2（禁止事项）与 §5/§6（测试计划与验收标准）**已随本轮修订补齐**：用例扩到 21 条并补 P0/P1 分级与「必须红」构造（含幂等重放、参数变更 409、可执行文件来源、审批后重跑、容器加固、同步硬上限、审计枚举）；§6 增前端四态、合规交付物、清理纪律、验收分离与「一条聚合命令」要求 |
+| **C1** | **段二规格（专项评审）** | 段二新增「工具执行链路 + 容器 + 危险命令」，属**地基级**改动，必须先有规格并通过评审（与段一同流程）。**进展（截至 2026-09-13）**：首轮评审「不予放行」→ 一轮修订 → 重审仍「不予放行」（B2/B4/B5 属「表面闭合」）→ 二轮修订（新增迁移 `027`、幂等改请求头 `Idempotency-Key`、`dsh-subprocess-local` 显式禁用、`restrict` 空交集作用域收窄等，见规格 §9.1）→ **第三轮独立复核仍「不予放行」**（**`027` 地基变更评审信息不足**：完整 DDL 只存在于未被规格引用的草稿；正文残留「零新迁移 / `message_id` 派生 / 本段不新建表」；见记录 §8.2 R3-1/R3-2/R3-3）→ **第三轮修订已完成**（新增 **§4.1 迁移 `027` 设计附录**、三处旧口径清零、202 响应体与幂等缺省语义与授权权威定死、用例 26/27、§8 U12/U13，见规格 §9.2）→ **第四轮独立复核「不予放行」**（8 阻断：语句顺序 / 草稿 §2 漏并 / 枚举不一致 / 规范化矛盾 / 幂等表可插入性 / `approval_id` 无映射键 / 许可来源 / C3 约束强度）→ 第四轮修订 → **第五轮独立复核「不予放行」**（9 阻断：`args_json` 落点缺失 / 幂等表缺结果码 / 规范化判据无编号 / 新增语义无 §5 用例 / 变更记录漏登新表 / 许可证据链 / 跨文档状态漂移 / 新增文档互斥 / 规约与契约行为冲突）→ **第五轮修订已完成**（**新增 `args_json` 与「正文边界」六条**、幂等表增 `http_status`、规范化规则 5 定死、**新增用例 28–31**、变更记录补登两张新表、许可证据改用上游 `LICENSE` 原文、四处状态同步、四份文档修正，见规格 §9.4）→ **待第六轮独立复核**。记录见 [`dsh-integration-review-record.md`](file:///d:/徐徐AI学习/公司工作台/docs/dsh-integration-review-record.md)（§2–§6 首轮、§7 重审、§8 第三轮、§9 第四轮、§10 第五轮）。→ 五轮修订（J1 = 甲案）→ **第六轮独立复核「不予放行」**（3 阻断：R6-1「从工作卷读」不可兑现 / R6-2 `control`·`body` 声明无落点 / R6-3 ① 步结果码冲突 → **甲案本体不可实现**）→ **用户裁决 J7 = 丙案 + J8/J9 定死** → 六轮修订 → **第七轮「定点复核」未通过（部分闭合）**（R6-3 真闭合；R6-1/R6-2 表面闭合：**`param_roles` 默认值 fail-open**、**加解密组件与密钥/清理周期无配置落点**、加解密失败语义与密钥轮换未定、**用例 32② 不可判定**；另 8 处状态漂移）→ **用户裁决 P1/P3/P11 + 其余 8 条 → 第七轮补丁已完成**（**新增 `BodyCipher` 组件落点、`WORKBENCH_BODY_ENCRYPTION_KEY` 与清理周期两项配置、加解密失败语义、密钥轮换窗口、`expired` 执行方、**用例 34**（`param_roles` 全覆盖断言），见规格 §9.6）→ **补丁确认未通过（P7/P8 表面闭合）→ Q1–Q3 → 再次补丁确认「部分真闭合」→ R1–R3**。记录见 [`dsh-integration-review-record.md`](file:///d:/徐徐AI学习/公司工作台/docs/dsh-integration-review-record.md)（§2–§6 首轮、§7 重审、§8 第三轮、§9 第四轮、§10 第五轮、§12 第六轮、§15 第七轮定点、§16 补丁留痕）。**第七轮已于 2026-09-13 由未参与 §4.1 撰写的独立视角完成「§4.1 数据模型本体」确认（结论：部分闭合）** → **补丁确认未通过（P7/P8）→ Q1–Q3 修订 → 再次补丁确认「部分真闭合」→ R1–R3 修订 → 最后一次补丁确认：R1/R2/R3 全部真闭合**（记录 §21）→ **C1 判为「过」**（规格状态：**已评审（附记录）· 2026-09-13**）|
+| **C2** | `docs/api-contract.md` 新增工具/执行章节 | **已完成（2026-09-12）**：`## 工具执行（P2a 段二）` 已追加（**契约先行 · 未实现**），含**五处**既有契约变更点、九步闸门→HTTP 语义（含审批后重跑口径）、审计与落库口径。**首轮评审后已回改**：撤销 `origin=conversation`、`agent_key` 校验落点改到执行入口、⑦ 删除「授权来源」、`AuditAction` 扩键改为硬要求、`reason` 受控枚举（**作用域仅 `tool.*`**）、落库落点明确。**第二轮（重审后）已回改**：幂等键由 `message_id` 改为**请求头 `Idempotency-Key`**、⑥/⑦ 挂**新增迁移 `027`**（逐项授权）、补 `201`/`202` 状态码分支。**第三轮（2026-09-13）已回改**：**Y2 决议行清零旧口径**（原残留「零新迁移 / `message_id` 派生」）、**`202` 响应体形状定死**、**幂等缺省语义定死**（缺键 ⇒ `stub=true` 不触发真实执行）、变更点 3/4/5 补**前端动作标签同步**与**规格 §4.1 引用** |
+| **C3** | 「禁止事项」与验收标准写清（三类用例 + 反假测试 + 真实容器回归） | 规格 §1.2（禁止事项）与 §5/§6（测试计划与验收标准）**已随七轮修订补齐**：用例扩到 **34 条**并补 P0/P1 分级与「必须红」构造（含幂等重放与**缺键语义**、参数变更 409、可执行文件来源、审批后重跑、逐项授权、待批动作持久化、`subprocess-local` 禁用、导出侧校验、**导出归属**、容器加固、同步硬上限、审计枚举、**前端动作标签同步**，第五轮新增 **28–31**：参数规范化判据 / `actions` 缺省退化路径 / 装配三断言 / 决议端点 `execution` 响应体；**第六轮新增 32–33**：受控正文密文与 TTL / 正文不进对外通道；**第七轮新增 34**：`param_roles` 全覆盖断言）；§6 增前端四态与标签、合规交付物、清理纪律、验收分离、**迁移交付**与「**一条聚合命令（`scripts/verify_all.py`）**」要求 |
 
 ---
 
@@ -136,10 +184,10 @@
 ## E. 本清单自身尚未核实之项（如实登记）
 
 1. **dsh 在 Linux 容器里的实际可运行性未测**：本机是 Windows，容器是 Linux；静态勘察的沙箱/审批结论**可能不适用**（见 B3 ④）。
-2. **子包许可证**（B13）：**核查已闭环**（lockfile 583 条目全量扫描 + 磁盘树交叉核对）：`@deepseek-ai/*` 246 条全为宽松许可（241 MIT + 5 BSD-3）；**14 个 LGPL 全来自 `sharp` 生态且全部是 `optional`**；`sharp` 是否进镜像决定义务是否触发；**已决议纳入段二交付物并产出 `THIRD-PARTY-NOTICES`**（§B13）。**遗留**：NOTICES 未产出、镜像内二次扫描未做、未逐包比对许可证正文。
+2. **子包许可证**（B13）：**按 lockfile 声明值的统计已闭环**（583 条目全量扫描 + 磁盘树交叉核对）：`@deepseek-ai/*` 246 条全为宽松许可（241 MIT + 5 BSD-3）；**14 个 LGPL 全来自 `sharp` 生态**（平台二进制为 `optional` 条目，但 `sharp` **本体是非 optional 传递依赖**，故 **LGPL 义务无法靠"不启用附件"归零**——与 §B13 结论③一致；原「全部是 optional」的表述易误导，已更正）。**已决议：保留 `sharp` + 把随镜像 LGPL 条目瘦身到 1 个 + 纳入段二交付物产出 `THIRD-PARTY-NOTICES`**（§B13）。**遗留（未闭环，见规格 §8 U13）**：① 未逐包比对许可证**正文**与声明值（583 条目）；② `THIRD-PARTY-NOTICES` 未产出；③ 镜像内二次扫描未做。
 3. **A5 的黑名单条目已于 2026-09-12 定案**（规格 §7 **X2** → 已写入 §3.2.1：R1–R4 判定口径 + A1–A12 + B/C 三层条目 + Q1–Q4 锁定值；首轮评审后补强 A11 包装器、A12 裸解释器、参数形态与路径族、C 类匹配算法）。**A2 的成本安排亦已于同日定案（接受分主机，规格 §7 X3）**。
 4. **Q7/Q8/Q10 与段二无关**（分别拦 P2b / P2b / P2c），本清单不涉及。
-5. **本文件不构成任何「段二可开工」的结论**：§A 决策已答复、规格 §7 的 **X1–X5 / Y1–Y3 / P1–P2 / LGPL 已全部定案**，但 **§B 中除 B12（决策项，已闭环）外的开工前置尚未取证，且 §C 文档前置未完成——C1 首轮评审结论为「不予放行」，规格已按 [`dsh-integration-review-record.md`](file:///d:/徐徐AI学习/公司工作台/docs/dsh-integration-review-record.md) §6 完成修订（**待重审**）、C2 已回改、C3 已补齐——在此之前，段二不得开工**。
+5. **本文件不构成任何「段二可开工」的结论**：§A 决策已答复；规格 §7 的 **X1–X5 / Y1–Y3 / P1–P2 / LGPL / R1–R4 / R5–R8 已全部定案**（R5–R8 为 2026-09-13 第三轮裁决）；但 **§B 中除 B12（决策项，已闭环）外的开工前置尚未取证，且 §C 文档前置未完成**——**C1 已历经 8 次独立复核（4 次全量 + 定点复核 + 3 次补丁确认），终局「最后一次补丁确认」判 R1/R2/R3 全部真闭合 → C1 已过**、规格状态为**已评审（附记录）· 2026-09-13**，C2/C3 已同步回改。**但 §B 取证尚未闭环 → 在 §B（除 B12 外）逐条取证通过之前，段二不得开工。**
 
 ---
 
@@ -190,7 +238,7 @@
    ⇒ 与 **A4（不出网）** 直接冲突，**必须显式禁用**。**特别注意**：只要容器里存在 `DEEPSEEK_API_KEY`，它就能**自行联网搜索**——这既是「绕过工作台联网归口」，也是「密钥进容器」的实证风险。
 
 **另外两项待复验（不写成结论）**：
-- `dsh-subprocess-local` 未禁用 → 禁用 bash/pwsh 工具后，子进程能力是否仍可被其他插件触达，需评估。
+- `dsh-subprocess-local`：**口径已闭环（2026-09-12 裁决 R3）——显式禁用**（与 `tool-bash`/`tool-pwsh` 同等，进禁用清单 + 启动期断言；否则模型可经它自起子进程，④-0/④-1/④-2 整段闸门被整体绕过）；**仍待取证**的是其**运行期可触达性**（禁用是否真正生效），由段二-1 用真实调用复验（规格 §3.5、§5 用例 24）。
 - `approval.policy` 默认为 `ask`，而 SDK 协议**没有审批方法** → 运行期可能出现「工具调用等待一个不存在的审批通道」；**该行为必须用一次真实调用复验**（可能与 `dsh-sdk-jsonrpc-server` 的 dead capability 冲突）。
 
 ### F3.2 会话级运行期取证（**2026-09-12，无凭据干跑**）
@@ -301,5 +349,353 @@ job_list / job_output / job_kill / list_agents / send_message / interrupt_agent
 | 项 | 状态 |
 | --- | --- |
 | B1 / B2（部分）/ B4 / B13 | ✅ **已取证** |
-| B3 | ⏳ **部分**：环境可运行性与剖面组成已取证；三条契约的完整运行期复验**需模型凭据或自写 stdio 客户端** |
+| B3 | ⏳ **部分**：环境可运行性与剖面组成已取证；三条契约的完整运行期复验**需模型凭据或自写 stdio 客户端**。**2026-09-13 已补 Linux 侧沙箱结论（§F7）** |
 | B5–B12 | 属**段二实施期**的判据（不是开工前置取证），其中 B5/B6/B11 在段二-2/段二-3 落地时验证；B12 **已定：本段不做**（规格 §7 X4，已闭环） |
+| **B14** | ❌ **全未取证**（2026-09-13 复核确认）：七条判据 A–G + 三条红线**均需真实 turn** → **必须使用模型凭据** |
+| **B3 剩余 3 项** | 「Linux 侧沙箱」**已于 §F7 取证**；「`subprocess-local` 禁用是否真生效」「`approval=ask` 无通道时的行为」**仍需真实调用** |
+
+---
+
+## F7 段二-1 复验（**2026-09-13 实测**）—— 环境复验 + Linux 侧剖面 + 许可树 + 两处新发现
+
+> **环境**：Windows 宿主 + Docker `29.7.2`（`OSType=linux`、overlayfs、cgroup v2、kernel `6.18.33.2-microsoft-standard-WSL2`）；镜像 `node:22-slim`（**已存在，未重新拉取**）。
+> **隔离**：新建独立工作目录 `d:\徐徐AI学习\_dsh-linux-verify\`，仅**复制**探针的 `package.json` + `package-lock.json` 进入（**未触碰** `_dsh-verify\` 内的 `node_modules` 与 `.env.dsh.txt`；**未复制、未读取任何凭据**）。
+> **原始输出**：`_dsh-linux-verify\out\`、`out2\`、`out3\`（本机保留，可复查）。**以下均为实测原文，不是推断。**
+
+### F7.1 环境与安装（复现 F2/F3）
+
+| 项 | 实测 |
+| --- | --- |
+| 探针目录实际内容 | `package.json` / `package-lock.json` / **`node_modules`（存在！）** / `.env.dsh.txt` —— ⚠️ **更正**：此前记录的"是否含安装树**未核实**"**已核实为存在**（P0-1 遗留项就此闭合） |
+| 容器内核/运行时 | `Linux ... x86_64`；**Node `v22.23.2`**、npm `10.9.8`（与 F2 一致） |
+| `npm ci`（`--os=linux --cpu=x64 --libc=glibc`） | **`added 522 packages in 3m`、`EXIT=0`**（与 F3 的 522 包一致） |
+| 顶层 `node_modules` 目录数 | **190**；`node_modules/@deepseek-ai` = **241**；磁盘 `package.json` 总数 = **554**（Windows 树为 550） |
+| dsh 入口 | `bin.dsh = lib/bin.js`（`.bin/dsh` → `../@deepseek-ai/dsh/lib/bin.js`）；**`engines` 字段 = 不存在（`engines: null`）** → 复现 B2 的"上游对 Node 版本零承诺" |
+| `--profile sdk --dump-default-config`（Linux） | **`EXIT=0`、352 行**（与 Windows 侧完全相同） |
+
+> **勘察中的一次方法错误（如实登记）**：v1 脚本按 `bin.js` / `bin/dsh.js` 探测入口，**漏了真实入口 `lib/bin.js`** → v1 的 dump 证据**无效**（`DSH_ENTRY=` 为空、命令未真正执行）；已由 v2 修正重跑。**负向与正向一律以重跑后的证据为准。**
+
+### F7.2 🔴 **B3④ 的缺口已补：Linux 侧剖面（此前「只在 Windows 上看过」）**
+
+实测 Linux `sdk` 剖面 **86 个 `- id:` 条目**（规格此前表述为"13 个"）。按 `disabled` 逐条核对，**Linux 侧求值结果**：
+
+| 插件 | `disabled` 表达式 | **Linux 求值** |
+| --- | --- | --- |
+| `dsh-tool-bash` | `process.platform === 'win32'` | **false → 启用** 🔴 |
+| `dsh-bash-sandbox` | `process.platform === 'win32'` | **false → 启用** 🔴 |
+| `dsh-tool-pwsh` | `process.platform !== 'win32'` | true → 禁用 ✅（与 pwsh-sandbox 同） |
+| `dsh-subprocess-local` | **无 `disabled`** | **启用** 🔴 |
+| `dsh-sandbox-local` / `dsh-sandbox-policy` | **无 `disabled`** | **启用** |
+| `dsh-user-approval` / `dsh-permission-presets` | **无 `disabled`** | **启用** |
+
+**总闸与配置（Linux 实测原文）**：
+
+```yaml
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.cwd()
+- id: approval
+  config:
+    policy: !!js >-
+      (process.env.DSH_PERMISSION_MODE ?? 'workspace-write') ===
+      'danger-full-access' ? 'never' : 'ask'
+    presets:
+      read-only:            { sandbox: read-only,              approval: ask }
+      workspace-write:      { sandbox: workspace-write,        approval: ask }
+      danger-full-access:   { sandbox: danger-full-access,     approval: never }
+```
+
+**联网工具（Linux 实测，全部存在且未禁用）**：
+
+```yaml
+- id: web                 { fetchProvider: http }
+- id: web-search-deepseek { apiKeyEnv: DEEPSEEK_API_KEY }
+- id: web-fetch-http
+- id: tool-web
+```
+
+> ⚠️ `dump-default-config` 打印的是**未求值的默认模板**（`!!js` 表达式原样输出），故 **06/07 两次不同 `DSH_PERMISSION_MODE` 的 dump 完全相同**——**这不是矛盾**，而是方法所限：`dump` 只能证明"表达式是总闸"，**证明不了运行期取值**（运行期取值由 §F3.2 的会话级取证承担）。
+
+### F7.3 🔴 **新发现①（规格与禁用清单均未涵盖）**：遥测默认外发
+
+```yaml
+- id: session-telemetry-otel
+  name: '@deepseek-ai/dsh-session-telemetry-otel'
+  config:
+    mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'
+    exporter:
+      url: !!js >-
+        process.env.DSH_TELEMETRY_OTLP_URL ??
+        'https://harness-telemetry.deepseeksvc.com/v1/logs'
+```
+
+- **上游默认把会话遥测发往 `https://harness-telemetry.deepseeksvc.com/v1/logs`**（`DSH_TELEMETRY_MODE` 默认 `FEEDBACK_ONLY`，非"关闭"）。
+- ⇒ 这是 **web 工具之外的第二条默认出网通道**，且带**数据外流**性质（会话事件）。
+- **规格 §3.5 的禁用清单里没有它**（清单列的是 `tool-bash`/`tool-pwsh`/`subprocess-local`/`web_*`/`skill`/`subagent*` 等）。
+- 与 **A4（不出网）**、**B14 判据 G** 直接相关：**即使禁掉全部 `web_*`，该通道仍会尝试出网**。
+- ⚠️ **这条属口径变更**（要加进禁用清单），**本轮只登记事实与影响，未擅自改规格** → **待用户裁决**。
+
+**🔴 实测更正（2026-09-13，对照实验见 §F10）**：用**本地假 OTLP 端点**做对照——**`DSH_TELEMETRY_DISABLED=1` 与不设该变量，两轮端点均收到 0 个请求**（同场景下 session 事件正常产生、turn 正常结束）。⇒ 上文"**默认外发 / web 之外的第二条默认出网通道**"的表述**未获证实，且与本场景实测相反**；`mode` 默认 `FEEDBACK_ONLY` 的合理含义是"**仅反馈路径才发**"。**保留 `DSH_TELEMETRY_DISABLED` 作为兜底开关仍然合理**，但**不得再表述为"默认外发"**。**未测**：反馈路径、以及 `DSH_TELEMETRY_MODE` 的其它取值。
+
+### F7.4 🔴 **新发现②**：B13 决议「随镜像 LGPL 瘦身到 1 个」**算术不成立**
+
+**Linux 实际安装树（disk 口径）**：`node_modules/@img` = **4 个**：
+
+| 包 | 许可证 |
+| --- | --- |
+| `@img/colour` (1.1.0) | MIT |
+| `@img/sharp-linux-x64` (0.35.4) | **Apache-2.0**（不是 LGPL） |
+| `@img/sharp-libvips-linux-x64` (1.3.3) | **LGPL-3.0-or-later** |
+| **`@img/sharp-wasm32` (0.35.4)** | **Apache-2.0 AND LGPL-3.0-or-later AND MIT** ← **平台过滤不掉** |
+
+**Linux 安装树全量许可扫描（disk 口径，522 包）**：`LGPL` 条目 = **2**、缺 `license` 字段 = **0**；分布：MIT 425 / Apache-2.0 64 / BSD-3 16 / ISC 10 / BSD-2 2 / **LGPL-3.0-or-later 1** / **组合含 LGPL 1** / Python-2.0 / Unlicense / 0BSD 各 1。
+
+**为什么 `sharp-wasm32` 过滤不掉（lockfile 实测）**：
+- `sharp@0.35.4` 的 `optionalDependencies` 里**没有** `@img/sharp-wasm32`；
+- `@img/sharp-wasm32` 的依赖方是 **`@img/sharp-freebsd-wasm32`** 与 **`@img/sharp-webcontainers-wasm32`**（二者本身是 optional 且被平台过滤）——**但其依赖仍被 npm 装进树里**；
+- `sharp` 本体**非 optional 的传递依赖**链再次确认：`@deepseek-ai/dsh-attachment-local | sharp=^0.35.3 | optional=false`。
+
+⇒ **决议原文写"随镜像 `@img/*` 包共 2 个、LGPL 仅 1 个"，与实测不符**：实为 **4 个 `@img` 包、含 LGPL 2 个**。
+⇒ **`THIRD-PARTY-NOTICES` 必须含 2 条 LGPL**（不是一个）；**"瘦身到 1 个"的算术需更正**。
+⇒ **可能仍有瘦身余地（待实测）**：`@img/sharp-wasm32` 只被两个已被过滤掉的 wasm 包依赖 → **镜像构建后删除该目录**，并**实测 sharp 功能仍可用**（linux-x64 + libvips-linux-x64 在位时不应回退 wasm），可把 LGPL 从 2 降回 1。**此项属实施期实测，不在本轮结论内**。
+
+### F7.5 本轮**仍未取证**（不得当作已解决）
+
+- **B14 七条判据 A–G 与三条红线：全部未取证**（需真实 turn + 模型凭据）。
+- **B3 的两项**：`dsh-subprocess-local` 禁用**是否真生效**（需真实调用）、`approval=ask` 且 SDK 无审批通道时的**实际行为**（自动拒 / 挂住 / 静默放行）。
+- **Linux 侧沙箱的"运行期"行为**：§F7.2 是**装配层（dump）**证据，**不是**"沙箱拦住某动作"的运行期证据。
+- **未做**：`THIRD-PARTY-NOTICES` 产出、镜像内二次扫描（本轮是安装树口径，非镜像口径）、`sharp` 去 wasm 后的可用性。
+
+### F7.6 临时勘察脚本（**按清理纪律登记，待用户确认后删除**）
+
+| 文件 | 用途 |
+| --- | --- |
+| `_dsh-linux-verify\probe-linux.sh` | v1（**存在入口探测缺陷，dump 证据无效**；其 §8 平台线索部分有效） |
+| `_dsh-linux-verify\probe-linux-2.sh` | v2（dump + Linux 树全量许可扫描） |
+| `_dsh-linux-verify\probe-linux-3.sh` | v3（lockfile 口径 `@img` 与依赖方） |
+| `_dsh-linux-verify\out\` `out2\` `out3\` | 原始证据输出 |
+| `_dsh-linux-verify\`（含 `node_modules` 约 500MB） | 隔离安装树（复验用） |
+
+**均为一次性勘察产物，与仓库无关，未进入 `公司工作台` 仓库**。
+
+---
+
+## F8 阶段 C（C1 静态勘察）—— 🔴 **B14/U1 的架构级结论**（2026-09-13）
+
+> **范围**：本段是 **C1（静态勘察）** 的结果；**真实 turn 实验（C2/C3）尚未执行**，因为下面的结论使**实验设计取决于一条架构选择**（见 §F8.4），须先裁决。
+> **证据来源**：容器内装好的 Linux 树（§F7.1），输出见 `_dsh-linux-verify\out4\`。
+
+### F8.1 三条决定性事实（实测原文）
+
+**① SDK 握手**不能传凭据（`dsh-sdk-jsonrpc-server\lib\index.js:110-132`）：
+
+```js
+async initialize(params) {
+  // 校验 reasoningEffort / maxTokens
+  const cwd = resolve(params.cwd);
+  const provider = params.provider;
+  const model = params.model;
+  ...
+}
+```
+
+→ `initialize` **只接受** `provider` / `model` / `cwd` / `maxTokens` / `reasoningEffort`：**没有任何 apiKey / credential 字段**。
+
+**② 凭据必须落在容器内的 env 或文件**（`dsh-credentials-local\lib\index.js:15-31` 模块文档原文）：
+
+```text
+inherited process environment      (read-only, wins)
+> $DSH_HOME/.credentials.yaml      (provider-managed, writable)
+> <invocation cwd>/.env            (read-only fallback)
+> $DSH_HOME/.env                   (read-only fallback)
+```
+
+> *"The inherited environment wins because `DEEPSEEK_API_KEY=… dsh`, a CI secret, or **a container `-e`** is this run's explicit intent"*
+
+→ **官方设计预期就是「密钥经容器 `-e` 传入」**。
+
+**③ 端点可覆盖**（`dsh-llm-pi-ai\lib\index.js:984-987, 1058-1079`）：
+
+```js
+apiKeyEnv: z.string().role("credential-ref"),
+baseURL: z.string(),
+```
+
+→ provider 路由**支持自定义 `baseURL`** ⇒ **存在"自建模型网关"的改造空间**。
+
+**④ 遥测有专门开关**（`out4\34-env-refs.txt`）：**`process.env.DSH_TELEMETRY_DISABLED`** 存在 ⇒ **D-A 的关闭手段应以此为首选**（比禁用插件更轻，且是上游自己的开关）。
+
+### F8.2 🔴 由此得出：**B14 判据 C 与 `dsh --profile sdk` 的架构不相容**
+
+- `dsh --profile sdk` 是 **stdio 子进程协议**，剖面内含 `dsh-llm` / `dsh-agent-default-model` / `dsh-deepseek-llm-api-extensions` ⇒ **agent 循环与模型调用由容器内的 dsh 进程自己发起**。
+- 判据 C 要求「**`--network none` 下 turn 仍成功**」，其隐含前提是「**模型调用完全由容器外发起**」。
+- 但 dsh 要在容器内调模型，就必须能**出网**（或能连到网关）⇒ **`--network none` 下它不可能成功**。
+  - 若容器内 dsh 把 `baseURL` 指向**容器外的网关**，则判据 A 可成立（**指向供应商域名的连接由容器外发起**），但**判据 C 仍不成立**（容器内必须有到网关的连接）。
+⇒ **「容器内无网络面」（判据 C）与「dsh 自驱模型调用」二者不能同时成立**；这不是实现缺陷，是**架构选择**。
+
+### F8.3 U1 的**正确表述**（修正 §3.5）
+
+| 原表述 | 实测能成立的表述 |
+| --- | --- |
+| "容器内**不持有长寿命密钥**" | 在 **dsh 默认部署下不成立**（密钥必须进容器 env/文件）。**可成立的唯一形态**：容器内只放**我们签发的短期网关令牌**，**真实供应商密钥只在容器外的网关**——这要求**段二自建模型网关** |
+| "模型调用由**工作台侧发起**" | 准确说法应是"**经工作台侧的网关发起**"——**发起方是网关（容器外），但不是"工作台直接调模型"**，dsh 仍在容器内驱动 agent 循环 |
+
+### F8.4 三条可选路径（**须用户裁决**，本段不擅自选）
+
+| 路径 | 内容 | 代价 / 后果 |
+| --- | --- | --- |
+| **① 自建模型网关**（我倾向） | 段二增加"模型网关"组件：容器外持有供应商密钥；容器内 `baseURL` 指向网关、`apiKeyEnv` 放**每 turn 新铸的短期令牌**（绑租户/会话/代次，服务端为准，终态吊销 —— 即 §3.5 短期凭据六条） | **满足**"容器内无供应商密钥"（判据 A/B/E/F）；**须放弃判据 C**（容器内必有一条到网关的连接）；**新增一个段二组件**（范围+工作量） |
+| **② 只借 dsh 的"工具执行"，模型调用由我们驱动** | 不用 dsh 的 agent 循环；仅用其工具执行面 | **能同时满足判据 C 与"无密钥"**；但**需勘察 dsh 是否支持"无模型/仅工具"模式**（当前剖面无此形态）——**可行性未知** |
+| **③ 接受密钥进容器** | 按 dsh 默认部署 | **违反 §3.5 硬约束**（与 A4 叠加为高风险）；**不建议** |
+
+### F8.5 仍未取证（本段未做，等裁决）
+
+- **C2/C3 真实 turn**：因 §F8.2 的结论，实验形态取决于路径选择，**未执行**；**B14 七条判据 A–G 与三条红线仍全部未取证**。
+- **§F3.2 的"最高优先级待验项"**（`sandbox_permissions` 升级通道的真实行为）**仍未验证**。
+- **`DSH_TELEMETRY_DISABLED` 的实际语义**：**部分验证（2026-09-13，对照实验见 §F10）**——SDK 剖面普通 turn 下，**设该开关与不设该开关，本地假 OTLP 端点两轮均收到 0 个请求** ⇒ 该开关**在本场景不承重**，且 §F7.3 的"默认外发"**未获证实**；**反馈路径与 `DSH_TELEMETRY_MODE` 其它取值仍未测**。
+
+### F8.6 裁决留痕与影响范围（2026-09-13）
+
+**用户裁决**：**走路径①「自建模型网关」**（我给的推荐项）。
+
+**由此产生的范围变更与口径修正（已回写真源）**：
+
+| # | 变更 | 落点 |
+| --- | --- | --- |
+| 1 | **段二新增交付项 F「模型网关」**：容器外持供应商密钥；容器内 `baseURL` 指向网关、`apiKeyEnv` 放**每 turn 新铸的短期令牌** | 规格 **§1.1** 新增行 F |
+| 2 | **网络面口径改写**：`--network none` → **仅内网桥（`--internal`，无外网出口）+ 仅网关可达** | 规格 **§3.3**「网络」行、**§1.1** 行 B |
+| 3 | **凭据口径定死**：容器内唯一注入物 = **短期网关令牌（六条）**；**供应商密钥只在容器外网关** | 规格 **§3.3**「凭据」行、**§3.5** P1 段（六条逐列） |
+| 4 | **B14 判据 C 作废 → 改判 C′**（容器内无指向供应商域名的连接；指向网关的内网连接允许且预期）；统一红线第 3 条同步修正 | 本清单 **§B14** |
+| 5 | **P1 回填**：由"待核实"改为"已定口径（路径①）"，§3.7 / §8 两处同步 | 规格 **§3.5 / §3.7 / §8** |
+| 6 | **§4 配置项新增网关相关项**（网关地址、令牌 TTL、网关超时/重试上限等）——✅ **已补（2026-09-13）**：**六项**已入规格 §4（`WORKBENCH_MODEL_GATEWAY_BASE_URL` / `..._TOKEN_TTL_SECONDS` / `..._UPSTREAM_BASE_URL` / `..._UPSTREAM_API_KEY` / `..._UPSTREAM_TIMEOUT_SECONDS` / `..._MAX_RETRIES`），**§B15 口径随之由 12 项改为 18 项** | 规格 **§4**、本清单 **§B15** |
+
+**仍未闭环（不得视为通过）**：
+- **B14 判据 A / B / E / F 与 C′：仍全部未取证**（须真实 turn；实验形态已随路径①确定：**容器内 `baseURL` → 容器外最小网关原型 + 短期令牌**）。
+- **§F3.2「最高优先级待验项」**（`sandbox_permissions` 升级通道真实行为）**仍未验证**。
+- **`DSH_TELEMETRY_DISABLED` 语义未验证**。
+- **规格 §4 的网关配置项**：✅ **已补（2026-09-13，六项，见上表第 6 行）**；**闭环移交 §B15**（18 项进 `settings.py` / `.env.staging.example` / 守护测试——**实现前必办**）。
+
+---
+
+## F9 阶段 C2/C3：**真实 turn 取证（路径①）**（2026-09-13 实测）
+
+> **实验形态**：**容器外最小网关原型**（透明转发 + 短期令牌）＋ **仅内网桥的 dsh 执行容器**。
+> **凭据来源**：探针 `.env.dsh.txt`（用户已授权"用真实模型凭据跑真实 turn"）。**供应商密钥只进网关（经 `--env-file`，未出现在任何命令行）**；执行容器只拿到**短期令牌**。
+> **隔离**：全部产物在**仓库外** `d:\徐徐AI学习\_dsh-gateway-verify\`；**未改任何仓库文件**。
+> **原始证据**：`_dsh-gateway-verify\out\`（`02-driver.log` / `03-gw.log` / `04-dsh-exec-inspect.json` / `06~08` 明文扫描 / `09-negative-case.log`）。
+
+### F9.1 🔴 **首要结论：真实 turn 走到了上游，但供应商凭据无效（401）**
+
+```
+[gw] UPSTREAM-REQ POST api.deepseek.com/chat/completions token=D0DqBJ.. peer=172.22.0.3
+[gw] UPSTREAM-RES status=401 token=D0DqBJ..
+dsh: {"kind":"error","error":{"message":"Authentication Fails, Your api key: ****1fa0 is invalid"}}
+```
+
+**已排除"是我方传递错误"**：在网关容器内**直连** `https://api.deepseek.com/chat/completions` 并用**同一密钥**（已确认 `KEYLEN=38`、无空白字符、末位字符码 `48`）→ 同样 `401 ... ****1fa0 is invalid`。
+⇒ **结论：该凭据在供应商侧已失效/被吊销，不是网关或容器的问题。**
+
+| 影响 | 说明 |
+| --- | --- |
+| ✅ 不受影响 | 判据 **A** / **C′** / **E**（argv）/ **F** 的**结构性**部分、三条红线中的第 2/3 条——**均已在本次实测中取得证据**（见 F9.2） |
+| ❌ 受影响 | **"turn 成功"** 与 **判据 B 的因果部分**（"清空宿主侧凭据后 turn 立即失败"）**未取证**——凭据本身即无效，无法构造"有凭据成功 / 无凭据失败"的对照 |
+| ⛔ 阻断 | **B14 判据 A/B/E/F 与 C′ 的最终确认仍不可放行**；**须用户提供有效凭据后重跑 C2/C3** |
+
+### F9.2 本次实测要点（原文摘录）
+
+| 观测 | 实测原文 | 对应判据 |
+| --- | --- | --- |
+| 执行容器**只有一条**已建立连接 | `connections: [{ "remote": "172.22.0.2:8080", "firstSeenMs": 159 }]`（172.22.0.2 = **网关容器**在 `--internal` 网内的地址） | **C′ 成立** |
+| 执行容器**不可达供应商域名** | `supplierDomain: "BLOCKED TypeError: fetch failed"`；`gateway: "REACHABLE status=403"` | **C′ / A** |
+| 供应商域名的出站连接**由网关发起** | `UPSTREAM-REQ POST api.deepseek.com/chat/completions ... peer=172.22.0.3`（`peer` 即执行容器→网关的内网请求） | **A 成立** |
+| 网关停机后 turn **立即失败**，且错误指向网关 | `"message": "DeepSeek API request to http://gw:8080 failed", "code": "TRANSPORT"`（连续 5 次重试后 turn 结束） | **路径必要性**（A/C′ 的负向证据；**不等价于 B 的因果**） |
+| 容器 PID 树 | `pid 1 = node /driver/driver.mjs`；`pid 13 = /usr/local/bin/node /dsh/node_modules/@deepseek-ai/dsh/lib/bin.js --profile sdk` | **判据 D 冲突**（见 F9.3） |
+| 容器内**无供应商密钥明文** | `FILE_HITS=0` / `ENV_HITS=0` / `PROC_ENVIRON_HITS=0`（扫描 `/workspace` `/dshhome` `/root` `/driver` `/etc`）；`docker inspect` 的 `Config.Env` 与 `Mounts` **均不含**该密钥 | **B（结构部分）/ E（按重述口径）** |
+| 容器内唯一凭据 = **短期令牌** | `DEEPSEEK_API_KEY` 长度 `43`（供应商密钥为 `38`），TTL `120s`、绑定 `turn-1` | **F（部分）** |
+| 令牌**可终态吊销** | 吊销前：`UPSTREAM-REQ`（网关接受该令牌）；`REVOKE bound=turn-2 n=1`；吊销后：`DENY ... reason=unknown-token` | **F（部分）** |
+
+**过程留痕（一次方法错误，如实登记）**：首次明文扫描用的 shell 模式串因 `tr -d "\r\n"` 在 `dash` 下**未剥掉 CR**（`PATTERN_LEN=39` 而非 `38`），**该次结果不可信**；改用 stdin 传模式（`PATTERN_LEN=38`）重跑后取数。**负向与正向一律以重跑证据为准。**
+
+### F9.3 🔴 **取证暴露的两条口径冲突（须裁决/回写，本轮未擅改）**
+
+| # | 冲突 | 证据 | 影响 |
+| --- | --- | --- | --- |
+| **X1** | **判据 D 与路径①不相容**：D 原文要求"**dsh 不在容器 PID 树内**"，但路径①下 dsh **必须在容器内**驱动 agent 循环（实测 `pid 13` 就是它） | F9.2「容器 PID 树」 | **D 须按路径①重述**：判据应从"dsh 不在容器内"改为"**容器内不存在供应商密钥**"（与供应商密钥不同处一个信任域） |
+| **X2** | **判据 E 的"无内网地址"与路径①不相容**：容器 env **必然**含 `DEEPSEEK_BASE_URL=http://gw:8080`（内网地址），且这是设计预期 | `contract.GW = "http://gw:8080"` | **E 须按路径①重述**：argv/env 不得含**供应商密钥**；`baseURL`（**仅网关内网地址**）是**预期注入物** |
+
+> ✅ **裁决与实施（2026-09-13，用户裁决：按建议重述并回写真源）**：`§B14` 已按下表同步修订——
+> 1. **判据 D 重述**：从"dsh 不在容器 PID 树内"→"**dsh 在容器内且其 env/argv/文件均无供应商密钥**（只含短期网关令牌）"；
+> 2. **判据 E 重述**：禁止项明确为**供应商密钥**；`baseURL`（**仅网关内网地址**）为**预期注入物**；
+> 3. **三条统一红线第 2 条重述**：命中条件改为"持有**供应商密钥**"或"存在**不经网关**的外网通道"（持有短期网关令牌不算命中）；
+> 4. **连带修正两处陈旧口径**：`§B14` 判据抬头第 ③ 条（原仍写 `--network none`）与判据 **G** 的成立边界（同）——**均改为"容器内不存在指向供应商域名的连接 / 无外网出口"**（与 C′ 对齐）。
+>
+> **未改动**：判据 **A / B / C′ / F** 与红线第 1、3 条**原文不改**（它们在路径①下仍然成立）。
+
+### F9.4 新发现（两条，均建议立待办）
+
+1. 🔴 **`initialize` 冷启动耗时 52–79s**（`transport.onRequest` 首次 `await ctx.get("loader")?.await()`）：实测两次分别为 **53.2s** 与 **78.9s**。⇒ **超时预算必须覆盖冷启动**，否则会把"初始化慢"误判为执行超时（关联 §4 `WORKBENCH_EXEC_TIMEOUT_SECONDS` / §8 **U11**）。
+2. 🔴 **`dsh-llm-retry` 在传输失败时会自行重试（实测 5 次）**：与新增的 `WORKBENCH_MODEL_GATEWAY_MAX_RETRIES` **叠加会造成重试放大**（实测网关停机时 5 次 `llm/retry`）。⇒ **重试归口须显式定死**（建议：**容器内不重试，重试只在网关**，与 §3.5 P1 第 4 条一致）。
+
+> ✅ **已回写真源（2026-09-13）**：两条均并入规格 **§8 待核实清单**——第 1 条 → **U11**（超时默认值须覆盖冷启动），第 2 条 → **U7**（重试归口）。**只记实测事实与约束，未擅自定值**（默认值与重试归口**仍为待裁决**）。
+
+### F9.5 本轮**仍未取证**（不得当作已解决）
+
+- **"真实 turn 成功"** 与 **判据 B 的因果部分**：**受阻于无效凭据**，须有效凭据后重跑。
+- **判据 A/B/E/F 与 C′ 的"最终确认"**：本次为**首轮实测**，仅覆盖**单次单轮**；**未做**重复/并发/长 turn。
+- **判据 F 六条中的两条未实现**：原型**未做** `constant-time` 比对（用 Map 查找）与**孤儿令牌上限**。
+- ~~**`DSH_TELEMETRY_DISABLED` 语义**：本次容器**无外网出口**，**无法区分**"开关生效"与"网络不通"~~ → ✅ **已用「本地假 OTLP 端点」完成对照实验（2026-09-13，见 §F10）**：**两轮均 0 请求** ⇒ 本场景**无遥测外发、该开关不承重**，且 §F7.3 的"默认外发"表述已被**实测更正**；**反馈路径仍未测**。
+- **`sandbox_permissions` 升级通道真实行为**（§F3.2 最高优先级待验项）：**仍未验证**。
+- **`/dsh` 安装树未做全盘密钥扫描**（Windows 绑定挂载上全盘 grep 过慢而中断）——但该树是**共享只读挂载**，且其宿主目录的扫描结果只有我方两个临时文件命中。
+
+### F9.6 临时产物登记（**按清理纪律，待用户确认后删除**）
+
+| 文件 / 目录 | 用途 | 处置 |
+| --- | --- | --- |
+| `_dsh-gateway-verify\gw\gw.js` | 最小网关原型（**骨架级**） | 待确认 |
+| `_dsh-gateway-verify\exec\driver.mjs` / `scan.mjs` | 容器内驱动 + 明文扫描器 | 待确认 |
+| `_dsh-gateway-verify\out\`（7 个文件） | **本次原始证据** | **建议保留**（复跑/复核用） |
+| `_dsh-gateway-verify\gw.env` | **供应商密钥文件** | ✅ **已立即删除**（含密钥，不留在磁盘） |
+| `_dsh-gateway-verify\out\05-gw-inspect.json` | 网关容器 spec（其 `Env` 含密钥） | ✅ **已立即删除**（含密钥） |
+| 容器 `gw` / `dsh-exec` / `dsh-exec-neg`、网络 `gwverify_net` | 本次实验运行时 | ✅ **已全部删除** |
+| 容器 **`dshverify`** | **上一阶段（§F7/§F8）遗留的探针容器** | ✅ **已删除（2026-09-13，用户确认）**；实验相关容器与网络经复查**无残留** |
+
+**均未进入 `公司工作台` 仓库**；**未提交、未推送**。
+
+---
+
+## F10 阶段 C 补充：`DSH_TELEMETRY_DISABLED` 语义的**对照实验**（2026-09-13 实测）
+
+> **为什么做**：§F8.5 / §F9.5 把它挂为"未验证"，而 §F7.3 又据此写了"**默认外发**"的强表述。**这两者必须用证据对齐**。
+> **方法（关键：不向任何外部域名发数据）**：起一个**本地假 OTLP 接收端**（`telemetry/sink.js`，仅内网可达），把 `DSH_TELEMETRY_OTLP_URL` 指向它；两个执行容器**除一个变量外完全相同**，各跑一次真实 turn（模型调用因无网关而失败，但 **session 事件正常产生**，足以触发遥测路径）。
+> **原始证据**：`_dsh-gateway-verify\out\20-telemetry-run-A.log`、`21-telemetry-run-B.log`、`22-otel-sink.log`。
+
+| 轮次 | `DSH_TELEMETRY_DISABLED` | 假 OTLP 端点收到 | turn 是否产生 session 事件 |
+| --- | --- | --- | --- |
+| **A** | **`=1`** | **0 个请求** | ✅（`session.status` running→idle、`llm/retry` 等事件齐全） |
+| **B** | **不设** | **0 个请求** | ✅（同上，且有 `request/header` 等） |
+
+### F10.1 结论（三条）
+
+1. 🔴 **`DSH_TELEMETRY_DISABLED` 在本场景「不承重」**：**不设它也不会外发**——因此**无法**据本实验声称"该开关有效"，**也无法**声称"没有它就会外发"。
+2. 🔴 **§F7.3 的"默认外发 / 第二条默认出网通道"表述，未获证实且与本场景实测相反**：与 `mode` 默认值 **`FEEDBACK_ONLY`** 的字面含义一致——**仅反馈路径才发送**。**已在 §F7.3 加实测更正注**。
+3. ✅ **保留该开关作为兜底仍然合理**（成本极低、上游自带）；但**规格与清单都不得再写"默认外发"**。
+
+### F10.2 本轮**未测**（不得当作已解决）
+
+- **反馈路径本身**（提交反馈时才发？）——我们**不会使用该路径**，故不做；
+- **`DSH_TELEMETRY_MODE` 的其它取值**（如设置为非 `FEEDBACK_ONLY` 时的行为）；
+- **有外网出口环境下**的真实行为（本实验用本地端点，**不涉及外网**，这一点是刻意的）。
+
+### F10.3 附带观测（支持 §3.5，不是新结论）
+
+在 `DSH_PERMISSION_MODE=read-only` 下，`request/header` 的 `tools[]` **仍然把 `bash` 作为可用工具暴露给模型**（描述里含沙箱拒绝语义）。⇒ **印证 §3.5「必须显式禁用 `tool-bash`」的必要性**：**只设 `read-only` 不足以把 `bash` 从工具面拿掉**。
+
+### F10.4 临时产物登记
+
+| 文件 | 用途 | 处置 |
+| --- | --- | --- |
+| `_dsh-gateway-verify\telemetry\sink.js` | 本地假 OTLP 接收端（**不转发到任何外部域名**） | 待确认 |
+| `_dsh-gateway-verify\out\20~22-*.log` | 本次对照实验原始证据 | **建议保留** |
+| 容器 `otel-sink` / `tel-a` / `tel-b`、网络 `gwverify_net` | 本次实验运行时 | ✅ **已全部删除**（复查无残留） |

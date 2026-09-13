@@ -133,7 +133,7 @@ PostgreSQL 实现使用 `migrations/008_accounts.sql` 新建 `workbench_accounts
 - **关键操作审计日志缺失**（宪法 2.2 与第八章「关键操作必须有审计日志」）：账号域目前**完全没有**结构化日志设施，注册申请、审批、驳回、登录、本人改密与管理员重置均不落日志。登录与权限变更属宪法要求必须留痕的操作，需后续专项补齐（注意日志不得包含口令或口令哈希）。
 - **口令弱口令策略不完整**（宪法第三章第一道防线「禁止纯数字 / 常见密码」）：当前只强制 10–128 位且禁止控制字符，未拦截纯数字与常见弱口令。
 
-全项目层面的既有差距（非本次引入，仅记录）：接口未采用宪法 2.2 要求的统一 JSON 信封（`code`/`message`/`data`）；仓库尚无应用侧 Dockerfile，`docker-compose.yml` 仅提供 PostgreSQL、Redis、MinIO 等基础设施。
+全项目层面的既有差距（非本次引入，仅记录）：接口未采用宪法 2.2 要求的统一 JSON 信封（`code`/`message`/`data`）；~~仓库尚无应用侧 Dockerfile~~〔**2026-09-13 更正：`Dockerfile` 已存在**〕，`docker-compose.yml` 仅提供 PostgreSQL、**Valkey**、**SeaweedFS** 等基础设施〔2026-09-13 组件名同步〕。
 
 ## 测试验收
 

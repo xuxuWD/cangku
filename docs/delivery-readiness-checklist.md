@@ -3,9 +3,9 @@
 > **用途**：把 `docs/delivery-gates.md` 的勾选状态摊开成可逐项追踪的底账，区分「代码在」「有测试守护」「在真实环境验收过」三种不同状态。
 >
 > **生成日期**：2026-09-10；**2026-09-11 同步三态**（第一次：容器化、弱口令策略、TOTP 二次验证、攻击面报告；第二次：数据分级闸门、协同动态表现层、运行指标采集、编排优化提案、GEO 阻塞更正；第三次：待办聚合接口、PWA 伴侣端、Electron 桌面端；第四次：死信通知渠道、并发探针、抓取器与发布器、门禁口径变更；第五次：内容安全评估用例；第六次：OIDC SSO 构建块 + 服务与接口；第七次：OIDC SSO 本地端到端预演 + SSO 预检脚本；第八次：IdP 配置模板与模板契约测试；第九次：外部依赖验收工具（Worker 运行态预检、迁移/备份恢复演练、密钥轮换演练、跨租户探针含正向对照）；第十次：项 8 两处代码缺口修复（运行时认证注入、注册表接入应用装配）+ 三项接入索取表（GEO 契约/公众号账号/外部运行时）；第十一次：分支 `feature/acceptance-tooling` 快进合入 `main`，基线口径由该分支改为 `main`；第十二次：TOTP 种子静态加密（HKDF 子密钥 + AES-256-GCM）与会话令牌服务端撤销（登出立即生效，迁移 018）；第十三次：补齐契约遗漏（内容任务列表、运行指标两接口）并新增路由覆盖守护测试；第十四次：审计明细嵌套值的递归敏感键校验（防御性加固），并订正过期口径——桌面端自动更新行拆出为已完成、通知能力范围改为「仅死信运维通知渠道」、核实记录注同步；第十五次：接入提交门禁 CI（`.github/workflows/ci.yml` + 静态契约守护）；第十六次：修复两个前端依赖版本漂移——`admin-web`、`companion-pwa` 的全部依赖由 `latest` 改为精确版本，并新增 lockfile 一致性守护；第十七次：CI 首次实跑通过（run `34590744934`）、Action 升到 v7 消除弃用告警并补齐 Action 版本守护，v7 版工作流再次实跑通过（run `34591258934`，4 job 全绿）；第十八次：员工站内通知收件箱——迁移 `019_inbox_items` + `app/inbox.py`（内存/PostgreSQL 双仓储）+ 三接口 + 两端入口，写入失败不阻断仅写审计；并登记「运行终态未落盘」缺口（E 节）；第十九次：补齐运行终态落盘（`RuntimeService` 统一回写 start/pause/resume/cancel、直启与内容生成运行一并纳入）、新增受控 `finish_reason`（迁移 020）与 Mock 确定性失败路径（`fail.` 前缀），接入运行失败/取消站内通知，并把「带审批步骤的运行终态」登记为新缺口；第二十次：补齐运行内审批决议闭环（`GET/POST /api/v1/runs/{run_id}/approvals[...]`、仅 CEO/超管且发起人不能自审、通过后执行步骤并落到终态、驳回立即 failed 并新增 `finish_reason=approval_rejected`、审计 `run.approval_decided`、通知 `run.approval_rejected`），关闭上一轮登记的缺口，并把「审批人无租户级待办入口」登记为新缺口；第二十一次：管理台运行详情页（指标 / 事件时间线 / 审批决议，通知跳转与 URL 直达），并修复两端收件箱 kind 漂移 + 新增 `test_frontend_inbox_kinds.py` 守护；第二十二次：审批人的运行审批待办入口（聚合第 4 类 `run_approval` + 伴侣端第 4 类卡片与决议动作），关闭 E 节最后一条 ❌；配套修复「终态运行可被剩余审批复活」的缺陷，并把「运行时状态未持久化（待办不跨重启、多进程不完整）」首次写入文档；第二十三次：运行时状态持久化——迁移 `021` + `PostgresRuntimeStateStore`（整行 JSONB upsert）+ 编解码与 `InvalidRuntimeState` + `build_runtime_state_store`（postgres 强制持久化、memory 仅限 development），事件 payload 写入前即脱敏，关闭「运行时状态持久化」缺口；第二十四次：通用审计查询接口 + 管理台审计页（严格本租户、动作/目标/操作者/时间筛选、`limit`+`offset`+`total`）与 33 个动作标签的漂移守护，把已落库审计变成可查证据）
-> **基线**：分支 `main`（`feature/acceptance-tooling` 已于 2026-09-11 快进合入），全量 **1159 项测试通过**，`compileall` 退出码 0
+> **基线**：分支 `main`（`feature/acceptance-tooling` 已于 2026-09-11 快进合入）。**当前口径（2026-09-12 CI 实测，2026-09-13 同步）：后端 1434 用例全绿**、`compileall` 退出码 0；四 job 全绿（`.github/workflows/ci.yml`）。**本节以下遗留的 1159 / 975 / 121 / 60 / 108 等数字为 2026-09-10 至 09-11 的历史快照，已过期，保留仅作留痕**。
 >
-> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的 121 个测试模块、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
+> **证据口径（重要）**：本清单以 `docs/delivery-gates.md` 的勾选状态、`tests/` 目录的测试模块与用例（**当前 = 后端 1434，2026-09-12 CI 实测**）、`README.md` 的能力声明为准。标 ✅ 表示仓库内存在实现且门禁已勾选，**不等于我逐项重新验收过**；需要真实环境证据的项一律标 ⬜。
 
 ## 判定口径
 
@@ -26,8 +26,8 @@
 | 达到**真实环境验收**（staging / 生产 / 真实外部账号） | **0**（另有本地真实验证 2 项、CI 环境验证 1 项，见下两行） |
 | 本地已验证（真实 PostgreSQL 迁移与备份恢复演练、内容工作台内部闭环回归） | **2** |
 | CI 环境已验证（提交门禁在 GitHub Actions 实跑通过） | **1** |
-| 测试文件数 | **121** 个测试模块（`tests/`；另有 `conftest.py` 与 `oidc_test_idp.py` 两个辅助文件，不计入） |
-| 测试用例数 | **1159**（后端）+ 前端 `admin-web` 60、`companion-pwa` 37、`desktop` 19（Node `node:test`） |
+| 测试文件数 | **121** 个测试模块（`tests/`；**历史值**，2026-09-12 未重数；另有 `conftest.py` 与 `oidc_test_idp.py` 两个辅助文件，不计入） |
+| 测试用例数 | **1434**（后端，2026-09-12 CI 实测）+ 前端 `admin-web` 147、`companion-pwa` 37、`desktop` 19（**后三项为段二规格头部口径，2026-09-12 未逐项复核**）。**历史快照**：本行原记「1159 + 60 + 37 + 19」，已过期 |
 
 > **一句话结论**：服务端能力基本齐全，**本批次可独立实现的代码缺口已全部闭合（项 2 的死信通知渠道、项 9 的抓取器/发布器/内容安全评估、项 3 的 OIDC SSO 客户端）**；但项 3 的真实 IdP 联调与项 6 的 GEO 适配器**尚需先拿到口径/契约才能动工**，不属于本仓库可独立完成的范围。其余卡点全为外部依赖。
 >
@@ -151,7 +151,7 @@
 
 | 项 | 实现 | 测试 | 验收 | 证据 |
 | --- | --- | --- | --- | --- |
-| 网页管理台（知识权限、公众号内容工作台、内容历史、协同动态、通知、安全与审计、员工与岗位、数字员工设置、用量与费用） | ✅ | ✅（Vitest，108 项） | ⬜ | `admin-web/`（9 个侧栏 feature 页面 + 运行详情页） |
+| 网页管理台（知识权限、公众号内容工作台、内容历史、协同动态、通知、安全与审计、员工与岗位、数字员工设置、用量与费用） | ✅ | ✅（Vitest，**147 项**——2026-09-12 口径；原记 108 项已过期） | ⬜ | `admin-web/`（9 个侧栏 feature 页面 + 运行详情页） |
 | 协同动态只读接口与任务权限过滤 | ✅ | ✅ | ⬜ | 门禁已勾选；响应已含租户/项目/责任人 |
 | 协同动态表现层（静态状态列表） | ✅ | ✅ | ⬜ | `admin-web/src/features/collaborationDynamics/`（页面 + 4 项 Vitest）；**已知限制**：仅呈现 `TaskStatus` 三态，文档 5 态词表无领域支撑 |
 | 伴侣端待办聚合接口 `GET /api/v1/approvals/pending` | ✅ | ✅ | ⬜ | `test_approvals_{service,store,api}.py`、`test_approvals_run_kind.py`；四类 kind（含 `run_approval`）+ 按角色过滤 + 计划提案与运行审批自审排除 + 注册标识脱敏 |
@@ -216,7 +216,7 @@
 6. ~~规划能力闭环：数据分级闸门、运行指标采集、编排优化提案~~ ✅（本批次已完成，见 C/E 节）。
 7. ~~协同动态表现层（静态状态列表）~~ ✅（本批次已完成，见 J 节）。
 8. ~~客户端三端：待办聚合接口 + PWA 伴侣端 + Electron 桌面端~~ ✅（本批次已完成，见 J 节）。
-9. ~~合并批次分支回 `main`~~ ✅（`feature/compliance-deployable`、规划能力闭环与 `feature/acceptance-tooling` 的内容均已进入 `main`；`feature/acceptance-tooling` 于 2026-09-11 **快进合入**，`main` 基线为后端 **975** 项 + `admin-web` 18 + `companion-pwa` 24 + `desktop` 13 全绿）。
+9. ~~合并批次分支回 `main`~~ ✅（`feature/compliance-deployable`、规划能力闭环与 `feature/acceptance-tooling` 的内容均已进入 `main`；`feature/acceptance-tooling` 于 2026-09-11 **快进合入**，`main` 基线为后端 **975** 项 + `admin-web` 18 + `companion-pwa` 24 + `desktop` 13 全绿——**该组为 2026-09-11 历史快照，当前基线见文档头部**）。
 10. ~~内容安全评估用例（项 9 的最后一块代码缺口）~~ ✅（已完成：canary 判定 + 反向控制，见 G 节与 `docs/content-safety-evaluation.md`）。
 11. **拿到外部资源后**：跑 `py scripts/staging_preflight.py` → `py scripts/staging_concurrency_probe.py` → 跨租户测试 → 并发压测 → 沙箱验证 → 真实联调；内容侧另跑 `py scripts/content_safety_evaluation.py` 并留存 JSON 报告。
 12. **桌面端发布链**：固定依赖版本 → 代码签名与时间戳 → 安装包构建 → 干净 Windows 机器验收（阻塞项 7）。
