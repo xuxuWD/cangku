@@ -161,6 +161,10 @@ class ToolExecutionService:
         tool_face: frozenset[str] | None = None,
         authorize_execution: Callable[[Any, str, Any], None] | None = None,
         trusted_roots: str | Sequence[str] | None = None,
+        # ④-0 属主 / 权限位判定口径：默认即生产语义（属主 root、group/world 不可写）；
+        # 可注入仅为测试在非 root 平台构造受信任假文件（不得放宽生产默认值）。
+        trusted_uid: int = 0,
+        write_mask: int = 0o022,
         needs_approval_fn: Callable[[str, str, str], bool] | None = None,
         now: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
@@ -186,7 +190,10 @@ class ToolExecutionService:
         self._new_id = id_factory or _default_id
         self._path_guard = PathGuard()
         self._command_gate = CommandGate(
-            trusted_roots=parse_trusted_roots(trusted_roots), workspace_root=workspace.root
+            trusted_roots=parse_trusted_roots(trusted_roots),
+            workspace_root=workspace.root,
+            trusted_uid=trusted_uid,
+            write_mask=write_mask,
         )
         # 判定留痕：`gate_trace` 为本次调用序列；`gate_calls` 为累计计数（供"重跑"断言）。
         self.gate_trace: list[str] = []

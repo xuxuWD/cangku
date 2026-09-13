@@ -31,6 +31,8 @@ from app.runtime.service import RuntimeService
 from app.tool_execution.args_digest import args_digest
 from app.tool_execution.blacklist import (
     READ_ONLY_WHITELIST,
+    CommandDenied,
+    ExecutableTrust,
     executable_blacklist_hit,
     normalize_args,
     param_blacklist_hit,
@@ -105,6 +107,18 @@ def _elf(path: str, *, body: bytes = b"\x7fELF" + b"\x00" * 64, mode: int = 0o55
     return path
 
 
+def _current_owner_uid() -> int:
+    """④-0 属主判定的「受信任属主」在**当前平台**的可注入期望值。
+
+    * POSIX：返回**当前进程 uid**（`os.getuid()`）——tmp 目录内新建的假可执行文件属主即该 uid，
+      从而在**非 root** 环境下也能被 ④-0 视为「受信任属主」而继续走后续判定。
+    * Windows：无 POSIX 属主语义，`os.stat().st_uid` **恒为 0**，故只能取 0；此时「属主必须是 0」
+      **退化为恒真**、本质上**不可判定**（详见 `test_exec_source_owner_check_platform_semantics`）。
+    """
+    getuid = getattr(os, "getuid", None)
+    return int(getuid()) if getuid is not None else 0
+
+
 def build_service(
     tmp_path,
     *,
@@ -114,6 +128,8 @@ def build_service(
     artifact_export_enabled: bool = False,
     authorize_execution=None,
     needs_approval_fn=None,
+    trusted_uid: int | None = None,
+    write_mask: int | None = None,
 ):
     trusted = tmp_path / "trusted"
     trusted.mkdir(exist_ok=True)
@@ -131,6 +147,9 @@ def build_service(
         authorize_execution=authorize_execution,
         needs_approval_fn=needs_approval_fn,
         trusted_roots=(str(trusted),),
+        # ④-0 属主口径按平台注入（生产默认 0 由 ToolExecutionService 保证，不在此覆盖）。
+        trusted_uid=_current_owner_uid() if trusted_uid is None else trusted_uid,
+        write_mask=0o022 if write_mask is None else write_mask,
         now=lambda: NOW,
     )
     return service, trusted, workspace_root
@@ -315,6 +334,65 @@ def test_exec_source_rejects_outside_trusted_root(tmp_path) -> None:
         service.execute(run_cmd(rogue, []))
     assert excinfo.value.reason_code is ReasonCode.BLACKLISTED
     assert GATE_EXEC_SOURCE in service.gate_trace
+
+
+def test_exec_source_rejects_owner_mismatch(tmp_path) -> None:
+    """④-0 属主不匹配**必须拒**（两平台均可判定 → 证明属主检查不是空转）。
+
+    注入期望属主 = 假文件真实属主 + 1，与假文件必然不同：
+    * POSIX：真实属主 = 当前进程 uid → 注入 uid+1；
+    * Windows：`os.stat().st_uid` 恒为 0 → 注入 1。
+    """
+    service, trusted, _ws = build_service(tmp_path, trusted_uid=_current_owner_uid() + 1)
+    _elf(str(trusted / "ls"))
+    with pytest.raises(ToolExecutionError) as excinfo:
+        service.execute(run_cmd(str(trusted / "ls"), []))
+    assert excinfo.value.http_status == 403
+    assert excinfo.value.reason_code is ReasonCode.BLACKLISTED
+    assert GATE_EXEC_SOURCE in service.gate_trace
+    # 该文件本身是合法 ELF / 在受信任根内 / 属主与 ④-1 名白名单均无问题：
+    # 命中原因只能是属主不匹配（对照 ④-1 未被触达）。
+    assert GATE_EXEC_NAME not in service.gate_trace
+
+
+def test_exec_source_owner_check_platform_semantics(tmp_path) -> None:
+    """④-0 属主检查在**当前平台**的判定能力（**显式断言**，不靠 skip 含混）。
+
+    * POSIX：`st_uid` 反映真实属主 → 属主检查**可判定**（真：`trusted_uid=真实属主` 通过；
+      假：`trusted_uid=真实属主+1` 被拒）。
+    * Windows：无 POSIX 属主语义、`os.stat().st_uid` **恒为 0** → 「属主必须是 0」
+      **退化为恒真**，本平台**无法**构造「属主非 0 的真实文件」，故「属主非 root 被拒」
+      这条生产语义在 Windows 上属**不可判定**；此处显式断言该退化事实。
+      判定逻辑本身并非空转：Windows 上仍可用**注入非 0 期望值**命中
+      （见 `test_exec_source_rejects_owner_mismatch`）。
+    """
+    path = _elf(str(tmp_path / "probe.elf"))
+    actual_uid = os.stat(path).st_uid
+    if os.name == "posix":
+        assert actual_uid == os.getuid(), "POSIX 上文件属主应为当前进程 uid"
+        assert ExecutableTrust(trusted_roots=[str(tmp_path)], trusted_uid=actual_uid).verify(path)
+        with pytest.raises(CommandDenied):
+            ExecutableTrust(trusted_roots=[str(tmp_path)], trusted_uid=actual_uid + 1).verify(path)
+    else:
+        # Windows：属主恒 0 ⇒ 期望 0 的属主检查退化为恒真（不可判定为假）。
+        assert actual_uid == 0, "Windows 上 st_uid 应为恒 0；若不为 0，需重估本平台判定口径"
+        assert ExecutableTrust(trusted_roots=[str(tmp_path)], trusted_uid=0).verify(path)
+
+
+def test_exec_source_write_mask_is_injectable(tmp_path) -> None:
+    """④-0 权限位口径可注入且真实生效：默认 `0o022` 拒 group/world 可写；显式 `0` 时不因该位拒。
+
+    两平台均可判定：POSIX `chmod 0o777` 置位 world-writable；Windows `chmod` 仅切只读位，
+    可写文件 `st_mode` 含 `0o666`（`& 0o022 != 0`）。
+    """
+    path = _elf(str(tmp_path / "writable.elf"), mode=0o777)
+    owner = os.stat(path).st_uid  # 与真实属主对齐，单独考察权限位（避免属主分支先行拒绝掩盖本判定）
+    with pytest.raises(CommandDenied, match="group/world"):
+        ExecutableTrust(trusted_roots=[str(tmp_path)], trusted_uid=owner).verify(path)
+    # 注入 write_mask=0：该位不再拒绝（属主 / 受信任根 / ELF 等其余判定不变）。
+    assert ExecutableTrust(
+        trusted_roots=[str(tmp_path)], trusted_uid=owner, write_mask=0
+    ).verify(path)
 
 
 def test_exec_name_whitelist_is_fail_closed(tmp_path) -> None:

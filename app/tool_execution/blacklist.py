@@ -195,14 +195,30 @@ def _inside_workspace(candidate: str, workspace_path: str | None, virtual_root: 
 
 
 class ExecutableTrust:
-    """④-0：可执行文件来源校验。"""
+    """④-0：可执行文件来源校验。
 
-    def __init__(self, *, trusted_roots: Iterable[str], workspace_root: str = "") -> None:
+    `trusted_uid` / `write_mask` 是**可注入的判定口径**，默认值即生产语义：
+    * `trusted_uid`（默认 `0` = root）：期望属主 uid。POSIX 上 `st_uid` 反映真实属主；
+      Windows 无 POSIX 属主语义、`os.stat().st_uid` 恒为 `0`，故该判定在本平台**退化为恒真**
+      （无法判定为「假」）。
+    * `write_mask`（默认 `0o022` = group/world 任一位可写即拒）：`st_mode & write_mask != 0` 即拒。
+    """
+
+    def __init__(
+        self,
+        *,
+        trusted_roots: Iterable[str],
+        workspace_root: str = "",
+        trusted_uid: int = 0,
+        write_mask: int = 0o022,
+    ) -> None:
         roots = tuple(self._normalize_root(root) for root in trusted_roots if root)
         if not roots:
             raise ValueError("未配置受信任可执行根 WORKBENCH_EXEC_TRUSTED_ROOTS")
         self._roots = roots
         self._workspace_root = os.path.realpath(workspace_root) if workspace_root else ""
+        self._trusted_uid = trusted_uid
+        self._write_mask = write_mask
 
     @staticmethod
     def _normalize_root(root: str) -> str:
@@ -211,6 +227,14 @@ class ExecutableTrust:
     @property
     def roots(self) -> tuple[str, ...]:
         return self._roots
+
+    @property
+    def trusted_uid(self) -> int:
+        return self._trusted_uid
+
+    @property
+    def write_mask(self) -> int:
+        return self._write_mask
 
     def _in_trusted_root(self, resolved: str) -> bool:
         for root in self._roots:
@@ -240,9 +264,9 @@ class ExecutableTrust:
             raise CommandDenied("可执行文件不可读取", sub_step="④-0") from exc
         if not os.path.isfile(resolved):
             raise CommandDenied("可执行文件不是常规文件", sub_step="④-0")
-        if info.st_uid != 0:
-            raise CommandDenied("可执行文件属主不是 root", sub_step="④-0")
-        if info.st_mode & 0o022:
+        if info.st_uid != self._trusted_uid:
+            raise CommandDenied("可执行文件属主不是受信任属主", sub_step="④-0")
+        if info.st_mode & self._write_mask:
             raise CommandDenied("可执行文件对 group/world 可写", sub_step="④-0")
         try:
             with open(resolved, "rb") as handle:
@@ -260,9 +284,19 @@ class CommandGate:
     """④ 的落点：④-0 → ④-1 → ④-2 顺序固定，任一命中即 `CommandDenied`。"""
 
     def __init__(
-        self, *, trusted_roots: Iterable[str], workspace_root: str = ""
+        self,
+        *,
+        trusted_roots: Iterable[str],
+        workspace_root: str = "",
+        trusted_uid: int = 0,
+        write_mask: int = 0o022,
     ) -> None:
-        self._trust = ExecutableTrust(trusted_roots=trusted_roots, workspace_root=workspace_root)
+        self._trust = ExecutableTrust(
+            trusted_roots=trusted_roots,
+            workspace_root=workspace_root,
+            trusted_uid=trusted_uid,
+            write_mask=write_mask,
+        )
 
     def verify_source(self, executable: str) -> str:
         return self._trust.verify(executable)
