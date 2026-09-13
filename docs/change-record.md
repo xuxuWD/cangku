@@ -19,6 +19,17 @@
 | **回退方式** | 改回宿主 bind 需**同时放弃** `noexec,nosuid,nodev` 三项（或改用其它隔离手段）⇒ **属安全性下降**，**回退前必须重新评审**，不得静默切换。 |
 | **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §3.3 文件系统 / 工作目录两行（2026-09-13 裁决注）；段二-3 实现 `app/tool_execution/executor.py` |
 
+### 2026-09-13 · 执行容器 tmpfs 追加 `mode=1777`（段 F 复跑发现）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-13（随段 F 真实 turn 复跑登记） |
+| **变更** | 执行容器的**工作卷 tmpfs** 挂载选项追加 **`mode=1777`**（非 root 进程需可写）。 |
+| **原因** | 容器以**非 root（65534）**运行，而 tmpfs 默认属主为 root ⇒ 工作卷对执行进程**不可写**。段 F 的真实 turn 复跑暴露该偏差。 |
+| **影响面** | 仅影响**容器内工作卷的权限位**；**不改变** §3.3 的其余加固项，**不改变**「生成即空、随容器销毁」语义（容器销毁即清，且 `noexec,nosuid,nodev` 三项仍在）。 |
+| **回退方式** | 收紧 `mode` 前必须先确认非 root 执行仍可写工作卷，否则执行会失败；**不得**为收紧权限而把容器改回 root 运行（那是更大的安全性下降）。 |
+| **依据** | 段 F 实现 `app/tool_execution/executor.py`；规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §3.3 文件系统行 |
+
 ### 2026-09-13 · 对既有表 `workbench_run_records` 增补唯一约束（随迁移 `027`）
 
 | 项 | 内容 |
