@@ -603,6 +603,85 @@ def build_runtime_service(settings: Settings, *, store, transport_factory=None, 
     return RuntimeService(store, registry=registry, state_store=shared_state_store, run_metrics=run_metrics)
 
 
+def build_tool_execution(
+    settings: Settings,
+    *,
+    run_metrics=None,
+    audit=None,
+    connection=None,
+    migrate: bool = True,
+):
+    """按 backend 装配段二工具执行服务（规格 §4.1.6-2）。
+
+    - `WORKBENCH_AGENT_RUNTIME_BACKEND=mock`（默认）时**必须**返回 `None`；
+    - 装配失败（缺件 / 配置非法）**不抛进程级异常**：记 `error` 告警并返回 `None`，
+      即"拒绝启用真实执行，但不拒绝整个服务进程启动"（§4.1.6-3）。
+    """
+    validate_runtime_settings(settings)
+    if settings.agent_runtime_backend != "dsh":
+        return None
+
+    from .tool_execution.body_cipher import BodyCipher
+    from .tool_execution.catalog import build_tool_spec_catalog
+    from .tool_execution.errors import ToolExecutionConfigError
+    from .tool_execution.executor import ContainerExecutor
+    from .tool_execution.log import get_logger
+    from .tool_execution.service import ToolExecutionService
+    from .tool_execution.startup import assert_real_execution_ready
+    from .tool_execution.workspace import WorkspaceManager
+
+    # 授权位与运行记录同库同表：直接复用运行记录仓储（§4.1.6-1）。
+    run_records = getattr(run_metrics, "store", None)
+    try:
+        catalog = build_tool_spec_catalog()
+        tool_actions = _build_tool_action_store(settings, connection=connection, migrate=migrate)
+        body_cipher = BodyCipher.from_base64(settings.body_encryption_key)
+        executor = ContainerExecutor.from_settings(settings)
+        workspace = WorkspaceManager(settings.exec_workspace_root)
+        tool_execution = ToolExecutionService(
+            catalog=catalog,
+            body_cipher=body_cipher,
+            executor=executor,
+            workspace=workspace,
+            tool_actions=tool_actions,
+            run_records=run_records,
+            audit=audit,
+        )
+    except ToolExecutionConfigError as exc:
+        get_logger().error("段二真实执行装配失败，已拒绝启用：%s", exc)
+        return None
+
+    if not assert_real_execution_ready(
+        tool_execution=tool_execution,
+        run_records=run_records,
+        tool_actions=tool_actions,
+        catalog=catalog,
+    ):
+        return None
+    return tool_execution
+
+
+def _build_tool_action_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配 `workbench_tool_actions` 仓储（内存实现仅 development 允许）。"""
+    from .tool_execution.errors import ToolExecutionConfigError
+    from .tool_execution.store import InMemoryToolActionStore, PostgresToolActionStore
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ToolExecutionConfigError("生产环境禁止使用内存工具动作仓储")
+        return InMemoryToolActionStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresToolActionStore(connection)
+    raise ToolExecutionConfigError("不支持的工具动作存储类型")
+
+
 _RUNTIME_KEYS = ("ragflow", "agentscope", "deerflow", "codex_worker", "hermes")
 
 
