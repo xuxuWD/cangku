@@ -3,7 +3,7 @@ import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
 import { decideRunApproval, getRunMetrics, getTask, listRunApprovals, listRunEvents } from './api'
 import { asRunError, initialRunDetailState } from './state'
-import { approvalStatusLabel, finishReasonLabel, runEventLabel, runStatusLabel, RUN_EVENT_PAYLOAD_FIELDS, type RunApproval, type RunDetailState, type RunEvent, type RunMetrics, type RunTask } from './types'
+import { approvalStatusLabel, finishReasonLabel, runApprovalOutcomeLabel, runEventLabel, runStatusLabel, RUN_EVENT_PAYLOAD_FIELDS, type RunApproval, type RunDetailState, type RunEvent, type RunMetrics, type RunTask } from './types'
 import { formatLocalTime } from '../../utils/time'
 
 // 与 Promise.allSettled 等价，但立即挂上处理函数，避免并发请求的拒绝变成未处理异常。
@@ -90,9 +90,11 @@ export function RunDetailPage({ runId, onNavigate }: { runId: string; onNavigate
   const decide = async (approvalId: string, approved: boolean) => {
     update({ decidingId: approvalId, toast: null })
     try {
-      await decideRunApproval(runId, approvalId, approved)
+      const decision = await decideRunApproval(runId, approvalId, approved)
       await load()
-      update({ decidingId: null, toast: approved ? '已通过' : '已驳回' })
+      // §4.1.6-7：可选 `execution` 存在时把执行结局并入提示；缺省即不追加（既有行为不变）。
+      const suffix = decision?.execution ? `（${runApprovalOutcomeLabel(decision.execution.outcome)}）` : ''
+      update({ decidingId: null, toast: (approved ? '已通过' : '已驳回') + suffix })
     } catch (error) {
       const mapped = asRunError(error)
       // 409 表示审批已被决议，直接刷新拿到最新状态。

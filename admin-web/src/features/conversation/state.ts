@@ -26,7 +26,7 @@ export function conversationErrorFromStatus(status: number, detail?: string | nu
   if (status === 403) return { status, message: detail || '当前岗位不能使用对话入口。', retryable: false }
   if (status === 404) return { status, message: detail || '会话不存在，或不属于当前账号。', retryable: false }
   if (status === 409) return { status, message: detail || '会话已归档，不能再发送新消息。', retryable: false }
-  if (status === 422) return { status, message: detail || '消息内容不符合要求（不能为空，最长 8000 字符）。', retryable: false }
+  if (status === 422) return { status, message: detail || '消息不符合要求（不能为空 / 超长，或未绑定可用的数字员工、工具调用格式不合法）。', retryable: false }
   if (status === 0 || status >= 500) return { status, message: DEFAULT_CONVERSATION_ERROR, retryable: true }
   return { status, message: detail || `请求未被接受（${status}）。`, retryable: false }
 }

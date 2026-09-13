@@ -43,7 +43,12 @@ export interface MessageCreateResponse {
   message_id: string
   conversation_id: string
   stub: boolean
-  reply: ConversationMessage
+  // 202 待批响应（stub=false）不含 reply；重取会话详情即可看到落库消息。
+  reply?: ConversationMessage
+  // §3.7 Y2 / 契约变更点 1：201 响应新增可选 run_id；202 另含 status 与 approval_id。
+  run_id?: string | null
+  status?: 'pending_approval'
+  approval_id?: string
 }
 
 export interface ConversationErrorShape {
@@ -74,9 +79,10 @@ export const CONVERSATION_PAGE_SIZE = 20
 export const MESSAGE_PAGE_SIZE = 50
 export const MAX_MESSAGE_LENGTH = 8000
 
-// 页面级显式声明：P1 未接入真实模型、不执行任何工具，避免用户误判。
+// 页面级显式声明：默认后端（mock）不接真实模型、不执行任何工具，助手回复是 stub 桩回复。
+// P2a 段二起，带 `Idempotency-Key` 的**结构化工具调用**消息可能触发真实执行（受九步闸门约束）。
 export const STUB_NOTICE =
-  '当前阶段（P1）未接入真实模型，也不会执行任何工具或文件/命令操作：助手回复均为后端标注 stub 的确定性桩回复，仅用于打通会话、权限与审计链路，请勿当作真实模型输出。'
+  '默认阶段未接入真实模型：普通消息的助手回复均为后端标注 stub 的确定性桩回复，仅用于打通会话、权限与审计链路，请勿当作真实模型输出；带幂等键的结构化工具调用消息会按九步闸门执行或转为待审批。'
 
 export const CONVERSATION_STATUS_LABELS: Record<ConversationStatus, string> = {
   active: '进行中',

@@ -3,6 +3,7 @@ import {
   DEFAULT_APPROVAL_ROLE,
   type PendingApproval,
   type PendingApprovalsResponse,
+  type RunApprovalDecision,
   type RunApprovalDetail,
 } from './types'
 
@@ -130,7 +131,8 @@ export function approveItem(item: PendingApproval, options: ApproveOptions = {})
   if (item.kind === 'run_approval') {
     const path = runApprovalPath(item)
     if (!path) return Promise.reject(new ApiError(MISSING_RUN_INFO, 400))
-    return authenticatedPost(path, { approved: true })
+    // 响应含可选 `execution`（§4.1.6-7）；按契约类型解析，未知字段不报错。
+    return authenticatedPost<RunApprovalDecision>(path, { approved: true })
   }
   // 账号注册审批必须带 role 与 tenant_id：角色由审批人指定，租户取当前会话。
   const session = loadSession()
@@ -148,7 +150,7 @@ export function rejectItem(item: PendingApproval, reason: string): Promise<unkno
   if (item.kind === 'run_approval') {
     const path = runApprovalPath(item)
     if (!path) return Promise.reject(new ApiError(MISSING_RUN_INFO, 400))
-    return authenticatedPost(path, { approved: false })
+    return authenticatedPost<RunApprovalDecision>(path, { approved: false })
   }
   if (item.kind === 'account_registration') {
     return authenticatedPost(`/auth/registrations/${encodeURIComponent(item.target_id)}/rejection`, { reason })

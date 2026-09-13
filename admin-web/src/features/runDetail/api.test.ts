@@ -55,6 +55,36 @@ describe('runDetail api', () => {
     expect(init.body).toBe(JSON.stringify({ approved: true }))
   })
 
+  it('tolerates the optional execution field on a decision response', async () => {
+    // §4.1.6-7：决议端点新增可选 `execution`；客户端解析未知字段不得报错，既有字段不变。
+    const fetchMock = vi.fn<FetchMock>(async () =>
+      ok({
+        run_id: 'run-1',
+        approval_id: 'a-1',
+        status: 'approved',
+        run_status: 'completed',
+        execution: { outcome: 'executed', code: 201, message_id: 'msg-1' },
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const decision = await decideRunApproval('run-1', 'a-1', true)
+
+    expect(decision).toMatchObject({ run_id: 'run-1', approval_id: 'a-1', status: 'approved', run_status: 'completed' })
+    expect(decision.execution?.outcome).toBe('executed')
+  })
+
+  it('parses a decision response without execution (backend=mock)', async () => {
+    const fetchMock = vi.fn<FetchMock>(async () =>
+      ok({ run_id: 'run-1', approval_id: 'a-1', status: 'approved', run_status: 'running' })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const decision = await decideRunApproval('run-1', 'a-1', true)
+
+    expect(decision.execution).toBeUndefined()
+  })
+
   it('maps 401 to a Chinese permission error', async () => {
     vi.stubGlobal('fetch', vi.fn<FetchMock>(async () => ({ ok: false, status: 401, json: async () => ({}) }) as Response))
 

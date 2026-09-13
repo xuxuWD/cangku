@@ -54,6 +54,29 @@ export interface RunApprovalDecision {
   approval_id: string
   status: string
   run_status: string
+  // 规格 §4.1.6-7：在既有字段之上**新增可选**执行结局；既有字段不变。
+  // 客户端须对未知字段容错——缺省即「无执行结局」（如 backend=mock）。
+  execution?: RunApprovalExecution
+}
+
+// §4.1.6-7 的 `execution`：只含结局码与消息指针，**不含**参数原文 / 宿主路径 / 凭据。
+export type RunApprovalOutcome = 'executed' | 'pending_approval' | 'rejected' | 'failed'
+
+export interface RunApprovalExecution {
+  outcome: RunApprovalOutcome
+  code?: number
+  message_id?: string
+}
+
+export const RUN_APPROVAL_OUTCOME_LABELS: Record<RunApprovalOutcome, string> = {
+  executed: '已执行',
+  pending_approval: '待审批',
+  rejected: '已拒绝',
+  failed: '执行失败',
+}
+
+export function runApprovalOutcomeLabel(outcome: string): string {
+  return RUN_APPROVAL_OUTCOME_LABELS[outcome as RunApprovalOutcome] ?? outcome
 }
 
 export interface RunErrorShape {

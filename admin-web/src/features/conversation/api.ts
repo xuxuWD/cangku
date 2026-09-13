@@ -55,9 +55,13 @@ export function createConversation(payload: { agent_key?: string; title?: string
 }
 
 // 响应直接带回 reply（含 stub 标注），不需要轮询。
-export function sendConversationMessage(conversationId: string, content: string): Promise<MessageCreateResponse> {
+// `Idempotency-Key`（§3.2 第四条）：带键 ⇒ 触发真实执行 + 幂等（201 已执行 / 202 待批）；
+// 不带键 ⇒ 后端沿用既有 `stub=true` 桩回复。键由调用方生成（同一键重放返回既有结果）。
+export function sendConversationMessage(conversationId: string, content: string, idempotencyKey?: string): Promise<MessageCreateResponse> {
+  const extra: HeadersInit = idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}
   return request<MessageCreateResponse>(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: 'POST',
+    headers: extra,
     body: JSON.stringify({ content }),
   })
 }

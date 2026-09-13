@@ -17,6 +17,24 @@ export interface PendingApproval {
   detail: Record<string, unknown>
 }
 
+// 运行审批决议的响应（规格 §4.1.6-7）：在既有字段之上**新增可选** `execution`；
+// 客户端须对未知字段容错——缺省即「无执行结局」（如 backend=mock）。既有字段不变。
+export type RunApprovalOutcome = 'executed' | 'pending_approval' | 'rejected' | 'failed'
+
+export interface RunApprovalExecution {
+  outcome: RunApprovalOutcome
+  code?: number
+  message_id?: string
+}
+
+export interface RunApprovalDecision {
+  run_id: string
+  approval_id: string
+  status: string
+  run_status: string
+  execution?: RunApprovalExecution
+}
+
 export interface PendingApprovalCounts {
   task_approval: number
   plan_proposal: number

@@ -29,6 +29,14 @@ const STATUS_FILTERS: Array<{ value: ConversationStatus | 'all'; label: string }
   { value: 'archived', label: '已归档' },
 ]
 
+// 每条消息生成一个新幂等键（§3.2 第四条）：同一键重放由服务端返回既有结果，
+// 因此重试/双击不会产生第二次真实执行。优先用 `crypto.randomUUID`，不可用时回落。
+function newIdempotencyKey(): string {
+  const cryptoObj = globalThis.crypto
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function') return cryptoObj.randomUUID()
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export function ConversationPage({
   conversationId,
   onNavigate,
@@ -111,7 +119,7 @@ export function ConversationPage({
     if (!conversationId || !canSend || !content) return
     setState((old) => ({ ...old, sending: true, sendError: null }))
     try {
-      await sendConversationMessage(conversationId, content)
+      await sendConversationMessage(conversationId, content, newIdempotencyKey())
       setDraft('')
       // 服务端已确认落库；重取详情拿到真实顺序与最新总数，不做乐观拼接。
       const nextLimit = Math.max(messagesLimit, (state.detail?.messages_total ?? 0) + 2)
