@@ -157,7 +157,7 @@
 | **D**（2026-09-13 重述口径） | ✅ **结论已取得证据**（⚠️ "只含短期令牌"已修正） | `02-driver.log:130-141` `pidTree`：`pid 13 = /usr/local/bin/node /dsh/node_modules/@deepseek-ai/dsh/lib/bin.js --profile sdk` ⇒ **dsh 在容器内（路径①下属预期）**；其 env / argv / `/proc/*/environ` **均无供应商密钥**（`08:5` `PROC_ENVIRON_HITS=0`）。**⚠️ 修正**：不得概括为"唯一凭据 = 43 字符令牌" —— 各轮 `DEEPSEEK_API_KEY` 长度为 **43**（在线轮，有 `MINT` 对应）、**29**（`09-negative-case.log:64-67`）、**21**（`20` / `21` 遥测两轮）；三者**均 ≠ 38**，但 **29 与 21 那两次无 `MINT` 记录、来源未留证** |
 | **E**（2026-09-13 重述口径） | ⚠️ **部分** | argv / env / 容器 spec **均无供应商密钥** ✅；`DEEPSEEK_BASE_URL=http://gw:8080`（**仅网关内网地址**）为**预期注入物** ✅。**缺**：「**不含工作台控制端点或其凭据**」**未取证**（本次实验无工作台控制端点，驱动器未回调） |
 | **F**（短期凭据六条） | ⚠️ **仅 2/6 有条目证据，且均为单样本**（原表"4/6"已下修） | ① **每 turn 新铸** ⚠️ **仅 1 次样本**（`03-gw.log:2` `MINT … bound=turn-1 ttl=120s total=1`）② **绑死租户 / 会话 / 代次** ⚠️ **校验点已裁决（2026-09-13）＝ 工作台控制面；该处尚未实现 ⇒ 本条未闭环**：**网关数据面不做绑定是预期、不是缺陷**。静态证据：`bound` 只是宿主经 `/__mint` 传入的**标签**（`gw.js:40`，**缺省值 `unbound` ⇒ 连"必填"都不是**），数据面（`gw.js:56-71`）**只校验存在与过期、从不校验 `bound`**，`gw.js` 全篇**无租户 / 会话 / 代次概念**；**运行期反证**（`out\30-binding-gw.log`，2026-09-13）：4 个"应通过"用例（`bound=turn-1` / `turn-2` / `unbound` / **令牌自带 bound 与请求声明的绑定不匹配**）**全部 `502` = 通过认证**，2 个对照组（**伪造令牌** / **TTL 过期**）**均 `401`** ⇒ **判定链本身有效**，故"全部通过"**不是网关失能**。⇒ 网关侧 `bound` **仅作审计元数据**；**强制绑定须在工作台控制面**（执行侧回调时按令牌反查 `(tenant, session, generation)` 并 constant-time 比对）落地，**属段二实现期** ③ **服务端为准** ✅（凭据以网关内存 Map 为准，容器声明不参与）④ **constant-time 比对** ❌ **未实现**（`gw.js:58` 用 `tokens.get(tok)` Map 查找）⑤ **终态同步吊销** ❌ **无归档证据**（原表引用的 `REVOKE bound=turn-2 n=1` 与 `DENY … reason=unknown-token` **在 `out\` 内任何日志中都不存在** —— 全目录 grep 只命中 `gw\gw.js:47/60` 的**代码字面量**）⑥ **孤儿令牌上限** ❌ **未实现**（`gw.js` 无令牌计数上限）。⇒ **六条中真正有归档运行期证据的只有 ①（单样本）与 ③** |
-| **G** | ⚠️ **部分** | 容器 env **不存在任何供应商 key** ✅（`04:171-183`）；容器**无外网出口** ✅（`02-driver.log:475` / `09-negative-case.log:868` 均 `supplierDomain=BLOCKED`）。**缺**：**`web_*` 是否真禁用未验证**；且 §F10.3 实测 `read-only` 下 `request/header` 的工具面**仍向模型暴露 `bash`**（`02-driver.log:321`）。**⚠️ 机理未证**：「无外网出口」只有 `fetch` 失败的负结果，**无网络 inspect**，无法区分 DNS 不可达 / egress 拦截 / 对端拒绝 |
+| **G** | ⚠️ **部分** | 容器 env **不存在任何供应商 key** ✅（`04:171-183`）；容器**无外网出口** ✅（`02-driver.log:475` / `09-negative-case.log:868` 均 `supplierDomain=BLOCKED`）。**`web_*` 禁用的手段与语义：✅ 已证（2026-09-13，见 **§F11**）** —— `--patch` 覆盖层可按 `id` 把插件整族禁用；**运行期工具面 25 → 23，恰好少 `web_fetch` / `web_search`，其余逐项不变**；并以 `pwsh`（Linux 上 `disabled`）与 `bash`（未禁用）互为反证，**顺带证得「`disabled: true` ⇒ 工具不进模型工具面」**（补上了 §F10.3 因采集截断而无法判定的问题）。⚠️ **仍未闭环**：「**我们自己的启动配置里是否真打了这个 patch**」属段二实现期（配置尚不存在）⇒ **不得据此声称"生产配置已禁用 `web_*`"**，须在 §3.6 启动期断言里落定。⚠️ 另注：`read-only` 下 `request/header` **仍向模型暴露 `bash`**（§F10.3，**不受本复验影响**）⇒ 仍须**显式禁用 `tool-bash`**。**⚠️ 机理未证**：「无外网出口」只有 `fetch` 失败的负结果，**无网络 inspect**，无法区分 DNS 不可达 / egress 拦截 / 对端拒绝 |
 | **红线 1**（清空宿主侧凭据后 turn **仍成功**） | ❌ **未取证** | 前提"turn 成功"未达成 ⇒ **无法判定**（**不得据此认为红线 1 成立**） |
 | **红线 2**（容器内存在持有供应商密钥的进程） | ✅ **未命中** | 各轮 `DEEPSEEK_API_KEY` 为 43 / 29 / 21 字符，**均 ≠ 供应商密钥 38 字符**；`PROC_ENVIRON_HITS=0`（**"唯一凭据是 43 字符令牌"的原表述已按 D 行修正**） |
 | **红线 3**（密钥明文出现在 `argv`/`env`/容器 spec/镜像层/日志，或容器内可触达供应商域名） | ⚠️ **未命中，但有一项根本没测** | 见 B / D / E 行；容器内 `supplierDomain=BLOCKED`。**⚠️「镜像层」一项未测**：本次 dsh 由**宿主 bind mount** 提供（`04:36-38` `…\_dsh-linux-verify:/dsh:ro`），**不是镜像层** ⇒ 该项**无从判定**。**⚠️ `07` 的 `/tmp/.k` 命中仍未消解**（见下） |
@@ -756,3 +756,61 @@ dsh: {"kind":"error","error":{"message":"Authentication Fails, Your api key: ***
 | `_dsh-gateway-verify\telemetry\sink.js` | 本地假 OTLP 接收端（**不转发到任何外部域名**） | 待确认 |
 | `_dsh-gateway-verify\out\20~22-*.log` | 本次对照实验原始证据 | **建议保留** |
 | 容器 `otel-sink` / `tel-a` / `tel-b`、网络 `gwverify_net` | 本次实验运行时 | ✅ **已全部删除**（复查无残留） |
+
+---
+
+## F11 G 判据复验：`web_*` 的**禁用手段**与**运行期工具面**（2026-09-13 实测）
+
+> **为什么做**：§B14 G 行此前只剩一条缺口 —— "**`web_*` 是否真禁用未验证**"。它其实是两个问题：
+> ① dsh **有没有**手段把某插件整族关掉？（**若没有，§3.5「全部显式禁用」就是不可兑现的设计** —— 这类结论必须在开工前拿到）
+> ② 就算配了 `disabled`，**模型实际看到的工具面**是否真的少了它？
+> **原始证据**：仓库外 `_dsh-patch-verify\out\`（`30-web-patched.log` / `31-web-nopatch.log` / `32-toolface-baseline.log` / `33-toolface-patched.log`）。
+
+### F11.1 手段：`--patch` 覆盖层（**装配层**证据）
+
+`dsh --help` 实测有 **`--patch <path>`**（`extra patch-list overlay applied after the profile layer`，**可重复**）。README 明确 patch 应用顺序：
+
+> 各 bundle 的 patch（按 `dsh.profile.bundles` 顺序）→ **剖面自己的 `cordis.patch.yml`** → 家目录级 `$DSH_HOME/cordis.patch.yml` → **`--patch` 覆盖层**
+
+**patch 语法**取自随包样例 `@deepseek-ai/dsh-sdk-app\cordis.patch.yml:9-10`（`- id: session-title-llm` + `disabled: true`）：**按插件 `id` 打 `disabled: true`**。
+
+**A/B 对照**（同一个 `--profile sdk --dump-config`，**唯一变量是 `--patch`**）：
+
+| 项 | 无 patch | 加 patch（关 4 个联网插件） |
+| --- | --- | --- |
+| 输出行数 | 352 | 358 |
+| `disabled: true` 总数 | **3** | **7** |
+| `web` / `web-search-deepseek` / `web-fetch-http` / `tool-web` | 均**无** `disabled` | **4 个全部** `disabled: true` |
+| 分层标记 | — | 多出 `# == @deepseek-ai/dsh-base, patched by …\disable-web.yml` |
+
+⇒ **dsh 确实能按 `id` 把插件整族关掉**（不是只能靠上游写死的"平台表达式"碰运气）。
+
+### F11.2 运行期工具面（**决定性证据**）
+
+**方法（含一处方法修正）**：复用 [driver.mjs](file:///d:/徐徐AI学习/_dsh-gateway-verify/exec/driver.mjs) 的协议流程（`initialize` → `session/prompt` → `shutdown`），但**另写一个不截断的驱动** `_dsh-patch-verify\tools-face-driver.mjs` —— 原驱动用 `truncate(v, 1200)` 落盘，**会把 `request/header` 的 `tools[]` 切掉**（这正是 §F10.3 当初只看得见 `bash` 一个工具名的原因，属**采集缺陷**，不是 dsh 只暴露了 `bash`）。两轮均在 `--network none` 的 `node:22-slim` 容器内运行，环境除 `DSH_PATCH` 外**完全相同**。
+
+| 轮次 | `DSH_PATCH` | 工具面数量 | web 类工具 | `pwsh` | `bash` |
+| --- | --- | --- | --- | --- | --- |
+| **基线** | 不设 | **25** | **`web_fetch` / `web_search`** | false | true |
+| **加 patch** | `disable-web.yml` | **23** | **（无）** | false | true |
+
+**三条独立结论**：
+1. **`disabled: true` ⇒ 工具不出现在模型工具面（运行期证明）**：`pwsh` 在 Linux 上本就是 `disabled`（§F7.2），实测它**与联网工具一样全程不在**工具面；反证 = `bash`（Linux 上未禁用）**始终在**。⇒ **同时补上了 §F10.3 那个因截断而无法判定的问题**。
+2. **25 → 23，恰好少 `web_fetch` / `web_search` 两个，其余 23 个逐项不变**（两端 `TOOLFACE_JSON` 已落盘可逐项比对）⇒ 覆盖层**精准生效、无副作用**。
+3. 基线 **25 个工具与规格 §3.5 记录的清单逐项吻合**（含 `web_fetch` / `web_search`）⇒ 该行得到**运行期复核**。
+
+### F11.3 结论与 G 行现状
+
+- ✅ **手段可兑现 + 语义已证**：`--patch` 覆盖层能按 `id` 整族禁用；**禁用后模型工具面确实不含 web 工具**（25→23）。
+- ⚠️ **仍未闭环**：**"我们自己的启动配置里是否真的打了这个 patch"属段二实现期**（配置目前不存在）⇒ **不得据此声称"生产配置已禁用 `web_*`"**，须在 §3.6 的**启动期断言**里落定。
+- ⚠️ **本复验不影响 §F10.3 的结论**：`read-only` 下 `request/header` **仍向模型暴露 `bash``** ⇒ 仍须靠**显式禁用 `tool-bash`** 解决，不能指望 `read-only`。
+
+### F11.4 临时产物登记
+
+| 文件 / 目录 | 用途 | 处置 |
+| --- | --- | --- |
+| `_dsh-patch-verify\disable-web.yml` | 禁用联网插件族的一次性 patch | **建议保留**（复跑用） |
+| `_dsh-patch-verify\tools-face-driver.mjs` | **不截断**的工具面驱动 | **建议保留**（复跑用） |
+| `_dsh-patch-verify\out\30`~`33-*.log` | 装配层 A/B 与运行期 A/B 的原始证据 | **建议保留** |
+| `_dsh-patch-verify\dshhome\` | `DSH_HOME` 临时初始化目录（**仓库外**，未写入用户家目录） | 待确认（可删） |
+| 容器（`--rm`） | 本次两次运行 | ✅ **已自动删除**，无残留 |
