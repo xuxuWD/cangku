@@ -56,6 +56,7 @@ class RunRecordStore(Protocol):
     def set_execution_authorization(
         self, tenant_id: str, run_id: str, authorization: ExecutionAuthorization | None
     ) -> RunRecord: ...
+    def delete(self, tenant_id: str, run_id: str) -> None: ...
 
 
 class InMemoryRunRecordStore:
@@ -106,6 +107,13 @@ class InMemoryRunRecordStore:
             items = [item for item in self._items.values() if item.tenant_id == tenant_id]
         items.sort(key=lambda item: item.started_at, reverse=True)
         return items[:limit]
+
+    def delete(self, tenant_id: str, run_id: str) -> None:
+        """删除运行记录（⑥ 失败回滚，§4.1.3）；仅删除本租户匹配的记录，幂等。"""
+        with self._lock:
+            item = self._items.get(run_id)
+            if item is not None and item.tenant_id == tenant_id:
+                del self._items[run_id]
 
 
 class PostgresRunRecordStore:
@@ -288,3 +296,13 @@ class PostgresRunRecordStore:
                 )
                 rows = cursor.fetchall()
         return [self._hydrate(row) for row in rows]
+
+    def delete(self, tenant_id: str, run_id: str) -> None:
+        """删除运行记录（⑥ 失败回滚，§4.1.3）；仅删除本租户匹配的行，幂等。"""
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_run_records WHERE tenant_id = %s AND run_id = %s",
+                        (tenant_id, run_id),
+                    )

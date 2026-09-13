@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Mapping
@@ -57,6 +58,8 @@ INVOCATION_PARAMS_FIELD = "params"
 
 # 承载任务口径（§3.7 Y2 表）。
 CONVERSATION_TASK_BUDGET = 0.0
+
+_logger = logging.getLogger(__name__)
 
 
 class ConversationExecutionError(ValueError):
@@ -242,7 +245,7 @@ class ConversationExecutionService:
         kind = "write" if spec.has_side_effect else "read"
         step_id = _new_step_id()
 
-        task = self._create_task(context, conversation, spec, invocation, idempotency_key)
+        task, task_created = self._create_task(context, conversation, spec, invocation, idempotency_key)
         plan = AgentPlan.from_steps(
             [
                 {
@@ -275,12 +278,21 @@ class ConversationExecutionService:
         try:
             result = self.tool_execution.execute(request, actor=context, plan=plan)
         except ToolExecutionError as exc:
-            return self._handle_failure(context, conversation_id, idempotency_key, run_id, exc)
+            return self._handle_failure(
+                context,
+                conversation_id,
+                idempotency_key,
+                run_id,
+                exc,
+                created_task_id=task.id if task_created else None,
+            )
 
         if result is None:  # 允许打桩返回 None（无执行结局）——不产生结果码，交由调用方兜底
             raise ConversationExecutionError("执行未返回结果", http_status=502)
 
         if result.outcome == "pending_approval":
+            # §3.7 Y2：⑥ 落库成功（该动作进入等待审批）后，把承载任务由 `queued` 置 `pending_approval`。
+            self._mark_task_pending_approval(context, task.id)
             self._append_message(context, conversation_id, MessageRole.USER, content)
             reply = self._append_message(
                 context,
@@ -330,10 +342,18 @@ class ConversationExecutionService:
         idempotency_key: str,
         run_id: str,
         exc: ToolExecutionError,
+        *,
+        created_task_id: str | None = None,
     ) -> MessageExecutionResult:
-        """按受控异常携带的 HTTP 语义落幂等行并抛出；**`503` 不写本表**（同事务回滚，§4.1.3）。"""
+        """按受控异常携带的 HTTP 语义落幂等行并抛出；**`503` 不写本表且回滚本次已创建对象**（§4.1.3）。
+
+        §4.1.3 / §4.1.6-5：`⑥` 落库失败（`503`）与幂等行、承载任务、运行属**同一次请求的产物**——
+        `⑥` 失败即整体回滚，故**不存在"首次 `503`"的行**，重放该键会**重新走一遍闸门**（此时未产生
+        任何消息 / 任务 / 运行 / 副作用，不违反幂等）。
+        """
         if exc.http_status == 503:
-            # ⑥ 加密 / 落库失败：不写幂等行、不追加助手消息（重放会重新走一遍闸门）。
+            # 撤销本次请求已创建的运行与承载任务（幂等行本就不写、消息在 ⑥ 成功后才追加 ⇒ 天然为 0）。
+            self._compensate(context, run_id=run_id, task_id=created_task_id)
             raise ConversationExecutionError(str(exc) or "审批请求暂时无法登记，请稍后重试", http_status=503) from exc
         outcome = "failed" if exc.http_status in (502, 504) else "rejected"
         self._remember(
@@ -342,6 +362,47 @@ class ConversationExecutionService:
             message_id=None, run_id=run_id, approval_id=None,
         )
         raise ConversationExecutionError(str(exc) or "执行被拒绝", http_status=exc.http_status) from exc
+
+    # ------------------------------------------------------------------ ⑥ 失败回滚（零残留）
+
+    def _compensate(
+        self, context: UserContext, *, run_id: str | None, task_id: str | None
+    ) -> None:
+        """⑥ 失败的回滚：撤销本次请求已创建的对象，使请求结束后**零残留**（§4.1.3）。
+
+        顺序与创建相反（先运行、后承载任务）。两分支口径一致：Postgres 与 InMemory 均为**显式补偿**
+        （本服务跨 4 个独立仓储，无共享事务可挂靠）——各仓储新增 `delete` / `remove` 方法承担撤销。
+        任一步失败只记 `error` 日志，**不得掩盖对外的 `503`**，也不得删他人数据。
+        """
+        if run_id:
+            run_records = getattr(self.runtime_service, "run_records", None)
+            delete_run = getattr(run_records, "delete", None)
+            if delete_run is not None:
+                try:
+                    delete_run(context.tenant_id, run_id)
+                except Exception:  # noqa: BLE001 - 回滚失败只告警，不改变对外 503 语义
+                    _logger.error("⑥ 失败回滚：运行记录撤销失败 run_id=%s", run_id)
+            state_store = getattr(self.runtime_service, "state_store", None)
+            remove_state = getattr(state_store, "remove", None)
+            if remove_state is not None:
+                try:
+                    remove_state(run_id)
+                except Exception:  # noqa: BLE001
+                    _logger.error("⑥ 失败回滚：运行状态撤销失败 run_id=%s", run_id)
+        if task_id:
+            delete_task = getattr(self.task_store, "delete", None)
+            if delete_task is not None:
+                try:
+                    delete_task(context.tenant_id, task_id)
+                except Exception:  # noqa: BLE001
+                    _logger.error("⑥ 失败回滚：承载任务撤销失败 task_id=%s", task_id)
+
+    def _mark_task_pending_approval(self, context: UserContext, task_id: str) -> None:
+        """⑥ 落库成功后把承载任务置 `pending_approval`（§3.7 Y2；走既有受控枚举，不新造字符串）。"""
+        setter = getattr(self.task_store, "set_pending_approval", None)
+        if setter is None:
+            return
+        setter(context, task_id)
 
     # ------------------------------------------------------------------ 承载任务
 
@@ -370,7 +431,7 @@ class ConversationExecutionService:
         spec,
         invocation: ToolInvocation,
         idempotency_key: str,
-    ) -> Task:
+    ) -> tuple[Task, bool]:
         title = f"对话触发：{conversation.title or ''}".strip() or "对话触发执行"
         fingerprint = hashlib.sha256(
             json.dumps(
@@ -396,10 +457,10 @@ class ConversationExecutionService:
             AuditEvent(action="task.created", actor_id=context.user_id, actor_role=context.role)
         )
         try:
-            stored, _created = self.task_store.create(context, task)
+            stored, created = self.task_store.create(context, task)
         except IdempotencyConflict as exc:
             raise ConversationExecutionError(str(exc), http_status=409) from exc
-        return stored
+        return stored, created
 
     # ------------------------------------------------------------------ 消息与幂等写入
 

@@ -13,6 +13,8 @@ class TaskRepository(Protocol):
     def approve(self, context: UserContext, task_id: str) -> Task: ...
     def list_pending_approval(self, tenant_id: str, *, limit: int) -> list[Task]: ...
     def count_by_employee(self, tenant_id: str) -> dict[str, int]: ...
+    def set_pending_approval(self, context: UserContext, task_id: str) -> Task: ...
+    def delete(self, tenant_id: str, task_id: str) -> None: ...
 
 
 class PostgresTaskRepository:
@@ -158,6 +160,44 @@ class PostgresTaskRepository:
                 )
                 rows = cursor.fetchall()
         return [self._row_to_task(row) for row in rows]
+
+    def set_pending_approval(self, context: UserContext, task_id: str) -> Task:
+        """把承载任务由 `queued` 置为 `pending_approval`（段二规格 §3.7 Y2；不新增审计动作码）。"""
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE workbench_tasks
+                        SET status = 'pending_approval', updated_at = now()
+                        WHERE id = %s AND tenant_id = %s AND status = 'queued'
+                        """,
+                        (task_id, context.tenant_id),
+                    )
+        return self.get(context, task_id)
+
+    def delete(self, tenant_id: str, task_id: str) -> None:
+        """删除承载任务及其创建痕迹（⑥ 失败回滚用，§4.1.3）：任务行 + 审计行 + 出箱行一并清除，
+        使请求结束后**零残留**（与 InMemory 分支一致）。仅删除本租户匹配的记录，幂等。
+        """
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        DELETE FROM workbench_event_outbox
+                        WHERE tenant_id = %s AND aggregate_type = 'task' AND aggregate_id = %s
+                        """,
+                        (tenant_id, task_id),
+                    )
+                    cursor.execute(
+                        "DELETE FROM workbench_audit_events WHERE tenant_id = %s AND task_id = %s",
+                        (tenant_id, task_id),
+                    )
+                    cursor.execute(
+                        "DELETE FROM workbench_tasks WHERE id = %s AND tenant_id = %s",
+                        (task_id, tenant_id),
+                    )
 
     def count_by_employee(self, tenant_id: str) -> dict[str, int]:
         """按数字员工标识统计本租户任务数（只读聚合，用于岗位/员工清单页）。"""

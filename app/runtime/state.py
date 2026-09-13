@@ -44,6 +44,14 @@ class RuntimeStateStore:
         with self._lock:
             return self._states[run_id]
 
+    def remove(self, run_id: str) -> None:
+        """删除一个运行状态（⑥ 失败回滚用，§4.1.3：使该次请求**零残留**）。
+
+        新增方法，不改变 `get` / `list_for_tenant` 等既有读取语义；幂等，删不存在无副作用。
+        """
+        with self._lock:
+            self._states.pop(run_id, None)
+
     def list_for_tenant(self, tenant_id: str, *, statuses: Iterable[str] | None = None) -> list[RuntimeState]:
         """按租户列出运行状态，可选按状态过滤。
 

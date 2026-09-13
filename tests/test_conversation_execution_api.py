@@ -23,7 +23,7 @@ from app.conversation.execution import ConversationExecutionService
 from app.conversation.idempotency import InMemoryExecutionIdempotencyStore
 from app.conversation.service import ConversationService
 from app.conversation.store import InMemoryConversationStore
-from app.domain import TaskStore, UserContext
+from app.domain import TaskStore, TaskStatus, UserContext
 from app.main import app
 from app.runtime.records import InMemoryRunRecordStore
 from app.runtime.run_metrics import RunMetricsService
@@ -296,6 +296,60 @@ def test_persist_failure_503_does_not_write_idempotency(monkeypatch, _isolate) -
     second = send(conversation_id, content, key="k-5")
     assert second.status_code == 503
     assert fake.calls == 2
+
+
+def test_persist_failure_503_leaves_zero_residue_and_replays_gates(monkeypatch, _isolate) -> None:
+    """⑥ 落库失败（`503`）：一次失败请求结束后**四项全零残留**（§4.1.3 J-5）。
+
+    规格口径：⑥ 与本行属**同一事务**，⑥ 失败即整体回滚 ⇒ **不得**留下承载任务 / Run / 消息 / 幂等行
+    中的任何一个；重放该键因幂等表确无该键而**重新走一遍闸门**（不违反幂等）。
+    """
+    fake = FakeToolExecution(error=ToolExecutionError("审批请求暂时无法登记，请稍后重试", http_status=503))
+    wire_execution(monkeypatch, fake, _isolate["directory"])
+    conversation_id = create_conversation()
+    content = invocation("fs.write", {"path": "/workspace/a.txt", "content": "x"})
+
+    first = send(conversation_id, content, key="k-503")
+
+    assert first.status_code == 503, first.text
+    # ① 承载任务：0（本次新建的记录已被补偿撤销）
+    assert main.store.count_by_employee(TENANT) == {}
+    # ② Run：0（运行记录 + 进程内运行状态均被撤销）
+    assert main.run_metrics_service.store.list_recent(TENANT, limit=50) == []
+    assert main.runtime_service.state_store.list_for_tenant(TENANT) == []
+    # ③ 消息：0（首次执行的消息只在 ⑥ 成功后才追加）
+    context = UserContext(TENANT, EMPLOYEE, "employee")
+    assert main.conversation_store.list_messages(context, conversation_id)[1] == 0
+    # ④ 幂等行：0（故不存在「首次 503」的行）
+    assert main.execution_idempotency_store.get(TENANT, EMPLOYEE, conversation_id, "k-503") is None
+
+    # 重放同一键：幂等表确无该键 ⇒ **重新走一遍闸门**（执行器再被调用一次，仍零残留）。
+    second = send(conversation_id, content, key="k-503")
+    assert second.status_code == 503
+    assert fake.calls == 2
+    assert main.store.count_by_employee(TENANT) == {}
+    assert main.run_metrics_service.store.list_recent(TENANT, limit=50) == []
+    assert main.execution_idempotency_store.get(TENANT, EMPLOYEE, conversation_id, "k-503") is None
+
+
+# ------------------------------------------------------------------ 承载任务 status 置 pending_approval
+
+
+def test_pending_approval_sets_carrying_task_pending_approval(monkeypatch, _isolate) -> None:
+    """§3.7 Y2：⑥ 落库成功（该动作进入等待审批）后，承载任务由建时的 `queued` 置 `pending_approval`。"""
+    fake = FakeToolExecution(
+        result=ToolExecutionResult(outcome="pending_approval", code=202, approval_id="appr-x")
+    )
+    wire_execution(monkeypatch, fake, _isolate["directory"])
+    conversation_id = create_conversation()
+    content = invocation("fs.write", {"path": "/workspace/a.txt", "content": "x"})
+
+    response = send(conversation_id, content, key="k-pa")
+
+    assert response.status_code == 202, response.text
+    task_id = fake.requests[0].task_id
+    task = main.store.get(UserContext(TENANT, EMPLOYEE, "employee"), task_id)
+    assert task.status is TaskStatus.PENDING_APPROVAL
 
 
 # ------------------------------------------------------------------ agent_key 收紧 / 输入非法

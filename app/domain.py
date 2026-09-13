@@ -128,6 +128,36 @@ class TaskStore:
                 counts[task.employee_key] = counts.get(task.employee_key, 0) + 1
         return counts
 
+    def set_pending_approval(self, context: UserContext, task_id: str) -> Task:
+        """把承载任务由 `queued` 置为 `pending_approval`（段二规格 §3.7 Y2）。
+
+        规格定死：建时 `queued`，**`pending_approval` 仅在 ⑥ 落库成功后置位**（`001_initial.sql`
+        的 CHECK 仅允许 `queued`/`pending_approval`/`cancelled`）。不新增审计动作码；仅当当前为
+        `queued` 时置位（幂等，重复调用无副作用）。
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.tenant_id != context.tenant_id:
+                raise TaskNotFound(task_id)
+            if task.status is TaskStatus.QUEUED:
+                task.status = TaskStatus.PENDING_APPROVAL
+            return task
+
+    def delete(self, tenant_id: str, task_id: str) -> None:
+        """删除承载任务（⑥ 失败回滚用，§4.1.3）：连同其幂等键索引一并清除，保证**零残留**。
+
+        仅删除本租户匹配的任务；不存在或跨租户一律不动（回滚不得误删他人数据）。新增方法，
+        不改变 `create` / `get` / `approve` 等既有语义。
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.tenant_id != tenant_id:
+                return
+            del self._tasks[task_id]
+            key = (task.tenant_id, task.created_by, task.idempotency_key)
+            if self._idempotency.get(key) == task_id:
+                del self._idempotency[key]
+
     def approve(self, context: UserContext, task_id: str) -> Task:
         with self._lock:
             task = self._tasks.get(task_id)
