@@ -49,6 +49,7 @@ from .settings import get_settings, resolve_cors_options, validate_runtime_setti
 from .runtime.authorization import ExecutionNotAuthorized
 from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable
 from .tool_execution.errors import ToolExecutionError
+from .tool_execution.cleanup import build_orphan_cleanup_task
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import FinishReason, RunRecordNotFound
 from .runtime.service import RunAccessDenied, RunApprovalDenied
@@ -149,6 +150,12 @@ tool_execution_service = build_tool_execution(
     runtime_service=runtime_service,
     tool_actions=tool_action_store,
 )
+# 孤儿容器清扫（§3.3 生命周期 / §8 U17 ⑥）：启动时 + 按 WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS
+# 周期，**跑在 API 进程内**；未启用真实执行（backend=mock）时不注册（不引入后台线程）。
+orphan_cleanup_task = build_orphan_cleanup_task(settings, tool_execution_service)
+if orphan_cleanup_task is not None:
+    app.add_event_handler("startup", orphan_cleanup_task.start)
+    app.add_event_handler("shutdown", orphan_cleanup_task.stop)
 content_store = build_content_store(settings)
 content_service = ContentService(
     task_store=store,

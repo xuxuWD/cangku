@@ -436,7 +436,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("INBOX_RETENTION_DAYS", "WORKBENCH_INBOX_RETENTION_DAYS"),
     )
 
-    # ---- 段二（dsh 接入段）新增配置：共 18 项 ----
+    # ---- 段二（dsh 接入段）新增配置：共 19 项 ----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
     # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。
     # 命名口径：只认 `WORKBENCH_` 前缀（由 env_prefix 自动派生），**不设裸名别名** ——
@@ -452,6 +452,9 @@ class Settings(BaseSettings):
     exec_pids_limit: int = Field(default=256, ge=16, le=4096)  # 对应 docker --pids-limit
     exec_memory_mb: int = Field(default=2048, ge=128, le=32768)  # 对应 docker --memory
     exec_cpu_quota: float = Field(default=2.0, ge=0.1, le=16.0)  # 对应 docker --cpus
+    # 孤儿容器上限（§8 U17 ⑥，保守 fail-closed）：超限 → 拒绝新执行并告警，不打挂进程；
+    # 默认 8。清扫时机 = 启动时 + 按 body_cleanup_interval_seconds 周期（同批）。
+    exec_orphan_limit: int = Field(default=8, ge=0, le=64)
     dsh_version: str = ""  # dsh 精确版本；留空 = 未配置（禁止 latest/main 一类浮动值）
     artifact_export_enabled: bool = False  # fail-closed：关闭时 artifact.export 不装配
     # 正文密文密钥：32 字节原始密钥的 base64；必填非空、不进仓库、不复用备份加密密钥。
