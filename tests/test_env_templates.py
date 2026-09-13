@@ -122,3 +122,89 @@ def test_staging_template_states_secret_values_are_not_written() -> None:
     assert "部署密钥系统注入" in content
     assert "AUTH_TOKEN" in content
 
+
+# 段二（dsh 接入段）新增的 18 项配置：Settings 字段名。
+# 与规格 §4、门禁 §B15、`.env.staging.example` 是同一份清单，改一处必须三处同步。
+STAGE2_SETTINGS_FIELDS = (
+    "agent_runtime_backend",
+    "exec_image_digest",
+    "exec_workspace_root",
+    "exec_trusted_roots",
+    "exec_timeout_seconds",
+    "exec_pids_limit",
+    "exec_memory_mb",
+    "exec_cpu_quota",
+    "dsh_version",
+    "artifact_export_enabled",
+    "body_encryption_key",
+    "body_cleanup_interval_seconds",
+    "model_gateway_base_url",
+    "model_gateway_token_ttl_seconds",
+    "model_gateway_upstream_base_url",
+    "model_gateway_upstream_api_key",
+    "model_gateway_upstream_timeout_seconds",
+    "model_gateway_max_retries",
+)
+
+
+def test_stage2_settings_are_declared() -> None:
+    """18 项必须真实存在于 Settings（防止清单与实现漂移）。"""
+    missing = [
+        name for name in STAGE2_SETTINGS_FIELDS if name not in Settings.model_fields
+    ]
+
+    assert missing == []
+
+
+def test_staging_template_covers_every_stage2_setting() -> None:
+    """staging 模板必须覆盖段二全部 18 项，否则部署方按模板配置仍会缺项。"""
+    keys = template_keys(STAGING_TEMPLATE)
+
+    missing = [
+        name
+        for name in STAGE2_SETTINGS_FIELDS
+        if not (declared_env_names(name) & keys)
+    ]
+
+    assert missing == []
+
+
+def test_stage2_defaults_are_pinned() -> None:
+    """段二默认值必须钉死：这是规格 §8 U11 / U16「实现前必须定值」的落点。
+
+    判定依据：把裁决值写成断言——任何一次静默改动都会让本用例变红；
+    `Settings()` 不参与（避免受本机 `.env` 影响），只读字段声明的默认值。
+    """
+    defaults = {
+        name: Settings.model_fields[name].default for name in STAGE2_SETTINGS_FIELDS
+    }
+
+    assert defaults["agent_runtime_backend"] == "mock"
+    assert defaults["exec_trusted_roots"] == "/usr/bin"
+    assert defaults["exec_timeout_seconds"] == 180
+    assert defaults["exec_pids_limit"] == 256
+    assert defaults["exec_memory_mb"] == 2048
+    assert defaults["exec_cpu_quota"] == 2.0
+    assert defaults["artifact_export_enabled"] is False
+    assert defaults["body_cleanup_interval_seconds"] == 60
+    assert defaults["model_gateway_token_ttl_seconds"] == 300
+    assert defaults["model_gateway_upstream_timeout_seconds"] == 60.0
+    assert defaults["model_gateway_max_retries"] == 0
+
+    # 硬约束（规格 §4）：令牌有效期必须 ≥ 执行超时，否则执行中途令牌先过期。
+    assert (
+        defaults["model_gateway_token_ttl_seconds"]
+        >= defaults["exec_timeout_seconds"]
+    )
+    # fail-closed 项：留空即"未配置"，不得给出看起来能用的默认地址或密钥。
+    for name in (
+        "exec_image_digest",
+        "exec_workspace_root",
+        "dsh_version",
+        "body_encryption_key",
+        "model_gateway_base_url",
+        "model_gateway_upstream_base_url",
+        "model_gateway_upstream_api_key",
+    ):
+        assert defaults[name] == ""
+

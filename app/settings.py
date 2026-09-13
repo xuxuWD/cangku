@@ -436,6 +436,39 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("INBOX_RETENTION_DAYS", "WORKBENCH_INBOX_RETENTION_DAYS"),
     )
 
+    # ---- 段二（dsh 接入段）新增配置：共 18 项 ----
+    # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
+    # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。
+    # 命名口径：只认 `WORKBENCH_` 前缀（由 env_prefix 自动派生），**不设裸名别名** ——
+    # 裸名（如 `EXEC_TIMEOUT_SECONDS`）过于通用，易被无关环境变量误拾。
+    # 默认值取舍：能 fail-closed 的一律留空或关闭；数值口径见各项注释（2026-09-13 用户裁决）。
+    agent_runtime_backend: str = "mock"  # 总开关：mock（默认）| dsh，仅显式 dsh 才启用真实执行
+    exec_image_digest: str = ""  # 执行镜像 digest（非 tag）；留空 = 未配置
+    exec_workspace_root: str = ""  # 执行工作卷根；留空 = 未配置
+    exec_trusted_roots: str = "/usr/bin"  # 受信任且不可写的可执行根
+    # 单次执行硬上限（秒）：须覆盖 dsh initialize 冷启动（实测 53.2s / 78.9s），
+    # 否则会把"初始化慢"误判为执行超时；超时语义 = 拒绝并终止容器（fail-closed）。
+    exec_timeout_seconds: int = Field(default=180, ge=10, le=3600)
+    exec_pids_limit: int = Field(default=256, ge=16, le=4096)  # 对应 docker --pids-limit
+    exec_memory_mb: int = Field(default=2048, ge=128, le=32768)  # 对应 docker --memory
+    exec_cpu_quota: float = Field(default=2.0, ge=0.1, le=16.0)  # 对应 docker --cpus
+    dsh_version: str = ""  # dsh 精确版本；留空 = 未配置（禁止 latest/main 一类浮动值）
+    artifact_export_enabled: bool = False  # fail-closed：关闭时 artifact.export 不装配
+    # 正文密文密钥：32 字节原始密钥的 base64；必填非空、不进仓库、不复用备份加密密钥。
+    body_encryption_key: str = ""
+    # 正文密文 TTL 清理周期（秒）：清理在启动时 + 按此周期执行，决定密钥轮换窗口长度。
+    body_cleanup_interval_seconds: int = Field(default=60, ge=10, le=86400)
+    model_gateway_base_url: str = ""  # 容器内 baseURL 指向的网关地址；供应商域名不得出现在本项
+    # 短期网关令牌有效期（秒）：每 turn 新铸、终态吊销；
+    # 硬约束 = 必须 ≥ exec_timeout_seconds，否则执行中途令牌先过期。
+    model_gateway_token_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    model_gateway_upstream_base_url: str = ""  # 上游供应商端点：只在网关侧出现，不得进容器
+    model_gateway_upstream_api_key: str = ""  # 上游供应商密钥：必填非空、不进仓库、不进容器
+    # 网关 → 上游单次请求超时（秒）：与 exec_timeout_seconds 耦合，
+    # 须与冷启动上限（79s）相加后仍落在执行超时内，两级超时才不会相互架空。
+    model_gateway_upstream_timeout_seconds: float = Field(default=60.0, ge=1, le=600)
+    model_gateway_max_retries: int = Field(default=0, ge=0, le=5)  # fail-closed：默认不隐式重试
+
 
 CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 CORS_HEADERS = [
