@@ -138,7 +138,8 @@ class RuntimeService:
 
         三种情形（口径见段一规格 §2.3）：
 
-        * **未装配运行记录仓储** → 闸门不生效（开发/测试装配下无授权位可存，保持既有行为）；
+        * **未装配运行记录仓储** → **拒绝**（fail-closed）：无授权位可查时宁可不执行（段二规格 §3.2
+          「两条必须收窄的既有实现」明令**不得**沿用 `run_records is None → return` 的 fail-open 行为）；
         * **有仓储但查不到该运行** → **拒绝**（fail-closed：状态不一致时宁可不执行）；
         * **有授权位但摘要不一致** → **拒绝**（授权已失效，需重新审批）；
         * 无授权位的运行（计划里没有需要审批的步骤）→ 放行，它不是「审批驱动」的运行。
@@ -148,7 +149,9 @@ class RuntimeService:
         `requires_approval=True`」的工具闸门，这道校验才真正拦得住东西。
         """
         if self.run_records is None:
-            return
+            raise ExecutionNotAuthorized(
+                "未装配运行记录仓储，无法校验执行授权，已拒绝推进执行（fail-closed）"
+            )
         try:
             record = self.run_records.get(actor.tenant_id, run_id)
         except RunRecordNotFound as exc:

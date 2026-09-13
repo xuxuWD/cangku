@@ -243,8 +243,9 @@ def test_guard_refuses_when_run_record_is_missing() -> None:
         service.ensure_execution_authorized(DECIDER, "run-missing", AgentPlan.from_steps([]))
 
 
-def test_guard_is_inert_when_run_records_are_not_wired() -> None:
-    """未注入运行记录仓储时闸门不生效（装配决定），不得因此抛错。"""
+def test_guard_is_fail_closed_when_run_records_are_not_wired() -> None:
+    """段二规格 §3.2「两条必须收窄的既有实现」：`run_records is None` 必须**拒绝**（不得静默放行）。"""
     service = RuntimeService(TaskStore())
 
-    service.ensure_execution_authorized(DECIDER, "run-x", AgentPlan.from_steps([]))
+    with pytest.raises(ExecutionNotAuthorized):
+        service.ensure_execution_authorized(DECIDER, "run-x", AgentPlan.from_steps([]))

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.domain import RiskLevel, Task, TaskStatus, TaskStore, UserContext
+from app.runtime.authorization import ExecutionNotAuthorized
 from app.runtime.contracts import AgentPlan, RuntimeContext
 from app.runtime.mock import MockRuntime
 from app.runtime.records import InMemoryRunRecordStore
@@ -132,7 +133,9 @@ def test_runtime_without_metrics_still_works() -> None:
 
     run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", READ_STEPS, "product_manager")
     runtime.pause(OWNER, run_id, "等待确认")
-    runtime.resume(OWNER, run_id)
+    # 段二 §3.2 收窄：未装配运行记录仓储时，启动执行闸门必须 fail-closed（不再静默放行）。
+    with pytest.raises(ExecutionNotAuthorized):
+        runtime.resume(OWNER, run_id)
     runtime.cancel(OWNER, run_id, "测试取消")
 
     assert records is None
