@@ -141,15 +141,52 @@
 
 **纪律**：任一只有静态证据、无运行期证据的条目，按规格 §8 纪律标「**未核实**」，**不得计入成立**。
 
+#### 当前取证状态（2026-09-13 · **权威口径**，取代本文档各处零散/陈旧表述）
+
+> **前提**：C2/C3 已实跑（见本文档 **§F9**）。**「turn 成功」未达成**（供应商凭据 401）⇒ **凡以"成功 turn"为成立条件的条目一律未取证**。
+> **原始证据**：仓库外 `d:\徐徐AI学习\_dsh-gateway-verify\out\`（`02-driver.log` / `03-gw.log` / `04-dsh-exec-inspect.json` / `06`~`08` 明文扫描 / `09-negative-case.log`，另加 `20`~`22` 遥测三件）。
+> **复核方式**：本表由主视角按原始日志编写后，**又经一名独立只读视角对抗式复核**；**初版 2 处硬错误 + 3 处过度概括已纠正**，并补出「方法与局限」（见下方「复核留痕」）。**表中每条均须能指到具体文件与行号。**
+
+| 判据 | 状态 | 证据要点（文件:行 + 原文） |
+| --- | --- | --- |
+| **A**（出站发起方在容器外） | ✅ **结论已取得证据**（⚠️ 推断链已修正） | **成立依据**：网关自身代码执行上游请求（`gw\gw.js:73-94` 的 `mod.request(opts,…)`），并在**自己的日志**里打出 `03-gw.log:4` `UPSTREAM-REQ POST api.deepseek.com/chat/completions token=D0DqBJ.. peer=172.22.0.3` 与 `:5` `UPSTREAM-RES status=401`；`gw\gw.js:77` `headers.authorization = \`Bearer ${UPSTREAM_KEY}\`` 是"密钥被网关自己用于上游"的**代码级**证据。**⚠️ 原表把 `peer=172.22.0.3` 当作"网关发起上游"的证明，属推断错误** —— `peer` 取自 `gw.js:88` 的 `req.socket.remoteAddress`，是**入站**客户端（执行容器）地址，只能说明"请求来自执行容器"。**⚠️ 缺口**：判据 A 原文要求"**容器内与宿主上同时抓**出站连接"，而 `out\` 里**没有**宿主侧/网关容器侧的连接抓取（无 `ss`/`netstat`/网关 inspect） |
+| **B** | ⚠️ **结构 ✅ / 因果 ❌** | **结构**：`out\08-plaintext-scan-notmp.txt:2-5` ⇒ `FILE_HITS=0 / ENV_HITS=0 / PROC_ENVIRON_HITS=0`；`out\04-dsh-exec-inspect.json:178` 的 `DEEPSEEK_API_KEY` 为 **43 字符**（前缀 `D0DqBJ`，可与 `03-gw.log:2` 的 `MINT id=D0DqBJ..` 对应）⇒ **非**供应商密钥（38 字符，与上游报错 `****1fa0` 末位一致）；`:143-160` 的 `Mounts` 仅两个 `ro` 绑定。**因果（清空宿主侧凭据后 turn 立即失败）未取证** —— 两轮 turn **均失败**（`02-driver.log` `AUTH 401` / `09-negative-case.log` `TRANSPORT`），**无法构造"有凭据成功 / 无凭据失败"的对照**；**"网关停机 ⇒ `TRANSPORT`"不等价于 B 的因果**（§F9.2 自注）。**注**：`04` 对应**网关在线**那轮（hostname `0a27ed22699f`） |
+| **C′**（容器内无指向供应商域名的连接） | ✅ **已取得证据**（⚠️ 采样方式有局限） | `02-driver.log:142-147` `connections:[{"remote":"172.22.0.2:8080","firstSeenMs":159}]`（**在线轮仅 1 条**，指向网关）；`:475` `supplierDomain:"BLOCKED TypeError: fetch failed"`；`09-negative-case.log:156` 停机轮 `connections: []`。**⚠️ 局限**：采样靠 `exec\driver.mjs` **轮询** `/proc/net/tcp*` 的 `st=='01'`（ESTABLISHED，约 150ms 一次）⇒ **短连接可能漏采**；且"`172.22.0.2` 即网关"**无 inspect 佐证**（属推断） |
+| **D**（2026-09-13 重述口径） | ✅ **结论已取得证据**（⚠️ "只含短期令牌"已修正） | `02-driver.log:130-141` `pidTree`：`pid 13 = /usr/local/bin/node /dsh/node_modules/@deepseek-ai/dsh/lib/bin.js --profile sdk` ⇒ **dsh 在容器内（路径①下属预期）**；其 env / argv / `/proc/*/environ` **均无供应商密钥**（`08:5` `PROC_ENVIRON_HITS=0`）。**⚠️ 修正**：不得概括为"唯一凭据 = 43 字符令牌" —— 各轮 `DEEPSEEK_API_KEY` 长度为 **43**（在线轮，有 `MINT` 对应）、**29**（`09-negative-case.log:64-67`）、**21**（`20` / `21` 遥测两轮）；三者**均 ≠ 38**，但 **29 与 21 那两次无 `MINT` 记录、来源未留证** |
+| **E**（2026-09-13 重述口径） | ⚠️ **部分** | argv / env / 容器 spec **均无供应商密钥** ✅；`DEEPSEEK_BASE_URL=http://gw:8080`（**仅网关内网地址**）为**预期注入物** ✅。**缺**：「**不含工作台控制端点或其凭据**」**未取证**（本次实验无工作台控制端点，驱动器未回调） |
+| **F**（短期凭据六条） | ⚠️ **仅 2/6 有条目证据，且均为单样本**（原表"4/6"已下修） | ① **每 turn 新铸** ⚠️ **仅 1 次样本**（`03-gw.log:2` `MINT … bound=turn-1 ttl=120s total=1`）② **绑死租户 / 会话 / 代次** ❌ **未实现**：`bound` 只是宿主经 `/__mint` 传入的**标签**（`gw.js:40`），数据面（`gw.js:56-71`）**只校验存在与过期、从不校验 `bound`**，`gw.js` 全篇**无租户/会话/代次概念** ③ **服务端为准** ✅（凭据以网关内存 Map 为准，容器声明不参与）④ **constant-time 比对** ❌ **未实现**（`gw.js:58` 用 `tokens.get(tok)` Map 查找）⑤ **终态同步吊销** ❌ **无归档证据**（原表引用的 `REVOKE bound=turn-2 n=1` 与 `DENY … reason=unknown-token` **在 `out\` 内任何日志中都不存在** —— 全目录 grep 只命中 `gw\gw.js:47/60` 的**代码字面量**）⑥ **孤儿令牌上限** ❌ **未实现**（`gw.js` 无令牌计数上限）。⇒ **六条中真正有归档运行期证据的只有 ①（单样本）与 ③** |
+| **G** | ⚠️ **部分** | 容器 env **不存在任何供应商 key** ✅（`04:171-183`）；容器**无外网出口** ✅（`02-driver.log:475` / `09-negative-case.log:868` 均 `supplierDomain=BLOCKED`）。**缺**：**`web_*` 是否真禁用未验证**；且 §F10.3 实测 `read-only` 下 `request/header` 的工具面**仍向模型暴露 `bash`**（`02-driver.log:321`）。**⚠️ 机理未证**：「无外网出口」只有 `fetch` 失败的负结果，**无网络 inspect**，无法区分 DNS 不可达 / egress 拦截 / 对端拒绝 |
+| **红线 1**（清空宿主侧凭据后 turn **仍成功**） | ❌ **未取证** | 前提"turn 成功"未达成 ⇒ **无法判定**（**不得据此认为红线 1 成立**） |
+| **红线 2**（容器内存在持有供应商密钥的进程） | ✅ **未命中** | 各轮 `DEEPSEEK_API_KEY` 为 43 / 29 / 21 字符，**均 ≠ 供应商密钥 38 字符**；`PROC_ENVIRON_HITS=0`（**"唯一凭据是 43 字符令牌"的原表述已按 D 行修正**） |
+| **红线 3**（密钥明文出现在 `argv`/`env`/容器 spec/镜像层/日志，或容器内可触达供应商域名） | ⚠️ **未命中，但有一项根本没测** | 见 B / D / E 行；容器内 `supplierDomain=BLOCKED`。**⚠️「镜像层」一项未测**：本次 dsh 由**宿主 bind mount** 提供（`04:36-38` `…\_dsh-linux-verify:/dsh:ro`），**不是镜像层** ⇒ 该项**无从判定**。**⚠️ `07` 的 `/tmp/.k` 命中仍未消解**（见下） |
+
+🔴 **`/tmp/.k`（原表归因错误，已更正）**：`out\07-plaintext-scan.txt:2-3` 显示 `FILE_HITS=1`、命中 **`/tmp/.k`**。**原表写"该文件由扫描器自身为传模式串而写入"，与源码矛盾** —— `exec\scan.mjs:5` 是 `fs.readFileSync(0, 'utf8')`（**只从 stdin 读**），全篇**无任何写文件调用**；`exec\driver.mjs` 唯一写盘是 `/tmp/driver-evidence.json`。⇒ **真实归因**：该文件由**未归档的宿主侧 shell 探测**写入（`out\06-plaintext-probe.txt` 的 `SHELL_PATTERN_LEN=38` 即其痕迹），而**该 shell 命令未留档** ⇒ **创建者无归档证据**。**结论**："非被测系统行为"**合理但未被归档证明**；`08` 排除 `/tmp` 后为 0 属**另一次运行**（两次运行环境未证明等价）。**⇒ 该轮"容器内无密钥明文"处于未闭合状态，不得用一句话带过。**
+
+🔴 **轮次与文件名（❗ 更正：原表把两轮写反了）**：`out\02-driver.log:34/36` `startedAt 06:47:57.323Z` + `hostname 0a27ed22699f` + `:2` `gateway=REACHABLE status=403` ⇒ **`02-driver.log` 是「网关在线」那轮**（与 `03-gw.log` 的 06:47:44–06:48:51、`04` 的 `Created 06:47:56.897Z` 同轮）；`out\09-negative-case.log:48/50` `06:51:51.263Z` + `d2208c7e41c6` + `:2` `gateway=UNREACHABLE` ⇒ **`09-negative-case.log` 是「网关停机」那轮**。**⇒ 文件名与内容一致，不存在"相反"**（原表该条结论作废）。
+
+🔴 **证据中存在、原表未提的关键事实**：① `out\20`~`22` 遥测三件同属本实验（`22-otel-sink.log` 仅 1 条 LISTEN、**0 请求**）—— 既是"容器内还有 21 字符短值"的证据，也是遥测未外发的对照证据；② `03-gw.log:3/6` 两次 `ADMIN-DENY path=/__tokens peer=172.22.0.3` —— **旁证 `peer` 即执行容器**；③ `out\` 编号断档（缺 `01` 与 `05`；`05` 为含供应商密钥的网关 spec，已按纪律删除）。
+
+🔴 **方法与局限（原表缺，复核补出）—— 本次实验形态不代表生产形态**：读 `04:35-135` 的 `HostConfig` 实测 —— `CapDrop: null`（`:59`，**未丢任何 capability**）、`SecurityOpt: null`（`:74`，**无 `no-new-privileges`**）、`PidsLimit: null`（`:108`）、`Memory: 0`（`:86`）、`NanoCpus`/`CpuQuota: 0`/`0`（`:87`/`:96`）、`Config.User: ""`（`:164`，**以 root 运行**）；**唯一落实的加固是 `ReadonlyRootfs: true`（`:73`）与 tmpfs 隔离（`:75-79`）**。⇒ 本实验只能证明"**在 root、无 cap-drop、无 PID/内存/CPU 限制、dsh 由宿主挂载**"这一**非加固形态**下的密钥位置，**不得外推**到规格 §4/§B15 所述加固口径（`PIDS_LIMIT=256` / `MEMORY_MB=2048` / `CPU_QUOTA=2.0`）。**其它局限**：① 样本 n 极小（2 轮真实 turn **全失败** + 2 轮遥测）⇒ 判据 B 因果 / 红线 1 / "turn 成功"**在方法上不可达**；② 明文扫描是**针对方差**而非通用检测（`scan.mjs` 用**单一 38 字符子串** `includes(K)`，**不能发现被编码 / 分段 / 改名后的密钥**）；③ **无宿主侧进程 / 端口证据** ⇒"网关持有密钥且不在容器 PID 命名空间内"未获独立验证。🔴 **该形态缺口已单列为门禁 **§B17**（「加固口径下的复跑」）：上述加固缺失使本实验结论**不能外推到生产形态**，必须在**加固口径**下复跑一次。
+
+**⇒ 汇总结论（❗ 已按 2026-09-13 只读复核下修）**：**A / C′ / D 的结论成立（各带上述局限）；F 仅 2/6 有条目证据，E / G 为部分；红线 2 / 3 未命中（但红线 3 的"镜像层"一项根本没测）。未取证的是「turn 成功」、判据 B 的因果部分与红线 1。** 按本节「纪律」条，**只有静态证据、无运行期证据的条目不得计入成立**。⇒ **在有效凭据重跑并补齐上述缺口之前，仍不得声称「容器内不持有模型密钥」的最终确认**（规格 §3.5 硬约束不变）。
+
+**复核留痕**：本表初版由主视角依据原始日志编写；随即由一名**独立只读视角**逐条对抗式复核（读完 `out\` 全部 10 个文件 + `gw.js` / `driver.mjs` / `scan.mjs` / `sink.js` 源码）。**复核推翻初版 2 处硬错误**（轮次映射写反、F⑤ 引用不存在的日志）与 **3 处过度概括**（A 的推断链、F②"仅会话级"实为"未强制"、D / 红线 2"唯一凭据"），并补出「方法与局限」与「遗漏项」。**上表为复核后的版本。**
+
 ### B15 新增配置的落点与守护（**实现前必办** · 2026-09-13 新增）
 
-- **事实**（第四轮复核 N3/P4；**第七轮 P3 后由 10 项增至 12 项**；**2026-09-13 裁决路径①后由 12 项增至 18 项**）：规格 §4 列出的 **18 项**新增配置（`WORKBENCH_AGENT_RUNTIME_BACKEND`、`WORKBENCH_EXEC_IMAGE_DIGEST`、`WORKBENCH_EXEC_WORKSPACE_ROOT`、`WORKBENCH_EXEC_TRUSTED_ROOTS`、`WORKBENCH_EXEC_TIMEOUT_SECONDS`、`WORKBENCH_EXEC_PIDS_LIMIT`、`WORKBENCH_EXEC_MEMORY_MB`、`WORKBENCH_EXEC_CPU_QUOTA`、`WORKBENCH_DSH_VERSION`、`WORKBENCH_ARTIFACT_EXPORT_ENABLED`、`WORKBENCH_BODY_ENCRYPTION_KEY`、`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS`、**路径①网关六项**：`WORKBENCH_MODEL_GATEWAY_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_TIMEOUT_SECONDS`、`WORKBENCH_MODEL_GATEWAY_MAX_RETRIES`）在 `app/settings.py`、`.env.staging.example`、`tests/test_env_templates.py` **三处零命中**。
+- **事实**（第四轮复核 N3/P4；**第七轮 P3 后由 10 项增至 12 项**；**2026-09-13 裁决路径①后由 12 项增至 18 项**）：规格 §4 列出的 **18 项**新增配置（`WORKBENCH_AGENT_RUNTIME_BACKEND`、`WORKBENCH_EXEC_IMAGE_DIGEST`、`WORKBENCH_EXEC_WORKSPACE_ROOT`、`WORKBENCH_EXEC_TRUSTED_ROOTS`、`WORKBENCH_EXEC_TIMEOUT_SECONDS`、`WORKBENCH_EXEC_PIDS_LIMIT`、`WORKBENCH_EXEC_MEMORY_MB`、`WORKBENCH_EXEC_CPU_QUOTA`、`WORKBENCH_DSH_VERSION`、`WORKBENCH_ARTIFACT_EXPORT_ENABLED`、`WORKBENCH_BODY_ENCRYPTION_KEY`、`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS`、**路径①网关六项**：`WORKBENCH_MODEL_GATEWAY_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_TIMEOUT_SECONDS`、`WORKBENCH_MODEL_GATEWAY_MAX_RETRIES`）在 `app/settings.py`、`.env.staging.example`、`tests/test_env_templates.py` **三处零命中**〔**2026-09-13 更正：该"零命中"已不成立 —— 18 项已全部落上述三处，见本条末「进展」块**〕。
 - **判据（实现前必须闭环）**：
   1. **18 项全部进 `app/settings.py`**（含类型与默认值；**`WORKBENCH_BODY_ENCRYPTION_KEY` 必填非空且不进仓库；`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY` 同口径（上游供应商密钥，只在网关侧）；`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS` 与 `WORKBENCH_EXEC_TIMEOUT_SECONDS` 的默认值须先定死——见规格 §8 U11/U16**；**新增的 `WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS` 须与之协调：TTL ≥ 执行超时**）；
   2. 全部进 **`.env.staging.example`**；
   3. **`tests/test_env_templates.py` 扩至覆盖全部新增项**（现仅覆盖 `sso_*` 与 5 个 Runtime 的元数据）；
   4. **`WORKBENCH_EXEC_TIMEOUT_SECONDS` 的默认值必须先定死**（规格 §8 **U11 仍开放**；未定值前用例 18 只能用临时值跑，默认值口径永久悬空）。
-- **未闭环前**：**不得声称"配置已被守护"**。
+- **进展（2026-09-13）**：**判据 2 / 3 / 4 已闭环；判据 1 部分闭环。**
+  - ✅ **判据 2**：18 项**全部进 `.env.staging.example`**（含密钥类"必须由部署密钥系统注入、禁止在模板填写真实值"的声明）。
+  - ✅ **判据 3**：`tests/test_env_templates.py` **新增 3 个守护用例**——① 清单↔实现的字段存在性；② 模板全覆盖 18 项；③ **默认值钉死 + `TTL ≥ EXEC_TIMEOUT` 硬约束 + fail-closed 项必须留空**。**含反假测试**：故意注释掉模板一行 + 把一个默认值改坏 ⇒ **恰好 2 个用例变红**（报错分别为 `['exec_cpu_quota']` 缺失、`181 == 180`），还原后复绿。
+  - ✅ **判据 4**：`WORKBENCH_EXEC_TIMEOUT_SECONDS` **默认值已定死 = `180` 秒**（2026-09-13 用户裁决；≈ §F9.4 冷启动上限 79s 的 2.3×）。**同批定值（规格 §4 原未给数）**：`EXEC_PIDS_LIMIT=256`、`EXEC_MEMORY_MB=2048`、`EXEC_CPU_QUOTA=2.0`（= `docker --cpus`）、`BODY_CLEANUP_INTERVAL_SECONDS=60`、`MODEL_GATEWAY_TOKEN_TTL_SECONDS=300`、`MODEL_GATEWAY_UPSTREAM_TIMEOUT_SECONDS=60`。
+  - ⚠️ **判据 1 部分闭环**：18 项**已全部进 `app/settings.py`**（含类型、默认值与 `ge/le` 边界；**不设裸名别名**，只认 `WORKBENCH_` 前缀）；**但"必填非空 / `base64` 32 字节 / `TTL ≥ 执行超时` 的启动期校验尚未实现** —— 其失败语义归 **§4.1.6-3「装配与失败语义」**，依赖目前**尚不存在**的装配组件（`tool_execution` / `run_records` / `tool_actions`）⇒ **随装配期一并落地**；此处**不提前造半成品**（避免与 §4.1.6-3 形成第二个事实源）。
+  - **回归证据**：按 CI 原命令 `python -m pytest -o addopts=""` ⇒ **`1437 passed`**（基线 1434 + 新增 3），`python -m compileall -q app tests extract_pdf.py scripts` 通过（exit 0）。
+- **未闭环前**：**不得声称"配置已被守护"**。**判据 1 的启动期校验未实现 ⇒ 该禁令当前仍然有效。**
 
 ### B16 关键依赖可自主控制（归档 + 断网构建演练）—— **不阻断开工，但阻断上线**
 
@@ -162,6 +199,18 @@
   - ⏸ **2026-09-13 用户裁决（选项 D）**：**P0-2 暂时挂起**（归档包已就绪并存于**本机**，**真源不标"已受控"**）；**恢复条件 = 用户指定一个受控归档位置**（内网 NAS/制品库，或云对象存储——后者属**口径变更**）；**P0-5 随之挂起**。⚠️ **判据 ① 未闭环 ⇒ 上线自检必含本项**。**本机无内网受控位置的三轮排查证据**见 [`key-dependency-autonomy-plan.md` §8 第 1 项](file:///d:/徐徐AI学习/公司工作台/docs/key-dependency-autonomy-plan.md)。
   - 🔴 **其余 6 项依赖的第 0 层：已完成侦察（2026-09-13，见 [同文 §11](file:///d:/徐徐AI学习/公司工作台/docs/key-dependency-autonomy-plan.md)）** —— **判据 ① 对它们同样未闭环**，且**新查出 3 个必须先修的缺口**：**① 后端无 lockfile** → ✅ **已完全闭环（2026-09-13，选项 C + E + F）：新增 [`requirements.lock`](file:///d:/徐徐AI学习/公司工作台/requirements.lock)（49 包全锁定 + 835 条 `--hash`），`Dockerfile` 已改为消费它（`--require-hashes`）；构建通过、镜像内 49/49 版本逐条一致、反假测试（改坏全部哈希必须失败）通过；**按 CI 原命令在锁定依赖下跑后端全量 ⇒ `1434 passed`（0 failed）+ `compileall` 通过，与文档基线逐数一致****（详见方案 §11.5 ~ §11.7）；**② `redis:7.4-alpine` / MinIO 钉死版本机缺失** → ✅ **已修复（2026-09-13）**：Redis 已拉取并记 digest；**MinIO 当时已按选项①换源到 `quay.io/minio/minio` 并按 digest 钉死**（纯换源、不动版本）—— ⚠️ **该组件已于同日被替换为 SeaweedFS（Apache-2.0），见本行后半句**。⚠️ **同时暴露一条许可事实**：MinIO 镜像自述 **`GNU AGPLv3`**，而项目许可清单**从未覆盖基础设施组件** ⇒ ✅ **已记入许可清单（2026-09-13）**：[`poc-license-checklist.md`](superpowers/poc-license-checklist.md) 新增 **【基础设施组件纳管】**（MinIO=AGPLv3〔镜像 banner〕/ PG+pgvector=PostgreSQL License〔**镜像内原文取证**〕/ **Redis 7.4.11=RSALv2+SSPLv1〔上游 LICENSE 原文取证 @tag 7.4.11〕** / MinIO 备选实现=未核）；⚠️ **"是否接受 AGPL / source-available 组件进生产"**：**已裁决并落地（2026-09-13）—— 方向为"不引入 copyleft"** ⇒ **Redis 已按路径④替换完成**：compose 换为 `valkey/valkey:8-alpine@sha256:d2e18f34…43d1`（Valkey 8.1.10），**用项目自身代码实测 Streams 语义 `10/10 PASS`**（含反假与对照组）、回归 `1434 passed`；许可证据 @**tag `8.1.10`** = **BSD 3-Clause，无 copyleft**（见方案 §11.11）；⚠️ **`1434` 不覆盖 Streams**（CI 无服务容器），兼容性以兼容套件为准；**MinIO（AGPLv3）已于 2026-09-13 替换为 SeaweedFS（`chrislusf/seaweedfs:4.46@sha256:08d51613…5b62`，**Apache-2.0**）：服务名 `minio`→`seaweedfs`、S3 端口保持 9000、**遥测默认开启已显式关闭**、Iceberg/Lance 附加服务已关；**S3 真实冒烟（boto3）全部通过**（见方案 §11.12）**；**③ 基础镜像用 tag 非 digest、前端未声明 Node 版本** → ✅ **已修**：`Dockerfile` 改 digest 钉死（含反假测试：错 digest 必失败）、三端 `package.json` 声明 `engines.node>=22`、重建通过；**`docker-compose.yml` 三个镜像亦已全部改为 `tag@sha256`**（postgres/redis 补钉 + minio 换源钉死，均已真起服务验证）（见方案 §11.9 / §11.10）。**#2/#3/#4（RAGFlow/AgentScope、WeKnora、DeerFlow/Codex/Hermes）未接入真实服务 ⇒ 无版本可归档**（属"接入时同步钉死 + 同步归档"）；**#5 GEO 为业务对端系统，第 0 层不适用**。**上述 3 个缺口：① 已完全闭环；② 已修（MinIO 换源完成，另留一条 AGPL 合规待判）；③ 已修。**
 - **与开工门禁的关系**：**本条不阻断段二评审与开工**；但**未闭环前不得宣称"关键依赖可自主控制/不依赖上游开源状态"**，且**上线自检必须包含它**。
+
+### B17 加固口径下的复跑（**B14 的形态补充** · 2026-09-13 新增）—— **不阻断开工，但阻断上线**
+
+- **为什么新增**：2026-09-13 的 C2/C3（B14 首轮实测）跑在一个**未加固、以 root 运行**的容器里。事后独立复核（见 §B14「当前取证状态」的「方法与局限」段）实测该容器：`CapDrop: null`（**未丢任何 capability**）、`SecurityOpt: null`（**无 `no-new-privileges`**）、`PidsLimit: null`、`Memory: 0`、`NanoCpus`/`CpuQuota: 0`/`0`、`Config.User: ""`（**root**）；**唯一落实的加固是 `ReadonlyRootfs: true` 与 tmpfs 隔离**。
+- **由此产生的缺口**：首轮结论只能证明"**在非加固形态下**容器内不持有供应商密钥"，**不能外推**到规格 §3.3 要求的加固形态（非 root、`--cap-drop ALL`、`no-new-privileges`、`--pids-limit` / `--memory` / `--cpus`、根只读、仅内网桥、per-run 工作卷）。**该缺口在 §B14 / §B16 中均无落脚点，故单列本条。**
+- **判据（上线前必须闭环）**：
+  1. **在完全按 §3.3 加固口径启动的执行容器内，复跑 B14 的关键判据** —— 至少 **A / C′ / D** 与 **B 的结构部分**；若届时已有有效凭据，**一并覆盖「turn 成功」/ B 的因果部分 / 红线 1**。
+  2. **容器 spec 须逐项可核验**：`HostConfig` 的 `CapDrop` / `SecurityOpt` / `PidsLimit` / `Memory` / `NanoCpus` / `ReadonlyRootfs` / `Config.User` **必须与 §3.3 及 §4 的 `WORKBENCH_EXEC_*` 取值一致**（**不得出现本次的 `null` / `0` / `""`**）。
+  3. **复跑结论须与首轮一致**（A / C′ / D 仍成立；红线 2 / 3 仍未命中）；**若不一致 → 判 B14 不成立，回到规格 §3.5 重新论证**。
+- **实施时机**：**依赖段二实现** —— 加固容器由 `ContainerExecutor` 产生（§4.1.6-2 装配点），`WORKBENCH_EXEC_*` 共 18 项配置见 §4 / 门禁 §B15。
+- **与开工门禁的关系**：**本条不阻断段二评审与开工**（加固容器尚不存在）；但 **① **未闭环前不得声称"已在生产形态下验证容器内不持有模型密钥"**；② **上线自检必须包含它**。**
+- **状态（2026-09-13）**：**未闭环** —— 首轮实测为**非加固形态**，**加固形态从未跑过**。
 
 ---
 
@@ -351,8 +400,13 @@ job_list / job_output / job_kill / list_agents / send_message / interrupt_agent
 | B1 / B2（部分）/ B4 / B13 | ✅ **已取证** |
 | B3 | ⏳ **部分**：环境可运行性与剖面组成已取证；三条契约的完整运行期复验**需模型凭据或自写 stdio 客户端**。**2026-09-13 已补 Linux 侧沙箱结论（§F7）** |
 | B5–B12 | 属**段二实施期**的判据（不是开工前置取证），其中 B5/B6/B11 在段二-2/段二-3 落地时验证；B12 **已定：本段不做**（规格 §7 X4，已闭环） |
-| **B14** | ❌ **全未取证**（2026-09-13 复核确认）：七条判据 A–G + 三条红线**均需真实 turn** → **必须使用模型凭据** |
+| **B14** | ⚠️ **已部分取证（2026-09-13，经两轮复核下修）**：C2/C3 已实跑（见 §F9）——**A / C′ / D 的结论成立（各有局限）；F 仅 2/6 有条目证据；B 结构 ✅ / 因果 ❌；E / G 部分；红线 2 / 3 未命中（但红线 3 的"镜像层"一项根本没测）**；**「turn 成功」、判据 B 的因果部分与红线 1 未取证**（受阻于供应商凭据 401）。**权威状态表见 §B14 的「当前取证状态」块。**〔原写「❌ 全未取证」，系 §F9 执行**之前**的陈旧表述〕 |
+| **B15** | ✅ **判据 2 / 3 / 4 已闭环、判据 1 部分闭环（2026-09-13）**：18 项已进 `app/settings.py`（含类型与 `ge/le` 边界）/ `.env.staging.example`，由 `tests/test_env_templates.py` **3 个守护用例**覆盖并**含反假测试**；**缺口 = "必填非空 / `base64` 32 字节 / `TTL ≥ 执行超时` 的启动期校验未实现**（归 §4.1.6-3 装配期）。见 §B15「进展」块 |
+| **B16** | ⏳ **部分（2026-09-13）**：判据 **②（断网演练，对 `dsh`）✅**、**③（7 项退出方案）✅**（候选许可多数仍"待核"）；**判据 ①（钉死版本归档到内网受控位置）⏸ 挂起**（用户裁决选项 D；恢复条件 = 指定受控归档位置）⇒ **整条第 0 层未闭环**。**不阻断开工，阻断上线** |
+| **B17** | ❌ **未闭环（2026-09-13 新增）**：**加固口径下的复跑从未执行**（首轮实测为非加固、**以 root 运行**的容器）⇒ **不得声称「已在生产形态下验证容器内不持有模型密钥」**。依赖段二实现（`ContainerExecutor`）。**不阻断开工，阻断上线** |
 | **B3 剩余 3 项** | 「Linux 侧沙箱」**已于 §F7 取证**；「`subprocess-local` 禁用是否真生效」「`approval=ask` 无通道时的行为」**仍需真实调用** |
+
+> **补登说明（2026-09-13）**：本表原为「§F6 §B 剩余项的状态」（2026-09-12 口径）。**B14 行已按 §F9 实测 + 两轮复核下修**；**B15 / B16 / B17 为本轮新增条目**（三条均属 §F9 之后新开或新收口的项，此前不在本表内，故一并补登）。
 
 ---
 
@@ -463,7 +517,7 @@ job_list / job_output / job_kill / list_agents / send_message / interrupt_agent
 
 ### F7.5 本轮**仍未取证**（不得当作已解决）
 
-- **B14 七条判据 A–G 与三条红线：全部未取证**（需真实 turn + 模型凭据）。
+- **B14 七条判据 A–G 与三条红线：全部未取证**（需真实 turn + 模型凭据）。〔**2026-09-13 更正：本行是 §F7 阶段的当时状态，已被同日 §F9（C2/C3 实跑）取代 —— A / C′ / D 已取得证据，B（结构）/ E / F / G 部分，红线 2/3 未命中，余项仍缺；权威状态见 §B14「当前取证状态」块**〕
 - **B3 的两项**：`dsh-subprocess-local` 禁用**是否真生效**（需真实调用）、`approval=ask` 且 SDK 无审批通道时的**实际行为**（自动拒 / 挂住 / 静默放行）。
 - **Linux 侧沙箱的"运行期"行为**：§F7.2 是**装配层（dump）**证据，**不是**"沙箱拦住某动作"的运行期证据。
 - **未做**：`THIRD-PARTY-NOTICES` 产出、镜像内二次扫描（本轮是安装树口径，非镜像口径）、`sharp` 去 wasm 后的可用性。
@@ -552,7 +606,7 @@ baseURL: z.string(),
 
 ### F8.5 仍未取证（本段未做，等裁决）
 
-- **C2/C3 真实 turn**：因 §F8.2 的结论，实验形态取决于路径选择，**未执行**；**B14 七条判据 A–G 与三条红线仍全部未取证**。
+- **C2/C3 真实 turn**：因 §F8.2 的结论，实验形态取决于路径选择，**未执行**；**B14 七条判据 A–G 与三条红线仍全部未取证**。〔**2026-09-13 更正：本行是 §F8 阶段的当时状态 —— C2/C3 已于同日执行（见 §F9），故"未执行"与"全部未取证"两句**均已失效**；权威状态见 §B14「当前取证状态」块**〕
 - **§F3.2 的"最高优先级待验项"**（`sandbox_permissions` 升级通道的真实行为）**仍未验证**。
 - **`DSH_TELEMETRY_DISABLED` 的实际语义**：**部分验证（2026-09-13，对照实验见 §F10）**——SDK 剖面普通 turn 下，**设该开关与不设该开关，本地假 OTLP 端点两轮均收到 0 个请求** ⇒ 该开关**在本场景不承重**，且 §F7.3 的"默认外发"**未获证实**；**反馈路径与 `DSH_TELEMETRY_MODE` 其它取值仍未测**。
 
@@ -572,7 +626,7 @@ baseURL: z.string(),
 | 6 | **§4 配置项新增网关相关项**（网关地址、令牌 TTL、网关超时/重试上限等）——✅ **已补（2026-09-13）**：**六项**已入规格 §4（`WORKBENCH_MODEL_GATEWAY_BASE_URL` / `..._TOKEN_TTL_SECONDS` / `..._UPSTREAM_BASE_URL` / `..._UPSTREAM_API_KEY` / `..._UPSTREAM_TIMEOUT_SECONDS` / `..._MAX_RETRIES`），**§B15 口径随之由 12 项改为 18 项** | 规格 **§4**、本清单 **§B15** |
 
 **仍未闭环（不得视为通过）**：
-- **B14 判据 A / B / E / F 与 C′：仍全部未取证**（须真实 turn；实验形态已随路径①确定：**容器内 `baseURL` → 容器外最小网关原型 + 短期令牌**）。
+- **B14 判据 A / B / E / F 与 C′：仍全部未取证**（须真实 turn；实验形态已随路径①确定：**容器内 `baseURL` → 容器外最小网关原型 + 短期令牌**）。〔**2026-09-13 更正：本行写于 C2/C3 执行**之前**（"实验形态已确定"即其标志），已被 §F9 取代 —— A / C′ / D 已取得证据；B（结构）/ E / F / G 部分；**「turn 成功」、B 的因果部分与红线 1 仍缺**（凭据 401）。权威状态见 §B14「当前取证状态」块**〕
 - **§F3.2「最高优先级待验项」**（`sandbox_permissions` 升级通道真实行为）**仍未验证**。
 - **`DSH_TELEMETRY_DISABLED` 语义未验证**。
 - **规格 §4 的网关配置项**：✅ **已补（2026-09-13，六项，见上表第 6 行）**；**闭环移交 §B15**（18 项进 `settings.py` / `.env.staging.example` / 守护测试——**实现前必办**）。
@@ -613,8 +667,8 @@ dsh: {"kind":"error","error":{"message":"Authentication Fails, Your api key: ***
 | 网关停机后 turn **立即失败**，且错误指向网关 | `"message": "DeepSeek API request to http://gw:8080 failed", "code": "TRANSPORT"`（连续 5 次重试后 turn 结束） | **路径必要性**（A/C′ 的负向证据；**不等价于 B 的因果**） |
 | 容器 PID 树 | `pid 1 = node /driver/driver.mjs`；`pid 13 = /usr/local/bin/node /dsh/node_modules/@deepseek-ai/dsh/lib/bin.js --profile sdk` | **判据 D 冲突**（见 F9.3） |
 | 容器内**无供应商密钥明文** | `FILE_HITS=0` / `ENV_HITS=0` / `PROC_ENVIRON_HITS=0`（扫描 `/workspace` `/dshhome` `/root` `/driver` `/etc`）；`docker inspect` 的 `Config.Env` 与 `Mounts` **均不含**该密钥 | **B（结构部分）/ E（按重述口径）** |
-| 容器内唯一凭据 = **短期令牌** | `DEEPSEEK_API_KEY` 长度 `43`（供应商密钥为 `38`），TTL `120s`、绑定 `turn-1` | **F（部分）** |
-| 令牌**可终态吊销** | 吊销前：`UPSTREAM-REQ`（网关接受该令牌）；`REVOKE bound=turn-2 n=1`；吊销后：`DENY ... reason=unknown-token` | **F（部分）** |
+| 容器内 `DEEPSEEK_API_KEY` = **短期令牌**（⚠️ 各轮长度不同） | 在线轮 `43`（供应商密钥为 `38`），TTL `120s`、`bound=turn-1`；`09-negative-case.log:64` 为 **`29`**、`20`/`21` 遥测两轮为 **`21`** | **F（部分）**〔**2026-09-13 复核更正：不得概括为"唯一凭据 = 43 字符令牌" —— `29` 与 `21` 那两次无 `MINT` 记录、来源未留证；三者均 ≠ `38`，故"供应商密钥不在容器内"这一结论仍成立**〕 |
+| 令牌**可终态吊销** | 吊销前：`UPSTREAM-REQ`（网关接受该令牌）；`REVOKE bound=turn-2 n=1`；吊销后：`DENY ... reason=unknown-token` | **F（部分）**〔🔴 **2026-09-13 复核更正：本行无归档证据** —— `REVOKE` 与 `DENY … reason=unknown-token` **在 `out\` 内任何日志中都不存在**（全目录 grep 只命中 `gw\gw.js:47/60` 的**代码字面量**），可能仅出现在当时的控制台输出、未落盘 ⇒ **不得据此认为"终态吊销已实测"**；权威状态见 §B14「当前取证状态」F 行**〕 |
 
 **过程留痕（一次方法错误，如实登记）**：首次明文扫描用的 shell 模式串因 `tr -d "\r\n"` 在 `dash` 下**未剥掉 CR**（`PATTERN_LEN=39` 而非 `38`），**该次结果不可信**；改用 stdin 传模式（`PATTERN_LEN=38`）重跑后取数。**负向与正向一律以重跑证据为准。**
 
