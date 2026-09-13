@@ -471,6 +471,9 @@ class Settings(BaseSettings):
     # 须与冷启动上限（79s）相加后仍落在执行超时内，两级超时才不会相互架空。
     model_gateway_upstream_timeout_seconds: float = Field(default=60.0, ge=1, le=600)
     model_gateway_max_retries: int = Field(default=0, ge=0, le=5)  # fail-closed：默认不隐式重试
+    # 网关控制面密钥（mint / revoke 鉴权）：由部署密钥系统注入、不进仓库、不进容器；
+    # 与 UPSTREAM_API_KEY（供应商密钥）职责分离。留空 = 未配置（网关侧 fail-closed 拒绝启动）。
+    model_gateway_mint_secret: str = ""
 
 
 CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
