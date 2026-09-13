@@ -8,6 +8,17 @@
 
 ## 记录
 
+### 2026-09-13 · 执行工作卷落点：宿主 bind → **容器内 tmpfs**（段二-3）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-13（**用户裁决**，随段二-3 实现登记） |
+| **变更** | 容器执行的**工作卷落点**由「宿主目录 bind 到 `/workspace`」改为「**容器内 tmpfs**」（挂载选项 `rw,noexec,nosuid,nodev`），容器销毁即随之消失。宿主侧 `WORKBENCH_EXEC_WORKSPACE_ROOT` **保留**，语义收窄为「③ 路径闸门的宿主锚点」。 |
+| **原因** | **Docker 不支持在 bind / volume 上设置 `nosuid,nodev,noexec`**（实测 `docker run -v vol:/w:noexec,nosuid,nodev` → `invalid mode: noexec,nosuid,nodev`）。而规格 §3.3 的三条要求必须**同时**满足：① 挂载选项 `nosuid,nodev,noexec`；② **工作卷与容器根不同设备**；③ 生成即空 + 运行结束销毁。**tmpfs 是同时满足三者的唯一原生手段。** |
+| **影响面** | ① 工作卷**不再落在宿主目录** ⇒ 宿主侧不能直接查看/留存执行产物（**产物导出**走 `artifact.export`，不受影响）；② §3.3「与容器根不同设备」由 tmpfs 天然满足；③ `WORKBENCH_EXEC_WORKSPACE_ROOT` 语义收窄，**不再**是 bind 源；④ 宿主残留风险**下降**（容器销毁即清，⑥ 孤儿治理只需管容器）。 |
+| **回退方式** | 改回宿主 bind 需**同时放弃** `noexec,nosuid,nodev` 三项（或改用其它隔离手段）⇒ **属安全性下降**，**回退前必须重新评审**，不得静默切换。 |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §3.3 文件系统 / 工作目录两行（2026-09-13 裁决注）；段二-3 实现 `app/tool_execution/executor.py` |
+
 ### 2026-09-13 · 对既有表 `workbench_run_records` 增补唯一约束（随迁移 `027`）
 
 | 项 | 内容 |

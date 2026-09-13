@@ -178,17 +178,17 @@
 
 ### B15 新增配置的落点与守护（**实现前必办** · 2026-09-13 新增）
 
-- **事实**（第四轮复核 N3/P4；**第七轮 P3 后由 10 项增至 12 项**；**2026-09-13 裁决路径①后由 12 项增至 18 项**）：规格 §4 列出的 **18 项**新增配置（`WORKBENCH_AGENT_RUNTIME_BACKEND`、`WORKBENCH_EXEC_IMAGE_DIGEST`、`WORKBENCH_EXEC_WORKSPACE_ROOT`、`WORKBENCH_EXEC_TRUSTED_ROOTS`、`WORKBENCH_EXEC_TIMEOUT_SECONDS`、`WORKBENCH_EXEC_PIDS_LIMIT`、`WORKBENCH_EXEC_MEMORY_MB`、`WORKBENCH_EXEC_CPU_QUOTA`、`WORKBENCH_DSH_VERSION`、`WORKBENCH_ARTIFACT_EXPORT_ENABLED`、`WORKBENCH_BODY_ENCRYPTION_KEY`、`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS`、**路径①网关六项**：`WORKBENCH_MODEL_GATEWAY_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_TIMEOUT_SECONDS`、`WORKBENCH_MODEL_GATEWAY_MAX_RETRIES`）在 `app/settings.py`、`.env.staging.example`、`tests/test_env_templates.py` **三处零命中**〔**2026-09-13 更正：该"零命中"已不成立 —— 18 项已全部落上述三处，见本条末「进展」块**〕。
+- **事实**（第四轮复核 N3/P4；**第七轮 P3 后由 10 项增至 12 项**；**2026-09-13 裁决路径①后由 12 项增至 18 项**；**2026-09-13 段二-3 裁决 ⑥ 后增至 19 项**）：规格 §4 列出的 **19 项**新增配置（`WORKBENCH_AGENT_RUNTIME_BACKEND`、`WORKBENCH_EXEC_IMAGE_DIGEST`、`WORKBENCH_EXEC_WORKSPACE_ROOT`、`WORKBENCH_EXEC_TRUSTED_ROOTS`、`WORKBENCH_EXEC_TIMEOUT_SECONDS`、`WORKBENCH_EXEC_PIDS_LIMIT`、`WORKBENCH_EXEC_MEMORY_MB`、`WORKBENCH_EXEC_CPU_QUOTA`、**`WORKBENCH_EXEC_ORPHAN_LIMIT`（⑥ 孤儿上限，默认 `8`）**、`WORKBENCH_DSH_VERSION`、`WORKBENCH_ARTIFACT_EXPORT_ENABLED`、`WORKBENCH_BODY_ENCRYPTION_KEY`、`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS`、**路径①网关六项**：`WORKBENCH_MODEL_GATEWAY_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_BASE_URL`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY`、`WORKBENCH_MODEL_GATEWAY_UPSTREAM_TIMEOUT_SECONDS`、`WORKBENCH_MODEL_GATEWAY_MAX_RETRIES`）在 `app/settings.py`、`.env.staging.example`、`tests/test_env_templates.py` **三处零命中**〔**2026-09-13 更正：该"零命中"已不成立 —— 19 项已全部落上述三处，见本条末「进展」块**〕。
 - **判据（实现前必须闭环）**：
-  1. **18 项全部进 `app/settings.py`**（含类型与默认值；**`WORKBENCH_BODY_ENCRYPTION_KEY` 必填非空且不进仓库；`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY` 同口径（上游供应商密钥，只在网关侧）；`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS` 与 `WORKBENCH_EXEC_TIMEOUT_SECONDS` 的默认值须先定死——见规格 §8 U11/U16**；**新增的 `WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS` 须与之协调：TTL ≥ 执行超时**）；
+  1. **19 项全部进 `app/settings.py`**（含类型与默认值；**`WORKBENCH_BODY_ENCRYPTION_KEY` 必填非空且不进仓库；`WORKBENCH_MODEL_GATEWAY_UPSTREAM_API_KEY` 同口径（上游供应商密钥，只在网关侧）；`WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS` 与 `WORKBENCH_EXEC_TIMEOUT_SECONDS` 的默认值须先定死——见规格 §8 U11/U16**；**新增的 `WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS` 须与之协调：TTL ≥ 执行超时**）；
   2. 全部进 **`.env.staging.example`**；
   3. **`tests/test_env_templates.py` 扩至覆盖全部新增项**（现仅覆盖 `sso_*` 与 5 个 Runtime 的元数据）；
   4. **`WORKBENCH_EXEC_TIMEOUT_SECONDS` 的默认值必须先定死**（规格 §8 **U11 仍开放**；未定值前用例 18 只能用临时值跑，默认值口径永久悬空）。
 - **进展（2026-09-13）**：**判据 2 / 3 / 4 已闭环；判据 1 部分闭环。**
-  - ✅ **判据 2**：18 项**全部进 `.env.staging.example`**（含密钥类"必须由部署密钥系统注入、禁止在模板填写真实值"的声明）。
-  - ✅ **判据 3**：`tests/test_env_templates.py` **新增 3 个守护用例**——① 清单↔实现的字段存在性；② 模板全覆盖 18 项；③ **默认值钉死 + `TTL ≥ EXEC_TIMEOUT` 硬约束 + fail-closed 项必须留空**。**含反假测试**：故意注释掉模板一行 + 把一个默认值改坏 ⇒ **恰好 2 个用例变红**（报错分别为 `['exec_cpu_quota']` 缺失、`181 == 180`），还原后复绿。
+  - ✅ **判据 2**：19 项**全部进 `.env.staging.example`**（含密钥类"必须由部署密钥系统注入、禁止在模板填写真实值"的声明）。
+  - ✅ **判据 3**：`tests/test_env_templates.py` **3 个守护用例**覆盖（① 清单↔实现的字段存在性；② 模板全覆盖 19 项；③ **默认值钉死 + `TTL ≥ EXEC_TIMEOUT` 硬约束 + fail-closed 项必须留空**）。**含反假测试**（首轮）：故意注释掉模板一行 + 把一个默认值改坏 ⇒ **恰好 2 个用例变红**（报错分别为 `['exec_cpu_quota']` 缺失、`181 == 180`），还原后复绿。**段二-3（2026-09-13）扩项**：⑥ 新增 `WORKBENCH_EXEC_ORPHAN_LIMIT`（默认 `8`），**三处台账同批同步**（`app/settings.py` / `.env.staging.example` / `STAGE2_SETTINGS_FIELDS`）并把项数由 **18 改为 19**，回归复绿。
   - ✅ **判据 4**：`WORKBENCH_EXEC_TIMEOUT_SECONDS` **默认值已定死 = `180` 秒**（2026-09-13 用户裁决；≈ §F9.4 冷启动上限 79s 的 2.3×）。**同批定值（规格 §4 原未给数）**：`EXEC_PIDS_LIMIT=256`、`EXEC_MEMORY_MB=2048`、`EXEC_CPU_QUOTA=2.0`（= `docker --cpus`）、`BODY_CLEANUP_INTERVAL_SECONDS=60`、`MODEL_GATEWAY_TOKEN_TTL_SECONDS=300`、`MODEL_GATEWAY_UPSTREAM_TIMEOUT_SECONDS=60`。
-  - ⚠️ **判据 1 部分闭环**：18 项**已全部进 `app/settings.py`**（含类型、默认值与 `ge/le` 边界；**不设裸名别名**，只认 `WORKBENCH_` 前缀）；**但"必填非空 / `base64` 32 字节 / `TTL ≥ 执行超时` 的启动期校验尚未实现** —— 其失败语义归 **§4.1.6-3「装配与失败语义」**，依赖目前**尚不存在**的装配组件（`tool_execution` / `run_records` / `tool_actions`）⇒ **随装配期一并落地**；此处**不提前造半成品**（避免与 §4.1.6-3 形成第二个事实源）。
+  - ⚠️ **判据 1 部分闭环**：19 项**已全部进 `app/settings.py`**（含类型、默认值与 `ge/le` 边界；**不设裸名别名**，只认 `WORKBENCH_` 前缀）；**但"必填非空 / `base64` 32 字节 / `TTL ≥ 执行超时` 的启动期校验尚未实现** —— 其失败语义归 **§4.1.6-3「装配与失败语义」**，依赖目前**尚不存在**的装配组件（`tool_execution` / `run_records` / `tool_actions`）⇒ **随装配期一并落地**；此处**不提前造半成品**（避免与 §4.1.6-3 形成第二个事实源）。
   - **回归证据**：按 CI 原命令 `python -m pytest -o addopts=""` ⇒ **`1437 passed`**（基线 1434 + 新增 3），`python -m compileall -q app tests extract_pdf.py scripts` 通过（exit 0）。
 - **未闭环前**：**不得声称"配置已被守护"**。**判据 1 的启动期校验未实现 ⇒ 该禁令当前仍然有效。**
 
@@ -212,9 +212,10 @@
   1. **在完全按 §3.3 加固口径启动的执行容器内，复跑 B14 的关键判据** —— 至少 **A / C′ / D** 与 **B 的结构部分**；若届时已有有效凭据，**一并覆盖「turn 成功」/ B 的因果部分 / 红线 1**。
   2. **容器 spec 须逐项可核验**：`HostConfig` 的 `CapDrop` / `SecurityOpt` / `PidsLimit` / `Memory` / `NanoCpus` / `ReadonlyRootfs` / `Config.User` **必须与 §3.3 及 §4 的 `WORKBENCH_EXEC_*` 取值一致**（**不得出现本次的 `null` / `0` / `""`**）。
   3. **复跑结论须与首轮一致**（A / C′ / D 仍成立；红线 2 / 3 仍未命中）；**若不一致 → 判 B14 不成立，回到规格 §3.5 重新论证**。
-- **实施时机**：**依赖段二实现** —— 加固容器由 `ContainerExecutor` 产生（§4.1.6-2 装配点），`WORKBENCH_EXEC_*` 共 18 项配置见 §4 / 门禁 §B15。
+- **实施时机**：**依赖段二实现** —— 加固容器由 `ContainerExecutor` 产生（§4.1.6-2 装配点），`WORKBENCH_EXEC_*` 共 19 项配置见 §4 / 门禁 §B15。
 - **与开工门禁的关系**：**本条不阻断段二评审与开工**（加固容器尚不存在）；但 **① **未闭环前不得声称"已在生产形态下验证容器内不持有模型密钥"**；② **上线自检必须包含它**。**
-- **状态（2026-09-13）**：**未闭环** —— 首轮实测为**非加固形态**，**加固形态从未跑过**。
+- **状态（2026-09-13）**：**部分闭环（段二-3 复跑，2026-09-13）** —— **判据 2 已闭环**：加固容器已由 `ContainerExecutor` 真实产生，`HostConfig` / `Config` 逐项核验与 §3.3 / §4 取值一致（**无 `null` / `0` / `""`**），原始证据 `out\80-b17-spec.log`。**判据 1 部分闭环**：在加固容器内复跑了 **C′**（容器内不存在指向供应商域名的连接：`BLOCKED gaierror`）与 **B 的结构部分**（env / `/proc/*/environ` / `/proc/*/cmdline` / 文件扫描的金丝雀命中数**全为 0**），证据 `out\81-b17-structural.log`；**A / D 未复跑**——两者依赖**真实 dsh turn**（本机未安装 dsh 树，属 §F 适配器段）⇒ **未验证**。**判据 3 未闭环**（需与首轮全判据对照，A / D 缺位）。**⇒ 本条整体仍未闭环、仍阻断上线。**
+  - **复跑口径（2026-09-13，段二-3）**：镜像 `python:3.12-slim@sha256:7838…`（digest 钉死）；`CapDrop=["ALL"]` / `SecurityOpt=["no-new-privileges"]` / `PidsLimit=256` / `Memory=2147483648` / `NanoCpus=2000000000` / `ReadonlyRootfs=true` / `Config.User="65534:65534"` / `NetworkMode=workbench-exec-internal`（`Network.Internal=true`）/ `Tmpfs` 三处均含 `noexec,nosuid,nodev` / `Mounts` 无 `docker.sock`。⚠️ `CpuQuota=0` 属**预期**（CPU 上限由 `NanoCpus` 承载，与 `docker --cpus` 同口径；`NanoCpus` 非 0）。
 
 ---
 
@@ -406,9 +407,9 @@ job_list / job_output / job_kill / list_agents / send_message / interrupt_agent
 | B3 | ⏳ **部分**：环境可运行性与剖面组成已取证；三条契约的完整运行期复验**需模型凭据或自写 stdio 客户端**。**2026-09-13 已补 Linux 侧沙箱结论（§F7）** |
 | B5–B12 | 属**段二实施期**的判据（不是开工前置取证），其中 B5/B6/B11 在段二-2/段二-3 落地时验证；B12 **已定：本段不做**（规格 §7 X4，已闭环） |
 | **B14** | ✅ **判据与三条红线全部取得证据（2026-09-13 四轮迭代：§F9 实测 → 两轮复核下修 → §F12 桩形态 → §F13 真实供应商收口）**：**A / C′ / D 结论成立；B 结构 ✅ / 因果 ✅；红线 1 ✅ 未命中、红线 2 / 3 未命中**。**仅存两项限定**：**F 仅 2/6 有条目证据**（②④⑤⑥ 属段二实现期 ⇒ 规格 §8 U17）；**容器形态未加固**（门禁 §B17，**阻断上线**）。**权威状态表见 §B14 的「当前取证状态」块。**〔原写「❌ 全未取证」，系 §F9 执行**之前**的陈旧表述〕 |
-| **B15** | ✅ **判据 2 / 3 / 4 已闭环、判据 1 部分闭环（2026-09-13）**：18 项已进 `app/settings.py`（含类型与 `ge/le` 边界）/ `.env.staging.example`，由 `tests/test_env_templates.py` **3 个守护用例**覆盖并**含反假测试**；**缺口 = "必填非空 / `base64` 32 字节 / `TTL ≥ 执行超时` 的启动期校验未实现**（归 §4.1.6-3 装配期）。见 §B15「进展」块 |
+| **B15** | ✅ **判据 2 / 3 / 4 已闭环、判据 1 部分闭环（2026-09-13）**：**19 项**已进 `app/settings.py`（含类型与 `ge/le` 边界）/ `.env.staging.example`，由 `tests/test_env_templates.py` **3 个守护用例**覆盖并**含反假测试**（⑧ 段二-3 新增 `WORKBENCH_EXEC_ORPHAN_LIMIT`，项数 18 → 19）；**缺口 = "必填非空 / `base64` 32 字节 / `TTL ≥ 执行超时` 的启动期校验未实现**（归 §4.1.6-3 装配期）。见 §B15「进展」块 |
 | **B16** | ⏳ **部分（2026-09-13）**：判据 **②（断网演练，对 `dsh`）✅**、**③（7 项退出方案）✅**（候选许可多数仍"待核"）；**判据 ①（钉死版本归档到内网受控位置）⏸ 挂起**（用户裁决选项 D；恢复条件 = 指定受控归档位置）⇒ **整条第 0 层未闭环**。**不阻断开工，阻断上线** |
-| **B17** | ❌ **未闭环（2026-09-13 新增）**：**加固口径下的复跑从未执行**（首轮实测为非加固、**以 root 运行**的容器）⇒ **不得声称「已在生产形态下验证容器内不持有模型密钥」**。依赖段二实现（`ContainerExecutor`）。**不阻断开工，阻断上线** |
+| **B17** | 🟡 **部分闭环（段二-3 复跑，2026-09-13）**：**判据 2 已闭环**（加固容器 spec 逐项与 §3.3/§4 一致、无 `null`/`0`/`""`）；**判据 1 部分闭环**（C′ + B 结构部分已在加固容器内复跑，命中数全 0；**A / D 未复跑** —— 依赖真实 dsh turn，属 §F）⇒ **判据 3 未闭环**。**仍不得声称「已在生产形态下验证容器内不持有模型密钥」**。**不阻断开工，阻断上线**。证据 `out\80-b17-spec.log` / `out\81-b17-structural.log` |
 | **B3 剩余 3 项** | 「Linux 侧沙箱」**已于 §F7 取证**；「`subprocess-local` 禁用是否真生效」「`approval=ask` 无通道时的行为」**仍需真实调用** |
 
 > **补登说明（2026-09-13）**：本表原为「§F6 §B 剩余项的状态」（2026-09-12 口径）。**B14 行已按 §F9 实测 + 两轮复核下修**；**B15 / B16 / B17 为本轮新增条目**（三条均属 §F9 之后新开或新收口的项，此前不在本表内，故一并补登）。
