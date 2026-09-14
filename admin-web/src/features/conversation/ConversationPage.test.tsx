@@ -19,6 +19,7 @@ interface Options {
   sendDetail?: string
   archived?: boolean
   emptyList?: boolean
+  detailMessages?: unknown[]
 }
 
 interface Call { url: string; method: string; body: string }
@@ -47,8 +48,8 @@ function makeFetch(options: Options = {}) {
       if (options.detailStatus && options.detailStatus >= 400) return json({ detail: '会话不存在' }, options.detailStatus)
       return json({
         ...conversation(options.archived ? { status: 'archived' } : {}),
-        messages: [message(), message({ message_id: 'msg-a', role: 'assistant', content: '（P1 桩回复）已收到你的消息。', stub: true })],
-        messages_total: 2,
+        messages: options.detailMessages ?? [message(), message({ message_id: 'msg-a', role: 'assistant', content: '（P1 桩回复）已收到你的消息。', stub: true })],
+        messages_total: (options.detailMessages ?? [null, null]).length,
         messages_limit: 50,
         messages_offset: 0,
       })
@@ -85,6 +86,34 @@ describe('ConversationPage', () => {
     expect(await screen.findByText('整理一下客户反馈')).toBeInTheDocument()
     expect(screen.getByText('桩回复', { selector: '.status-badge' })).toBeInTheDocument()
     expect(calls.some((call) => call.url.includes('/conversations/conv-1?limit=50&offset=0'))).toBe(true)
+  })
+
+  it('shows which tool a user turn invoked from the message tool_name field, next to the redacted body', async () => {
+    const { fetchMock } = makeFetch({
+      detailMessages: [
+        message({ tool_name: 'fs.write', content: '[工具调用·脱敏] tool_key=fs.write params=[content,path] digest=deadbeef' }),
+        message({ message_id: 'msg-a', role: 'assistant', content: '工具已执行完成。', stub: false }),
+      ],
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+
+    // 用户气泡：正文是脱敏摘要（无参数值），调用的工具名单独按 tool_name 展示。
+    expect(await screen.findByText('[工具调用·脱敏] tool_key=fs.write params=[content,path] digest=deadbeef')).toBeInTheDocument()
+    expect(document.querySelector('.conversation-message--user .conversation-message__head .ws-code')?.textContent).toBe('fs.write')
+  })
+
+  it('renders a user turn without tool_name (legacy message) and shows no tool label', async () => {
+    const { fetchMock } = makeFetch({
+      detailMessages: [message({ tool_name: null, content: '[消息·脱敏] chars=12 digest=abcd1234' })],
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+
+    expect(await screen.findByText('[消息·脱敏] chars=12 digest=abcd1234')).toBeInTheDocument()
+    expect(document.querySelector('.conversation-message--user .conversation-message__head .ws-code')).toBeNull()
   })
 
   it('selects a conversation from the list', async () => {

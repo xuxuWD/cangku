@@ -207,6 +207,9 @@ def test_executed_path_stores_redacted_user_message_and_keeps_history(monkeypatc
     assert "tool_key=fs.write" in user_message["content"]
     assert BODY_SENTINEL not in user_message["content"]
     assert PATH_SENTINEL not in user_message["content"]
+    # §8 U23「展示弥补」：用户消息行落本次调用的工具键；助手消息不带 `tool_name`。
+    assert user_message["tool_name"] == "fs.write"
+    assert assistant_message["tool_name"] is None
     # 助手消息写入行**未改**（重放依赖它的 id）。
     assert assistant_message["content"] == "工具已执行完成。"
     assert fake.calls == 1
@@ -253,6 +256,8 @@ def test_pending_approval_path_stores_redacted_user_message(monkeypatch, _isolat
     assert user_message["content"].startswith("[工具调用·脱敏]")
     assert BODY_SENTINEL not in user_message["content"]
     assert PATH_SENTINEL not in user_message["content"]
+    # 202 写入点同样落工具键（与 201 一致）。
+    assert user_message["tool_name"] == "fs.write"
 
 
 def test_stub_path_stores_redacted_free_text(monkeypatch, _isolate) -> None:
@@ -269,6 +274,47 @@ def test_stub_path_stores_redacted_free_text(monkeypatch, _isolate) -> None:
     user_message = detail["messages"][0]
     assert user_message["content"].startswith("[消息·脱敏]")
     assert FREETEXT_SENTINEL not in user_message["content"]
+    # 桩路径无工具调用 ⇒ `tool_name` 保持 `null`（不编造工具）。
+    assert user_message["tool_name"] is None
+
+
+def test_tool_name_records_invoked_tool_while_content_stays_redacted(
+    monkeypatch, _isolate
+) -> None:
+    """§8 U23「展示弥补」：用户消息行 `tool_name` = 本次调用的工具键，`content` 仍为脱敏摘要。
+
+    调用 JSON 路径的两个写入点（`201 executed` / `202 pending_approval`）各验一次，工具键**互不相同**
+    以证明 `tool_name` 取自本次调用、而非任何常量。
+    """
+    # 201 executed
+    _wire(monkeypatch, FakeToolExecution())
+    executed = _create_conversation()
+    _send(
+        executed,
+        _invocation("fs.write", {"path": PATH_SENTINEL, "content": BODY_SENTINEL}),
+        key="tn-201",
+    )
+    user_201 = _detail(executed)["messages"][0]
+    assert user_201["role"] == "user"
+    assert user_201["tool_name"] == "fs.write"
+    assert user_201["content"].startswith("[工具调用·脱敏]")
+    assert "tool_key=fs.write" in user_201["content"]
+    for value in (BODY_SENTINEL, PATH_SENTINEL):  # 参数值不得随 `tool_name` 回填而回流到 `content`
+        assert value not in user_201["content"]
+
+    # 202 pending_approval
+    _wire(
+        monkeypatch,
+        FakeToolExecution(
+            result=ToolExecutionResult(outcome="pending_approval", code=202, approval_id="appr-x")
+        ),
+    )
+    pending = _create_conversation()
+    _send(pending, _invocation("fs.read", {"path": PATH_SENTINEL}), key="tn-202")
+    user_202 = _detail(pending)["messages"][0]
+    assert user_202["tool_name"] == "fs.read"  # 与上一次的 fs.write 不同 ⇒ 取自本次调用
+    assert user_202["content"].startswith("[工具调用·脱敏]")
+    assert PATH_SENTINEL not in user_202["content"]
 
 
 # ------------------------------------------------------------------ ③④ 全表检索守护（内存等价口径）
