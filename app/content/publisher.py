@@ -139,17 +139,3 @@ class WechatMpPublisher:
         if not status:
             raise PublicationFailed("回执核对响应缺少状态")
         return status
-
-
-class DisabledPublisher:
-    """未配置发布渠道时的占位发布器：任何操作都明确拒绝。"""
-
-    name = "disabled"
-
-    def publish(
-        self, *, title: str, content: str, idempotency_key: str
-    ) -> PublicationReceipt:
-        raise PublicationNotConfigured("未配置发布渠道，发布功能未启用")
-
-    def verify(self, receipt_id: str) -> str:
-        raise PublicationNotConfigured("未配置发布渠道，发布功能未启用")
