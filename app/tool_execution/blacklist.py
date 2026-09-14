@@ -316,9 +316,3 @@ class CommandGate:
             raise CommandDenied("命中可执行名黑名单", sub_step="④-2")
         if param_blacklist_hit(resolved_executable, args, workspace_path=workspace_path):
             raise CommandDenied("命中参数级黑名单", sub_step="④-2")
-
-    def evaluate(self, executable: str, args: Sequence[str], *, workspace_path: str | None = None) -> str:
-        resolved = self.verify_source(executable)
-        self.verify_name(resolved)
-        self.verify_blacklist(resolved, args, workspace_path=workspace_path)
-        return resolved
