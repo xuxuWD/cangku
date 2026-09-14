@@ -256,7 +256,7 @@
 | --- | --- |
 | 位置 | **生产：与工作台分主机**（不同宿主、不同 Docker 网络/编排域）；两者之间只经一个受控执行接口。**开发期允许本机 Docker，但仅用于机制验证，不得据此声称隔离达成**（评测附录 B#14，与清单 A2 对齐） |
 | 网络 | **仅内网桥（`--internal`，无外网出口）+ 仅模型网关与执行回调边车可达**（2026-09-13 裁决路径①；**原 `--network none` 口径与 dsh 架构不相容**，见门禁 §F8.2）；模型调用**经工作台侧模型网关**发起（**真实供应商密钥只在网关**，容器内仅短命令牌——见 §3.5）。**〔2026-09-14 更新（§8 U20 方案 b-1）〕** 该内网桥内新增**执行回调边车**（`app/exec_callback`，**只监听一个端口、只暴露一个端点** `POST /internal/exec-callback`）；执行容器可**入向**到达它，回调经边车判定后由 **`边车 → 工作台`** 的受控出向调用交回工作台——**工作台 app 容器不得接入该内网桥**（否则把工作台整个 API 面暴露给执行容器）。 |
-| 文件系统 | 根**只读**；只挂一个**专用空工作目录**到 `/workspace`，挂载选项 **`nosuid,nodev,noexec`**；**工作卷与容器根不同设备**；**不挂 `docker.sock`**、不挂宿主设备节点。**〔2026-09-13 用户裁决·实现口径〕落点 = 容器内 `tmpfs`**（`rw,noexec,nosuid,nodev`）。**理由**：Docker **不支持**在 bind / volume 上设置 `nosuid,nodev,noexec`（实测 `-v vol:/w:noexec,nosuid,nodev` → `invalid mode`），而 **tmpfs 是同时满足**「三项挂载选项 + 与容器根不同设备 + 生成即空 + 随容器销毁」的**唯一原生手段**。**影响**：工作卷**不再落在宿主目录**（产物导出仍走 `artifact.export`）；宿主侧 `WORKBENCH_EXEC_WORKSPACE_ROOT` 保留，语义收窄为「③ 路径闸门的宿主锚点」。**登记**：变更记录「执行工作卷落点」条 |
+| 文件系统 | 根**只读**；只挂一个**专用空工作目录**到 `/workspace`，挂载选项 **`nosuid,nodev,noexec`**；**工作卷与容器根不同设备**；**不挂 `docker.sock`**、不挂宿主设备节点。**〔2026-09-13 用户裁决·实现口径〕落点 = 容器内 `tmpfs`**（`rw,noexec,nosuid,nodev`,`uid=65534`,`gid=65534`,`mode=700`；`/tmp` 与 `/dev/shm` 为 `rw,noexec,nosuid,nodev,uid=65534,gid=65534,mode=1777`）。**〔2026-09-15 G7：`uid/gid/mode` 必须显式写出，不得依赖 Docker 默认值〕**依据真容器实测——Docker 对 `--tmpfs` 的默认是 `mode=1777,uid=0,gid=0`（工作卷＝**全局可写**），且**一旦容器带 `--workdir` 指向该 tmpfs，该挂载会被改写成 `mode=755`（`root:root`）** ⇒ 以 65534 运行的工具**无法写入工作卷**（`PermissionError [Errno 13]`）；显式指定后行为与是否设 workdir 无关。回归见 `tests/test_container_executor.py::test_workspace_is_owned_by_exec_user_and_writable` 与 `::test_container_spec_is_hardened`；裁决与取证全文见 §8 **U28**。**理由**：Docker **不支持**在 bind / volume 上设置 `nosuid,nodev,noexec`（实测 `-v vol:/w:noexec,nosuid,nodev` → `invalid mode`），而 **tmpfs 是同时满足**「三项挂载选项 + 与容器根不同设备 + 生成即空 + 随容器销毁」的**唯一原生手段**。**影响**：工作卷**不再落在宿主目录**（产物导出仍走 `artifact.export`）；宿主侧 `WORKBENCH_EXEC_WORKSPACE_ROOT` 保留，语义收窄为「③ 路径闸门的宿主锚点」。**登记**：变更记录「执行工作卷落点」条 |
 | 路径原子性 | ③ 的校验与 ⑧ 的打开必须**原子化**（fd 传递 / `openat2 RESOLVE_BENEATH`），消除 TOCTOU 与硬链接绕过 |
 | 权限 | **非 root**；`--cap-drop ALL`；禁止 `--privileged`；**`--security-opt no-new-privileges`** |
 | 资源 | `--pids-limit` / `--memory` / **`--cpus`（重审补，宪法部署检查要求 CPU 上限）** / **单次执行硬上限（超时，默认值见 §4）**；**超时语义 = 拒绝并终止容器**（fail-closed）；`/tmp` 与 `/dev/shm` 须限额并置 `noexec`（若实测某工具必需例外，须在本规格登记理由） |
@@ -992,6 +992,52 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 | 5 | **撤销删除申请后的状态未定义（撤销入口前置）** | 真源要求可撤销 —— `docs\private-deployment-runbook.md:64`「……申请删除后**撤销**或等待冷静期的流程演练」、`docs\external-dependency-acceptance-plan.md:182`「……申请删除后**撤销**或等冷静期……」；但 `app\commercial\tenant.py:61-68` 的 `transition_tenant` 允许边中 `TenantStatus.DELETING: {TenantStatus.DELETED}`（`:66`）**只允许 → `DELETED`**，**无回到可用态的边**。 | **✅ 已裁决（2026-09-14）**：撤销后回到 **`ACTIVE`** —— 在 `transition_tenant` 增加 `DELETING → ACTIVE` 允许边（**不得绕过状态机**）。实现留痕：`app\commercial\tenant.py` 的 `transition_tenant` 允许边新增 `TenantStatus.DELETING: {TenantStatus.DELETED, TenantStatus.ACTIVE}`；新增撤销入口 `POST /api/v1/commercial/deletion-requests/cancel`（`app\main.py`）+ 服务侧 `cancel_delete` 经 `transition_tenant` 回退，契约已同轮同步。原缺口描述（**曾未定义 ⇒ 未实施**）：此前**无撤销端点**（原 5 条 `/api/v1/commercial/*` 路由 `:819` / `:837` / `:853` / `:864` / `:875` 中**没有**）；且**不得**用 `set_tenant_status` 绕过状态机。 | 撤销后回到哪个状态（建议：**`DELETING → ACTIVE`，并在 `transition_tenant` 增加该允许边**）。**⇒ ✅ 已裁决（2026-09-14）= `DELETING → ACTIVE`。** |
 
 **⇒ 已裁决；按上表执行（2026-09-14）。** 限定（继续有效）：**① `units` / `cost_cents` 口径仍需将来定价才可改**（定价属新增真源，牵动 `migrations` 与三处台账）；**③ 导出载荷数据面本期不建**（15 类仍为空数组，沿用 `UNIMPLEMENTED_EXPORT_CATEGORIES`）。
+
+### U28 沙箱边界裁决（R1 = 方案 C）— ✅ 已裁决（2026-09-15）；同轮更正并修复 G7
+
+**性质**：2026-09-15 用户就 [`docs/sandbox-boundary-decision.md`](file:///d:/徐徐AI学习/公司工作台/docs/sandbox-boundary-decision.md) 的 **R1 裁决为「方案 C」**（＝维持"强化容器 + 容器不是安全边界"，把 microVM 升级写成**触发器**）。本节只登记**裁决生效内容 + 触发器 + 同轮 G7 的更正与修复事实**；材料全文见该文档（**该文档未评审**，不作放行依据）。
+
+**一、裁决生效内容（方案 C）**
+
+1. **边界声明写硬**：容器为**风险削减措施**，**不是安全边界**；边界 = **主机边界 + 九步闸门 + 无长寿命凭据**（与 §15 #2 一致）；**§3.3 的位置与凭据口径不变**。
+2. **不升级 microVM**：容器运行时保持 Docker SDK；独立内核（Kata / Cube Sandbox / gVisor / Docker Sandboxes）**本期不上**。
+3. **G1 / G3 / G4 已实测关闭（限本机）**：`--internal` 下**零出网**（TCP `1.1.1.1:443`、`8.8.8.8:53`、裸 UDP DNS 全部 `[Errno 101] Network is unreachable`）；**外部域名解析失败**（`gaierror [Errno -3]`，DNS 不外泄）；云元数据 `169.254.169.254:80` **不可达**；`os.unshare(CLONE_NEWUSER)` **被拒**（`Operation not permitted`，且 `CapEff=0` / `NoNewPrivs=1` / `Seccomp=2`）；只读根 / 越界写 / 越界读三项照常生效。**限定**：宿主为 **Windows + Docker Desktop**，**生产 Linux 宿主与 CI 未复测 ⇒ 上述结论不得外推**。
+4. **G7 更正并修复**（见第三节）。
+
+**二、五个 microVM 触发器（任一命中 ⇒ 启动方案 B 专项评审）**
+
+| # | 触发器 | 命中判据（可判定，非形容词） |
+| --- | --- | --- |
+| T1 | **执行容器与生产数据同宿主** | 部署形态放弃 §3.3 的"分主机"（执行容器与工作台/数据库任一者同宿主） |
+| T2 | **多租户共享同一执行主机** | 同一执行宿主上承载 ≥ 2 个租户的容器 |
+| T3 | **对外提供"执行即服务"** | 执行能力被用于承载**非本方**代码（客户自带代码/外部平台提交的代码） |
+| T4 | **所选运行时命中真实逃逸事件或高危 CVE** | 针对 Docker/runc/所钉镜像的逃逸型 CVE 影响当前版本，或发生本环境的逃逸事件 |
+| T5 | **合规/客户明确要求"独立内核"** | 等保/信创评审或客户合同中提出"不得共享内核"类条款 |
+
+**三、G7 更正（实测推翻原表述）+ 已修复**
+
+- **原表述（错误）**：`--tmpfs` 不带 `uid/gid` ⇒ 工作卷以 `root:root mode=755` 创建 ⇒ 非 root 不可写 ⇒ **"按 §3.3 现状口径实现即不可用"**。
+- **实测更正（三组对照，同镜像同加固参数）**：差异来源是 **`--workdir` 指向该 tmpfs**，**不是**缺 `uid/gid` ——
+  - A（执行器口径，无 `--workdir`）⇒ 工作卷 `0o41777`、**`WROTE_OK`**；
+  - B（无 `size` 且 **带 `--workdir /workspace`**）⇒ 工作卷 `0o40755`、**`PermissionError [Errno 13]`**；
+  - C（无 `size`、无 `--workdir`）⇒ 工作卷 `0o41777`、**`WROTE_OK`**。
+  ⇒ **执行器不传 `--workdir`，故"当前实现即有缺陷"不成立**（**假阳性，源于探针设计与执行器口径不一致**；原始探针输出已由 A/B/C 对照更正）。
+- **残留真问题（G7 的正确形态）**：工作卷权限**依赖 Docker 默认值**（实测默认 `mode=1777,uid=0,gid=0`＝**全局可写**），且**与"是否设 workdir"耦合** ⇒ 将来给容器加 CWD（工具迟早需要）时会**静默失效**。
+- **修复（已落地）**：`app/tool_execution/executor.py` **显式钉死** tmpfs 选项——工作卷 `uid=65534,gid=65534,mode=700`；`/tmp` 与 `/dev/shm` `uid/gid` + `mode=1777`；`noexec,nosuid,nodev` 三处均保留。
+- **回归**：`tests/test_container_executor.py::test_workspace_is_owned_by_exec_user_and_writable`（真容器内断言「归属 + 权限 + **真能写入**」）+ `::test_container_spec_is_hardened` 增挂载字符串断言。
+- **取证（2026-09-15，本机真容器；同一批命令可复现）**：修前 **2 failed**（`MODE 0o1777 UID 0 GID 0`）；修后 **13 passed**；**反假**"删掉显式 `uid/gid/mode`" ⇒ **2 failed**；**加 `working_dir=/workspace`（陷阱条件）⇒ 仍 13 passed**（证明修复后与 workdir **解耦**）；全量 **`1743 passed, 33 skipped`**；`compileall` exit=0。
+
+**四、残留未闭环（不得视为已收口）**
+
+| # | 残留 | 状态 |
+| --- | --- | --- |
+| G2 | 容器内 **env 白名单**未定义（短期令牌若经 env 注入，任何能执行代码的路径都能读到） | ❌ 未定 |
+| G5 | **13 条逃逸用例进 CI + 反假**（现 §5 仅覆盖部分） | ❌ 未做 |
+| G8 | **`noexec` 作用边界**未写进 §3.3：实测 `python /workspace/*.py` **可运行** ⇒ `noexec` **挡不住解释器**，第一道仍是 §3.2 的 ④-0 来源校验 | ❌ 未写 |
+| — | G1/G3/G4 的**生产宿主与 CI 复测** | ❌ 未做（仅本机） |
+| R7 | **桌面端（Windows 本地）是否承载工具执行**（drvfs 与 unix socket 两条穿透通道） | ❌ 未裁决 |
+| R8 | **E1（eBPF 运行时强制）是否纳入下一阶段** | ❌ 未裁决 |
+
 
 ---
 
