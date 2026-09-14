@@ -123,8 +123,10 @@ def test_staging_template_states_secret_values_are_not_written() -> None:
     assert "AUTH_TOKEN" in content
 
 
-# 段二（dsh 接入段）新增的 24 项配置：Settings 字段名。
-# 与规格 §4、门禁 §B15、`.env.staging.example` 是同一份清单，改一处必须三处同步。
+# 段二（dsh 接入段）新增的 24 项配置：Settings 字段名（**甲口径**：§4 清单内字段，**不含**网关侧 `mint_secret`）。
+# 口径（2026-09-14 补注）：本常量 / 规格 §4 / 门禁 §B15 = **24 项**；`.env.staging.example` = **25 项**
+# （多网关侧 `WORKBENCH_MODEL_GATEWAY_MINT_SECRET`）⇒ 三处仅在**前 24 项**上同源，`.env` 模板多登记 1 项网关侧配置。
+# 改一处必须三处同步。
 STAGE2_SETTINGS_FIELDS = (
     "agent_runtime_backend",
     "exec_image_digest",

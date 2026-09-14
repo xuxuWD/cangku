@@ -436,7 +436,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("INBOX_RETENTION_DAYS", "WORKBENCH_INBOX_RETENTION_DAYS"),
     )
 
-    # ---- 段二（dsh 接入段）新增配置：共 24 项 ----
+    # ---- 段二（dsh 接入段）新增配置：共 25 项（= 规格 §4 清单 24 项 + 网关侧 `mint_secret`）----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
     # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。
     # 命名口径：只认 `WORKBENCH_` 前缀（由 env_prefix 自动派生），**不设裸名别名** ——
