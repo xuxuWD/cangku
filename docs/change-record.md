@@ -8,6 +8,19 @@
 
 ## 记录
 
+### 2026-09-14 · §8 U25 扩围 E6 `DisabledPublisher` 死代码删除 + E1–E6 定性登记（代码删除，非地基变更）—— 可回退
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（随规格 §8 U25 扩围表 E6 行处置 + E1–E6 逐项定性登记；**E6 删除已获用户授权**） |
+| **变更** | **E6（已删）**：删除 `app/content/publisher.py` 的 `DisabledPublisher` 类（原 `:144`，连同其专属 docstring「未配置发布渠道时的占位发布器：任何操作都明确拒绝。」与 `name = "disabled"` / `publish(...)` / `verify(...)` 三个成员，共 12 行）。**同步回写文档**：① 规格 §8 U25 扩围表 E6 行「处置」列改为「✅ 已删除（2026-09-14）」、定义处列标注原行号；② 更新 U25 禁令延续句中对本类的引用；③ 在 U25 扩围表后新增小节「U25 扩围 · E1–E6 定性（2026-09-14，逐项侦察后定性）」。**未改**其它代码、**未动** `migrations/*`、**未新增**审计动作码、**未放宽**任何断言。 |
+| **原因** | §8 U25 扩围表 E6 登记为「冗余死代码」—— 其 docstring 自述为"未配置渠道时的 fail-closed 占位器"，但**实际 fail-closed 由 `publisher is None` 承担**（`app/content/publication_service.py:72-73` / `:132-133` 抛 `PublicationNotConfigured`）。真源把 fail-closed **明确指定给 `build_content_publisher` 返回 `None`**（`docs/platform-account-onboarding.md:45`），**非本类**。判据：生产 / 测试 / 字符串 / 动态均无调用方。 |
+| **影响面** | 仅删除无人引用的定义；**不改**任何行为、接口、数据模型、权限模型；**不改**迁移；无审计动作码新增；**无失效 import**（`app/content/publisher.py` 的 `Callable` / `dataclass` / `datetime`(UTC) / `Any` / `Protocol` / `httpx` 均仍被 `Publisher` / `PublicationReceipt` / `WechatMpPublisher` / `_default_transport` 使用，**无需连带清理**）。 |
+| **验证（已做）** | ✅ **符号检索**：`DisabledPublisher` **全仓仅定义处 + `docs/` 规格 2 处（E6 行 / 禁令句）命中**，`app/`、`tests/` **零命中**（已复核）；✅ **字符串 / 动态**：`"DisabledPublisher"` 字符串形态 **0 命中**；`app/content/` 内 `getattr` 命中（`openai_compatible.py:64/:92`、`publisher.py:105/:131`、`scraper.py:101`）**均不指向本类**；无 `globals()` / `eval` / `importlib` / 按名拼装；✅ **测试引用复核**：`tests/` 内 `disabled` 命中全属 `AuditAction.*_DISABLED`、dsh 插件、workforce 角色/员工 `status="disabled"` 等他模块符号，**无 `DisabledPublisher`**；`tests/test_content_publications.py:348/:437` 期望的 `PublicationNotConfigured` 来自 **`publisher=None`** 路径（`:337` `make_service(publisher=None)`、`:428-430` `PublicationService(..., publisher=None, ...)`），**不依赖本类**；✅ **反证（删前）**：将类**改名**（`DisabledPublisher_RENAME_PROBE`）后跑 `py -m pytest -o addopts=""` ⇒ **`1709 passed, 31 skipped`**（与基线一致 ⇒ 测试不引用它）；✅ **删后**：同一命令 ⇒ **`1709 passed, 31 skipped`**（**无用例数变化**）；`py -m compileall -q app` ⇒ **exit=0**。 |
+| **未验证（不得读成已验）** | ① E6 之外的**反射式调用方（`getattr` / 拼名 / entry-point）未穷尽**（规格 §8 U25 E23 已登记的同一盲区）；本轮「测试牵连」结论来自**静态读测试文件**，非实跑（反证那一次实跑仅覆盖 pytest 收集到的用例）；② 无真库 / staging 参与（本变更不涉数据读写）；③ E1–E5 的定性**仅为文档登记**，其「接线 / 裁决」落地**未验证**。 |
+| **回退方式** | 在 `app/content/publisher.py` 末尾**按原样恢复** `DisabledPublisher` 类：`class DisabledPublisher:` + docstring「未配置发布渠道时的占位发布器：任何操作都明确拒绝。」+ `name = "disabled"` + `publish(self, *, title, content, idempotency_key)` 与 `verify(self, receipt_id)` 两方法（方法体均 `raise PublicationNotConfigured("未配置发布渠道，发布功能未启用")`）。并回退规格 §8 U25 扩围表 E6 行「处置」列 / 禁令句 / 新增 E1–E6 定性小节 ⇒ 回到「该定义存在但无调用方」状态。**未经确认不得执行回滚。** |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §8 U25 扩围表 E6 行、U25 禁令延续句、新增「U25 扩围 · E1–E6 定性」小节；实现 `app/content/publisher.py`；服务侧 `app/content/publication_service.py`；测试 `tests/test_content_publications.py` |
+
 ### 2026-09-14 · §8 U25 R2 死代码删除 + R1 判定保留（代码删除，非地基变更）—— 可回退
 
 | 项 | 内容 |

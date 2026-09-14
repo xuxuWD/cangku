@@ -905,7 +905,7 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 | E3 | `CommercialLifecycleService.mark_final_exported` | `lifecycle.py:138` | **(A)** | 无调用 ⇒ 🔴 **`execute_delete` 的前置条件生产上永远不满足** | 登记（与 E2 同批） |
 | E4 | `CommercialLifecycleService.set_retention` / `retention` / `tenant_status` / `build_export_payload` | `lifecycle.py:166/:172/:176/:112` | **(A)** | 无调用；`build_export_payload` **恒返回空资源清单** ⇒ 易读成"导出已实现" | 登记（保守：明确"导出载荷未实现"） |
 | E5 | `QuotaService` / `PlanVersion` / `QuotaDecision` / `QuotaError`（整模块 `commercial/plan.py`） | `plan.py:8/:13/:19/:28` | **(A)/(C)** | **未被 `app/` 任何文件 import**（零命中）⇒ 🔴 **配额/超额策略控制面齐备却不接入任何执行路径** ⇒ 易读成"配额已强制" | 登记；**"预留 vs 缺接线"需真源确认** |
-| E6 | `DisabledPublisher` | `app\content\publisher.py:144` | **(A)/(B)** | **全仓零命中**；注释称"未配置渠道时的 fail-closed 占位器"，**实际 fail-closed 由 `publisher is None` 承担** ⇒ 冗余死代码 | 登记；建议经确认后删（或真正接线） |
+| E6 | `DisabledPublisher` | `app\content\publisher.py`（**原 :144，已于 2026-09-14 删除**） | **(A)/(B)** | **全仓零命中**；注释称"未配置渠道时的 fail-closed 占位器"，**实际 fail-closed 由 `publisher is None` 承担** ⇒ 冗余死代码 | **✅ 已删除（2026-09-14）** |
 | E7 | `TenantStatus.EXPORTING` | `app\commercial\tenant.py:13` | **(B)** | `app/` 内**无赋值点**（`request_export` 不置该状态）⇒ "导出中"**生产不可达** | 登记（枚举完整性 / 明确"预留态"） |
 | E8 | `Conversation.dsh_session_id` | `app\conversation\models.py:83` | **(B)** | 列被建表/读回，但 **`app/` 内无任何赋值点**（恒 `NULL`）⇒ 与 §U25 **A3（dsh 待接线）**同族 | 登记（预留；**不得声称 dsh 会话已落库**） |
 | E9 | `ConversationMessage.tool_call_id` | `app\conversation\models.py:96` | **(B)** | 仅作形参与回读，**`app/` 内无调用方传非 `None`** ⇒ 恒 `None` | 登记（预留） |
@@ -924,7 +924,21 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 | E22 | 租户仓储操作族（`ensure_test_tenant`、`activate_tenant`、`suspend_tenant`、`create_workspace`、`get_workspace`、`add_customer_admin`、`create_tenant`） | `app\commercial\repository.py:23/:30/:49/:52/:55/:63/:70/:109/:117/:144` | **(C)** | `app/` 内无生产调用（`create_tenant` 仅被同文件 `create_workspace` 内部调用）；`ensure_test_tenant` docstring 已自述"生产代码不依赖此方法" | 登记；**"无生产建/停租户入口"需真源确认是否外部运维负责** |
 | E23 | 反射式读取面（`pydantic` 自动序列化 / `__getattribute__` 覆写 / entry-point 反射装配） | — | **未核实** | 本次**未核** ⇒ (B) 类中"写而未读"结论**仅限 `app/`+`tests/` 静态引用** | 登记为**排查盲区**（需 AST 级"定义—引用"全配对才能"零遗漏"） |
 
-**⇒ 禁令延续（扩围部分）**：涉及 **E1–E6** 的结论**一律不得表述为"已生效"** —— **不得说"计费已启用""删除已执行""配额已强制""导出已实现""未配置渠道时走 `DisabledPublisher` 兜底"**；E8 不得说"dsh 会话已落库"；E21 不得说"内容安全已在生产强制"。
+**⇒ 禁令延续（扩围部分）**：涉及 **E1–E5** 的结论**一律不得表述为"已生效"** —— **不得说"计费已启用""删除已执行""配额已强制""导出已实现"**；**E6（`DisabledPublisher`）已于 2026-09-14 删除**（见下节及 `docs/change-record.md`），fail-closed 由 `publisher is None` 承担，**故不再有"走 `DisabledPublisher` 兜底"这一说法**；E8 不得说"dsh 会话已落库"；E21 不得说"内容安全已在生产强制"。
+
+**U25 扩围 · E1–E6 定性（2026-09-14，逐项侦察后定性）**
+
+> 本小节把上表 **E1–E6** 从"登记"推进到"逐项定性"（**接线 / 待真源裁决 / 已删除**）。**所有定性均以真源为锚**；凡真源**自相矛盾**者**不裁决、不下"已生效"结论**。逐条给出：**定性 / 依据强度 / 关键真源锚点 / 待办**。
+
+- **E1 用量台账 `append`/`reverse`（+ PG 版）** —— 定性 **接线**｜强度 **强**｜依据：`docs/superpowers/specs/2026-09-06-commercial-g0-design.md:28`（「后台必须记录模型和 Runtime 用量」）、`docs/api-contract.md:140`（「用量记录由服务端追加」）、同规格 `:171`（G0 验收 3）、`docs/capability-ownership-map.md:34`（标「✅ 已交付」）｜**读端点与前端已在等**（`app/main.py:842-843`、`admin-web/src/features/billing/api.ts:21-23`）｜**待办**：定"哪个终态钩子写台账"并接线（注意 `app/runtime/state.py:22` 的 `usage` 是运行内计数，**与商业账本非同一物**，须新建映射，**不得声称已有**）。
+- **E2 `execute_delete`** —— 定性 **接线**｜强度 **强**｜依据：`commercial-g0-design.md:114`（两步流程）、`:174`（验收 6）、`docs/api-contract.md:148`（「删除执行不在请求线程完成」）｜申请入口已接（`app/main.py:858`）｜**待办**：按真源边界（`docs/superpowers/plans/2026-09-06-commercial-g0.md:7`「以异步任务/运维命令为边界」）建执行者；**并补真源要求的"撤销"入口**（`docs/private-deployment-runbook.md:65`，当前 5 条路由无撤销端点）。
+- **E3 `mark_final_exported`** —— 定性 **接线（与 E2 同批）**｜强度 **强**｜依据：`commercial-g0-design.md:114`（「删除前必须生成最终导出包」）、`docs/staging-acceptance-checklist.md:32`｜**⚠️ E2/E3 是同一处断链的两端，只接 E2 仍会恒抛**。
+- **E4 `set_retention`/`retention`/`build_export_payload`** —— 定性 **接线**｜强度 **中**｜依据：`commercial-g0-design.md:118`（保留策略 + 「任何保留策略变化都写入审计」）、`:173`（验收 5）、`docs/delivery-gates.md:63`（**已勾**）｜**待办 3 条**：① **裁"保留口径以 env 还是 DB 为准"**（预检读 env `scripts/commercial_g0_preflight.py:54`，服务读 DB `app/commercial/lifecycle.py:172-174`，**两者之间无写入方** ⇒ 预检 pass ≠ 服务侧生效）；② 补 `set_retention` **缺失的审计写入**（`lifecycle.py:166-170`）；③ `retention` 默认值缺 `events`/`usage` 键，与真源三档默认（`:118`）**不一致**。
+- **E4 子项 `tenant_status`（`lifecycle.py:176`）** —— 定性 **仅登记**（无害只读，无牵连）。
+- **E5 整模块 `app/commercial/plan.py`** —— 🔴 **证据不足，待真源裁决**｜强度 **弱**｜**真源自相矛盾**：`docs/delivery-gates.md:58` 已勾「套餐」 vs `docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md:190` 决策 D1「**不在本期实现计费、白标、配额售卖**」 vs `docs/capability-ownership-map.md:55`「🟡 部分交付（G0）」｜**⇒ 三者互斥，未裁决前：不得声称"配额已强制"；不得删 `plan.py` 与 `workbench_plan_versions`（表在，删代码会造成漂移）**。
+- **E6 `DisabledPublisher`** —— **✅ 已删除（2026-09-14，用户授权）**｜强度 **强**｜依据：真源把 fail-closed **明确指定给 `build_content_publisher` 返回 `None`**（`docs/platform-account-onboarding.md:45`），**非本类**；全仓零命中、无数据/契约/前端/测试牵连｜**并同步更新上表 E6 行与禁令句中对该类的引用**（避免"规格登记一个已不存在的符号"）。
+
+**补充事实（对定性有直接影响，一并登记）**：① `docs/superpowers/plans/2026-09-06-commercial-g0.md:115` 要求 `Create: app/commercial/service.py`，**该文件不存在** ⇒ E2/E3/E4 的「导出/删除执行层」**从未落地**；② E6 之外的**未核实边界**：反射式调用方（`getattr`/拼名/entry-point）**未穷尽**；本轮"测试牵连"结论来自**静态读测试文件**，非实跑。
 
 ### U26 门禁 §B14 判据 D / E / F —— ✅ **已取证（2026-09-14，生产装配 + 真容器）**，**形态未达真实 dsh turn**
 
