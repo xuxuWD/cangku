@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import os
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -64,8 +66,10 @@ from app.tool_execution.store import (
     ToolActionStatus,
 )
 from app.tool_execution.workspace import WorkspaceManager
+from app.workforce.models import DEFAULT_APPROVAL_TIMEOUT_MINUTES
 
 NOW = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
+ROOT = Path(__file__).resolve().parents[1]
 ACTOR = UserContext("t-1", "u-1", "employee")
 PLAN = AgentPlan.from_steps([{"step_id": "step-1", "kind": "write", "tool": "fs.write"}])
 
@@ -538,10 +542,135 @@ def test_pending_action_is_persisted_before_waiting(tmp_path) -> None:
     assert row.args_json == {"path": "/workspace/a.txt", "content": BODY_PLACEHOLDER}
     assert row.body_ciphertext is not None
     assert row.body_expires_at is not None
-    assert row.body_expires_at > NOW
+    # 用例 32①：`body_expires_at` = **该动作的审批超时时刻**（= 落库时刻 + 审批超时），不是随便一个未来值。
+    assert row.body_expires_at == NOW + timedelta(minutes=DEFAULT_APPROVAL_TIMEOUT_MINUTES)
     # 未进入等待：trace 不含 ⑧。
     assert GATE_PERSIST in service.gate_trace
     assert GATE_EXECUTE not in service.gate_trace
+
+
+# ------------------------------- 用例 32② / 32⑤ / 32⑥：密文不是明文、未等待不落密文、占位常量
+
+
+def test_body_ciphertext_is_not_plaintext_and_meets_aesgcm_length_bound(tmp_path) -> None:
+    """用例 32②(a)(b)（§3.4 约束 1 / Q2）：密文不是明文；长度下界 = 正文字节数 + 28。
+
+    28 = AES-256-GCM 的 12B nonce + 16B tag（**有来源**，不是拍脑袋的常数）；下界不成立即
+    说明**未按定死算法加密**（例如"只追加 nonce+tag 而不加密"会被 (a) 直接命中）。
+    """
+    store = InMemoryToolActionStore()
+    service, _trusted, _ws = build_service(tmp_path, store=store)
+    body = "机密正文：这段内容绝不应当以明文落库"
+    service.execute(request("fs.write", {"path": "/workspace/a.txt", "content": body}))
+
+    blob = store.list_for_run("t-1", "run-1")[0].body_ciphertext
+    assert blob is not None
+    # (a) hex / 原始字节均不含正文原文。
+    assert body.encode("utf-8").hex() not in blob.hex()
+    assert body.encode("utf-8") not in blob
+    # (b) 长度下界：正文字节数 + 28（nonce 12B + tag 16B）。
+    assert len(blob) >= len(body.encode("utf-8")) + 28
+
+
+def test_action_not_entering_approval_leaves_no_body_ciphertext(tmp_path) -> None:
+    """用例 32⑤（§3.4 红线范围声明）：未进入审批等待的动作**不落**密文列。"""
+    store = InMemoryToolActionStore()
+    service, _trusted, _ws = build_service(tmp_path, store=store)
+
+    result = service.execute(request("fs.list", {"path": "/workspace"}))
+
+    assert result.outcome == "executed"
+    rows = store.list_for_run("t-1", "run-1")
+    assert rows == []  # 无需审批 → 不产生待批动作
+    assert all(row.body_ciphertext is None and row.body_expires_at is None for row in rows)
+
+
+def test_body_placeholder_never_participates_in_digest_or_rebuild(tmp_path) -> None:
+    """用例 32⑥ / §3.4 约束 5：占位常量只落 `args_json`（按键区分），**不参与** `args_digest`。"""
+    store = InMemoryToolActionStore()
+    service, _trusted, _ws = build_service(tmp_path, store=store)
+    body = "机密正文"
+    spec = ToolSpecCatalog(default_tool_specs()).get("fs.write")
+
+    pending = service.execute(request("fs.write", {"path": "/workspace/a.txt", "content": body}))
+    row = store.get("t-1", pending.action_id)
+
+    assert row.args_json == {"path": "/workspace/a.txt", "content": BODY_PLACEHOLDER}
+    # `args_digest` 按**完整参数（含正文）**一次算定。
+    assert row.args_digest == args_digest(
+        {"path": "/workspace/a.txt", "content": body}, path_params=path_param_names(spec)
+    )
+    # 若占位常量参与了摘要，二者会相等——如实断言**不相等**，堵死"拿占位值反算摘要"。
+    assert row.args_digest != args_digest(row.args_json, path_params=path_param_names(spec))
+
+
+# ---------------------------------------------- 用例 33①：审计明细不含正文与 args_digest
+
+
+def test_blocked_audit_detail_has_no_body_and_no_args_digest(tmp_path) -> None:
+    """用例 33①（§3.4 审计明细最小集）：`tool.blocked` 明细**不含**正文，也**不含** `args_digest`。"""
+    audit = RecordingAudit()
+    store = InMemoryToolActionStore()
+    service, _trusted, _ws = build_service(tmp_path, store=store, audit=audit)
+    body = "机密正文"
+    pending = service.execute(request("fs.write", {"path": "/workspace/a.txt", "content": body}))
+    row = store.get("t-1", pending.action_id)
+    # 篡改密文 → 重跑解密失败 → 502 + `tool.blocked`（§4.1.6-5「⑦ 之后·正文解密失败」行）。
+    tampered = bytearray(row.body_ciphertext)
+    tampered[-1] ^= 0x01
+    store.upsert(
+        replace(
+            row,
+            status=ToolActionStatus.APPROVED,
+            decided_by="ceo-1",
+            decided_at=NOW,
+            decision_source="user",
+            body_ciphertext=bytes(tampered),
+        )
+    )
+
+    with pytest.raises(ToolExecutionError) as excinfo:
+        service.resume(tenant_id="t-1", run_id="run-1", approval_id=pending.approval_id)
+
+    assert excinfo.value.http_status == 502
+    assert [action for action, _ in audit.calls] == [AuditAction.TOOL_BLOCKED]
+    detail = audit.calls[0][1]["detail"]
+    assert set(detail) <= {"tool_key", "risk_level", "status", "reason", "run_id"}
+    assert "args_digest" not in detail
+    assert body not in str(detail)
+
+
+# ---------------------------------- 用例 33③：`artifact.export` 导出通道不携带流程密文
+
+_FORBIDDEN_EXPORT_NAMES = frozenset({"body_ciphertext", "body_cipher"})
+
+
+def _export_channel_identifier_refs() -> set[str]:
+    """按 AST 收集**导出通道实现面**（容器执行器）引用的标识符（避开文档字符串里的词）。"""
+    names: set[str] = set()
+    tree = ast.parse((ROOT / "app" / "tool_execution" / "executor.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            names.add(node.module or "")
+            for alias in node.names:
+                names.add(alias.name)
+    return names & _FORBIDDEN_EXPORT_NAMES
+
+
+def test_export_channel_source_never_touches_process_ciphertext() -> None:
+    """用例 33③（§3.4 约束 3）：`artifact.export` 的导出通道与审批密文列**无关**。
+
+    导出通道的实现面 = 容器执行器（组装命令 + 产出摘要）；以 AST 断言该模块**零引用**
+    `body_ciphertext` / `body_cipher`，故导出物不可能携带流程密文。
+    """
+    assert _export_channel_identifier_refs() == set()
 
 
 def test_persist_failure_returns_503_without_waiting(tmp_path) -> None:

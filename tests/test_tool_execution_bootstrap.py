@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -159,9 +159,9 @@ def _wired_pair(tmp_path):
     return runtime_service, service, task, tool_actions
 
 
-def _approval_row(run_id: str, *, plan_digest_value: str) -> ToolAction:
+def _approval_row(run_id: str, *, plan_digest_value: str, **overrides) -> ToolAction:
     """一行「需审批」的 027 待批动作（`requires_approval=True`）。"""
-    return ToolAction(
+    base = dict(
         tenant_id="t-1",
         action_id="act-1",
         approval_id="appr-1",
@@ -178,6 +178,8 @@ def _approval_row(run_id: str, *, plan_digest_value: str) -> ToolAction:
         requested_by="u-1",
         requested_at=_NOW,
     )
+    base.update(overrides)
+    return ToolAction(**base)
 
 
 def test_mock_backend_wires_no_tool_actions() -> None:
@@ -235,4 +237,43 @@ def test_dsh_wiring_enforces_approval_path_without_actions(tmp_path) -> None:
 
     with pytest.raises(ExecutionNotAuthorized):
         runtime_service.ensure_execution_authorized(_DECIDER, run_id, state.plan)
+
+
+# ------------------------- 用例 32③：审批落定（rejected 分支）即清空密文两列
+
+_APPROVAL_STEPS = [
+    {"step_id": "s1", "kind": "read", "tool": "knowledge.search"},
+    {"step_id": "s2", "kind": "write", "tool": "fs.write", "requires_approval": True},
+]
+
+
+def test_decide_rejection_clears_body_ciphertext_and_expiry(tmp_path) -> None:
+    """用例 32③（`rejected` 分支；§3.4 约束 2 / §4.1.5 ①）：审批**落定即清空**密文两列。
+
+    驳回 = 不再执行 → 密文无保留必要，必须在**写入决议的同一次 upsert** 里清空两列
+    （`body_check` 要求同有同无）。此分支与 `expired` 同口径，**不含** `approved`。
+    """
+    runtime_service, service, task, tool_actions = _wired_pair(tmp_path)
+    assert service is not None
+    run_id, _key, _version = runtime_service.start(
+        _ACTOR, task.id, "mock", _APPROVAL_STEPS, "product_manager"
+    )
+    state = runtime_service.snapshot(_DECIDER, run_id)
+    tool_actions.upsert(
+        _approval_row(
+            run_id,
+            plan_digest_value=plan_digest(state.plan),
+            approval_id="s2",
+            body_ciphertext=b"\x00" * 28,
+            body_expires_at=_NOW + timedelta(minutes=1),
+        )
+    )
+
+    runtime_service.decide_approval(_DECIDER, run_id, "s2", False)
+
+    row = tool_actions.get("t-1", "act-1")
+    assert row.status is ToolActionStatus.REJECTED
+    assert row.body_ciphertext is None
+    assert row.body_expires_at is None
+    assert row.decision_source == "user"
 

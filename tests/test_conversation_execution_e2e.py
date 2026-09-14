@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 
 import pytest
@@ -147,3 +148,93 @@ def test_conversation_to_approval_to_execution_full_flow(wired) -> None:
     assert replay.status_code == 202
     assert replay.json() == body
     assert wired["executor"].call_count == 1  # 重放不二次执行
+
+
+# ------------------------- 用例 33②：响应体不含正文 / 密文 / 宿主路径 / 凭据（P0）
+
+
+def _create_conversation() -> str:
+    return client.post(
+        "/api/v1/conversations", headers=headers(), json={"agent_key": AGENT}
+    ).json()["conversation_id"]
+
+
+def _send(conversation_id: str, body: str, *, key: str):
+    return client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers={**headers(), "Idempotency-Key": key},
+        json={"content": body},
+    )
+
+
+def _assert_clean(text: str, *forbidden: str) -> None:
+    for item in forbidden:
+        assert item not in text, item
+
+
+def test_usecase_33_2_bodies_carry_no_body_cipher_or_host_path(wired, tmp_path) -> None:
+    """用例 33②（§3.4 约束 3 / 契约「审计与落库口径」）：`202` / `201` / 决议响应体均不泄密。
+
+    逐条断言：**正文原文**、**密文（hex）**、**宿主路径**、**凭据**都不得出现在任何响应体里。
+    """
+    conversation = _create_conversation()
+    body_text = "机密正文-用例33②"
+    invocation = json.dumps(
+        {"tool_key": "fs.write", "params": {"path": "/workspace/a.txt", "content": body_text}}
+    )
+
+    pending = _send(conversation, invocation, key="leak-1")
+    assert pending.status_code == 202, pending.text
+    run_id, approval_id = pending.json()["run_id"], pending.json()["approval_id"]
+    row = wired["actions"].list_for_run(TENANT, run_id)[0]
+    cipher_hex = bytes(row.body_ciphertext).hex()
+
+    # 202 响应体：不含正文 / 密文 / 宿主路径 / 凭据。
+    _assert_clean(pending.text, body_text, cipher_hex, str(tmp_path), "api_key", "secret")
+
+    # 决议端点响应体（审批通过 → 同一请求内重跑执行）。
+    decided = client.post(
+        f"/api/v1/runs/{run_id}/approvals/{approval_id}/approval",
+        headers=headers("ceo-1", "ceo"),
+        json={"approved": True},
+    )
+    assert decided.status_code == 200, decided.text
+    _assert_clean(decided.text, body_text, cipher_hex, str(tmp_path), "api_key", "secret")
+
+    # 201 响应体（无需审批、同请求内执行完成的工具）。
+    executed = _send(
+        conversation,
+        json.dumps({"tool_key": "fs.list", "params": {"path": "/workspace"}}),
+        key="leak-2",
+    )
+    assert executed.status_code == 201, executed.text
+    _assert_clean(executed.text, body_text, cipher_hex, str(tmp_path), "api_key", "secret")
+
+
+# ------------------------------- 用例 33④：日志中 grep 不到正文与密文（P0）
+
+
+def test_usecase_33_4_logs_contain_no_body_or_ciphertext(wired, caplog) -> None:
+    """用例 33④（§3.4 约束 1）：跑完整条链路后，**日志里查不到正文原文与密文**。"""
+    conversation = _create_conversation()
+    body_text = "机密正文-用例33④"
+    invocation = json.dumps(
+        {"tool_key": "fs.write", "params": {"path": "/workspace/a.txt", "content": body_text}}
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        pending = _send(conversation, invocation, key="log-1")
+        assert pending.status_code == 202, pending.text
+        run_id, approval_id = pending.json()["run_id"], pending.json()["approval_id"]
+        row = wired["actions"].list_for_run(TENANT, run_id)[0]
+        cipher_hex = bytes(row.body_ciphertext).hex()
+        decided = client.post(
+            f"/api/v1/runs/{run_id}/approvals/{approval_id}/approval",
+            headers=headers("ceo-1", "ceo"),
+            json={"approved": True},
+        )
+        assert decided.status_code == 200, decided.text
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert body_text not in logs
+    assert cipher_hex not in logs
