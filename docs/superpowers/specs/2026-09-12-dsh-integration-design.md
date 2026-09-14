@@ -881,6 +881,18 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **检索盲区（本清单的边界，不得读成"已穷尽"）**：**通过 `getattr` / 字符串拼接 / 反射构造的调用方查不到**（如 `app\conversation\execution.py:415` 的 `getattr(task_store, "set_pending_approval", None)`、`app\bootstrap.py:755-770` 按 `f"{key}_endpoint"` 拼字段名）；本次未穷举 `app/planner`、`app/commercial`、`app/content`、`app/workforce`、`app/conversation` 的**模块内部**未引用符号。
 
+**U25 补充（2026-09-14，P1 侦察与接线后新发现 —— 同族：**存在但无调用方 / 行为与外观不符**）**
+
+| # | 符号 / 位置 | 事实（带证据） | 类别 | 处置 |
+|---|---|---|---|---|
+| **N1** | `ContainerSpec.docker_args`（`app\tool_execution\executor.py:89-116`） | **生产无消费者**（唯一消费者是测试）；它是 `create_kwargs` 的"等价 CLI 口径"，两者须同步（**P1 已同改**），但 `docker_args` 本身生产无人调用 | (A)/(B) 边界 | **登记**（保留：它是口径对照物、非缺陷；**但不得声称"生产走 CLI 口径"**） |
+| **N2** | `ContainerExecutor.execute(..., spec=None)` 的 **`spec` 形参**（`executor.py:316-340`） | **该形参未被使用**（内部走 `self.create` → `build_spec`）⇒ 调用方传 `spec` **无效果** | **(A) 真缺口**（易误读为"可注入 spec"） | **登记**；若要支持注入，需改为真正消费该形参 |
+| **N3** | 🔴 `RuntimeRegistry.health()`（`app\runtime\registry.py:64-85`，关键行 **`:81`**） | **`status` 只对 `ragflow` 特判 `unavailable`，其余一律强制 `"ok"`** ⇒ **dsh 即使 `real_execution_enabled=False`（自身 `status="unavailable"`）也显示 ok** ⇒ **运维面板会误判** | 🔴 **具体缺陷** | **登记为缺陷**；修法 = 按 adapter 真实健康态输出（**需授权后改**） |
+| **R1** | `settings.object_storage_url`（`app\settings.py:15`） | `app/` 内**无读者**（仅 `scripts\staging_preflight.py` 按 env 直读）；`docs\key-dependency-autonomy-plan.md:165` 已自述"已声明、未接入" | (B) | **登记**（**未授权删除**） |
+| **R2** | `CommandGate.evaluate`（`app\tool_execution\blacklist.py:320`） | `app/` 内**无调用**（生产走 `verify_source` / `verify_name` / `verify_blacklist` 三步） | (B) | **登记**（**未授权删除**） |
+
+**⇒ 禁令延续**：涉及上述符号的结论**一律不得表述为"已生效"** —— N1 不得说"生产走 CLI 口径"；N2 不得说"支持注入 spec"；N3 不得说"健康面板反映真实状态"。
+
 ### U26 门禁 §B14 判据 D / E / F —— ✅ **已取证（2026-09-14，生产装配 + 真容器）**，**形态未达真实 dsh turn**
 
 **取证结论（2026-09-14，P1 接线后重取）**：在 `build_tool_execution(...)`（**真装配**）+ 真 `ContainerExecutor` + **真容器** + **真网关进程**（`python -m app.model_gateway`）下：
