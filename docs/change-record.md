@@ -8,6 +8,20 @@
 
 ## 记录
 
+### 2026-09-14 · 对话入口消息表落**脱敏摘要**（§8 U23 裁决）—— 消息表写入语义变更（可回退）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（随 §8 U23 裁决「入口改落脱敏引用 / 摘要」实现登记） |
+| **变更** | 对话入口**不再把用户原始调用 JSON（或自由文本）逐字落** `workbench_conversation_messages.content`，改落**脱敏摘要**：新增**唯一**脱敏入口 `app/conversation/redaction.py::redact_message_content`（调用 JSON ⇒ `tool_key` + 参数**键名清单** + 摘要指纹；自由文本 ⇒ 长度 + 指纹；**所有参数值一律不落**）。改造**三个写入点**：`app/conversation/execution.py`（`201` / `202` 两条 USER 写入）+ `app/conversation/service.py`（**无键桩路径**）。桩路径补 `normalize_content(content)`（校验落在**原文**上）。 |
+| **原因** | §8 U23：用例 32②(c1)③ 要求 `workbench_conversation_messages.content` **检索不到正文原文**，而对话入口会逐字落调用 JSON（含 `content:"<正文>"`）。`control` 类的 `path` / `target` 若保留，会经 `GET /api/v1/conversations/{id}` 外泄（与用例 33② 冲突）⇒ 取**全量脱敏**、fail-closed、**不引入可显示白名单**。 |
+| **影响面** | ① **消息表写入语义变更**（用户消息 `content` 由原文变摘要）—— `GET /api/v1/conversations/{id}` 的 `messages[].content` 随之为摘要；**表结构不变、迁移未改（不动 `027`）、未新增审计动作码**；② **不改变**响应结构、`stub` 语义、幂等重放（仍按**助手消息** `message_id` 反查）与 `messages_total`；③ **助手消息写入行未动**；④ **列表/分页/权限/审计口径均不变**。 |
+| **验证（已做）** | ✅ `tests/test_conversation_message_redaction.py`（8 用例：脱敏单测 + 三个写入点 + 「功能没坏」等价验证 + 内存全表检索守护）；✅ `tests/test_dsh_execution_postgres.py::test_usecase_32_c1_3_no_body_original_in_conversation_messages`（**真库检索守护，DSN 门控**，默认 skip）；✅ **反假 2 组**（见下行原始输出）；✅ 全量回归 + `compileall`（见规格 §8 U23）。 |
+| **反假原始输出（改坏 → 变红 → 还原）** | **组 1**（`redact_message_content` 改为 `return content`，即把原文写回该列）：`py -m pytest -o addopts="" tests/test_conversation_message_redaction.py -q` ⇒ **`7 failed, 1 passed`**（含 `test_search_guard_no_original_text_in_any_message_content` 断言 `'/workspace/secret-u23.txt' not in ...` 失败）。**组 2**（`execution._rebuild` 的 executed 分支改为读会话首条（用户）消息，即**重放依赖用户消息**）：`py -m pytest -o addopts="" tests/test_conversation_message_redaction.py::test_replay_returns_first_result_and_does_not_depend_on_user_message tests/test_conversation_execution_api.py::test_replay_returns_same_result_without_second_execution -q` ⇒ **`2 failed`**（`reply.content` 变成摘要、`role` 变成 `user`）。两处均已还原并复绿。 |
+| **未验证（不得读成已验）** | ① **真库上的检索断言** —— 本机无 `WORKBENCH_TEST_DATABASE_URL`（无凭据 / staging 不可达），真库守护用例**默认 skip、未跑过 ⇒ 未验证**；② **存量行** —— 按裁决「历史为空」处理（用户确认、**本机无法独立验证**），断言范围 = 全表、**未回溯清洗**；③ **前端展示回退是否可接受** —— 展示形态属**产品确认**，非本轮可判。 |
+| **回退方式** | 还原 `app/conversation/redaction.py`（删除）/ `app/conversation/execution.py` / `app/conversation/service.py` 三处，并回退规格 §8 U23 与 `docs/api-contract.md` 的相关段落 ⇒ 回到「用户消息逐字落原文」状态（**即 U23 冲突复现**）。**未经确认不得执行回滚。** |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §8 U23 裁决；契约 [`api-contract.md`](api-contract.md)「对话式 AI 员工平台」条；实现 `app/conversation/redaction.py`；测试 `tests/test_conversation_message_redaction.py` / `tests/test_dsh_execution_postgres.py` |
+
 ### 2026-09-14 · 正文密文密钥轮换的**旧密钥配置落点**（新增外置配置，§8 U22 裁决）—— 配置面变更（可回退）
 
 | 项 | 内容 |

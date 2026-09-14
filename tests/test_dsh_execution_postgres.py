@@ -45,6 +45,7 @@ from app.runtime.service import RuntimeService
 from app.runtime.state_postgres import PostgresRuntimeStateStore
 from app.tool_execution.catalog import build_tool_spec_catalog
 from app.tool_execution.errors import ToolExecutionError
+from app.tool_execution.service import ToolExecutionResult
 from app.workforce.store import InMemoryWorkforceDirectoryStore
 
 DSN = os.environ.get("WORKBENCH_TEST_DATABASE_URL", "")
@@ -415,7 +416,7 @@ class _FailingToolExecution:
         raise ToolExecutionError("审批请求暂时无法登记，请稍后重试", http_status=503)
 
 
-def _build_execution_service(connection):
+def _build_execution_service(connection, *, tool_execution=None):
     """全部四个仓储都指向**真库**（承载任务 / 运行记录 / 运行状态 / 幂等）。"""
     task_store = PostgresTaskRepository(connection)
     run_records = PostgresRunRecordStore(connection)
@@ -436,7 +437,7 @@ def _build_execution_service(connection):
         conversation_store=conversations,
         task_store=task_store,
         runtime_service=runtime,
-        tool_execution=_FailingToolExecution(),
+        tool_execution=tool_execution if tool_execution is not None else _FailingToolExecution(),
         idempotency=idempotency,
         catalog=build_tool_spec_catalog(),
         directory_store=directory,
@@ -499,3 +500,66 @@ def test_compensation_leaves_no_runtime_state_row(connection) -> None:
         )
 
     assert _count(connection, "workbench_runtime_states", TENANT) == 0
+
+
+# ------------------------------------------------------------------ 6) 消息表正文脱敏（§8 U23）
+
+# 合成哨兵（**非真实业务正文**），用于「原文不得落库」的检索断言。
+_U23_BODY = "机密正文-U23-真库哨兵"
+_U23_PATH = "/workspace/secret-u23-db.txt"
+
+
+class _SucceedingToolExecution:
+    """替身：`outcome=executed`（201），用于驱动**真实写入路径**（Postgres 分支）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute(self, request, *, actor=None, plan=None):
+        self.calls += 1
+        return ToolExecutionResult(outcome="executed", code=201)
+
+
+def _count_content_like(connection, needle: str) -> int:
+    """§5 用例 32②(c1)③ 的**可执行检索**：对 `workbench_conversation_messages.content`（TEXT）
+    直接 `LIKE`（该列为 `TEXT` ⇒ **无需 `::text`**）。"""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT COUNT(*) FROM workbench_conversation_messages WHERE content LIKE '%' || %s || '%'",
+            (needle,),
+        )
+        row = cursor.fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def test_usecase_32_c1_3_no_body_original_in_conversation_messages(connection) -> None:
+    """§8 U23：真实写入路径下，`workbench_conversation_messages.content` **全表**检索正文原文 /
+    参数值 / 调用 JSON 片段 ⇒ **0 命中**（用例 32②(c1)③ 的真库口径）。
+
+    查询（**验收记录须写明库与查询**）：
+
+        SELECT COUNT(*) FROM workbench_conversation_messages
+        WHERE content LIKE '%' || %s || '%';   -- 分别以正文原文 / path 参数值 / '"tool_key"' 传入
+
+    ⚠️ **局限（如实声明）**：默认 CI 不提供 `WORKBENCH_TEST_DATABASE_URL` ⇒ 本模块整体 skip；
+    **未在真库上跑过 ⇒ 该断言「未验证」**（见 §8 U23 判据①）。
+    """
+    service, conversations, _idempotency = _build_execution_service(
+        connection, tool_execution=_SucceedingToolExecution()
+    )
+    context = _employee()
+    conversation = conversations.create_conversation(context, agent_key=AGENT, title="t")
+    content = json.dumps(
+        {"tool_key": "fs.write", "params": {"path": _U23_PATH, "content": _U23_BODY}}
+    )
+
+    result = service.handle_message(
+        context, conversation.conversation_id, content=content, idempotency_key="k-u23"
+    )
+
+    assert result.http_status == 201, result.body
+    # 全表检索：正文原文 / 参数值 / 调用 JSON 片段均不得命中。
+    for needle in (_U23_BODY, _U23_PATH, '"tool_key"'):
+        assert _count_content_like(connection, needle) == 0, needle
+    # 「功能没坏」：消息仍在（用户 + 助手各一条）。
+    assert conversations.list_messages(context, conversation.conversation_id)[1] == 2

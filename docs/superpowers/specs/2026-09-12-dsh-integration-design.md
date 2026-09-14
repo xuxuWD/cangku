@@ -823,7 +823,7 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **同批提示**：本轮已登记的另两条未验证与本条同族 —— **窗口跨进程 / 多副本的一致性**（密钥集为**进程内对象**）、**真库下的轮换路径**。
 
-### U23 用例 32②(c1)③ 与消息表冲突 — 正文原文会落 `workbench_conversation_messages` — ❌ **未闭环（2026-09-14 新增）**
+### U23 用例 32②(c1)③ 与消息表冲突 — 正文原文会落 `workbench_conversation_messages` — ✅ **已闭环（2026-09-14 实现）**，下方登记未验证项
 
 **现状**：§5 用例 32②**(c1)③** 要求 `workbench_conversation_messages.content`（TEXT）**检索不到正文原文**；但对话入口会把**用户原始消息**（即含 `content:"<正文>"` 的**调用 JSON**）**逐字落库** —— **静态证据**：`app/conversation/execution.py:296` / `:320`（`_append_message(..., MessageRole.USER, content)`）→ `app/conversation/store.py:124-140` / `:323-357`。**⇒ 正文原文会进消息表。**
 
@@ -832,6 +832,14 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 **裁决（2026-09-14，用户）＝ 入口改落「脱敏引用 / 摘要」**：对话入口**不再把原始调用 JSON 逐字落消息表**。**⇒ 前置条件（实施前必做）**：**先评估谁依赖该消息内容**（会话历史前端展示 / 幂等重放 / 审计），**评估结论须写进实施说明**；**若牵动契约或前端，必须同轮回改**（§2.3 契约 + 前端同步），**不得只改后端留下不一致**。**判据**：① 真库上对 `workbench_conversation_messages.content` 做 32②**(c1)③** 的检索断言（**须在验收记录写明库与查询**），**不得**用 `args_json` 单点代表全部三处；② **必须**给出"**入口改后会话历史仍可用**"的等价验证证据（前端展示 / 重放链路），**不得只证"检索不到"而不证"功能没坏"**。
 
 **存量行策略（2026-09-14 用户裁决）＝ 按「历史为空」处理，断言范围定为「全表」**：① **依据**：**用户确认——本项目尚未在有真实业务数据的 PG 上运行过** ⇒ **存量 = 0（构造性）** ⇒ **无需回溯清洗**；② 因此 **`32②(c1)③` 的断言范围 = 全表**（**不**做"仅限新写入行"的限定，也不设时间/`message_id` 分界）；③ 🔴 **依据强度声明（不得省略）**：该确认**来自用户，本机无法独立验证** —— 2026-09-14 的调查结果是**可达范围内没有含该表的库**：唯一同名 `workbench` 库**属另一个项目**（`schema_migrations` 为 0001–0013、22 张表**无任何 `workbench_*`**）、本机 Windows PG **无凭据**、staging / prod **不可达**；⇒ **若将来在有真实数据的库上部署，必须重跑该断言**；**若届时发现存量行含正文原文，须回到「回溯清洗 vs 限定新行」的裁决，不得默认沿用本条**；④ **判据**：本仓自有 `postgres`（或任一有真实数据的库）上对**全表**做 `32②(c1)③` 检索 ⇒ **0 命中**；**并**给出"入口改后会话历史仍可用"的等价验证（见上条判据②）。
+
+**脱敏粒度（2026-09-14 用户裁决）＝ 全量脱敏**：摘要 = **`tool_key` + 参数键名清单 + 摘要指纹**（如 `args_digest` 前 8 位），**所有参数值一律不落**（含 `body` 类与 `control` 类）。**理由**：① 与**用例 33②**（响应体**不含**宿主路径 / 凭据 / 参数原文）**天然一致** —— `control` 里的 `path` / `target` 若原样保留，会经 `GET /api/v1/conversations/{id}` 的 `messages[].content` **外泄，与 33② 直接冲突**；② **fail-closed**（默认不显示值，而非默认显示）；③ **不引入"哪些 `control` 参数可显示"的白名单**（白名单一漏即泄漏）。**展示弥补（可选，另行评估）**：如需保留"调了什么工具"，**另把 `tool_name` 落到用户消息**（该列已存在且当前未用），**不得**把参数值塞回 `content`。
+
+**实作（2026-09-14）＝ 收敛为单一脱敏函数，覆盖三个写入点**：新增 `app/conversation/redaction.py::redact_message_content`（**唯一**脱敏入口，防「改两处漏一处」）—— 输入原始 `content`（调用 JSON 或自由文本）⇒ 输出摘要：调用 JSON 落 `[工具调用·脱敏] tool_key=<key> params=[<键名…>] digest=<8hex>`，自由文本落 `[消息·脱敏] chars=<N> digest=<8hex>`；**所有参数值一律不落**（含 `body` 类与 `control` 类的 `path` / `target`），非 JSON / 自由文本**不透传原文**。三个写入点：`app/conversation/execution.py`（`201 executed` / `202 pending_approval` 两条 USER 写入）+ `app/conversation/service.py`（**无键桩路径**，自由文本原文不得落库）；**助手消息写入行未动**（重放依赖其 `message_id`）。桩路径另补 `normalize_content(content)`（空 / 纯空白 / 超长的校验落在**原文**上 —— 否则会被恒非空的摘要绕过，属本轮发现的**回归修复**）。**未新增迁移、未改 `027`、未新增审计动作码。**
+
+**取证（本机）**：`tests/test_conversation_message_redaction.py`（8 用例：脱敏单测 + 三个写入点 + 「功能没坏」等价验证 + 内存全表检索守护）+ `tests/test_dsh_execution_postgres.py::test_usecase_32_c1_3_no_body_original_in_conversation_messages`（**真库检索守护，DSN 门控**）。**「功能没坏」等价验证**：`GET /api/v1/conversations/{id}` 仍返回消息、`messages_total` 正确、重放仍返回首次结果（逐字段相等）。**反假 2 组**：① 摘要把原文写回该列 ⇒ 守护用例 **7 红**；② 重放改依赖用户消息 ⇒ 「功能没坏」+ 既有重放用例 **2 红**。契约同步：`docs/api-contract.md`「对话式 AI 员工平台」条；变更留痕：`docs/change-record.md`。
+
+**未验证（不得读成已验）**：① **真库上的检索断言** —— 本机无 `WORKBENCH_TEST_DATABASE_URL`（无凭据 / staging 不可达），`test_usecase_32_c1_3_...` **默认 skip，未在真库上跑过 ⇒ 未验证**；② **存量行** —— 按裁决「历史为空」处理（用户确认，**本机无法独立验证**），断言范围 = 全表，**未回溯清洗**；③ **前端展示回退是否可接受** —— `content` 由原文变摘要，`admin-web/.../ConversationPage.tsx` 仅按字符串展示（技术上不破坏），但**展示形态属产品确认，非本轮可判**。
 
 **同批提示**：32②(c1) 的**库内三处 SQL 检索**与 (c2) 的**日志文件逐一 grep** 本轮**均未在真库 / 真实日志上取证**（见 §8 U15 相关未验证项）。
 
