@@ -525,8 +525,8 @@ def _count_content_like(connection, needle: str) -> int:
     直接 `LIKE`（该列为 `TEXT` ⇒ **无需 `::text`**）。"""
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT COUNT(*) FROM workbench_conversation_messages WHERE content LIKE '%' || %s || '%'",
-            (needle,),
+            'SELECT COUNT(*) FROM workbench_conversation_messages WHERE content LIKE %s',
+            (f"%{needle}%",),
         )
         row = cursor.fetchone()
     return int(row[0]) if row is not None else 0
