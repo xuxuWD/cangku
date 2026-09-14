@@ -1,0 +1,43 @@
+# 执行回调边车编排（规格 §3.5 P1 第 3 条 ②④ / §8 U20 方案 b-1）—— **单独一个文件、按需启用**。
+#
+# 为什么**单独一个文件**、而不并入 docker-compose.app.yml：
+#   本文件把 workbench-exec-internal 声明为 `external: true`，而 external 网络要求**预先存在**
+#   （顺序陷阱）。若并入 app 文件，会让**未建网 / 根本不用边车**的既有部署在基础 `up` 时失败。
+#   单独成文 ⇒ 基础编排（docker-compose.yml + docker-compose.app.yml）**行为不变**。
+#
+# 顺序（必须，缺一不可）：
+#   1) py scripts/ensure_exec_internal_network.py     # 预创建内网桥（idempotent，同 executor 口径）
+#   2) docker compose -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.exec-callback.yml up -d
+#
+# 边界（红线，改动前先读规格）：
+#   · 边车**只挂 workbench-exec-internal**（**不加入**工作台默认网络）——否则等于把工作台
+#     整个 API 面暴露给执行容器；反之**工作台 app 容器不得加入该内网**。
+#   · 边车**只监听一个端口、只暴露一个端点**（`POST /internal/exec-callback`）；镜像内
+#     **不得**烤入回调地址 / 凭据（`FORWARD_URL` 由部署注入，缺失即拒绝启动）。
+#   · `FORWARD_URL` 须指向**工作台侧回调接收端点**；执行容器**不得**直连工作台。
+#   · 边车 → 工作台的**受控出向调用**在本机（Windows / Docker Desktop）**未验证**：容器挂
+#     `internal` 网络时到宿主的路径依平台而异；上线前须按目标平台实测并回填取证。
+
+services:
+  exec-callback:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.exec_callback"]
+    environment:
+      WORKBENCH_EXEC_CALLBACK_LISTEN_HOST: ${WORKBENCH_EXEC_CALLBACK_LISTEN_HOST:-0.0.0.0}
+      WORKBENCH_EXEC_CALLBACK_LISTEN_PORT: ${WORKBENCH_EXEC_CALLBACK_LISTEN_PORT:-8081}
+      # 缺失即 `:?` 报错 ⇒ 边车拒绝启动（fail-closed）；不得给默认地址。
+      WORKBENCH_EXEC_CALLBACK_FORWARD_URL: ${WORKBENCH_EXEC_CALLBACK_FORWARD_URL:?set WORKBENCH_EXEC_CALLBACK_FORWARD_URL in .env}
+    networks:
+      - workbench-exec-internal
+    # 边车只有那一个端点：关掉应用镜像自带的 /api/v1/health 健康检查（该端点在边车里不存在）。
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+networks:
+  # 执行内网桥：**预先存在**（先跑 scripts/ensure_exec_internal_network.py）。
+  # 只有模型网关与执行回调边车挂这里；工作台 app 容器**不得**加入。
+  workbench-exec-internal:
+    external: true
