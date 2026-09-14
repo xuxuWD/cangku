@@ -176,13 +176,43 @@ def test_external_health_is_reduced_to_safe_summary():
 
     health = AgentScopeAdapter(LeakyTransport(), "https://agentscope").health()
 
+    # `status` 透传上游自报（缺陷 N4 修复；原先此处期望 `"ok"` 是把缺陷固化的断言，已更正为上游自报值）。
     assert health == {
         "runtime": "https://agentscope",
-        "status": "ok",
+        "status": "unavailable",
         "version": "v2",
         "capabilities": ["run"],
         "sandbox": "isolated",
         "reason": "ok",
+    }
+
+
+def test_external_health_passes_through_upstream_declared_status():
+    """缺陷 N4 的正面验证：`ExternalAdapter.health()` 的 `status` **透传上游自报**。
+
+    覆盖 deerflow / codex_worker / hermes / agentscope 共用的 `ExternalAdapter.health()`：
+    上游（`GET {endpoint}/health`）自报 `unavailable` ⇒ adapter 如实报 `unavailable`；
+    `status` 是**可选**字段（`docs/runtime-onboarding-request.md` §1.4），未上报 ⇒ 维持既有默认 `ok`
+    （与 N3 的 `RuntimeRegistry.health()` 同口径）。
+    """
+
+    class UnavailableTransport(FakeTransport):
+        def health(self, endpoint):
+            return {"runtime": endpoint, "status": "unavailable", "reason": "维护中"}
+
+    class NoStatusTransport(FakeTransport):
+        def health(self, endpoint):
+            return {"runtime": endpoint, "version": "v3"}
+
+    assert AgentScopeAdapter(UnavailableTransport(), "https://agentscope").health() == {
+        "runtime": "https://agentscope",
+        "status": "unavailable",
+        "reason": "维护中",
+    }
+    assert DeerFlowAdapter(NoStatusTransport(), "http://deerflow").health() == {
+        "runtime": "http://deerflow",
+        "status": "ok",
+        "version": "v3",
     }
 
 

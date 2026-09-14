@@ -185,9 +185,13 @@ class ExternalAdapter(AgentRuntimeAdapter):
         raw = self.transport.health(self.endpoint)
         if not isinstance(raw, dict):
             raise TransportError("Runtime 健康检查响应格式无效")
+        # `status` 是外部契约里的**可选**字段（docs/runtime-onboarding-request.md §1.4）：
+        # **透传上游自报**（字符串即用），未上报 / 类型不符时维持既有默认 `ok`
+        # （与 N3 的 `RuntimeRegistry.health()` 同口径；字段白名单 / 过滤语义未动）。
+        raw_status = raw.get("status")
         summary: dict[str, Any] = {
             "runtime": self.endpoint,
-            "status": "ok",
+            "status": raw_status if isinstance(raw_status, str) else "ok",
         }
         if isinstance(raw.get("version"), str):
             summary["version"] = raw["version"]
