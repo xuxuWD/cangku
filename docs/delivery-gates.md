@@ -88,6 +88,6 @@ RAGFlow/AgentScope 当前仅完成开发期适配器契约与受控注册表验�
 | 日期 | 原口径 | 新口径 | 理由 |
 | --- | --- | --- | --- |
 | 2026-09-11 | 设备绑定、生产密钥轮换和真实统一登录验收 | 生产密钥轮换与真实统一登录验收（**移除设备绑定**） | 产品决定登录采用「注册申请 + 管理员审批」制：申请人提交账号/密码/职位/个人信息，管理员审批通过即可登录，重复手机号有提示，角色由管理员在审批时指定。设备绑定在该模型下不再是必要条件，故从门禁移除并明确不做；该项剩余部分（密钥轮换、统一登录）仍需外部资源，保持未勾选。 |
-| 2026-09-15 | `postgres` job 只跑 2 个「真连库」模块 | `postgres` job **逐个跑 3 个**（纳入 `tests/test_commercial_lifecycle_postgres.py`） | 新增的真库模块（PG 侧排序确定性等）由 `WORKBENCH_TEST_DATABASE_URL` 门控、本机与默认 `backend` job 均无该变量 ⇒ **整体 skip，无人自动跑**；纳入后该模块随 job 一并真跑，且 `skipped == 0` 判定与镜像摘要钉死均未放宽，另由 `tests/test_ci_assets.py` 逐字断言所列模块（漏跑任一即红）。**未改变**任何既有代码事实。 |
+| 2026-09-15 | `postgres` job 只跑 2 个「真连库」模块 | `postgres` job **逐个跑 3 个**（纳入 `tests/test_commercial_lifecycle_postgres.py`） | 新增的真库模块（PG 侧排序确定性等）由 `WORKBENCH_TEST_DATABASE_URL` 门控、本机与默认 `backend` job 均无该变量 ⇒ **整体 skip，无人自动跑**；纳入后该模块随 job 一并真跑，且 `skipped == 0` 判定与镜像摘要钉死均未放宽，另由 `tests/test_ci_assets.py` 逐字断言所列模块（漏跑任一即红）。**未改变**任何既有代码事实。**✅ 已在 GitHub Actions 实跑通过**：push `e602a44` 触发 run **`34870650538`**（`2026-09-14T16:46Z` 起 = 本地 `2026-09-15 00:46`）——run 级 `conclusion=success` ⇒ 5 个 job 全绿，该 job 日志末行 **`真库用例：tests=33 skipped=0 failed=0`**。 |
 
 > 口径变更只调整**要求本身**，不改变任何既有代码事实；变更后 9 项未勾选门禁与 `docs/delivery-readiness-checklist.md` 保持同步。

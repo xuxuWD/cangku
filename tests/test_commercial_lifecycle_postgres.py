@@ -13,7 +13,9 @@
   - ✅ **覆盖现状**：本文件**已纳入** `.github/workflows/ci.yml` 的 `postgres` job 命令，
     与 `test_tool_action_store_postgres.py`、`test_dsh_execution_postgres.py` 一并真跑，
     且该 job 强制 `tests > 0 and skipped == 0 and failed == 0`（由 `tests/test_ci_assets.py` 静态守护）。
-    **未验证**：真库路径尚未在真实 GitHub Actions 上实跑过。
+    **✅ 已在真实 GitHub Actions 实跑**：push `e602a44` 触发 run `34870650538`
+    （GitHub 显示 `2026-09-14T16:46Z` = 本地 `2026-09-15 00:46`），该 job `conclusion=success`，
+    日志末行 `真库用例：tests=33 skipped=0 failed=0`（含本文件 2 条）。
 """
 
 from __future__ import annotations
