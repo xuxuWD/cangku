@@ -436,7 +436,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("INBOX_RETENTION_DAYS", "WORKBENCH_INBOX_RETENTION_DAYS"),
     )
 
-    # ---- 段二（dsh 接入段）新增配置：共 22 项 ----
+    # ---- 段二（dsh 接入段）新增配置：共 23 项 ----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
     # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。
     # 命名口径：只认 `WORKBENCH_` 前缀（由 env_prefix 自动派生），**不设裸名别名** ——
@@ -484,6 +484,10 @@ class Settings(BaseSettings):
     # 边车 → 工作台的**受控出向**调用目标（工作台侧回调接收端点）；**留空 = 拒绝启用**（fail-closed）。
     # **不得把回调地址烤进镜像**：只能由部署配置注入（本项默认留空即不启用边车）。
     exec_callback_forward_url: str = ""
+    # 「边车 → 工作台」的**预共享密钥**（对称鉴权，§8 U21 裁决）：边车转发随行附带，
+    # 工作台接收端点做 `constant-time` 比对；**留空 = 未配置 ⇒ 拒绝请求（fail-closed）**。
+    # **不得烤进镜像 / 不进仓库**：只能由部署密钥系统外置注入（两侧同值）。
+    exec_callback_shared_secret: str = ""
 
 
 CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
