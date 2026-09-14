@@ -836,6 +836,12 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **脱敏粒度（2026-09-14 用户裁决）＝ 全量脱敏**：摘要 = **`tool_key` + 参数键名清单 + 摘要指纹**（如 `args_digest` 前 8 位），**所有参数值一律不落**（含 `body` 类与 `control` 类）。**理由**：① 与**用例 33②**（响应体**不含**宿主路径 / 凭据 / 参数原文）**天然一致** —— `control` 里的 `path` / `target` 若原样保留，会经 `GET /api/v1/conversations/{id}` 的 `messages[].content` **外泄，与 33② 直接冲突**；② **fail-closed**（默认不显示值，而非默认显示）；③ **不引入"哪些 `control` 参数可显示"的白名单**（白名单一漏即泄漏）。**展示弥补（可选，另行评估）**：如需保留"调了什么工具"，**另把 `tool_name` 落到用户消息**（该列已存在且当前未用），**不得**把参数值塞回 `content`。
 
+**〔2026-09-14 真库实跑验证〕** **"真库 `tool_name` 水化"：✅ 已通过** —— 一次性 PG（`pgvector/pgvector:0.8.0-pg16@sha256:a132765e…9ad8bc9`，**27 个迁移**含 `027`）+ **真实 201 写入路径**后直查库：
+- 用户行 = `('user', 'fs.write', '[工具调用·脱敏] tool_key=fs.write params=[content,path] digest=5d49b362')`
+- 助手行 = `('assistant', None, '工具已执行完成。')`
+- 哨兵检查：`BODY_SENTINEL_in_content=False`、`PATH_SENTINEL_in_content=False`
+**⇒ `tool_name` 落库为工具键 ✓、`content` 为脱敏摘要且不含任何参数值 ✓、助手行未受影响 ✓**；**反假**（`UPDATE tool_name` → 观察到真实变化 → 还原）证明查的是**真实落库值**而非常量；同期 `tests\test_dsh_execution_postgres.py` **19 passed**。**仍未验证**：**`pending_approval`（202）分支**的 `tool_name` 落库（真库只走了 `executed`/201 分支）。
+
 **实作（2026-09-14）＝ 收敛为单一脱敏函数，覆盖三个写入点**：新增 `app/conversation/redaction.py::redact_message_content`（**唯一**脱敏入口，防「改两处漏一处」）—— 输入原始 `content`（调用 JSON 或自由文本）⇒ 输出摘要：调用 JSON 落 `[工具调用·脱敏] tool_key=<key> params=[<键名…>] digest=<8hex>`，自由文本落 `[消息·脱敏] chars=<N> digest=<8hex>`；**所有参数值一律不落**（含 `body` 类与 `control` 类的 `path` / `target`），非 JSON / 自由文本**不透传原文**。三个写入点：`app/conversation/execution.py`（`201 executed` / `202 pending_approval` 两条 USER 写入）+ `app/conversation/service.py`（**无键桩路径**，自由文本原文不得落库）；**助手消息写入行未动**（重放依赖其 `message_id`）。桩路径另补 `normalize_content(content)`（空 / 纯空白 / 超长的校验落在**原文**上 —— 否则会被恒非空的摘要绕过，属本轮发现的**回归修复**）。**未新增迁移、未改 `027`、未新增审计动作码。**
 
 **取证（本机）**：`tests/test_conversation_message_redaction.py`（8 用例：脱敏单测 + 三个写入点 + 「功能没坏」等价验证 + 内存全表检索守护）+ `tests/test_dsh_execution_postgres.py::test_usecase_32_c1_3_no_body_original_in_conversation_messages`（**真库检索守护，DSN 门控**）。**「功能没坏」等价验证**：`GET /api/v1/conversations/{id}` 仍返回消息、`messages_total` 正确、重放仍返回首次结果（逐字段相等）。**反假 2 组**：① 摘要把原文写回该列 ⇒ 守护用例 **7 红**；② 重放改依赖用户消息 ⇒ 「功能没坏」+ 既有重放用例 **2 红**。契约同步：`docs/api-contract.md`「对话式 AI 员工平台」条；变更留痕：`docs/change-record.md`。
