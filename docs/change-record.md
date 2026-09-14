@@ -8,6 +8,19 @@
 
 ## 记录
 
+### 2026-09-14 · §8 U25 R2 死代码删除 + R1 判定保留（代码删除，非地基变更）—— 可回退
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（随规格 §8 U25 补充表 R1 / R2 行处置；用户已授权删除） |
+| **变更** | **R2（已删）**：删除 `CommandGate.evaluate`（`app/tool_execution/blacklist.py`，原 `:320`）—— 该实例方法无专属注释，方法体共 4 行（`verify_source` → `verify_name` → `verify_blacklist` → `return resolved`）。**R1（保留，未删）**：`settings.object_storage_url`（`app/settings.py:15`）**保持原样**（逐面查证后判定为「有文档记载的预留项」，非死代码）。**未改**其它代码、**未动** `migrations/*`、**未新增**审计动作码、**未放宽**任何断言。 |
+| **原因** | §8 U25 补充表 R1 / R2 登记为「存在但无调用方」。**R2** 经三重检索确认属死代码（可言删）；**R1** 经五面查证确认属**部署配置面在维护的预留项**（删它会造成「模板/compose 仍设该 env、应用侧却无对应字段」的漂移）⇒ **保留**。 |
+| **影响面** | 仅删除 R2 一个**生产/测试均无引用**的方法；**不改**任何行为、接口、数据模型、权限模型；**不改**迁移；无审计动作码新增。**R1 未做任何改动**（含模板 / compose / 台账 / 计数 / 测试 / 其它文档均未动）。 |
+| **验证（已做）** | ✅ **R2 三重检索**：① 符号 —— `CommandGate.evaluate` **全仓仅定义处命中**，生产 `app/tool_execution/service.py:381/386/391` 只走 `verify_source` / `verify_name` / `verify_blacklist`，**无 `.evaluate(`**；② 字符串/动态 —— `["']evaluate["']` **0 命中**，`app/tool_execution/` 内 `getattr` 7 处**均不指向 `evaluate`**；③ 测试 —— `tests/` 内 `evaluate*` 全属 `evaluate_login_throttle` / `evaluate_task_idempotency` / `evaluate_plan_approval` / `evaluate_isolation*` 等他模块符号，无 `CommandGate.evaluate`。✅ **反证（删前）**：将 `evaluate` 定义**改名**（`evaluate_r2_rename_probe`）后跑 `py -m pytest -o addopts=""` ⇒ **`1709 passed, 31 skipped`**（与基线一致 ⇒ 测试不引用它）。✅ **删后**：同一命令 ⇒ **`1709 passed, 31 skipped`**（**无用例数变化**）；`py -m compileall -q app` ⇒ **exit=0**。**无失效 import**（`Sequence` / `Iterable` / `os` / `re` 均仍被其他方法使用，无需连带清理）。✅ **R1 五面查证**（结论 = 保留）：① 不在 `tests/test_env_templates.py:130-155` 的 `STAGE2_SETTINGS_FIELDS`（段二台账）内；② 已登记于 `.env.example:12` / `.env.staging.example:19` / `docker-compose.app.yml:25`；③ 无测试断言该 Settings 字段存在（`tests/test_staging_preflight.py:35,71` 为预检 config dict 键）；④ `scripts/staging_preflight.py:72` 读 env（非 Settings 字段）；⑤ 文档记为在用基础设施 + 将来接入对象（`capability-ownership-map.md:52`、`architecture.md:14`、`api-contract.md:693-694`、dsh 规格 `:135/:272/:282`、`key-dependency-autonomy-plan.md:165/:617`）。 |
+| **未验证（不得读成已验）** | ① 规格 §8 U25 已声明的**检索盲区**（`app/planner`、`app/commercial`、`app/content`、`app/workforce`、`app/conversation` 的**模块内部**未穷举）**本轮仍未穷举** ⇒ 对其内部符号「无引用」**未验证**；② 无真库 / staging 参与（本变更不涉数据读写）；③ R1 的「将来必接入」**仅依据文档记载**（`artifact.export` 落对象存储等），**未验证**是否有落地排期。 |
+| **回退方式** | **R2**：在 `app/tool_execution/blacklist.py::CommandGate` 末尾按原样恢复 `evaluate` 方法（`def evaluate(self, executable: str, args: Sequence[str], *, workspace_path: str | None = None) -> str:`，方法体 4 行：`verify_source` → `verify_name` → `verify_blacklist` → `return resolved`），并回退规格 §8 U25 补充表 R2 行与 B 行的「处置」标注 ⇒ 回到「该定义存在但无调用方」状态。**R1 无回退项**（未改动）。**未经确认不得执行回滚。** |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §8 U25 补充表 R1 / R2 行、B 行；实现 `app/tool_execution/blacklist.py`、`app/settings.py` |
+
 ### 2026-09-14 · §8 U24 接线：短期网关令牌的**写入侧**接通（一次 turn = 一次容器执行，②④⑤）—— 行为变更（可回退）
 
 | 项 | 内容 |
