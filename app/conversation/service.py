@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from ..audit.models import AuditAction
 from ..domain import RiskLevel, UserContext, ensure_can_approve, ensure_can_create
-from .models import Conversation, ConversationMessage, MessageRole
+from .models import Conversation, ConversationMessage, MessageRole, normalize_content
+from .redaction import redact_message_content
 from .store import ConversationStore
 
 # P1 用桩回复：不接真实模型、不执行任何工具（D7）。响应体显式标注 stub。
@@ -83,9 +84,16 @@ class ConversationService:
         """落库用户消息 → 生成确定性桩回复 → 落库助手消息；两条消息各自写审计。
 
         审计只记标识与角色，**不记消息正文**。
+        §8 U23：用户消息 `content` 落库前经 `redact_message_content` 收敛为**脱敏摘要**，
+        自由文本原文**不落库**（助手桩回复不受影响）。
+        ⚠️ 空 / 纯空白 / 超长的校验必须落在**原文**上（脱敏摘要恒非空，若只校验摘要会放过空消息）。
         """
+        normalize_content(content)
         user_message = self.store.append_message(
-            context, conversation_id, role=MessageRole.USER, content=content
+            context,
+            conversation_id,
+            role=MessageRole.USER,
+            content=redact_message_content(content),
         )
         self._record(
             context,

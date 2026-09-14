@@ -51,6 +51,7 @@ from .models import (
     MessageRole,
     normalize_content,
 )
+from .redaction import redact_message_content
 
 # 带键触发执行时，`content` 必须是结构化工具调用 JSON。
 INVOCATION_TOOL_KEY_FIELD = "tool_key"
@@ -293,7 +294,9 @@ class ConversationExecutionService:
         if result.outcome == "pending_approval":
             # §3.7 Y2：⑥ 落库成功（该动作进入等待审批）后，把承载任务由 `queued` 置 `pending_approval`。
             self._mark_task_pending_approval(context, task.id)
-            self._append_message(context, conversation_id, MessageRole.USER, content)
+            self._append_message(
+                context, conversation_id, MessageRole.USER, redact_message_content(content)
+            )
             reply = self._append_message(
                 context,
                 conversation_id,
@@ -317,7 +320,9 @@ class ConversationExecutionService:
             return MessageExecutionResult(http_status=202, body=body)
 
         # executed
-        self._append_message(context, conversation_id, MessageRole.USER, content)
+        self._append_message(
+            context, conversation_id, MessageRole.USER, redact_message_content(content)
+        )
         reply = self._append_message(
             context, conversation_id, MessageRole.ASSISTANT, "工具已执行完成。"
         )
