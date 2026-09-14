@@ -83,10 +83,25 @@ def test_list_for_tenant_orders_by_created_at_then_id(store) -> None:
 
 
 def test_list_for_tenant_breaks_same_timestamp_ties_by_id(store) -> None:
-    """同刻多行：次级键 `id` 使顺序仍确定。"""
+    """同刻多行：先**证实真库中两行确实同刻**，再断言次级键 `id` 使顺序仍确定。"""
     same = datetime(2026, 9, 12, 8, 0, tzinfo=UTC)
     store.create(_job("job-b", same))
     store.create(_job("job-a", same))
+
+    # 前提校验：把「同刻」由**假定**变成**断言**。若 `create` 把 `created_at` 落成 `now()`、
+    # 或列类型把亚秒精度截断 ⇒ 两行其实不同刻，此时本断言先红，
+    # 避免出现「看似在验并列、实际两行不同刻」的假守护。
+    with store.connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT id, created_at FROM workbench_lifecycle_jobs WHERE tenant_id = %s ORDER BY id",
+            (TENANT,),
+        )
+        rows = cursor.fetchall()
+
+    assert [row[0] for row in rows] == ["job-a", "job-b"]
+    assert rows[0][1] == rows[1][1] == same, (
+        f"真库两行未真正同刻：{rows[0][1]!r} / {rows[1][1]!r}"
+    )
 
     listed = store.list_for_tenant(TENANT, kind="delete")
 
