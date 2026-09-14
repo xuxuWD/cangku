@@ -871,6 +871,14 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **检索盲区（本清单的边界，不得读成"已穷尽"）**：**通过 `getattr` / 字符串拼接 / 反射构造的调用方查不到**（如 `app\conversation\execution.py:415` 的 `getattr(task_store, "set_pending_approval", None)`、`app\bootstrap.py:755-770` 按 `f"{key}_endpoint"` 拼字段名）；本次未穷举 `app/planner`、`app/commercial`、`app/content`、`app/workforce`、`app/conversation` 的**模块内部**未引用符号。
 
+### U26 门禁 §B14 判据 D / E / F 的取证对象**在生产路径不存在**（证据来自原型） — ❌ **未闭环（2026-09-14 只读侦察新增）**
+
+**事实（带证据）**：① **生产路径上没有人 mint** —— mint 的 app 侧唯一客户端 `GatewayTokenClient`（`app\tool_execution\gateway_token.py:41-47`）的**唯一消费者是 `DshAdapter`**（`app\runtime\adapters\dsh.py:264`），而 **`DshAdapter` 未注册进运行时**（见 §U25 A3）⇒ **生产不 mint**；② **生产路径上没有人把令牌放进容器** —— `ContainerExecutor.create_kwargs`（`app\tool_execution\executor.py:118-141`）**完全没有 `environment` 字段**，唯一注入容器 env 的是 `DshAdapter.build_turn_env`（`dsh.py:233-246`，**不可达**），且其依赖的 `turn_runner` **仓库内无任何实现**（全仓仅定义处 + 测试 Fake）；③ **`app/model_gateway` 在全部编排文件（`docker-compose*.yml` / `Dockerfile` / `.env*.example`）中 grep 零命中** ⇒ **网关进程连部署落点都没有**。
+
+**⇒ 后果（必须写清）**：**§B14 判据 D / E / F 的取证对象**（容器内 `baseURL`、`apiKeyEnv`、短期令牌）**在生产装配下不存在** —— 相关证据来自**原型**（`_dsh-gateway-verify\`），**不是生产路径**。**⇒ 在这三条上不得表述为"生产已验"**；**准确表述只能是**「**原型形态下已验证；生产装配下取证对象尚不存在**」。**受影响范围**：§B14 **D / E / F**（**E 直接受影响、F 最受影响**）；**A / C′ / G 与三条红线不受影响**（均围绕供应商密钥与外网，与"谁铸令牌"无关）。**§B17**：判据 1 的 **D 受影响**、**判据 3 需重判**。
+
+**解锁（与 §U24 同一根因）**：需先解决 **P1（真实的"进入新 turn"入口）** 与 **P2（令牌在册状态如何被网关数据面看见）**；**否则补方案 (c) 或替代① 都会变成第 4 个"存在但无调用方"**（前三个：`/__revoke`、`rotation_window_seconds`、`TokenBindingStore.record`）。**判据**：在**生产装配**下取得 D / E / F 的原始证据（容器内 env / 令牌来源 / 无供应商密钥），**不得以原型证据替代**。
+
 **取证（本机）**：`tests/test_conversation_message_redaction.py`（8 用例：脱敏单测 + 三个写入点 + 「功能没坏」等价验证 + 内存全表检索守护）+ `tests/test_dsh_execution_postgres.py::test_usecase_32_c1_3_no_body_original_in_conversation_messages`（**真库检索守护，DSN 门控**）。**「功能没坏」等价验证**：`GET /api/v1/conversations/{id}` 仍返回消息、`messages_total` 正确、重放仍返回首次结果（逐字段相等）。**反假 2 组**：① 摘要把原文写回该列 ⇒ 守护用例 **7 红**；② 重放改依赖用户消息 ⇒ 「功能没坏」+ 既有重放用例 **2 红**。契约同步：`docs/api-contract.md`「对话式 AI 员工平台」条；变更留痕：`docs/change-record.md`。
 
 **未验证（不得读成已验）**：① **真库上的检索断言** —— 本机无 `WORKBENCH_TEST_DATABASE_URL`（无凭据 / staging 不可达），`test_usecase_32_c1_3_...` **默认 skip，未在真库上跑过 ⇒ 未验证**；② **存量行** —— 按裁决「历史为空」处理（用户确认，**本机无法独立验证**），断言范围 = 全表，**未回溯清洗**；③ **前端展示回退是否可接受** —— `content` 由原文变摘要，`admin-web/.../ConversationPage.tsx` 仅按字符串展示（技术上不破坏），但**展示形态属产品确认，非本轮可判**。
