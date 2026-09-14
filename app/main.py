@@ -139,12 +139,17 @@ runtime_state_store = build_runtime_state_store(settings)
 # 027 待批动作仓储：RuntimeService 与 tool_execution 复用**同一实例**（§4.1.6-2 不得建两个实例）；
 # backend=mock（默认）时为 None——不存在真实执行，RuntimeService 保持既有行为（§4.1.7-5）。
 tool_action_store = build_tool_action_store(settings)
+# 商业化仓储（租户 / 用量账本 / 生命周期）：在 `runtime_service` 之前装配，因为运行终态
+# 记账（`RuntimeService._record_usage_on_terminal`）与 `GET /api/v1/commercial/usage`
+# **必须读同一账本实例**——否则接口读到的恒为 0。
+commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 runtime_service = build_runtime_service(
     settings,
     store=store,
     run_metrics=run_metrics_service,
     state_store=runtime_state_store,
     tool_actions=tool_action_store,
+    usage_ledger=commercial_usage,
 )
 # ②④ 的权威状态（§3.5 P1 第 3 条 / §8 U24）：**装配期单例**，`build_tool_execution`
 # （mint 侧写：`TokenBindingStore.record` + `ActiveExecutionRegistry.register`）与
@@ -215,7 +220,6 @@ publication_service = build_publication_service(
     audit=audit_service,
     inbox=inbox_service,
 )
-commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
 planner_service, planner_store = build_planner_service(
     settings, task_store=store, runtime_service=runtime_service, audit=audit_service
 )

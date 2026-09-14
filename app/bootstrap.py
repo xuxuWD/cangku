@@ -595,12 +595,16 @@ def build_runtime_service(
     state_store=None,
     run_metrics=None,
     tool_actions=None,
+    usage_ledger=None,
 ):
     """从裸名配置装配 Runtime 服务；未配置任何地址时只保留 Mock。
 
     `tool_actions` 为 027 待批动作仓储：必须与 `build_tool_execution` 复用**同一个实例**
     （§4.1.6-2「不得建两个实例」），由 `app/main.py` 按同一实例传入；未启用真实执行时为
     `None`（保持既有行为，仅比对运行级摘要，§4.1.7-5）。
+
+    `usage_ledger` 为商业化追加式用量账本（`app/main.py` 传入装配期单例，与
+    `GET /api/v1/commercial/usage` 读取的**同一实例**）；未传入时为 `None`（不记账）。
     """
     validate_runtime_settings(settings)
     from .runtime.registry import build_runtime_registry
@@ -619,6 +623,7 @@ def build_runtime_service(
         state_store=shared_state_store,
         run_metrics=run_metrics,
         tool_actions=tool_actions,
+        usage_ledger=usage_ledger,
     )
 
 

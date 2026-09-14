@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Sequence
 
+from app.commercial.usage import UsageEntry
 from app.domain import PolicyError, Task, TaskNotFound, UserContext
 from app.tool_execution.store import ReasonCode, ToolActionStatus
 
@@ -19,9 +20,9 @@ from .authorization import (
 from .contracts import AgentPlan, RuntimeContext
 from .mock import MockRuntime
 from .policy import RuntimePolicy
-from .records import RunRecordNotFound
+from .records import RunRecord, RunRecordNotFound
 from .registry import RuntimeRegistry
-from .state import RuntimeStateStore
+from .state import RuntimeState, RuntimeStateStore
 
 
 class RunAccessDenied(ValueError):
@@ -51,12 +52,16 @@ class PendingRunApproval:
 
 
 class RuntimeService:
-    def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None, run_metrics: Any = None, tool_actions: Any = None) -> None:
+    def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None, run_metrics: Any = None, tool_actions: Any = None, usage_ledger: Any = None) -> None:
         self.task_store = task_store
         self.state_store = state_store or RuntimeStateStore()
         self.registry = registry or RuntimeRegistry()
         self.policy = policy or RuntimePolicy('policy-1')
         self.run_metrics = run_metrics
+        # 追加式用量账本（商业化 G0）：只记「按运行 1 unit、cost_cents 恒 0」，
+        # **不向员工计费**（`docs/superpowers/specs/2026-09-06-commercial-g0-design.md:72`）。
+        # 未装配（既有单测 / 段一路径）→ 不记账，保持旧行为。
+        self.usage_ledger = usage_ledger
         # 授权位与运行记录同库同表：直接复用运行记录仓储，不另建存储通道。
         self.run_records = getattr(run_metrics, "store", None)
         # 027 待批动作仓储（可选）：仅用于 ⑦ 的「待判动作序列」投影与「是否需审批路径」判定。
@@ -337,12 +342,47 @@ class RuntimeService:
         if self.run_metrics is None:
             return
         state = self.snapshot(actor, run_id)
-        self.run_metrics.record_state(
+        record = self.run_metrics.record_state(
             tenant_id=state.context.tenant_id,
             proposal_id=proposal_id,
             runtime_key=runtime_key,
             state=state,
             latency_ms=latency_ms,
+        )
+        # 运行终态同步钩子：这里是全仓**唯一**回写运行记录的地方，故也是用量记账的唯一落点。
+        self._record_usage_on_terminal(state, record)
+
+    def _record_usage_on_terminal(self, state: RuntimeState, record: RunRecord) -> None:
+        """运行到终态时向追加式用量账本记一条「1 run = 1 unit」，`cost_cents` 恒 0。
+
+        依据与本实现的固定口径：
+
+        - **方案 A（用户裁决）**：`docs/superpowers/specs/2026-09-06-commercial-g0-design.md:72`
+          「内部版……记录用量，**不向员工计费**」⇒ `units=1`、`cost_cents=0`；
+          **不引入单价表、换算公式或任何定价真源**。
+        - **幂等维度**：真源 `:171`「用量账本**按任务和运行幂等**记账」⇒ 幂等键同时含
+          `task_id` 与 `run_id`：`usage:{task_id}:{run_id}`。真源只约定幂等维度，
+          **键的格式由本实现确定**。
+        - **`units` 语义**：沿用「未定义、只展示原值」口径
+          （`docs/superpowers/specs/2026-09-12-usage-billing-page-design.md:49/:66`），
+          **不解释成 token / 次数 / 条数**。`state.usage` 是运行内计数
+          （`app/runtime/state.py:22`），**不是**商业账本 ⇒ 不拿 `tool_calls` 当 units。
+        - **只在终态写入**：`record.finish_reason is not None`（由运行状态单向推导）时才写，
+          避免运行中反复写；账本**只追加、不原地修改**，重复终态同步（如 start 后 cancel）
+          由幂等键去重。
+        - **冲正未接线（本期不做）**：`UsageLedger.reverse` / `reverse_usage` **不接线、不删除**。
+        """
+        if self.usage_ledger is None:
+            return
+        if record.finish_reason is None:
+            return
+        self.usage_ledger.append(
+            UsageEntry(
+                idempotency_key=f"usage:{state.context.task_id}:{state.run_id}",
+                tenant_id=state.context.tenant_id,
+                units=1,
+                cost_cents=0,
+            )
         )
 
     def adapter_for(self, actor: UserContext, run_id: str):
