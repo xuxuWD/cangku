@@ -436,7 +436,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("INBOX_RETENTION_DAYS", "WORKBENCH_INBOX_RETENTION_DAYS"),
     )
 
-    # ---- 段二（dsh 接入段）新增配置：共 19 项 ----
+    # ---- 段二（dsh 接入段）新增配置：共 22 项 ----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
     # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。
     # 命名口径：只认 `WORKBENCH_` 前缀（由 env_prefix 自动派生），**不设裸名别名** ——
@@ -474,6 +474,16 @@ class Settings(BaseSettings):
     # 网关控制面密钥（mint / revoke 鉴权）：由部署密钥系统注入、不进仓库、不进容器；
     # 与 UPSTREAM_API_KEY（供应商密钥）职责分离。留空 = 未配置（网关侧 fail-closed 拒绝启动）。
     model_gateway_mint_secret: str = ""
+    # 执行回调边车三项（§3.5 P1 第 3 条 ②④ / §8 U20 方案 b-1）：
+    # 边车是**独立进程**，**只监听一个端口、只挂 workbench-exec-internal**（门禁 §B14 判据 E）；
+    # 其自身从同名环境变量读取（`app/exec_callback/config.py`），本处与模板同批登记以守台账。
+    # 唯一监听地址：对外可达性由「只挂内网」限定；不得双宿到工作台默认网络。
+    exec_callback_listen_host: str = "0.0.0.0"
+    # 唯一监听端口：不得再开第二个端口 / 第二条路由。
+    exec_callback_listen_port: int = Field(default=8081, ge=1, le=65535)
+    # 边车 → 工作台的**受控出向**调用目标（工作台侧回调接收端点）；**留空 = 拒绝启用**（fail-closed）。
+    # **不得把回调地址烤进镜像**：只能由部署配置注入（本项默认留空即不启用边车）。
+    exec_callback_forward_url: str = ""
 
 
 CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]

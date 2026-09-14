@@ -954,8 +954,10 @@ def build_conversation_execution_service(
 def build_control_plane_binding_verifier(settings: Settings, *, audit=None):
     """装配「短期令牌控制面绑定校验器」（规格 §3.5 P1 第 3 条 ②④）。
 
-    ⚠️ 当前**无调用方**：规格所述回调场景（导出产物 / 请求授权）尚未存在。用户裁决「本期做」
-    故先交付组件与判据（§5 用例 35）；接入真实回调端点前**不得声称「②④ 已强制」**。
+    真实调用方 = **执行回调边车**（`app/exec_callback`，§8 U20 方案 b-1）：边车在
+    `POST /internal/exec-callback` 上按令牌反查工作台自持绑定并 `constant-time` 比对。
+    本函数仍保留为**组件装配口**；边车进程用 `app/exec_callback.build_plane` 装配
+    （同一构造路径）。**②④ 是否「已强制」以边车端点取证为准**（§5 用例 35 + 反假）。
     """
     validate_runtime_settings(settings)
     from .tool_execution.token_binding import ControlPlaneBindingVerifier, TokenBindingStore

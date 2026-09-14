@@ -176,8 +176,9 @@ conversation_execution_service = build_conversation_execution_service(
     audit=audit_service,
     directory_store=workforce_directory_store,
 )
-# 段二-4 控制面绑定校验器（§3.5 P1 第 3 条 ②④）：规格所述回调场景尚未存在 → 当前无调用方；
-# 先装配组件与判据（§5 用例 35），**接入真实回调端点前不得声称「②④ 已强制」**。
+# 段二-4 控制面绑定校验器（§3.5 P1 第 3 条 ②④）：真实调用方 = 执行回调边车
+# （`app/exec_callback`，§8 U20 方案 b-1；独立进程、只监听一个端口、只挂执行内网）。
+# 此处仍装配组件实例（构造路径与边车一致）；**②④ 是否已强制以边车端点取证为准**。
 control_plane_binding_verifier = build_control_plane_binding_verifier(settings, audit=audit_service)
 content_store = build_content_store(settings)
 content_service = ContentService(
