@@ -8,6 +8,19 @@
 
 ## 记录
 
+### 2026-09-14 · B 类死代码清理三处（代码删除，非地基变更）—— 可回退
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（随规格 §8 U25 B 行「建议经确认后清理」执行登记；用户已授权） |
+| **变更** | 删除**生产/测试均无引用**的三处死代码：① `ToolExecutionService._record_blocked`（`app/tool_execution/service.py:667`）；② `paths.BlacklistedPath`（`app/tool_execution/paths.py:38`）；③ `parse_revoke_response`（`app/tool_execution/gateway_token.py:93`）。**顺带清理**仅由 ③ 使用的 import：`gateway_token.py` 的 `import json` 与 `from typing import Any`。**未改**其它代码、**未动** `migrations/*`、**未新增**审计动作码、**未放宽**任何断言。 |
+| **原因** | 规格 §8 U25 B 行登记：三处为「**存在但无调用方**」——全仓仅定义处命中。**判据**：生产无调用方 + 无动态/字符串引用 + 测试无引用。 |
+| **影响面** | 仅删除无人引用的定义（其中 ③ 连带清理 2 个随之失效的 import）；**不改**任何行为、接口、数据模型、权限模型；**不改**迁移；无审计动作码新增。 |
+| **验证（已做）** | ✅ 符号检索：三处**全仓仅定义处命中**（`docs/` 规格除外）；✅ 字符串/动态检索：`"_record_blocked"` / `"BlacklistedPath"` / `"parse_revoke_response"` 字符串形态 **0 命中**，`getattr`/`setattr`/`globals()`/`eval`/`importlib` 清单 **0 命中**；✅ **反证（删前）**：将 `_record_blocked` **定义改名**（`_record_blocked_deadcode_probe`）后跑 `py -m pytest -o addopts=""` ⇒ **`1694 passed, 31 skipped`**（与基线一致 ⇒ 测试不引用它）；✅ **删后**：同一命令 ⇒ **`1694 passed, 31 skipped`**（**无用例数变化**）；✅ `py -m compileall -q app` ⇒ **exit=0**。 |
+| **未验证（不得读成已验）** | ① 规格 §8 U25 已声明的**检索盲区**（`app/planner`、`app/commercial`、`app/content`、`app/workforce`、`app/conversation` 的**模块内部**未穷举）**本轮仍未穷举** ⇒ 对其内部符号「无引用」**未验证**；② 无真库 / staging 参与（本变更不涉数据读写）；③ 三处之外的其它 B 类符号（`object_storage_url` / `CommandGate.evaluate` / `SsoStateStore.purge_expired` 等）**本次未处置**。 |
+| **回退方式** | 按原样恢复三个定义（`service.py` 的 `_record_blocked`、`paths.py` 的 `BlacklistedPath`、`gateway_token.py` 的 `parse_revoke_response` 及其 `import json` / `from typing import Any`），并回退规格 §8 U25 B 行的「处置」标注 ⇒ 回到「三个定义存在但无调用方」状态。**未经确认不得执行回滚。** |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §8 U25 B 行；实现 `app/tool_execution/service.py` / `app/tool_execution/paths.py` / `app/tool_execution/gateway_token.py` |
+
 ### 2026-09-14 · 对话入口消息表落**脱敏摘要**（§8 U23 裁决）—— 消息表写入语义变更（可回退）
 
 | 项 | 内容 |
