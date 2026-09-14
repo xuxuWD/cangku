@@ -52,7 +52,7 @@
 | 24 | 数据库 / 向量 / 缓存 / 对象存储 | **B** | PostgreSQL + pgvector / **Valkey** / **SeaweedFS** | ✅ 在用 | 迁移链**自研（A）**。**2026-09-13 换入**：Redis→Valkey（BSD-3）、MinIO→SeaweedFS（Apache-2.0），原因均为"不引入 copyleft"，见自主可控方案 §11.11 / §11.12 |
 | 25 | 观测与日志 | **B**（轮子）+ **A**（审计分离） | OpenTelemetry 等；审计与过程事件分离为**我们的**口径 | 🟡 部分 | 审计**不得**用外部日志系统当事实源 |
 | 26 | 桌面分发（签名 / 公证 / 自动更新） | **B**（轮子）+ **A**（配置与流程） | electron-builder 等 | 🟡 未验收（阻塞项 7） | |
-| 27 | 多租户 SaaS 计费 / 套餐 | **A** | `app/commercial/` | 🟡 部分交付（G0） | |
+| 27 | 多租户 SaaS 计费 / 套餐 | **A** | `app/commercial/` | 🟡 预留（本期不含配额强制） | 依据 **2026-09-14 用户裁决**：配额 / 超额策略**不属本期**（与上位规格决策 D1「不在本期实现计费、白标、配额售卖」取齐，见规格 §8 U25 的 E5 条）；`app/commercial/plan.py` 与表 `workbench_plan_versions`（`migrations/006_commercial_g0.sql:25`）**保留不删**；**不得**声称「配额已强制」「套餐额度已生效」 |
 | 28 | **EvoFlow / OpenWorkBuddy / WorkBuddy / Trae** | **D 只读学** | 见 [`evoflow-source-study-and-adaptation-plan.md`](evoflow-source-study-and-adaptation-plan.md)、[`p2c-interaction-study.md`](p2c-interaction-study.md) | — | **禁接禁搬**：EvoFlow/OpenWorkBuddy 非商用；WorkBuddy/Trae 闭源（外观版权） |
 | 29 | **OpenMausBot** | **D**（模式可借；**代码复用需另过许可评审**） | Apache-2.0（`enterprise/` 除外） | 已出研读报告 | 结论：**不建议复用其代码** |
 | 30 | **OpenClaw**（整套 Gateway） | **D**：**不接不搬**（整套属"引擎/平台"） | MIT ✅ 已核对（SHA `ebaebf7c…`） | 仅登记 | **R5-8 更正**：原记为「**D/C**」——**违反 §1「只能四选一 / 同一能力只允许一个归属」**，已修为单一 **D**；其 `computer-use` 脚本集的 **B 类候选**身份见第 21 行备注，**若启用须新增一行**。其 `THIRD_PARTY_NOTICES.md` 须在 vendor 前核对 |

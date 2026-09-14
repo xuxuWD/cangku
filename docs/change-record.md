@@ -8,6 +8,19 @@
 
 ## 记录
 
+### 2026-09-14 · `capability-ownership-map.md:55` 套餐口径对齐 E5 裁决（改为「预留（本期不含配额强制）」；纯文档口径，无代码改动）—— 可回退
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（承接同日 **E5 裁决**：`app/commercial/plan.py` 整模块不属本期 ⇒ 预留） |
+| **变更** | **纯文档口径更正，无任何代码 / 迁移 / 测试 / 前端改动**。`docs/capability-ownership-map.md` 第 **27** 行（多租户 SaaS 计费 / 套餐）**现状列**由「🟡 部分交付（G0）」改为「**🟡 预留（本期不含配额强制）**」，并在**同一行备注列**注明依据：**2026-09-14 用户裁决**（配额 / 超额策略**不属本期**，与上位规格决策 D1 取齐，见规格 §8 U25 的 E5 条）；`app/commercial/plan.py` 与表 `workbench_plan_versions`（`migrations/006_commercial_g0.sql:25`）**保留不删**；不得声称「配额已强制」「套餐额度已生效」。 |
+| **原因** | 该行原写「🟡 部分交付（G0）」，与用户 2026-09-14 裁决（E5 不属本期 ⇒ 预留）**冲突**；同日「§8 U25 E5 裁决登记」条已把该行列为**待消解对象**（当时**未改**，见其「未验证」②）。本次据此消解，使本表与本裁决一致。 |
+| **影响面** | 不改任何行为、接口、数据模型、权限模型；**不改** `app/`、`migrations/`、`tests/`、`docs/api-contract.md`、前端；**不改** `docs/delivery-gates.md`（已于 2026-09-14 改过）；仅改 `docs/capability-ownership-map.md` **一行** + 本条记录。 |
+| **验证（已做）** | ✅ 改前按**实际行号**核对原文（实际位于 `capability-ownership-map.md:55`，与任务给定一致，**行号未漂移**）；✅ 该文件内检索「套餐 / 配额 / Quota / plan」**除本行外无**第二处套餐/配额口径（`:38` 的「计量」指模型网关计量，非套餐/配额；`:34` 为用量账本行）。✅ 回归：`py -m pytest -o addopts=""` ⇒ **`1723 passed, 31 skipped`**（与改动前基线一致，**纯文档改动 ⇒ 用例数不得变化**）；`py -m compileall -q app` ⇒ **exit=0**。 |
+| **未验证（不得读成已验）** | ① **未做 `docs/` 全量穷举**：其它文档**是否还有**把「套餐/配额」表述为**已强制 / 已交付**，**未逐篇核对**（本文件内已核，见「验证」）；② 无真库 / staging 参与（本条不涉数据读写）；③ 前一条记录已声明：配额**执行链路的额度检查点落点**真源未指定，**本次仍未探明**。 |
+| **回退方式** | 将 `docs/capability-ownership-map.md:55` 的**现状列**恢复为「🟡 部分交付（G0）」、**备注列**恢复为空，并删除本条记录即可；**本条仅为口径更正，无代码改动，无代码回退项**。**未经确认不得执行回滚。** |
+| **依据** | 用户 2026-09-14 裁决（E5 不属本期 ⇒ 预留）；规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §8 U25「E1–E6 定性」E5 条；[`capability-ownership-map.md`](capability-ownership-map.md):55；[`delivery-gates.md`](delivery-gates.md):58；[`2026-09-12-conversational-agent-platform-design.md`](superpowers/specs/2026-09-12-conversational-agent-platform-design.md):190 决策 D1；`migrations/006_commercial_g0.sql:25` |
+
 ### 2026-09-14 · §8 U27 登记：E1–E4 实施暴露的「真源未定义 ⇒ 未实施」缺口 1–5（纯登记，无代码改动）—— 可回退
 
 | 项 | 内容 |
