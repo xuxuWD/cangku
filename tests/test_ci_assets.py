@@ -94,3 +94,75 @@ def test_actions_are_pinned_to_explicit_non_deprecated_majors() -> None:
     # 判定依据：不得回落已被弃用的 Action 大版本。
     deprecated = sorted(set(refs) & set(DEPRECATED_ACTION_REFS))
     assert deprecated == [], f"CI 使用已弃用的 Action 版本：{deprecated}"
+
+
+def read_job(name: str) -> str:
+    """截取顶层 job `name` 的文本块（到下一个顶层 job 或文件末尾）。
+
+    顶层 job 均以两个空格缩进，其内部键（services/steps/env 等）为四空格，
+    因此 `^  \\S`（两个空格后紧跟非空白）恰好命中下一个 job 的起点。
+    """
+    content = read_workflow()
+    match = re.search(rf"^  {name}:.*?(?=^  \S|\Z)", content, re.M | re.S)
+    assert match, f"工作流缺少 {name} 任务"
+    return match.group(0)
+
+
+# postgres job 的真库服务镜像**逐字钉死**（含摘要值）。仅校验「存在合法形式的 sha256」
+# 挡不住「换成另一个合法但不同的 sha256」，故此处把期望镜像串写成常量并对值比较。
+POSTGRES_SERVICE_IMAGE = (
+    "pgvector/pgvector:0.8.0-pg16@sha256:a132765ec351c65111b5b675928a3a0515a466a40f97277329db8b8209ad8bc9"
+)
+
+
+def test_postgres_job_exists_and_pins_service_image_by_digest() -> None:
+    content = read_workflow()
+
+    # 判定依据：真库门禁必须作为一个顶层 job 存在，否则「默认 skip」无人跑。
+    assert re.search(r"^  postgres:", content, re.M), "jobs 中缺少 postgres 任务"
+
+    job = read_job("postgres")
+    # 判定依据：真库服务镜像必须按 sha256 摘要钉死，防止上游 tag 漂移悄悄换掉镜像。
+    assert re.search(r"image:\s*\S+@sha256:[0-9a-f]{64}\b", job), "postgres 服务镜像未按摘要钉死"
+    # 判定依据：上面的正则只看「形式」——换成另一个合法 sha256 不会报警。此处把镜像串
+    # （含摘要值）与钉死常量逐字比较，摘要值与钉死值不符即失败。
+    image_match = re.search(r"^\s*image:\s*(\S+)\s*$", job, re.M)
+    assert image_match, "postgres 服务镜像未声明 image"
+    pinned_image = image_match.group(1)
+    assert pinned_image == POSTGRES_SERVICE_IMAGE, (
+        f"postgres 服务镜像摘要值与钉死值不符：实际 {pinned_image!r}，"
+        f"期望 {POSTGRES_SERVICE_IMAGE!r}"
+    )
+    # 判定依据：裸 tag（含 :latest）可被上游随时覆写，等同未钉死。
+    assert ":latest" not in job, "postgres 服务镜像不得使用 :latest"
+
+
+def test_postgres_job_applies_repo_migrations_and_sets_dsn() -> None:
+    job = read_job("postgres")
+
+    # 判定依据：必须调用仓库自身的迁移函数建表（而非另写一套 DDL），否则真库结构与代码漂移。
+    assert "app.migrations import apply_migrations" in job
+    assert "apply_migrations(conn" in job
+    # 判定依据：真库用例由该变量门控；缺失即整体 skip（本 job 存在的意义就是把它设起来）。
+    assert "WORKBENCH_TEST_DATABASE_URL" in job
+
+
+def test_postgres_job_runs_only_the_two_real_db_modules() -> None:
+    job = read_job("postgres")
+
+    # 只取 pytest 调用本身（截到紧随其后的 junit 校验 heredoc 为止），排除注释与其它步骤。
+    match = re.search(r"python -m pytest.*?(?=python - <<)", job, re.S)
+    assert match, "postgres 任务缺少 pytest 调用"
+    command = match.group(0)
+
+    # 判定依据：本 job 只跑这两个由 DSN 门控的真库模块，命令里必须同时出现二者。
+    assert "tests/test_tool_action_store_postgres.py" in command
+    assert "tests/test_dsh_execution_postgres.py" in command
+
+
+def test_postgres_job_requires_zero_skipped() -> None:
+    job = read_job("postgres")
+
+    # 判定依据：模块整体 skip 时 pytest 仍返回 0；必须显式零容忍 skipped（tests>0 且 skipped==0），
+    # 否则「整模块被跳过」会被当成通过——这正是该 job 相对 backend job 的存在理由。
+    assert "tests > 0 and skipped == 0 and failed == 0" in job
