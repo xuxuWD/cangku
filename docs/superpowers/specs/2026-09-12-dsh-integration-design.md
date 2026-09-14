@@ -842,9 +842,34 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 - 用户行 = `('user', 'fs.write', '[工具调用·脱敏] tool_key=fs.write params=[content,path] digest=5d49b362')`
 - 助手行 = `('assistant', None, '工具已执行完成。')`
 - 哨兵检查：`BODY_SENTINEL_in_content=False`、`PATH_SENTINEL_in_content=False`
-**⇒ `tool_name` 落库为工具键 ✓、`content` 为脱敏摘要且不含任何参数值 ✓、助手行未受影响 ✓**；**反假**（`UPDATE tool_name` → 观察到真实变化 → 还原）证明查的是**真实落库值**而非常量；同期 `tests\test_dsh_execution_postgres.py` **19 passed**。**仍未验证**：**`pending_approval`（202）分支**的 `tool_name` 落库（真库只走了 `executed`/201 分支）。
+**⇒ `tool_name` 落库为工具键 ✓、`content` 为脱敏摘要且不含任何参数值 ✓、助手行未受影响 ✓**；**反假**（`UPDATE tool_name` → 观察到真实变化 → 还原）证明查的是**真实落库值**而非常量；同期 `tests\test_dsh_execution_postgres.py` **19 passed**。**〔2026-09-14 追加实跑：`pending_approval`（202）分支〕** **✅ 已通过** —— 真库（**27 个迁移**）+ 真实 202 路径：`{"status":"pending_approval","run_id":"run-a1fe…","approval_id":"step-3d6c…"}`；库内**用户行 `tool_name='fs.write'`**、`content` 为**脱敏摘要**（`[工具调用·脱敏] tool_key=fs.write params=[content,path] digest=5c88b9ca`）；**助手行 = `该操作需要人工审批后方可执行。`**；全表 `LIKE` **正文哨兵 / path 哨兵 / `"tool_key"` = 0 / 0 / 0**；**反假**（`UPDATE tool_name` → 观察到变化 → 还原）证明查到的是**真实落库值**。**⇒ 202 与 201 两分支的 `tool_name` / 摘要口径一致。**
 
 **实作（2026-09-14）＝ 收敛为单一脱敏函数，覆盖三个写入点**：新增 `app/conversation/redaction.py::redact_message_content`（**唯一**脱敏入口，防「改两处漏一处」）—— 输入原始 `content`（调用 JSON 或自由文本）⇒ 输出摘要：调用 JSON 落 `[工具调用·脱敏] tool_key=<key> params=[<键名…>] digest=<8hex>`，自由文本落 `[消息·脱敏] chars=<N> digest=<8hex>`；**所有参数值一律不落**（含 `body` 类与 `control` 类的 `path` / `target`），非 JSON / 自由文本**不透传原文**。三个写入点：`app/conversation/execution.py`（`201 executed` / `202 pending_approval` 两条 USER 写入）+ `app/conversation/service.py`（**无键桩路径**，自由文本原文不得落库）；**助手消息写入行未动**（重放依赖其 `message_id`）。桩路径另补 `normalize_content(content)`（空 / 纯空白 / 超长的校验落在**原文**上 —— 否则会被恒非空的摘要绕过，属本轮发现的**回归修复**）。**未新增迁移、未改 `027`、未新增审计动作码。**
+
+### U24 ②④ 的权威状态**无任何写入方** ⇒ 回调端点恒拒 — ❌ **未闭环（2026-09-14 只读排查新增）**
+
+**事实（带证据）**：`TokenBindingStore.record`（`app\tool_execution\token_binding.py:68`）与 `ActiveExecutionRegistry.register`（`app\tool_execution\active_execution.py:37`）的**唯一调用点在测试**（`tests\test_token_binding.py:98/132/137`、`tests\test_exec_callback.py:90/105`）；**生产装配用全新空实例** —— `app\bootstrap.py:971-973`（`TokenBindingStore()` / `ActiveExecutionRegistry()`）→ `app\main.py:184` 绑定给 `workbench_callback_guard`，**此后无任何代码写入**。⇒ 调用链：`registry.current_for()` **必为 `None`** → `_NO_ACTIVE_EXECUTION` 占位 → `store.lookup()` **必为 `None`** → `BindingDenied` → **`403`**（`app\main.py:573`）。
+
+**⇒ 后果**：端点、限流、恒时比对、审计与 `403` 文案**全部齐备**，**外观上"②④ 已强制"**；**实际任何合法回调都被拒**。**⇒ 与 §U20 / §U21 同一禁令：不得声称「②④ 已强制」。**（口径更正：此前"②④ 机制已就位"**只能读作"组件就位"**，**不能读作"生效"**。）
+
+**解锁**：补写入侧接线 —— **mint 时 `store.record`** + **进入 turn 时 `registry.register`**（并接 `retire`，该 `retire` 同样**无调用方**：`active_execution.py:65` 仅定义处命中）。**判据**：真实装配下**一次完整回调的成功路径**（非测试注入）。
+
+### U25 「存在但无调用方」的实现清单 — ❌ **待逐项处置（2026-09-14 只读排查新增）**
+
+**性质**：本类问题的**第三次出现**（前两次：`/__revoke`、`rotation_window_seconds`）。**共性 = 组件/公式/端点齐备、外观像"已生效"，但生产路径无人调用** ⇒ **最容易被误读成"已强制/已实现"**。**⇒ 在逐项处置前，涉及下列符号的结论一律不得表述为"已生效"。**
+
+| # | 符号 | 定义处 | 事实（检索证据） | 类别 |
+|---|---|---|---|---|
+| **A2** | `GatewayTokenClient` / `build_terminal_state_revoker` / `token_revoker=` | `app\tool_execution\gateway_token.py:27/:79`、`executor.py:183/:362` | **全仓仅测试命中**；**`ContainerExecutor.from_settings` 不接受也不传 `token_revoker`**（`executor.py:213-222`）⇒ 生产恒为 `None` ⇒ `_revoke_on_terminal` **首行即 `return`** | **(A) 真缺口** |
+| **A3** | `DshAdapter` 全族（`build_dsh_adapter` / `DshProfileLock` / `assert_profile_locked`） | `app\runtime\adapters\dsh.py:187/:146/:125` | **未注册进运行时**：`app\runtime\registry.py:132-138` 的 `constructors` **无 `dsh`**、`app\bootstrap.py:748` 的 `_RUNTIME_KEYS` **亦无** ⇒ 生产不可达（仅 re-export + 测试）⇒ **剖面锁死 / 启动期断言在生产不执行** | **(A) 真缺口**；🔴 **定位待裁决**：是"待接线"还是"已弃用（生产走 `ContainerExecutor`，剖面由容器加固承担）"？**两种读法的登记措辞不同，未定前不得二选一。** |
+| **A6** | `model_gateway_base_url`（`app\settings.py:469`）、`dsh_version`（`:458`） | 同上 | 唯一读取点是 `DshAdapterConfig.from_settings`（`dsh.py:164/:166`），而 **`DshAdapter` 未注册**（见 A3）⇒ **生产无消费者 ⇒ "配了等于没配"**（"容器内 baseURL 指向网关"这一安全口径**在生产不生效**） | **(A) 真缺口** |
+| A4 | `SsoStateStore.purge_expired` | `app\accounts\sso_store.py:34/:58/:130` | `app/` 内**无任何调用**（仅 `tests/test_sso_blocks.py:474/482`）⇒ 未被消费的过期 state **无清理入口、持续累积** | (A) 宜登记 |
+| A5 | `WorkspaceManager.create` / `destroy` | `app\tool_execution\workspace.py:35/:53` | 生产只调 `path_for`（`service.py:290`）⇒ 宿主侧**从不创建/销毁**（卷实际由**容器内 tmpfs** 承担，见 §3.3 裁决） | (A)/(B) 边界，宜登记 |
+| B | `object_storage_url`（`settings.py:15`）、`ToolExecutionService._record_blocked`（`service.py:667`）、`paths.BlacklistedPath`（`paths.py:38`）、`CommandGate.evaluate`（`blacklist.py:320`）、`parse_revoke_response`（`gateway_token.py:93`） | 同左 | **`app/` 内无读者/无调用**（`_record_blocked`、`BlacklistedPath`、`parse_revoke_response` **全仓仅定义处命中 = 死代码**；`object_storage_url` 仅 `scripts\staging_preflight.py` 按 env 直读） | (B) 登记（其中三个建议经确认后清理） |
+
+**端点维度（"路由存在、前端无人调用"，**属"未见"而非"证明无"**）**：🔴 **`POST /api/v1/auth/logout` 无前端调用** ⇒ **登出后令牌不会进入服务端撤销名单**（名单已就绪，`main.py:2320`）；🔴 **TOTP 绑定/确认、改密、管理员 TOTP/口令重置无 UI 入口**（`main.py:2424/2436/2462/2449/2475`）；中风险：**申请审批**（`:1896`）、**生命周期 `pause/resume/cancel`**（`:1868/1877/1886`）、**死信重放**（`:900`）、**导出/删除申请/生命周期查询**（`:834/845/856`）、**提案创建与启动运行**（`:2537/2608`）、**编排提案**（`:2669…`）。
+
+**检索盲区（本清单的边界，不得读成"已穷尽"）**：**通过 `getattr` / 字符串拼接 / 反射构造的调用方查不到**（如 `app\conversation\execution.py:415` 的 `getattr(task_store, "set_pending_approval", None)`、`app\bootstrap.py:755-770` 按 `f"{key}_endpoint"` 拼字段名）；本次未穷举 `app/planner`、`app/commercial`、`app/content`、`app/workforce`、`app/conversation` 的**模块内部**未引用符号。
 
 **取证（本机）**：`tests/test_conversation_message_redaction.py`（8 用例：脱敏单测 + 三个写入点 + 「功能没坏」等价验证 + 内存全表检索守护）+ `tests/test_dsh_execution_postgres.py::test_usecase_32_c1_3_no_body_original_in_conversation_messages`（**真库检索守护，DSN 门控**）。**「功能没坏」等价验证**：`GET /api/v1/conversations/{id}` 仍返回消息、`messages_total` 正确、重放仍返回首次结果（逐字段相等）。**反假 2 组**：① 摘要把原文写回该列 ⇒ 守护用例 **7 红**；② 重放改依赖用户消息 ⇒ 「功能没坏」+ 既有重放用例 **2 红**。契约同步：`docs/api-contract.md`「对话式 AI 员工平台」条；变更留痕：`docs/change-record.md`。
 
