@@ -25,6 +25,7 @@ from app.runtime.authorization import ExecutionNotAuthorized, plan_digest
 from app.runtime.records import InMemoryRunRecordStore
 from app.runtime.run_metrics import RunMetricsService
 from app.settings import Settings
+from app.tool_execution.cleanup import build_body_cleanup_task
 from app.tool_execution.startup import assert_real_execution_ready
 from app.tool_execution.store import InMemoryToolActionStore, ToolAction, ToolActionStatus
 
@@ -189,6 +190,25 @@ def test_mock_backend_wires_no_tool_actions() -> None:
     assert tool_actions is None
     assert runtime_service.tool_actions is None
     assert build_tool_execution(settings) is None
+
+
+def test_mock_backend_builds_no_body_cleanup_task() -> None:
+    """mock（`tool_execution is None`）→ 不注册正文密文 TTL 清理（不引入后台线程）。"""
+    settings = Settings(env="development", storage_backend="memory", agent_runtime_backend="mock")
+    assert build_body_cleanup_task(settings, None) is None
+
+
+def test_dsh_backend_body_cleanup_task_uses_configured_interval_and_store(tmp_path) -> None:
+    """清理任务用的周期 = `WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS`，仓储 = 服务的 027 仓储。"""
+    _runtime_service, service, _task, tool_actions = _wired_pair(tmp_path)
+    assert service is not None
+
+    task = build_body_cleanup_task(_dsh_settings(tmp_path, body_cleanup_interval_seconds=45), service)
+
+    assert task is not None
+    assert task.interval_seconds == 45
+    assert task.store is tool_actions
+    assert task.store is service.tool_actions
 
 
 def test_dsh_backend_shares_one_tool_action_store(tmp_path) -> None:

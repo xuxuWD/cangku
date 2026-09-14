@@ -21,7 +21,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.domain import RiskLevel
+from app.audit.models import AuditAction
+from app.tool_execution.cleanup import BodyCleanupTask
 from app.tool_execution.store import (
+    EXPIRY_DECIDED_BY,
+    EXPIRY_DECISION_SOURCE,
     PostgresToolActionStore,
     ReasonCode,
     ToolAction,
@@ -199,6 +203,92 @@ def test_library_level_guards_reject_bad_rows(store) -> None:
 
     with pytest.raises(ValueError, match="不得带决议列"):
         store.upsert(_action(action_id="bad-3", decided_by="ceo-1", decided_at=NOW))
+
+
+def test_expire_pending_bodies_expires_due_rows_and_clears_body(store) -> None:
+    """真库：到期 `pending` 行 → `expired` + 两列清空 + 受控常量；未到期行不动；重复执行幂等。"""
+    due_expiry = NOW - timedelta(seconds=1)
+    store.upsert(
+        _action(
+            action_id="due",
+            step_id="step-due",
+            approval_id="ap-due",
+            body_ciphertext=b"z" * 28,
+            body_expires_at=due_expiry,
+        )
+    )
+    store.upsert(
+        _action(
+            action_id="later",
+            step_id="step-later",
+            approval_id="ap-later",
+            body_ciphertext=b"y" * 28,
+            body_expires_at=NOW + timedelta(minutes=5),
+        )
+    )
+
+    assert len(store.expire_pending_bodies(now=NOW)) == 1
+
+    due = store.get(TENANT, "due")
+    assert due.status is ToolActionStatus.EXPIRED
+    assert due.decided_by == EXPIRY_DECIDED_BY
+    assert due.decision_source == EXPIRY_DECISION_SOURCE
+    assert due.decided_at is not None
+    assert abs((due.decided_at - due_expiry).total_seconds()) < 1  # decided_at = 到期时刻
+    assert due.body_ciphertext is None
+    assert due.body_expires_at is None
+
+    later = store.get(TENANT, "later")
+    assert later.status is ToolActionStatus.PENDING
+    assert later.body_ciphertext == b"y" * 28
+
+    # 幂等：第二次无命中、不报错、不误删未到期行。
+    assert store.expire_pending_bodies(now=NOW) == []
+    assert store.get(TENANT, "later").status is ToolActionStatus.PENDING
+
+
+class RecordingAudit:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, dict]] = []
+
+    def record(self, action, **kwargs) -> None:
+        self.calls.append((action, kwargs))
+
+
+def test_body_cleanup_task_expires_and_audits_on_real_db(store) -> None:
+    """真库端到端：清理任务把到期行置 `expired` + 清空两列，并按既有动作码留审计（§4.1.6-8/§4.1.7-6）。"""
+    store.upsert(
+        _action(
+            action_id="due",
+            step_id="step-due",
+            approval_id="ap-due",
+            body_ciphertext=b"z" * 28,
+            body_expires_at=NOW - timedelta(seconds=1),
+        )
+    )
+    store.upsert(
+        _action(
+            action_id="later",
+            step_id="step-later",
+            approval_id="ap-later",
+            body_ciphertext=b"y" * 28,
+            body_expires_at=NOW + timedelta(minutes=5),
+        )
+    )
+    audit = RecordingAudit()
+
+    report = BodyCleanupTask(store, interval_seconds=60, now=lambda: NOW, audit=audit).run_once()
+
+    assert report.expired == 1
+    due = store.get(TENANT, "due")
+    assert due.status is ToolActionStatus.EXPIRED
+    assert due.body_ciphertext is None and due.body_expires_at is None
+    assert store.get(TENANT, "later").status is ToolActionStatus.PENDING  # 未到期未被误动
+    assert len(audit.calls) == 1
+    action, kwargs = audit.calls[0]
+    assert action is AuditAction.RUN_APPROVAL_DECIDED  # 既有动作码，未新增
+    assert kwargs["target_id"] == RUN
+    assert kwargs["detail"] == {"status": "expired"}
 
 
 def test_database_body_check_rejects_ciphertext_without_ttl(store) -> None:

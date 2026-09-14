@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from threading import RLock
 from typing import Protocol
 
 from ..domain import RiskLevel
+
+# §4.1.6-8：审批超时置 `expired` 时的**受控常量**（不得来自请求体）。
+EXPIRY_DECIDED_BY = "system:approval-timeout"
+EXPIRY_DECISION_SOURCE = "timeout"
 
 
 class ReasonCode(StrEnum):
@@ -87,6 +91,33 @@ def _validate(action: ToolAction) -> None:
         raise ValueError("非 pending 行必须同时带 decided_by 与 decided_at（迁移 027 decision_check）")
 
 
+def expire_row(action: ToolAction) -> ToolAction:
+    """把一行 `pending` 待批动作按 §4.1.6-8 置为 `expired`（同事务三件事的**单一口径**）。
+
+    ① `status='expired'`；② `decided_by` / `decided_at=到期时刻` / `decision_source` 取受控常量；
+    ③ 清空 `body_ciphertext` 与 `body_expires_at`。**不得只清密文不改状态**——否则该行仍为
+    `pending`，一旦被批准将无正文可还原（§4.1.6-8 末句）。
+    """
+    return replace(
+        action,
+        status=ToolActionStatus.EXPIRED,
+        decided_by=EXPIRY_DECIDED_BY,
+        decided_at=action.body_expires_at,
+        decision_source=EXPIRY_DECISION_SOURCE,
+        body_ciphertext=None,
+        body_expires_at=None,
+    )
+
+
+def is_due(action: ToolAction, *, now: datetime) -> bool:
+    """该行是否「已到期」：仅 `pending` 且带到期时刻且 `body_expires_at <= now`（未到期绝不动）。"""
+    return (
+        action.status is ToolActionStatus.PENDING
+        and action.body_expires_at is not None
+        and action.body_expires_at <= now
+    )
+
+
 class ToolActionStore(Protocol):
     def upsert(self, action: ToolAction) -> ToolAction: ...
     def get(self, tenant_id: str, action_id: str) -> ToolAction: ...
@@ -94,6 +125,7 @@ class ToolActionStore(Protocol):
     def find_approved(
         self, *, tenant_id: str, run_id: str, approval_id: str
     ) -> ToolAction | None: ...
+    def expire_pending_bodies(self, *, now: datetime) -> list[ToolAction]: ...
 
 
 class InMemoryToolActionStore:
@@ -137,6 +169,24 @@ class InMemoryToolActionStore:
                 ):
                     return item
         return None
+
+    def expire_pending_bodies(self, *, now: datetime) -> list[ToolAction]:
+        """到期（`body_expires_at <= now`）的 `pending` 行 → `expired` + 清空密文两列；返回被清理行。
+
+        返回被清理的行本身（已置 `expired`），供调用方按既有动作码留审计证据（§4.1.7-6）。
+        幂等：非 `pending`（已判决 / 已过期）与未到期行一律不动；重复调用第二次返回空列表。
+        跨租户全量清扫（这是系统级后台任务，不属任何单一租户请求），**只动到期行**。
+        """
+        expired: list[ToolAction] = []
+        with self._lock:
+            for key, item in list(self._items.items()):
+                if not is_due(item, now=now):
+                    continue
+                updated = expire_row(item)
+                _validate(updated)
+                self._items[key] = updated
+                expired.append(updated)
+        return expired
 
 
 class PostgresToolActionStore:
@@ -302,3 +352,42 @@ class PostgresToolActionStore:
                 )
                 row = cursor.fetchone()
         return self._hydrate(row) if row is not None else None
+
+    def expire_pending_bodies(self, *, now: datetime) -> list[ToolAction]:
+        """到期行 → `expired` + 清空密文两列（单条 UPDATE，**一个事务**，§4.1.6-8）。
+
+        `RETURNING` 回传被清理的行本身，供调用方按既有动作码留审计证据（§4.1.7-6）。
+        只命中 `status='pending' AND body_expires_at <= now`：
+        * **未到期的绝不动**（`body_expires_at > now` 不在集合内）；
+        * 非 `pending` 行（含已 `approved`）不动——并发决议与清扫互不覆盖（首写先落者胜，
+          另一方的 `WHERE status='pending'` 不再命中）；
+        * **幂等**：重复执行第二次无命中、返回空列表，不误删、不报错。
+        `decided_at` 取 **本行的到期时刻**（`body_expires_at`），不取 `now`（§4.1.6-8②）。
+        """
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE workbench_tool_actions
+                        SET status = %s,
+                            decided_by = %s,
+                            decided_at = body_expires_at,
+                            decision_source = %s,
+                            body_ciphertext = NULL,
+                            body_expires_at = NULL
+                        WHERE status = %s
+                          AND body_expires_at IS NOT NULL
+                          AND body_expires_at <= %s
+                        RETURNING {self._COLUMNS}
+                        """,
+                        (
+                            ToolActionStatus.EXPIRED.value,
+                            EXPIRY_DECIDED_BY,
+                            EXPIRY_DECISION_SOURCE,
+                            ToolActionStatus.PENDING.value,
+                            now,
+                        ),
+                    )
+                    rows = cursor.fetchall()
+        return [self._hydrate(row) for row in rows]

@@ -49,7 +49,7 @@ from .settings import get_settings, resolve_cors_options, validate_runtime_setti
 from .runtime.authorization import ExecutionNotAuthorized
 from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable
 from .tool_execution.errors import ToolExecutionError
-from .tool_execution.cleanup import build_orphan_cleanup_task
+from .tool_execution.cleanup import build_body_cleanup_task, build_orphan_cleanup_task
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import FinishReason, RunRecordNotFound
 from .runtime.service import RunAccessDenied, RunApprovalDenied
@@ -157,6 +157,12 @@ orphan_cleanup_task = build_orphan_cleanup_task(settings, tool_execution_service
 if orphan_cleanup_task is not None:
     app.add_event_handler("startup", orphan_cleanup_task.start)
     app.add_event_handler("shutdown", orphan_cleanup_task.stop)
+# 正文密文 TTL 清理 + 审批超时置 expired（§4.1.5 / §4.1.6-8）：与孤儿清扫**同批**（同处注册、
+# 同款周期循环、同一个 WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS）；backend=mock 时不注册。
+body_cleanup_task = build_body_cleanup_task(settings, tool_execution_service, audit_service)
+if body_cleanup_task is not None:
+    app.add_event_handler("startup", body_cleanup_task.start)
+    app.add_event_handler("shutdown", body_cleanup_task.stop)
 # 段二-4 对话入口路由（§3.7 Y2 / §3.2 第四条）：幂等行落 027 的 `workbench_execution_idempotency`。
 execution_idempotency_store = build_execution_idempotency_store(settings)
 conversation_execution_service = build_conversation_execution_service(
