@@ -8,7 +8,21 @@
 
 ## 记录
 
-### 2026-09-14 · 执行面新增「回调边车」（网络面 / 信任面变更，§8 U20 方案 b-1）
+### 2026-09-14 · 执行回调面**返工**：边车纯转发 + ②④ 判定回工作台 + 专用回调网（网络面 / 信任面变更，§8 U21 裁决「候选②」）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（随 §8 U21 裁决「候选②：边车纯转发 + 判定回工作台」落地登记） |
+| **变更** | ① **边车去状态**：`app/exec_callback/` 下**移除判定**（删除 `registry.py`，不再引用 `TokenBindingStore` / `ActiveExecutionRegistry`），边车退化为**无状态纯转发**（不解析令牌 / 不比对绑定）；② **②④ 判定回工作台**：新增端点 **`POST /api/v1/internal/exec-callback`**（`app/tool_execution/callback_guard.py`），`expected` 从**工作台权威状态**重建（`app/tool_execution/active_execution.py`），`constant-time` 比对，不匹配 / 跨租户 / 旧代次 / 未知令牌 → `403`（不泄露存在性）+ 记审计（**复用 `tool.blocked`，未新增动作码**）；③ **专用回调网** `workbench-exec-callback`（只含「工作台 + 边车」）：**边车双宿**、**执行容器不可达回调网**（新增断言）；④ **鉴权 = 预共享密钥**（新增配置 `WORKBENCH_EXEC_CALLBACK_SHARED_SECRET`，对称、**缺失即拒**）、**限流 = `100` rps**（超限 `429`）。 |
+| **原因** | §8 U21：②④ 的权威数据（令牌自持绑定 + 当前执行登记表）都是**进程内**对象，而生产下**签发令牌的是工作台进程、做校验的是边车（另一进程）** ⇒ 边车独立启动会把全部回调请求拒绝（fail-closed、功能不通）。候选② 通过**把判定放回工作台**从**架构上消解**跨进程同步缺口。 |
+| **影响面** | ① **网络面**：新增一条**回调网**（与执行内网同为 `internal=true`）；**边车由「只挂执行内网」放宽为「双宿执行内网 + 回调网」**（原约束的目的「不把工作台暴露给执行容器」**未被违反** —— 执行容器仍**只挂执行内网**、**不可达回调网**）；工作台 app 容器**只**额外接入回调网（**不得**接入执行内网）；② **§4 新增配置 22 → 23 项**（`STAGE2_SETTINGS_FIELDS` 22 → 23；`Settings` 段二字段 23 → 24），`test_env_templates` 三用例同批同步；③ **不新增审计动作码、不动迁移 `027`**；④ 新增 **`scripts/ensure_exec_internal_network.py` 预创建两条网**、改 **`docker-compose.exec-callback.yml`**（边车双宿、工作台接入回调网）；⑤ **未验证（随本次挂住）**：**两进程真实拓扑下的成功路径**（本轮只做到**单进程内两监听**：uvicorn 同进程另起真 HTTP）、**`generation` 真实多 turn**、**限流是否全局口径**（实现为**进程内**令牌桶 ⇒ 多副本为「每副本 100 rps」）、真实 dsh turn 触发的回调。 |
+| **改写的上一轮实现** | ① `app/exec_callback/server.py`：删除 `ControlPlaneBindingVerifier` / `ActiveExecutionRegistry` 判定与注入式转发，改为**原样透传**（保留单端口 / 单端点 / 单请求体上限）；② `app/exec_callback/config.py` / `__main__.py` / `__init__.py`：去判定构件、加 `SHARED_SECRET` 必填；③ `app/exec_callback/registry.py`：**删除**（登记表迁至 `app/tool_execution/active_execution.py`）；④ `app/bootstrap.py`：`build_control_plane_binding_verifier` → `build_exec_callback_guard`；⑤ `app/main.py`：控件装配与新增接收端点；⑥ `tests/test_exec_callback.py`：重写（工作台六条 + 边车纯转发 + 单进程端到端 + 反假 ≥3 组）；⑦ `tests/test_exec_callback_network.py`：**保留**「执行容器不可达工作台」断言、**新增**「不可达回调网」。 |
+| **回退方式** | 还原 `app/exec_callback/` 四文件 + 恢复 `registry.py` + 还原 `app/bootstrap.py` / `app/main.py` / `app/settings.py` / `.env.staging.example` / `tests/test_env_templates.py` / `scripts/ensure_exec_internal_network.py` / `docker-compose.exec-callback.yml` / `tests/test_exec_callback*.py`，并还原门禁 §B14 / §B15 / §B17 与规格 §3.5 / §4 / §5 / §6 / §8 的相关段落 ⇒ 回到 b-1「边车自带判定」形态（**该形态存在 §U21 的跨进程同步缺口**）。**未经确认不得执行回滚。** |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §3.5 P1 第 3 条 / §8 U20 / §8 U21；门禁 [`dsh-integration-preflight-checklist.md`](dsh-integration-preflight-checklist.md) §B14 判据 C′ / E / F、§B15、§B17；实现 `app/tool_execution/{active_execution,callback_guard}.py` / `app/exec_callback/`；测试 `tests/test_exec_callback.py` / `tests/test_exec_callback_network.py` |
+
+### 2026-09-14 · 执行面新增「回调边车」（网络面 / 信任面变更，§8 U20 方案 b-1）—— ⚠️ **已被同日「§8 U21 返工」取代（见上条）**
+
+> **⚠️ 取代说明**：本条描述的「边车**自带** ②④ 判定、**只挂执行内网**」形态已于**同日**被 §8 U21 裁决**返工**为「**边车纯转发 + 判定回工作台 + 双宿两网**」。本条**保留备查**（记录当时的变更与理由）；**当前有效形态以上一条为准**。
 
 | 项 | 内容 |
 | --- | --- |
