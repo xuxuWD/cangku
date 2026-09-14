@@ -201,9 +201,10 @@ def test_runtime_registry_health_filters_untrusted_adapter_summary():
     registry = RuntimeRegistry()
     registry.register("external", UntrustedAdapter())
 
+    # `status` 按 adapter 自报输出（缺陷 N3 修复；原先此处写死 `"ok"`，是把缺陷固化的断言）；其余字段仍是白名单过滤。
     assert registry.health() == {
         "external": {
             "runtime": "https://runtime",
-            "status": "ok",
+            "status": "unavailable",
         }
     }

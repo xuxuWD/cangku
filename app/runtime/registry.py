@@ -78,7 +78,12 @@ class RuntimeRegistry:
                             summary[name] = list(value)
                     elif isinstance(value, str):
                         summary[name] = value
-                summary["status"] = "unavailable" if key == "ragflow" and raw.get("status") == "unavailable" else "ok"
+                # status **按 adapter 自报输出**（不按 key 特判）：adapter 报什么就显示什么，
+                # 例如 ragflow 恒报 `unavailable`、dsh 在真实执行未启用时自报 `unavailable`。
+                # `status` 在外部契约中是**可选**字段（docs/runtime-onboarding-request.md §1.4）：
+                # 未上报或类型不符时维持既有默认 `ok`（不改既有口径，mock 仍显示 ok）。
+                raw_status = raw.get("status")
+                summary["status"] = raw_status if isinstance(raw_status, str) else "ok"
                 result[key] = summary
             except Exception as exc:  # 外部健康检查失败也要返回可读摘要
                 result[key] = {"status": "error", "reason": "Runtime 健康检查失败"}
