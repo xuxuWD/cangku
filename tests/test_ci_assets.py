@@ -147,7 +147,7 @@ def test_postgres_job_applies_repo_migrations_and_sets_dsn() -> None:
     assert "WORKBENCH_TEST_DATABASE_URL" in job
 
 
-def test_postgres_job_runs_only_the_two_real_db_modules() -> None:
+def test_postgres_job_runs_only_the_real_db_modules() -> None:
     job = read_job("postgres")
 
     # 只取 pytest 调用本身（截到紧随其后的 junit 校验 heredoc 为止），排除注释与其它步骤。
@@ -155,9 +155,11 @@ def test_postgres_job_runs_only_the_two_real_db_modules() -> None:
     assert match, "postgres 任务缺少 pytest 调用"
     command = match.group(0)
 
-    # 判定依据：本 job 只跑这两个由 DSN 门控的真库模块，命令里必须同时出现二者。
+    # 判定依据：本 job 只跑这几个由 DSN 门控的真库模块，命令里必须逐个出现；
+    # 用「全称逐字断言」而非「包含任意一个」——后者在漏跑某个模块时仍会通过。
     assert "tests/test_tool_action_store_postgres.py" in command
     assert "tests/test_dsh_execution_postgres.py" in command
+    assert "tests/test_commercial_lifecycle_postgres.py" in command
 
 
 def test_postgres_job_requires_zero_skipped() -> None:

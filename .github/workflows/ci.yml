@@ -101,8 +101,9 @@ jobs:
         run: node --test
 
   postgres:
-    # 覆盖「真连库」的两个模块：tests/test_tool_action_store_postgres.py 与
-    # tests/test_dsh_execution_postgres.py。它们由 WORKBENCH_TEST_DATABASE_URL 门控，
+    # 覆盖「真连库」的三个模块：tests/test_tool_action_store_postgres.py、
+    # tests/test_dsh_execution_postgres.py 与 tests/test_commercial_lifecycle_postgres.py。
+    # 它们由 WORKBENCH_TEST_DATABASE_URL 门控，
     # 无该变量即**整体 skip**（默认 backend job 不提供 ⇒ 那时它们是 skip、不受守护）。
     # 本 job 提供一次性真库、按仓库自身 apply_migrations 建表，并要求 `skipped == 0`，
     # 从而把「默认 skip ⇒ 无人跑 ⇒ 假守护」堵死。
@@ -152,6 +153,7 @@ jobs:
           python -m pytest -o addopts="" \
             tests/test_tool_action_store_postgres.py \
             tests/test_dsh_execution_postgres.py \
+            tests/test_commercial_lifecycle_postgres.py \
             --junitxml=postgres-junit.xml
           python - <<'PY'
           import sys

@@ -10,8 +10,10 @@
   - 目标库必须是**已完成全部迁移（含 006/007）**的库；本文件**不建表、不迁移**，
     缺表时应**显式失败**而不是静默跳过。
   - 只操作 `TENANT` 这一个租户的数据，每个用例前后自清（按外键逆序删）。
-  - ⚠️ **覆盖现状**：本文件未纳入 `.github/workflows/ci.yml` 的 `postgres` job 的命令
-    （该 job 目前只跑另两个真库模块）⇒ 默认全量下整体 skip。**未验证**：真库路径尚未在 CI 上实跑过。
+  - ✅ **覆盖现状**：本文件**已纳入** `.github/workflows/ci.yml` 的 `postgres` job 命令，
+    与 `test_tool_action_store_postgres.py`、`test_dsh_execution_postgres.py` 一并真跑，
+    且该 job 强制 `tests > 0 and skipped == 0 and failed == 0`（由 `tests/test_ci_assets.py` 静态守护）。
+    **未验证**：真库路径尚未在真实 GitHub Actions 上实跑过。
 """
 
 from __future__ import annotations
