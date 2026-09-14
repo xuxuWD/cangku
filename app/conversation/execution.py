@@ -295,7 +295,11 @@ class ConversationExecutionService:
             # §3.7 Y2：⑥ 落库成功（该动作进入等待审批）后，把承载任务由 `queued` 置 `pending_approval`。
             self._mark_task_pending_approval(context, task.id)
             self._append_message(
-                context, conversation_id, MessageRole.USER, redact_message_content(content)
+                context,
+                conversation_id,
+                MessageRole.USER,
+                redact_message_content(content),
+                tool_name=invocation.tool_key,
             )
             reply = self._append_message(
                 context,
@@ -321,7 +325,11 @@ class ConversationExecutionService:
 
         # executed
         self._append_message(
-            context, conversation_id, MessageRole.USER, redact_message_content(content)
+            context,
+            conversation_id,
+            MessageRole.USER,
+            redact_message_content(content),
+            tool_name=invocation.tool_key,
         )
         reply = self._append_message(
             context, conversation_id, MessageRole.ASSISTANT, "工具已执行完成。"
@@ -470,10 +478,16 @@ class ConversationExecutionService:
     # ------------------------------------------------------------------ 消息与幂等写入
 
     def _append_message(
-        self, context: UserContext, conversation_id: str, role: MessageRole, content: str
+        self,
+        context: UserContext,
+        conversation_id: str,
+        role: MessageRole,
+        content: str,
+        *,
+        tool_name: str | None = None,
     ) -> ConversationMessage:
         message = self.conversation_store.append_message(
-            context, conversation_id, role=role, content=content
+            context, conversation_id, role=role, content=content, tool_name=tool_name
         )
         if self.audit is not None:
             self.audit.record(
