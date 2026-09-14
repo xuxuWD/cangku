@@ -30,13 +30,19 @@ from .workforce.store import (
 )
 
 
-def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True):
-    """Build tenant, usage, and lifecycle persistence as one coordinated unit."""
+def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True, audit: AuditService | None = None):
+    """Build tenant, usage, and lifecycle persistence as one coordinated unit.
+
+    `audit` 注入生命周期服务：真源要求「任何保留策略变化都写入审计」
+    （`commercial-g0-design.md:118`）；未注入时 `set_retention` fail-closed。
+    """
     validate_runtime_settings(settings)
     from .commercial.lifecycle import (
         CommercialLifecycleService,
+        InMemoryExportPackageStore,
         InMemoryLifecycleJobStore,
         InMemoryRetentionPolicyStore,
+        PostgresExportPackageStore,
         PostgresLifecycleJobStore,
         PostgresRetentionPolicyStore,
     )
@@ -52,6 +58,8 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
             repository,
             job_store=InMemoryLifecycleJobStore(),
             retention_store=InMemoryRetentionPolicyStore(),
+            export_store=InMemoryExportPackageStore(),
+            audit=audit,
         )
         return repository, usage, lifecycle
     if settings.storage_backend != "postgres":
@@ -69,6 +77,8 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
         repository,
         job_store=PostgresLifecycleJobStore(connection),
         retention_store=PostgresRetentionPolicyStore(connection),
+        export_store=PostgresExportPackageStore(connection),
+        audit=audit,
     )
     return repository, usage, lifecycle
 

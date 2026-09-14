@@ -57,6 +57,8 @@ class AuditAction(StrEnum):
     # 段二（dsh 接入段）工具执行：⑨ 成功 / 被拒（含黑名单、路径、参数拒）
     TOOL_EXECUTED = "tool.executed"
     TOOL_BLOCKED = "tool.blocked"
+    # 商业化保留策略变更（真源 commercial-g0-design.md:118「任何保留策略变化都写入审计」）
+    COMMERCIAL_RETENTION_UPDATED = "commercial.retention.updated"
 
 
 class AuditDetailNotAllowed(ValueError):

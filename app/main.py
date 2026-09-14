@@ -142,7 +142,9 @@ tool_action_store = build_tool_action_store(settings)
 # 商业化仓储（租户 / 用量账本 / 生命周期）：在 `runtime_service` 之前装配，因为运行终态
 # 记账（`RuntimeService._record_usage_on_terminal`）与 `GET /api/v1/commercial/usage`
 # **必须读同一账本实例**——否则接口读到的恒为 0。
-commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(settings)
+commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(
+    settings, audit=audit_service
+)
 runtime_service = build_runtime_service(
     settings,
     store=store,

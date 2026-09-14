@@ -50,7 +50,8 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.WORKFORCE_AGENT_CONFIG_REJECTED.value == "workforce.agent.config.rejected"
     assert AuditAction.TOOL_EXECUTED.value == "tool.executed"
     assert AuditAction.TOOL_BLOCKED.value == "tool.blocked"
-    assert len(set(AuditAction)) == 47
+    assert AuditAction.COMMERCIAL_RETENTION_UPDATED.value == "commercial.retention.updated"
+    assert len(set(AuditAction)) == 48
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

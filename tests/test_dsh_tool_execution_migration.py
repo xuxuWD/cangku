@@ -134,9 +134,15 @@ def test_migration_is_repeatable_and_non_destructive() -> None:
 
 
 def test_staging_template_registers_migration_027() -> None:
-    """漏登则 staging 预检永久 blocked（tests/test_staging_assets.py 会逐条相等断言）。"""
+    """漏登则 staging 预检永久 blocked（tests/test_staging_assets.py 会逐条相等断言）。
+
+    末项断言只校验「登记行以 `migrations/` 的最新编号结尾」——`027` 曾是写入时的最新编号，
+    现由 `028_workbench_export_packages` 接续；故改用动态最新编号，避免每次新增迁移都需手改常量，
+    同时保留「登记行没有尾部漂移」这一原始覆盖。
+    """
     assert "027_dsh_tool_execution" in STAGING_TEMPLATE
     line = next(
         item for item in STAGING_TEMPLATE.splitlines() if item.startswith("WORKBENCH_APPLIED_MIGRATIONS=")
     )
-    assert line.rstrip().endswith("027_dsh_tool_execution")
+    newest = sorted(path.stem for path in Path("migrations").glob("*.sql"))[-1]
+    assert line.rstrip().endswith(newest)

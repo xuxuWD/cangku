@@ -1,7 +1,13 @@
 from pathlib import Path
 from datetime import UTC, datetime
 
-from app.commercial.lifecycle import LifecycleJob, PostgresLifecycleJobStore, PostgresRetentionPolicyStore
+from app.commercial.lifecycle import (
+    ExportPackage,
+    LifecycleJob,
+    PostgresExportPackageStore,
+    PostgresLifecycleJobStore,
+    PostgresRetentionPolicyStore,
+)
 from app.commercial.repository import PostgresCommercialRepository
 from app.commercial.tenant import TenantStatus
 from app.commercial.usage import PostgresUsageLedger, UsageEntry
@@ -142,3 +148,43 @@ def test_commercial_retention_migration_adds_persistent_policy_and_export_marker
     migration = Path("migrations/007_commercial_retention.sql").read_text(encoding="utf-8")
     assert "workbench_retention_policies" in migration
     assert "ADD COLUMN IF NOT EXISTS final_exported" in migration
+
+
+def test_export_packages_migration_declares_columns_and_indexes():
+    migration = Path("migrations/028_workbench_export_packages.sql").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS workbench_export_packages (" in migration
+    for column in ("id", "tenant_id", "job_id", "payload", "created_at", "expires_at"):
+        assert column in migration, f"workbench_export_packages 缺少列 {column}"
+    assert "REFERENCES workbench_tenants(id)" in migration
+    assert "CREATE INDEX IF NOT EXISTS idx_workbench_export_packages_tenant" in migration
+    assert "CREATE INDEX IF NOT EXISTS idx_workbench_export_packages_expires" in migration
+
+
+def test_postgres_export_package_store_scopes_reads_by_tenant():
+    created_at = datetime.now(UTC)
+    row = ("export-1", "tenant-1", "job-1", {"tenant_id": "tenant-1"}, created_at, created_at)
+    connection = Connection([row])
+    store = PostgresExportPackageStore(connection)
+
+    package = store.get("export-1", tenant_id="tenant-1")
+
+    assert package.tenant_id == "tenant-1"
+    assert package.job_id == "job-1"
+    assert package.expires_at == created_at
+    assert any("WHERE id = %s AND tenant_id = %s" in sql for sql, _ in connection.cursor_instance.statements)
+
+
+def test_postgres_export_package_store_inserts_payload_with_expiry():
+    connection = Connection([])
+    store = PostgresExportPackageStore(connection)
+    package = ExportPackage(
+        tenant_id="tenant-1",
+        job_id="job-1",
+        payload={"tenant_id": "tenant-1", "resources": {"users": []}},
+        expires_at=datetime.now(UTC),
+    )
+
+    store.save(package)
+
+    assert connection.transactions == 1
+    assert any("INSERT INTO workbench_export_packages" in sql for sql, _ in connection.cursor_instance.statements)

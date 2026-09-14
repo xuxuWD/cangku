@@ -8,6 +8,42 @@ from uuid import uuid4
 
 from .repository import InMemoryCommercialRepository, ResourceNotFound
 from .tenant import Actor, CommercialPolicyError, TenantStatus
+from ..audit.models import AuditAction
+from ..audit.service import AuditService
+
+
+# 保留策略默认值（真源 commercial-g0-design.md:118）：任务和运行 180 天、事件和用量 365 天、审计 730 天。
+# 保留口径以 DB 表 `workbench_retention_policies`（服务侧）为准；env `WORKBENCH_RETENTION_POLICY`
+# 仅由 `scripts/commercial_g0_preflight.py` 的部署预检读取，**不被服务侧消费**
+# （两者之间无写入方 ⇒ 预检 pass ≠ 服务侧生效）。
+DEFAULT_RETENTION_POLICY: dict[str, int] = {"tasks": 180, "events": 365, "usage": 365, "audit": 730}
+
+# 真源 commercial-g0-design.md:102-108（§6.1）的导出类别清单。
+# 当前商业化服务**没有任何跨模块读取通道**（不持有 users/roles/agents/tasks/runs/steps/artifacts/
+# knowledge_*/memories/growth_proposals/approvals/usage/audits 的读取器）⇒ 每一类**均无现成读取方法**，
+# 一律返回空数组（**未实现**）。**不臆造字段、不假装有数据**。
+EXPORT_RESOURCE_CATEGORIES: tuple[str, ...] = (
+    "users",                  # 用户配置
+    "roles",                  # 岗位配置
+    "agents",                 # 数字员工配置
+    "tasks",                  # 任务元数据
+    "runs",                   # 运行元数据
+    "steps",                  # 步骤元数据
+    "artifacts",              # 产物元数据
+    "knowledge_documents",    # 知识文档元数据
+    "knowledge_versions",     # 知识文档版本
+    "knowledge_references",   # 知识引用关系
+    "memories",               # 记忆
+    "growth_proposals",       # 成长提案
+    "approvals",              # 审核记录
+    "usage",                  # 用量账本
+    "audits",                 # 审计记录
+)
+# 无现成读取方法、因而**未实现**（返回空数组）的类别集合。
+UNIMPLEMENTED_EXPORT_CATEGORIES: frozenset[str] = frozenset(EXPORT_RESOURCE_CATEGORIES)
+
+# 导出脱敏契约（docs/api-contract.md:144）：以下内容**一律不导出**。
+EXPORT_REDACTED_FIELDS: tuple[str, ...] = ("密码", "Cookie", "验证码", "令牌", "原始 API 密钥", "客户原文")
 
 
 @dataclass
@@ -22,6 +58,22 @@ class LifecycleJob:
     final_exported: bool = False
 
 
+@dataclass
+class ExportPackage:
+    """租户导出载荷落点（表 `workbench_export_packages`）。
+
+    `expires_at` 由写入方显式给出：真源（commercial-g0-design.md:110）只要求「带过期时间」，
+    **未给定时长** ⇒ 本模块**不自造默认时长**。
+    """
+
+    tenant_id: str
+    payload: dict[str, object]
+    expires_at: datetime
+    job_id: str | None = None
+    id: str = field(default_factory=lambda: f"export-{uuid4().hex[:12]}")
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
 class LifecycleJobStore(Protocol):
     def create(self, job: LifecycleJob) -> LifecycleJob: ...
     def get(self, job_id: str, *, tenant_id: str | None = None) -> LifecycleJob: ...
@@ -32,6 +84,11 @@ class LifecycleJobStore(Protocol):
 class RetentionPolicyStore(Protocol):
     def set(self, tenant_id: str, policy: dict[str, int], *, actor_id: str) -> None: ...
     def get(self, tenant_id: str) -> dict[str, int] | None: ...
+
+
+class ExportPackageStore(Protocol):
+    def save(self, package: ExportPackage) -> ExportPackage: ...
+    def get(self, package_id: str, *, tenant_id: str | None = None) -> ExportPackage: ...
 
 
 class InMemoryLifecycleJobStore:
@@ -79,6 +136,24 @@ class InMemoryRetentionPolicyStore:
             return dict(value) if value is not None else None
 
 
+class InMemoryExportPackageStore:
+    def __init__(self) -> None:
+        self._packages: dict[str, ExportPackage] = {}
+        self._lock = RLock()
+
+    def save(self, package: ExportPackage) -> ExportPackage:
+        with self._lock:
+            self._packages[package.id] = package
+            return package
+
+    def get(self, package_id: str, *, tenant_id: str | None = None) -> ExportPackage:
+        with self._lock:
+            package = self._packages.get(package_id)
+            if package is None or (tenant_id is not None and package.tenant_id != tenant_id):
+                raise ResourceNotFound(package_id)
+            return package
+
+
 class CommercialLifecycleService:
     def __init__(
         self,
@@ -87,6 +162,8 @@ class CommercialLifecycleService:
         cooldown_days: int = 7,
         job_store: LifecycleJobStore | None = None,
         retention_store: RetentionPolicyStore | None = None,
+        export_store: ExportPackageStore | None = None,
+        audit: AuditService | None = None,
     ) -> None:
         if cooldown_days < 1:
             raise CommercialPolicyError("删除冷静期必须至少 1 天")
@@ -94,6 +171,10 @@ class CommercialLifecycleService:
         self.cooldown_days = cooldown_days
         self.job_store = job_store or InMemoryLifecycleJobStore()
         self.retention_store = retention_store or InMemoryRetentionPolicyStore()
+        self.export_store = export_store or InMemoryExportPackageStore()
+        # 保留策略变更必须写入审计（真源 commercial-g0-design.md:118）。
+        # 未配置审计通道时 `set_retention` 会 fail-closed（见下），不静默跳过。
+        self.audit = audit
 
     def _ensure_admin(self, actor: Actor, tenant_id: str) -> None:
         tenant = self.repository.get_tenant(tenant_id)
@@ -110,12 +191,38 @@ class CommercialLifecycleService:
         return self.job_store.create(job)
 
     def build_export_payload(self, tenant_id: str) -> dict[str, object]:
+        """构造租户导出载荷（真源 commercial-g0-design.md §6.1）。
+
+        结构按真源类别清单产出；**当前每一类都没有现成读取方法**（商业化服务不持有
+        users/roles/agents/tasks/runs/steps/artifacts/knowledge_*/memories/growth_proposals/
+        approvals/usage/audits 的读取通道）⇒ 一律为空数组（**未实现**，见
+        `UNIMPLEMENTED_EXPORT_CATEGORIES`）；**不臆造字段、不假装有数据**。
+        载荷只承载元数据/脱敏字段（契约 docs/api-contract.md:144）。
+        """
         self.repository.get_tenant(tenant_id)
         return {
             "tenant_id": tenant_id,
-            "resources": {"users": [], "workspaces": [], "tasks": [], "runs": [], "knowledge_references": [], "usage": [], "audits": []},
-            "redaction": ["password", "cookie", "验证码", "token", "api_key", "客户原文"],
+            "resources": {category: [] for category in EXPORT_RESOURCE_CATEGORIES},
+            "unimplemented_categories": sorted(UNIMPLEMENTED_EXPORT_CATEGORIES),
+            "redaction": list(EXPORT_REDACTED_FIELDS),
         }
+
+    def store_export_package(
+        self, tenant_id: str, job_id: str, *, expires_at: datetime
+    ) -> ExportPackage:
+        """把脱敏导出载荷写入 `workbench_export_packages`。
+
+        `expires_at` 由调用方显式给出：真源只要求「带过期时间的下载包」，**未给定时长**
+        ⇒ 本方法**不自造默认时长**（取值需先裁决）。
+        """
+        self.repository.get_tenant(tenant_id)
+        package = ExportPackage(
+            tenant_id=tenant_id,
+            job_id=job_id,
+            payload=self.build_export_payload(tenant_id),
+            expires_at=expires_at,
+        )
+        return self.export_store.save(package)
 
     def request_delete(self, actor: Actor, tenant_id: str) -> LifecycleJob:
         self._ensure_admin(actor, tenant_id)
@@ -167,11 +274,25 @@ class CommercialLifecycleService:
         self._ensure_admin(actor, tenant_id)
         if not policy or any(not isinstance(value, int) or value < 1 for value in policy.values()):
             raise CommercialPolicyError("保留天数必须是正整数")
+        # fail-closed：真源要求「任何保留策略变化都写入审计」（commercial-g0-design.md:118），
+        # 没有审计通道就拒绝变更，绝不静默跳过审计。
+        if self.audit is None:
+            raise CommercialPolicyError("保留策略变更必须写入审计（未配置审计通道）")
         self.retention_store.set(tenant_id, policy, actor_id=actor.user_id)
+        self.audit.record(
+            AuditAction.COMMERCIAL_RETENTION_UPDATED,
+            tenant_id=tenant_id,
+            actor_id=actor.user_id,
+            target_type="retention_policy",
+            target_id=tenant_id,
+            # 只记「哪些类别被改动」的服务端声明键，不含自由文本。
+            detail={"changed_fields": sorted(policy)},
+        )
 
     def retention(self, tenant_id: str) -> dict[str, int]:
         self.repository.get_tenant(tenant_id)
-        return self.retention_store.get(tenant_id) or {"tasks": 180, "audit": 730}
+        stored = self.retention_store.get(tenant_id)
+        return dict(stored) if stored is not None else dict(DEFAULT_RETENTION_POLICY)
 
     def tenant_status(self, tenant_id: str) -> TenantStatus:
         return self.repository.get_tenant(tenant_id).status
@@ -231,3 +352,26 @@ class PostgresRetentionPolicyStore:
                 cur.execute("SELECT policy FROM workbench_retention_policies WHERE tenant_id = %s", (tenant_id,)); row=cur.fetchone()
         if row is None: return None
         return dict(json.loads(row[0]) if isinstance(row[0], str) else row[0])
+
+
+class PostgresExportPackageStore:
+    def __init__(self, connection_or_pool) -> None: self.connection = connection_or_pool
+    def _connection(self):
+        from contextlib import nullcontext
+        return self.connection.connection() if hasattr(self.connection, "connection") and callable(self.connection.connection) else nullcontext(self.connection)
+    def save(self, package: ExportPackage) -> ExportPackage:
+        import json
+        with self._connection() as c:
+            with c.transaction():
+                with c.cursor() as cur:
+                    cur.execute("INSERT INTO workbench_export_packages (id, tenant_id, job_id, payload, created_at, expires_at) VALUES (%s,%s,%s,%s,%s,%s)", (package.id, package.tenant_id, package.job_id, json.dumps(package.payload, ensure_ascii=False), package.created_at, package.expires_at))
+        return package
+    def get(self, package_id: str, *, tenant_id: str | None = None) -> ExportPackage:
+        import json
+        with self._connection() as c:
+            with c.cursor() as cur:
+                sql="SELECT id, tenant_id, job_id, payload, created_at, expires_at FROM workbench_export_packages WHERE id = %s"; params=[package_id]
+                if tenant_id is not None: sql += " AND tenant_id = %s"; params.append(tenant_id)
+                cur.execute(sql, tuple(params)); row=cur.fetchone()
+        if row is None: raise ResourceNotFound(package_id)
+        return ExportPackage(tenant_id=str(row[1]), job_id=row[2], payload=dict(json.loads(row[3]) if isinstance(row[3], str) else row[3]), expires_at=row[5], id=str(row[0]), created_at=row[4] if isinstance(row[4], datetime) else datetime.now(UTC))
