@@ -8,6 +8,17 @@
 
 ## 记录
 
+### 2026-09-14 · 执行面新增「回调边车」（网络面 / 信任面变更，§8 U20 方案 b-1）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（随 §8 U20 方案 b-1 落地登记） |
+| **变更** | 执行链路新增**独立的执行回调边车进程**（`app/exec_callback`，入口 `python -m app.exec_callback`）：**只监听一个端口、只暴露一个端点**（`POST /internal/exec-callback`）、**只挂 `workbench-exec-internal`**（不双宿工作台默认网络）。**②④ 短期令牌绑定强制校验的真实落点改在此边车**（原为「组件已交付但无调用方」）；判定通过后经 **`边车 → 工作台`** 的受控出向调用交回工作台。新增三项外置配置 `WORKBENCH_EXEC_CALLBACK_LISTEN_HOST` / `WORKBENCH_EXEC_CALLBACK_LISTEN_PORT` / `WORKBENCH_EXEC_CALLBACK_FORWARD_URL`（三处台账同批同步）。 |
+| **原因** | §8 U20：②④ 组件无调用方、**不得**声称「②④ 已强制」。方案 b-1 选「边车单端口回调面」而非「把工作台 app 容器接入内网」——**Docker 无法按端口做成员级隔离**；接入 app 容器会把工作台整个 API 面暴露给执行容器。 |
+| **影响面** | ① **执行内网桥目的地由 1 个（模型网关）变为 2 个（+回调边车）** ⇒ 门禁 §B14 判据 **C′ / E** 与 **§B17 判据 1/3** 的口径与证据形态**已同批改写**（C′ 不再以「只有一条连接」为成立形式）；② **§4 新增配置 20 → 23 项**（`STAGE2_SETTINGS_FIELDS` 19 → 22），`test_env_templates` 三用例同批同步；③ **工作台 app 容器不得接入该内网**（红线不变）；④ 边车**只做判定 + 受控转发**，**不新增审计动作码、不动迁移 `027`**；⑤ **未验证（随本次挂住）**：跨进程权威绑定同步、`边车 → 工作台` 链路的鉴权与限流、边车多副本并发、本机（Windows / Docker Desktop）`边车 → 工作台` 可达路径、真实 dsh turn 触发的回调。 |
+| **回退方式** | 删除 `app/exec_callback/`、`docker-compose.exec-callback.yml`、`scripts/ensure_exec_internal_network.py`，回退 `app/settings.py` / `.env.staging.example` / `tests/test_env_templates.py` 三项配置，并还原门禁 §B14 / §B17 与规格 §3.3 / §3.5 / §4 / §8 的相关段落 ⇒ 回到「②④ 组件无调用方」。**未经确认不得执行回滚。** |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §3.5 P1 第 3 条 / §8 U20；门禁 [`dsh-integration-preflight-checklist.md`](dsh-integration-preflight-checklist.md) §B14 判据 E / C′ / F、§B15、§B17；实现 `app/exec_callback/`；测试 `tests/test_exec_callback.py` / `tests/test_exec_callback_network.py` |
+
 ### 2026-09-13 · ⑥ 失败的零残留语义：字面「同一事务」→ **显式补偿回滚**（段二-4）
 
 | 项 | 内容 |
