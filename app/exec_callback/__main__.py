@@ -1,16 +1,17 @@
-"""边车进程入口：`python -m app.exec_callback`（规格 §3.5 P1 第 3 条 ②④ / §8 U20 方案 b-1）。
+"""边车进程入口：`python -m app.exec_callback`（规格 §3.5 P1 第 3 条 ②④ / §8 U21 裁决路线）。
 
 **只读环境变量**（值一律由部署配置注入；本进程**不回显任何密钥 / 令牌**）：
 
-    WORKBENCH_EXEC_CALLBACK_FORWARD_URL        边车 → 工作台的受控出向调用目标（**必填**；缺失拒绝启动）
-    WORKBENCH_EXEC_CALLBACK_LISTEN_HOST        边车唯一监听地址（默认 0.0.0.0）
-    WORKBENCH_EXEC_CALLBACK_LISTEN_PORT        边车唯一监听端口（默认 8081）
-    WORKBENCH_EXEC_CALLBACK_FORWARD_TIMEOUT_SECONDS  转发超时秒（默认 10）
+    WORKBENCH_EXEC_CALLBACK_FORWARD_URL             边车 → 工作台的受控出向调用目标（**必填**；缺失拒绝启动）
+    WORKBENCH_EXEC_CALLBACK_SHARED_SECRET           「边车 → 工作台」预共享密钥（**必填**；缺失拒绝启动）
+    WORKBENCH_EXEC_CALLBACK_LISTEN_HOST             边车唯一监听地址（默认 0.0.0.0）
+    WORKBENCH_EXEC_CALLBACK_LISTEN_PORT             边车唯一监听端口（默认 8081）
+    WORKBENCH_EXEC_CALLBACK_FORWARD_TIMEOUT_SECONDS 转发超时秒（默认 10）
 
-⚠️ **网络成员事实**（隔离的真正依据）：本进程对外可达性由「只挂 `workbench-exec-internal`」
-限定；**不得**把它双宿到工作台默认网络，也**不得**把工作台 app 容器接入该网络。
-⚠️ **未接线残留**：本入口只起「一个端口 + 一个端点」的判定 / 转发面；**权威绑定与
-当前执行登记**须由工作台控制面经受控通道注入（本次未实现跨进程同步 ⇒ 见交付报告「未验证项」）。
+⚠️ **网络成员事实**（隔离的真正依据）：本进程**双宿** `workbench-exec-internal` + 回调网；
+**不得**加入工作台默认网络，**不得**把工作台 app 容器接入 `workbench-exec-internal`。
+⚠️ 边车**无状态纯转发**：不持有判定所需的权威状态（令牌自持绑定 / 当前执行登记表），
+②④ 判定在工作台接收端点（`app/tool_execution/callback_guard.py`）。
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     plane = build_plane(
         forward_url=config.forward_url,
+        shared_secret=config.shared_secret,
         forward_timeout_seconds=config.forward_timeout_seconds,
     )
     server = ExecCallbackServer(plane, host=config.listen_host, port=config.listen_port)

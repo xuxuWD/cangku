@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_control_plane_binding_verifier, build_dead_letter_store, build_event_bus, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -49,6 +49,8 @@ from .settings import get_settings, resolve_cors_options, validate_runtime_setti
 from .runtime.authorization import ExecutionNotAuthorized
 from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable
 from .tool_execution.errors import ToolExecutionError
+from .tool_execution.callback_guard import CallbackRateLimiter, shared_secret_matches
+from .tool_execution.token_binding import BindingDenied
 from .tool_execution.cleanup import build_body_cleanup_task, build_orphan_cleanup_task
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import FinishReason, RunRecordNotFound
@@ -176,10 +178,12 @@ conversation_execution_service = build_conversation_execution_service(
     audit=audit_service,
     directory_store=workforce_directory_store,
 )
-# 段二-4 控制面绑定校验器（§3.5 P1 第 3 条 ②④）：真实调用方 = 执行回调边车
-# （`app/exec_callback`，§8 U20 方案 b-1；独立进程、只监听一个端口、只挂执行内网）。
-# 此处仍装配组件实例（构造路径与边车一致）；**②④ 是否已强制以边车端点取证为准**。
-control_plane_binding_verifier = build_control_plane_binding_verifier(settings, audit=audit_service)
+# 段二（dsh 接入段）执行回调接收 + ②④ 判定（§3.5 P1 第 3 条 / §8 U21 裁决「候选②」）：
+# 边车是**无状态纯转发**，②④ 判定落回**工作台**的权威状态处——`expected` 从工作台权威状态重建
+# （`ActiveExecutionRegistry`，**绝不取自请求体**），与令牌自持绑定做 `constant-time` 比对。
+workbench_callback_guard = build_exec_callback_guard(settings, audit=audit_service)
+# 边车 → 工作台 的限流（§8 U21 裁决：`100` rps，超限 `429`）；进程内令牌桶（多副本为「每副本」口径）。
+exec_callback_limiter = CallbackRateLimiter(rate_per_second=100.0)
 content_store = build_content_store(settings)
 content_service = ContentService(
     task_store=store,
@@ -512,6 +516,64 @@ def to_view(task: Task) -> TaskView:
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "company-workbench"}
+
+
+# ------------------------------------------------ 执行回调接收（边车纯转发 → 工作台判定）
+# §3.5 P1 第 3 条 ②④ / §8 U21 裁决「候选②：边车纯转发 + 判定回工作台」。
+# 本端点是**内网服务对服务**调用面（不挂用户认证依赖）：鉴权走 `X-Exec-Callback-Key` 预共享密钥。
+WORKBENCH_EXEC_CALLBACK_PATH = "/api/v1/internal/exec-callback"
+
+
+def _callback_bearer(raw: str | None) -> str:
+    """从 `Authorization` 头取短期令牌（只解析，不做判定）。"""
+    if not raw:
+        return ""
+    prefix, _, value = raw.partition(" ")
+    return value.strip() if prefix.lower() == "bearer" else ""
+
+
+def _callback_payload(raw: bytes) -> dict[str, object]:
+    """解析转发来的回调用载荷；非 JSON / 非对象一律当空（判定不依赖它）。"""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _callback_text(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+@app.post(WORKBENCH_EXEC_CALLBACK_PATH)
+async def receive_exec_callback(request: Request) -> dict[str, str]:
+    """接收边车转发的执行回调，并在**工作台权威状态**处做 ②④ 判定（fail-closed）。
+
+    - 限流：`100` rps（超限 `429`；进程内令牌桶）；
+    - 鉴权：`X-Exec-Callback-Key` 预共享密钥（`constant-time` 比对；**缺失 / 不匹配即拒**）；
+    - ②④：`expected` 从工作台权威状态重建（**绝不取自请求体**），与令牌自持绑定恒时比对，
+      不匹配 / 跨租户 / 旧代次 / 未知令牌 → `403`（**不泄露存在性**）+ 记审计（复用 `tool.blocked`）。
+    """
+    if not exec_callback_limiter.allow():
+        raise HTTPException(status_code=429, detail="回调过于频繁")
+    provided = request.headers.get("X-Exec-Callback-Key")
+    if not shared_secret_matches(settings.exec_callback_shared_secret, provided):
+        raise HTTPException(status_code=403, detail="forbidden")
+    payload = _callback_payload(await request.body())
+    try:
+        workbench_callback_guard.authorize(
+            token=_callback_bearer(request.headers.get("Authorization")),
+            session_id=request.query_params.get("session_id", ""),
+            run_id=_callback_text(payload, "run_id"),
+            tool_key=_callback_text(payload, "tool_key"),
+        )
+    except BindingDenied:
+        raise HTTPException(status_code=403, detail="forbidden") from None
+    return {"status": "accepted"}
+
 
 
 @app.post("/api/v1/content-tasks", status_code=status.HTTP_201_CREATED)

@@ -951,18 +951,21 @@ def build_conversation_execution_service(
     )
 
 
-def build_control_plane_binding_verifier(settings: Settings, *, audit=None):
-    """装配「短期令牌控制面绑定校验器」（规格 §3.5 P1 第 3 条 ②④）。
+def build_exec_callback_guard(settings: Settings, *, audit=None):
+    """装配工作台侧的「执行回调接收」②④ 判定组件（规格 §3.5 P1 第 3 条 ②④ / §8 U21 裁决）。
 
-    真实调用方 = **执行回调边车**（`app/exec_callback`，§8 U20 方案 b-1）：边车在
-    `POST /internal/exec-callback` 上按令牌反查工作台自持绑定并 `constant-time` 比对。
-    本函数仍保留为**组件装配口**；边车进程用 `app/exec_callback.build_plane` 装配
-    （同一构造路径）。**②④ 是否「已强制」以边车端点取证为准**（§5 用例 35 + 反假）。
+    2026-09-14 返工（§8 U21 裁决「候选②：边车纯转发 + 判定回工作台」）：判定落点回到**工作台**
+    的权威状态处——`expected` 从 `ActiveExecutionRegistry`（会话当前代次）重建、**绝不取自请求体**，
+    与令牌自持绑定（`TokenBindingStore`，mint 时落）做 `constant-time` 比对。边车不再持有这些状态。
     """
     validate_runtime_settings(settings)
-    from .tool_execution.token_binding import ControlPlaneBindingVerifier, TokenBindingStore
+    from .tool_execution.active_execution import ActiveExecutionRegistry
+    from .tool_execution.callback_guard import WorkbenchCallbackGuard
+    from .tool_execution.token_binding import TokenBindingStore
 
-    return ControlPlaneBindingVerifier(store=TokenBindingStore(), audit=audit)
+    return WorkbenchCallbackGuard(
+        store=TokenBindingStore(), registry=ActiveExecutionRegistry(), audit=audit
+    )
 
 
 def registered_model_keys(settings: Settings) -> frozenset[str]:
