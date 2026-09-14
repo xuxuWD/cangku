@@ -12,6 +12,7 @@ import os
 
 import pytest
 
+from app.settings import parse_previous_body_keys
 from app.tool_execution.body_cipher import BodyCipher, rotation_window_seconds
 from app.tool_execution.errors import BodyCipherError, ToolExecutionConfigError
 from app.workforce.models import MAX_APPROVAL_TIMEOUT_MINUTES
@@ -107,3 +108,27 @@ def test_rotation_window_is_max_approval_timeout_plus_cleanup_interval() -> None
         )
         == MAX_APPROVAL_TIMEOUT_MINUTES * 60 + 60
     )
+
+
+# ------------------------------- 旧密钥多值配置（§8 U22：WORKBENCH_BODY_ENCRYPTION_PREVIOUS_KEYS）
+
+
+def test_previous_keys_config_is_comma_separated_and_blank_means_none() -> None:
+    """多值格式 = **逗号分隔**（base64 无逗号，分隔无歧义）；空 / 空白 / 仅分隔符 ⇒ 空列表。"""
+    first, second = _key(), _key()
+    assert parse_previous_body_keys("") == []
+    assert parse_previous_body_keys("   ") == []
+    assert parse_previous_body_keys(" , ") == []
+    assert parse_previous_body_keys(f" {first} ,{second}, ") == [first, second]
+
+
+def test_previous_keys_config_parses_into_usable_previous_keys() -> None:
+    """配置串经解析后可交给 `BodyCipher.from_base64` 解密旧密文（与主密钥同口径的 base64）。"""
+    old_key = _key()
+    old_blob = BodyCipher.from_base64(old_key).encrypt("轮换前的正文")
+
+    rotated = BodyCipher.from_base64(
+        _key(), previous=parse_previous_body_keys(f" {old_key} ")
+    )
+
+    assert rotated.decrypt(old_blob) == "轮换前的正文"

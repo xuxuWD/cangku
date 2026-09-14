@@ -26,6 +26,7 @@ from app.runtime.records import InMemoryRunRecordStore
 from app.runtime.run_metrics import RunMetricsService
 from app.settings import Settings
 from app.tool_execution.cleanup import build_body_cleanup_task
+from app.tool_execution.errors import BodyCipherError
 from app.tool_execution.startup import assert_real_execution_ready
 from app.tool_execution.store import InMemoryToolActionStore, ToolAction, ToolActionStatus
 
@@ -276,4 +277,70 @@ def test_decide_rejection_clears_body_ciphertext_and_expiry(tmp_path) -> None:
     assert row.body_ciphertext is None
     assert row.body_expires_at is None
     assert row.decision_source == "user"
+
+
+# ------------- §8 U22：正文密钥轮换「触发方式 = 启动时读配置」（装配处 `build_tool_execution`）
+
+
+def _cipher_service(tmp_path, **overrides):
+    """按装配处口径重新装配一次（= 「重启后读入配置」的等价模拟，**非真进程重启**）。"""
+    settings = _dsh_settings(tmp_path, **overrides)
+    metrics = RunMetricsService(InMemoryRunRecordStore())
+    service = build_tool_execution(settings, run_metrics=metrics, audit=RecordingAudit())
+    assert service is not None
+    return service
+
+
+def test_body_key_rotation_end_to_end_via_bootstrap(tmp_path) -> None:
+    """§8 U22 轮换端到端：轮换 = 改配置 + 重启。
+
+    旧密钥加密 → 构造「新配置同时含新密钥 + 旧密钥（`previous_keys`）」的新实例
+    （等价于重启后重新装配读入配置）→ 旧密文**解密成功**。
+    """
+    old_key = base64.b64encode(os.urandom(32)).decode("ascii")
+    new_key = base64.b64encode(os.urandom(32)).decode("ascii")
+
+    before = _cipher_service(tmp_path, body_encryption_key=old_key)
+    old_blob = before.body_cipher.encrypt("轮换前的正文")
+
+    after = _cipher_service(
+        tmp_path,
+        body_encryption_key=new_key,
+        body_encryption_previous_keys=old_key,
+    )
+
+    assert after.body_cipher.decrypt(old_blob) == "轮换前的正文"
+    # 旧密钥**只**用于解密：旧实例解不开新活动密钥产出的密文。
+    with pytest.raises(BodyCipherError):
+        before.body_cipher.decrypt(after.body_cipher.encrypt("轮换后的正文"))
+
+
+def test_body_key_rotation_outside_window_fails_closed(tmp_path) -> None:
+    """§8 U22 窗口外失效：新实例**只含新密钥** → 解旧密文**必须抛 `BodyCipherError`**。"""
+    old_key = base64.b64encode(os.urandom(32)).decode("ascii")
+    old_blob = _cipher_service(tmp_path, body_encryption_key=old_key).body_cipher.encrypt("旧正文")
+
+    outside = _cipher_service(
+        tmp_path,
+        body_encryption_key=base64.b64encode(os.urandom(32)).decode("ascii"),
+    )
+
+    with pytest.raises(BodyCipherError):
+        outside.body_cipher.decrypt(old_blob)
+
+
+def test_body_previous_keys_missing_or_blank_is_fail_closed(tmp_path) -> None:
+    """§8 U22 fail-closed：配置缺失 / 为空 / 仅分隔符 ⇒ 不使用旧密钥（= 只含新密钥的行为）。"""
+    old_key = base64.b64encode(os.urandom(32)).decode("ascii")
+    old_blob = _cipher_service(tmp_path, body_encryption_key=old_key).body_cipher.encrypt("旧正文")
+    new_key = base64.b64encode(os.urandom(32)).decode("ascii")
+
+    for blank in ("", "   ", " , ", ","):
+        service = _cipher_service(
+            tmp_path,
+            body_encryption_key=new_key,
+            body_encryption_previous_keys=blank,
+        )
+        with pytest.raises(BodyCipherError):
+            service.body_cipher.decrypt(old_blob)
 
