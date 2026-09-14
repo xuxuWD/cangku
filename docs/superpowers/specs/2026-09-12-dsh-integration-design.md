@@ -894,6 +894,38 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **⇒ 禁令延续**：涉及上述符号的结论**一律不得表述为"已生效"** —— N1 不得说"生产走 CLI 口径"；N2 不得说"支持注入 spec"；N3 **已修（注册表按 adapter 自报输出，2026-09-14）⇒ 可表述为"注册表中已有 adapter 的自报 `status` 会被如实输出"**，但 **`dsh` 未注册（A3）⇒ 不得说"健康面板反映 dsh 的真实状态"**（面板里没有 `dsh` 键）；N4 **已修（外部 adapter 按上游自报输出，2026-09-14）⇒ 可表述为"外部运行时若自报 `status` 会被如实输出"**，但**真实外部运行时（deerflow / codex_worker / hermes / agentscope）未接入 ⇒ 不得说"健康面板已如实反映外部运行时的健康"**（面板里没有这些键）。
 
+**U25 扩围（2026-09-14，盲区补扫 —— `app/planner` · `app/commercial` · `app/content` · `app/workforce` · `app/conversation` 的**模块内部**符号）**
+
+**方法**：精确标识符检索（排除定义处 / 注释 / `docs` / `tests`）+ **字符串·动态第二轮**（`"符号名"`、`getattr`/`setattr`/`globals()`/`eval`/`importlib`、`f"{…}"` 拼名）+ 反射读取核查（`asdict`/`dataclasses.fields`/`vars()`/`__dict__`）⇒ **第二轮全部 0 命中**，故下列均维持"无生产调用方"。
+
+| # | 符号 | 定义处 | 类别 | 事实 | 处置 |
+|---|---|---|---|---|---|
+| E1 | `InMemoryUsageLedger.append/.reverse`、`PostgresUsageLedger.append/.reverse`、`PostgresCommercialRepository.append_usage/.reverse_usage` | `app\commercial\usage.py:30/:41/:78/:111`、`repository.py:170/:217` | **(A)** | `app/` 内**无任何调用**；`/api/v1/commercial/usage`（`main.py:842-843`）只**读** `.total`/`.total_cost_cents` ⇒ 🔴 **计费端点恒返回 0** | 登记；（若计费属本期交付 ⇒ 接写入侧；否则明确写"未接入"） |
+| E2 | `CommercialLifecycleService.execute_delete` | `app\commercial\lifecycle.py:148` | **(A)** | `app/` 内无调用 ⇒ 🔴 **只有"申请删除"，没有"执行删除"** | 登记；决定接运维/定时任务还是"人工外部执行" |
+| E3 | `CommercialLifecycleService.mark_final_exported` | `lifecycle.py:138` | **(A)** | 无调用 ⇒ 🔴 **`execute_delete` 的前置条件生产上永远不满足** | 登记（与 E2 同批） |
+| E4 | `CommercialLifecycleService.set_retention` / `retention` / `tenant_status` / `build_export_payload` | `lifecycle.py:166/:172/:176/:112` | **(A)** | 无调用；`build_export_payload` **恒返回空资源清单** ⇒ 易读成"导出已实现" | 登记（保守：明确"导出载荷未实现"） |
+| E5 | `QuotaService` / `PlanVersion` / `QuotaDecision` / `QuotaError`（整模块 `commercial/plan.py`） | `plan.py:8/:13/:19/:28` | **(A)/(C)** | **未被 `app/` 任何文件 import**（零命中）⇒ 🔴 **配额/超额策略控制面齐备却不接入任何执行路径** ⇒ 易读成"配额已强制" | 登记；**"预留 vs 缺接线"需真源确认** |
+| E6 | `DisabledPublisher` | `app\content\publisher.py:144` | **(A)/(B)** | **全仓零命中**；注释称"未配置渠道时的 fail-closed 占位器"，**实际 fail-closed 由 `publisher is None` 承担** ⇒ 冗余死代码 | 登记；建议经确认后删（或真正接线） |
+| E7 | `TenantStatus.EXPORTING` | `app\commercial\tenant.py:13` | **(B)** | `app/` 内**无赋值点**（`request_export` 不置该状态）⇒ "导出中"**生产不可达** | 登记（枚举完整性 / 明确"预留态"） |
+| E8 | `Conversation.dsh_session_id` | `app\conversation\models.py:83` | **(B)** | 列被建表/读回，但 **`app/` 内无任何赋值点**（恒 `NULL`）⇒ 与 §U25 **A3（dsh 待接线）**同族 | 登记（预留；**不得声称 dsh 会话已落库**） |
+| E9 | `ConversationMessage.tool_call_id` | `app\conversation\models.py:96` | **(B)** | 仅作形参与回读，**`app/` 内无调用方传非 `None`** ⇒ 恒 `None` | 登记（预留） |
+| E10 | `OUTCOMES` | `app\conversation\idempotency.py:19` | **(B)** | `app/` 内零命中（真正生效的是 `_ALLOWED_STATUS_BY_OUTCOME`）⇒ **改它不影响校验** | 登记；建议删或让 `_validate` 真消费 |
+| E11 | `MAX_AGENT_KEY_LENGTH` | `app\conversation\models.py:21` | **(B)** | 零命中（`_AGENT_KEY_PATTERN` 用**字面量 63**）⇒ **改它不改变校验** | 登记；建议改为引用常量 |
+| E12 | `CONFIG_FIELDS` | `app\workforce\store.py:33` | **(A)/(B)** | **全仓零命中**（实现走显式 kwargs）⇒ 易读成"字段白名单生效" | 登记；建议删或真正用于白名单校验 |
+| E13 | `MessageRole.TOOL` / `SYSTEM` | `app\conversation\models.py:39/:40` | **(B)** | `app/` 内无消费者（只写入/判断 `USER`/`ASSISTANT`） | 登记（枚举完整性） |
+| E14 | `ConversationError` | `app\conversation\models.py:43` | **(B)** | **无任何 `except ConversationError`**（接口层按具体子类映射） | 登记（基类，非缺陷） |
+| E15 | `Tool.description`（planner） | `app\planner\models.py:47` | **(B)** | `from_config` 赋值（`:95-100`），`app/` 内**无读取点** | 登记（写而未读） |
+| E16 | `PublicationReceipt.detail` | `app\content\publisher.py:24` | **(B)** | `publish` 赋值（`:120`），`app/` 内**无读取**（只读 `receipt_id`） | 登记（写而未读） |
+| E17 | `PlanProposalStore.list_for_task`（Protocol + 两实现） | `app\planner\store.py:22/:63/:261` | **(C)** | `app/` 内无调用（**对照**：同 Protocol 的 `list_pending_review` 被 `app/approvals.py:69` 生产消费） | 登记（有实现、无生产调用方） |
+| E18 | `ContentService.runtime_side_effects` | `app\content\service.py:201` | **(C)** | `app/` 内无调用（恒返回 `[]`）⇒ 易误读为"内容服务有副作用回放" | 登记 |
+| E19 | `ContentRecord.run_id`（property） | `app\content\store.py:31` | **(C)** | `app/` 内无读取（只用 `run_ids` / `draft.run_id`） | 登记 |
+| E20 | `record_to_dict` / `dumps` | `app\conversation\idempotency.py:202/:218` | **(C)** | `app/` 内无外部引用；`tests/` 亦无（`dumps` 自带 `# pragma: no cover`） | 登记；**建议删除**（无任何消费者） |
+| E21 | `content/safety.py` 全族（`ContentSafetyEvaluator`、`SafetyReport`、`SafetyCase*`、`SafetyCategory/Severity`、`scan_artifacts`、`DEFAULT_CASES`、canary 与 finding code 常量…） | `app\content\safety.py:34-37/:40/:46/:52/:58/:71/:81/:93-98/:100/:192/:227/:321` | **(C)** | `app/` 内**零命中**；消费者仅 `scripts\content_safety_evaluation.py:32/:67` + 测试。模块 docstring 已自述"**是评估仪器不是安全证明**" | 登记；**不得读成"内容安全已在生产强制"** |
+| E22 | 租户仓储操作族（`ensure_test_tenant`、`activate_tenant`、`suspend_tenant`、`create_workspace`、`get_workspace`、`add_customer_admin`、`create_tenant`） | `app\commercial\repository.py:23/:30/:49/:52/:55/:63/:70/:109/:117/:144` | **(C)** | `app/` 内无生产调用（`create_tenant` 仅被同文件 `create_workspace` 内部调用）；`ensure_test_tenant` docstring 已自述"生产代码不依赖此方法" | 登记；**"无生产建/停租户入口"需真源确认是否外部运维负责** |
+| E23 | 反射式读取面（`pydantic` 自动序列化 / `__getattribute__` 覆写 / entry-point 反射装配） | — | **未核实** | 本次**未核** ⇒ (B) 类中"写而未读"结论**仅限 `app/`+`tests/` 静态引用** | 登记为**排查盲区**（需 AST 级"定义—引用"全配对才能"零遗漏"） |
+
+**⇒ 禁令延续（扩围部分）**：涉及 **E1–E6** 的结论**一律不得表述为"已生效"** —— **不得说"计费已启用""删除已执行""配额已强制""导出已实现""未配置渠道时走 `DisabledPublisher` 兜底"**；E8 不得说"dsh 会话已落库"；E21 不得说"内容安全已在生产强制"。
+
 ### U26 门禁 §B14 判据 D / E / F —— ✅ **已取证（2026-09-14，生产装配 + 真容器）**，**形态未达真实 dsh turn**
 
 **取证结论（2026-09-14，P1 接线后重取）**：在 `build_tool_execution(...)`（**真装配**）+ 真 `ContainerExecutor` + **真容器** + **真网关进程**（`python -m app.model_gateway`）下：
