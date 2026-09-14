@@ -121,6 +121,24 @@ def test_disabled_employee_falls_back_to_existing_rule(directory) -> None:
     )
 
 
+def test_role_disabled_employee_falls_back_to_existing_rule(directory) -> None:
+    """岗位停用连带：所属岗位停用后，该员工不参与治理判定 → 回落既有口径（**收严不放宽**）。
+
+    口径与 `agent_is_active` 一致（员工 active **且** 岗位 active）；本用例同时锁定「岗位停用」
+    在任务创建路径上的表现：不再套用该员工的免批配置，而是回落「不低于 high 即审批」。
+    """
+    create_employee(directory, "content-writer", autonomy_level="full_auto", risk_threshold="critical")
+    # 治理生效时：`full_auto` + `critical` ⇒ `high` 免批（对照组，证明配置确实被消费）
+    assert create_task(role="ceo", employee_key="content-writer", risk_level="high") == (201, "queued")
+
+    directory.update_role(ADMIN, "content-operator", status="disabled")
+
+    assert create_task(role="ceo", employee_key="content-writer", risk_level="high") == (
+        201,
+        "pending_approval",
+    )
+
+
 def test_employee_key_lookup_follows_directory_normalization(directory) -> None:
     """标识按目录口径归一（转小写）：大小写不同**不是两个员工**，故套用同一份治理配置。"""
     create_employee(directory, "content-writer", autonomy_level="full_auto", risk_threshold="critical")

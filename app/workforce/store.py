@@ -222,13 +222,21 @@ class InMemoryWorkforceDirectoryStore:
         标识按目录口径**归一后精确匹配**（小写化），与「大小写不同不是两个标识」一致；
         标识非法或员工不存在 / 已停用一律返回 `None`（= 无治理配置，由调用方回落既有口径），
         刻意不抛异常——`employee_key` 在创建任务时本来就是不校验的自由输入。
+
+        **可用性口径 = `agent_is_active`（岗位停用连带）**：员工自身 `active` **且**所属岗位 `active`，
+        缺一不可——岗位停用即连带其下属员工不可用（`agent_key` 应被拒）。故本方法对
+        「岗位已停用」同样返回 `None`，与写路径闸门 `ensure_agent_binding_available` 同一口径，
+        区别仅在于**不要求 `super_admin`**（执行入口的操作者可以是任意角色）。
         """
         key = _safe_key(agent_key)
         if not key:
             return None
         with self._lock:
             employee = self._employees.get((context.tenant_id, key))
-        if employee is None or employee.status is not DirectoryStatus.ACTIVE:
+            if employee is None or employee.status is not DirectoryStatus.ACTIVE:
+                return None
+            role = self._roles.get((context.tenant_id, employee.role_key))
+        if role is None or role.status is not DirectoryStatus.ACTIVE:
             return None
         return (employee.autonomy_level, employee.risk_threshold)
 
@@ -622,7 +630,11 @@ class PostgresWorkforceDirectoryStore:
         return self._hydrate_agent_config(row)
 
     def read_agent_governance(self, context: UserContext, agent_key: str) -> tuple[str, str] | None:
-        """只读治理两字段；语义与内存仓储逐条对齐（不校验角色、非法标识与停用一律 `None`）。"""
+        """只读治理两字段；语义与内存仓储逐条对齐（不校验角色、非法标识与停用一律 `None`）。
+
+        可用性口径 = `agent_is_active`（**岗位停用连带**）：`JOIN workbench_job_roles` 后
+        **员工自身 `active` 且所属岗位 `active`** 才返回治理两字段；岗位缺失或已停用一并 `None`。
+        """
         key = _safe_key(agent_key)
         if not key:
             return None
@@ -630,9 +642,12 @@ class PostgresWorkforceDirectoryStore:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT autonomy_level, risk_threshold
-                    FROM workbench_digital_employees
-                    WHERE tenant_id = %s AND agent_key = %s AND status = 'active'
+                    SELECT employee.autonomy_level, employee.risk_threshold
+                    FROM workbench_digital_employees AS employee
+                    JOIN workbench_job_roles AS role
+                      ON role.tenant_id = employee.tenant_id AND role.role_key = employee.role_key
+                    WHERE employee.tenant_id = %s AND employee.agent_key = %s
+                      AND employee.status = 'active' AND role.status = 'active'
                     """,
                     (context.tenant_id, key),
                 )

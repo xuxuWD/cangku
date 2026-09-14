@@ -375,3 +375,46 @@ def test_postgres_agent_is_active_joins_own_and_role_status() -> None:
     assert PostgresWorkforceDirectoryStore(RecordingConnection([None])).agent_is_active(ADMIN, "nobody") is False
     # 所属岗位缺失时 LEFT JOIN 出 NULL，同样按不可用处理
     assert PostgresWorkforceDirectoryStore(RecordingConnection([("active", None)])).agent_is_active(ADMIN, "content-writer") is False
+
+
+# ------------------------------------------------------------ 治理读取的岗位停用连带
+
+
+def test_read_agent_governance_follows_role_disabled_cascade() -> None:
+    """岗位停用连带：岗位停用后，其下属员工的治理读取同样返回 `None`（口径同 `agent_is_active`）。
+
+    §15 #11 / 段二 §1.4：`agent_key` 路由到真实执行前须「存在且启用」，实施口径 =
+    写路径闸门 `ensure_agent_binding_available`（员工 active **且** 岗位 active），
+    但**不要求 `super_admin`**（执行入口操作者可以是任意角色）。
+    """
+    store = InMemoryWorkforceDirectoryStore()
+    store.create_role(ADMIN, role_key="content-operator", name="自媒体运营岗")
+    store.create_employee(ADMIN, agent_key="content-writer", name="内容创作", role_key="content-operator")
+    store.update_agent_config(
+        ADMIN, "content-writer", autonomy_level="full_auto", risk_threshold="critical"
+    )
+
+    assert store.read_agent_governance(ADMIN, "content-writer") == ("full_auto", "critical")
+    # 非管理角色同样可读（不要求 super_admin），租户隔离仍生效
+    assert store.read_agent_governance(CEO, "content-writer") == ("full_auto", "critical")
+
+    store.update_role(ADMIN, "content-operator", status="disabled")
+
+    assert store.read_agent_governance(ADMIN, "content-writer") is None
+    assert store.agent_is_active(ADMIN, "content-writer") is False  # 两条读路径口径一致
+
+
+def test_postgres_read_agent_governance_joins_role_status() -> None:
+    """PG 仓储：治理读取必须 JOIN 岗位并同时要求员工与岗位 `active`（无 `_ensure_admin` 门槛）。"""
+    connection = RecordingConnection([("full_auto", "critical")])
+    store = PostgresWorkforceDirectoryStore(connection)
+
+    assert store.read_agent_governance(CEO, "Content-Writer") == ("full_auto", "critical")
+    statement, params = connection.cursor_instance.statements[0]
+    assert "JOIN workbench_job_roles" in statement
+    assert "employee.status = 'active' AND role.status = 'active'" in statement
+    assert params == ("t-1", "content-writer")
+
+    assert PostgresWorkforceDirectoryStore(RecordingConnection([None])).read_agent_governance(
+        ADMIN, "content-writer"
+    ) is None

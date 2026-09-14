@@ -371,6 +371,23 @@ def test_agent_key_disabled_or_unknown_is_422(monkeypatch, _isolate) -> None:
     assert main.execution_idempotency_store.get(TENANT, EMPLOYEE, conversation_id, "k-6") is None
 
 
+def test_agent_with_disabled_role_is_rejected_at_execution_entry(monkeypatch, _isolate) -> None:
+    """岗位停用连带（§15 #11 / 段二 §1.4）：岗位停用后，绑定该岗位的 `agent_key` 在执行入口被拒。"""
+    directory = _isolate["directory"]
+    fake = FakeToolExecution()
+    wire_execution(monkeypatch, fake, directory)
+    conversation_id = create_conversation()
+
+    directory.update_role(UserContext(TENANT, "admin-1", "super_admin"), "writer", status="disabled")
+
+    response = send(conversation_id, invocation("fs.list", {"path": "/workspace"}), key="k-role")
+
+    assert response.status_code == 422, response.text
+    assert fake.calls == 0  # 在创建任何东西之前拒绝
+    assert main.store.count_by_employee(TENANT) == {}
+    assert main.execution_idempotency_store.get(TENANT, EMPLOYEE, conversation_id, "k-role") is None
+
+
 def test_conversation_without_agent_cannot_trigger_execution(monkeypatch, _isolate) -> None:
     fake = FakeToolExecution()
     wire_execution(monkeypatch, fake, _isolate["directory"])
