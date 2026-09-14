@@ -846,13 +846,23 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **实作（2026-09-14）＝ 收敛为单一脱敏函数，覆盖三个写入点**：新增 `app/conversation/redaction.py::redact_message_content`（**唯一**脱敏入口，防「改两处漏一处」）—— 输入原始 `content`（调用 JSON 或自由文本）⇒ 输出摘要：调用 JSON 落 `[工具调用·脱敏] tool_key=<key> params=[<键名…>] digest=<8hex>`，自由文本落 `[消息·脱敏] chars=<N> digest=<8hex>`；**所有参数值一律不落**（含 `body` 类与 `control` 类的 `path` / `target`），非 JSON / 自由文本**不透传原文**。三个写入点：`app/conversation/execution.py`（`201 executed` / `202 pending_approval` 两条 USER 写入）+ `app/conversation/service.py`（**无键桩路径**，自由文本原文不得落库）；**助手消息写入行未动**（重放依赖其 `message_id`）。桩路径另补 `normalize_content(content)`（空 / 纯空白 / 超长的校验落在**原文**上 —— 否则会被恒非空的摘要绕过，属本轮发现的**回归修复**）。**未新增迁移、未改 `027`、未新增审计动作码。**
 
-### U24 ②④ 的权威状态**无任何写入方** ⇒ 回调端点恒拒 — ❌ **未闭环（2026-09-14 只读排查新增）**
+### U24 ②④ 的权威状态**无任何写入方** ⇒ 回调端点恒拒 — ✅ **已闭环（2026-09-14 接线，写入侧补齐）**
 
-**事实（带证据）**：`TokenBindingStore.record`（`app\tool_execution\token_binding.py:68`）与 `ActiveExecutionRegistry.register`（`app\tool_execution\active_execution.py:37`）的**唯一调用点在测试**（`tests\test_token_binding.py:98/132/137`、`tests\test_exec_callback.py:90/105`）；**生产装配用全新空实例** —— `app\bootstrap.py:971-973`（`TokenBindingStore()` / `ActiveExecutionRegistry()`）→ `app\main.py:184` 绑定给 `workbench_callback_guard`，**此后无任何代码写入**。⇒ 调用链：`registry.current_for()` **必为 `None`** → `_NO_ACTIVE_EXECUTION` 占位 → `store.lookup()` **必为 `None`** → `BindingDenied` → **`403`**（`app\main.py:573`）。
+**事实（带证据，闭环前的原始记录）**：`TokenBindingStore.record`（`app\tool_execution\token_binding.py:68`）与 `ActiveExecutionRegistry.register`（`app\tool_execution\active_execution.py:37`）的**唯一调用点在测试**；**生产装配用全新空实例** —— `app\bootstrap.py:971-973`（`TokenBindingStore()` / `ActiveExecutionRegistry()`）→ `app\main.py:184` 绑定给 `workbench_callback_guard`，**此后无任何代码写入**。⇒ 调用链：`registry.current_for()` **必为 `None`** → `_NO_ACTIVE_EXECUTION` 占位 → `store.lookup()` **必为 `None`** → `BindingDenied` → **`403`**。
 
-**⇒ 后果**：端点、限流、恒时比对、审计与 `403` 文案**全部齐备**，**外观上"②④ 已强制"**；**实际任何合法回调都被拒**。**⇒ 与 §U20 / §U21 同一禁令：不得声称「②④ 已强制」。**（口径更正：此前"②④ 机制已就位"**只能读作"组件就位"**，**不能读作"生效"**。）
+**⇒ 后果**：端点、限流、恒时比对、审计与 `403` 文案**全部齐备**，**外观上"②④ 已强制"**；**实际任何合法回调都被拒**。（此前"②④ 机制已就位"**只能读作"组件就位"**，**不能读作"生效"**。）
 
-**解锁**：补写入侧接线 —— **mint 时 `store.record`** + **进入 turn 时 `registry.register`**（并接 `retire`，该 `retire` 同样**无调用方**：`active_execution.py:65` 仅定义处命中）。**判据**：真实装配下**一次完整回调的成功路径**（非测试注入）。
+**✅ 处置（2026-09-14 用户裁决 **1-A + 2-乙 + 3 同批**）＝ 补写入侧接线**：
+
+- **一次 turn = 一次容器执行（⑧）**（**不引入常驻 dsh 会话驱动，§3.3 容器生命周期不动**）；
+- 新增 `app/tool_execution/turn_token.py::TurnTokenController`：在 ⑧ 前 `GatewayTokenClient.mint(bound)` ⇒ **同一处** `TokenBindingStore.record` + `ActiveExecutionRegistry.register`；终态经 `ContainerExecutor(token_revoker=…)` 出口 **`registry.retire` + `store.revoke_binding` + 网关 `revoke`**（`build_terminal_state_revoker`，**不再自创**）；
+- **绑定取值**：`session_id` = **任务 `task_id`**（会话键，与 `DshAdapter` 以 `context.task_id` 作会话同口径）；`generation` = **取 `ActiveExecutionRegistry` 权威当前代次 + 1**（无当前执行则 `1`，**不另立计数器**）；网关 `bound` = `"{tenant}:{session}:{generation}"`（审计元数据，与 `DshAdapter._bound_for` 同口径）；
+- **共享单例**：`TokenBindingStore` / `ActiveExecutionRegistry` 由**装配期**创建（`app/main.py` 的 `exec_authority_store` / `exec_authority_registry`），`build_tool_execution`（写）与 `build_exec_callback_guard`（读）**共用同一实例**；
+- **容器 env 注入**（2-乙）：`ContainerSpec` 增 `environment`（`create_kwargs` **与** `docker_args()` 同口径）；注入内容由 `app/runtime/adapters/dsh.py::build_token_env` 生成（**唯一事实源**：常量 + 禁止名单 + 供应商密钥拒绝性自检都在该函数收口）。
+
+**判据取证（2026-09-14，本机）**：`tests/test_turn_token_wiring.py`（12 用例）—— ① 真实 `execute`（**假 Docker 客户端**）下容器 spec 确含 env、`store`/`registry` 确有该次写入、终态后 `retire` 被调用（`registry.current_for(session) is None`）且网关 `revoke` 被调用（桩网关在册令牌清空）；② 服务层 ⑧ 前注入 env、终态经 executor 出口 retire；③ 装配路径（= `app/main.py` 口径）下 mint 侧与判定侧**同一实例**、`executor.token_revoker` 已接；④ turn 进行中回调放行、终态后恒拒。**反假 3 组均真变红**（① 不共享单例 ⇒ 4 红；② 不写 `store.record` ⇒ 4 红；③ env 出现供应商密钥 ⇒ 4 红），还原后 30 passed。**配置**：**未新增任何配置项** —— 复用既有的 `model_gateway_base_url` / `model_gateway_mint_secret`（后者此前在 `app/` 内**零消费者**，本次开始消费）/ `model_gateway_upstream_api_key`。
+
+**未验证（不得读成已验，随闭环挂住）**：① **真实 dsh turn 未跑** —— 本机执行路径仍是**假 Docker 客户端 / 既有测试替身**，**未起真容器** ⇒ 「真容器内 env 实跑」**未验证**；② `turn_runner` 仍**不存在**（dsh 运行时未接线，A3 维持"待接线"）；③ 回调端点的**真拓扑成功路径**（容器 → 边车 → 工作台）**未跑真容器**；④ 「`generation` 真实多 turn 递增 / `retire` 后复用会话」的语义**仅单进程单测覆盖**。
 
 ### U25 「存在但无调用方」的实现清单 — ❌ **待逐项处置（2026-09-14 只读排查新增）**
 
@@ -860,9 +870,9 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 | # | 符号 | 定义处 | 事实（检索证据） | 类别 |
 |---|---|---|---|---|
-| **A2** | `GatewayTokenClient` / `build_terminal_state_revoker` / `token_revoker=` | `app\tool_execution\gateway_token.py:27/:79`、`executor.py:183/:362` | **全仓仅测试命中**；**`ContainerExecutor.from_settings` 不接受也不传 `token_revoker`**（`executor.py:213-222`）⇒ 生产恒为 `None` ⇒ `_revoke_on_terminal` **首行即 `return`** | **(A) 真缺口** |
+| **A2** | `GatewayTokenClient` / `build_terminal_state_revoker` / `token_revoker=` | `app\tool_execution\gateway_token.py:27/:79`、`executor.py:183/:362` | **全仓仅测试命中**；**`ContainerExecutor.from_settings` 不接受也不传 `token_revoker`**（`executor.py:213-222`）⇒ 生产恒为 `None` ⇒ `_revoke_on_terminal` **首行即 `return`** | **✅ 已收口（2026-09-14，随 §U24 接线）**：`from_settings(settings, *, token_revoker=…)` 已接受并透传；装配处注入 `TurnTokenController.on_terminal`（内部用 `build_terminal_state_revoker`，与 mint **共用同一控制面客户端**）。**取证**：`tests/test_turn_token_wiring.py`（真实 `execute` 终态 revoke 被调用 + 装配路径 `from_settings` 出口已接）；**未验证**：真实容器 / 真实 dsh turn 下未复跑 |
 | **A3** | `DshAdapter` 全族（`build_dsh_adapter` / `DshProfileLock` / `assert_profile_locked`） | `app\runtime\adapters\dsh.py:187/:146/:125` | **未注册进运行时**：`app\runtime\registry.py:132-138` 的 `constructors` **无 `dsh`**、`app\bootstrap.py:748` 的 `_RUNTIME_KEYS` **亦无** ⇒ 生产不可达（仅 re-export + 测试）⇒ **剖面锁死 / 启动期断言在生产不执行** | **(A) 真缺口**；🔴 **定位已裁决（2026-09-14 用户）=「待接线」** —— 即 `DshAdapter` 是为**将来启用 dsh 运行时**准备的、届时接入 `registry`（那时**剖面锁死与启动断言才在生产生效**）；**在此之前不得声称"剖面已锁死 / 启动期断言已生效"**。 |
-| **A6** | `model_gateway_base_url`（`app\settings.py:469`）、`dsh_version`（`:458`） | 同上 | 唯一读取点是 `DshAdapterConfig.from_settings`（`dsh.py:164/:166`），而 **`DshAdapter` 未注册**（见 A3）⇒ **生产无消费者 ⇒ "配了等于没配"**（"容器内 baseURL 指向网关"这一安全口径**在生产不生效**） | **(A) 真缺口** |
+| **A6** | `model_gateway_base_url`（`app\settings.py:469`）、`dsh_version`（`:458`） | 同上 | 唯一读取点是 `DshAdapterConfig.from_settings`（`dsh.py:164/:166`），而 **`DshAdapter` 未注册**（见 A3）⇒ **生产无消费者 ⇒ "配了等于没配"**（"容器内 baseURL 指向网关"这一安全口径**在生产不生效**） | **(A) 真缺口**；**部分收口（2026-09-14，随 §U24）**：`model_gateway_base_url` 现由 `build_tool_execution` → `TurnTokenController`（`app/bootstrap.py::_build_turn_token_controller`）消费 ⇒「容器内 baseURL 指向网关」**经 token 注入路径在生产生效**（另有 `model_gateway_mint_secret` 首次被 `app/` 消费）；**`dsh_version` 仍无消费者**（随 A3 待接线） |
 | A4 | `SsoStateStore.purge_expired` | `app\accounts\sso_store.py:34/:58/:130` | `app/` 内**无任何调用**（仅 `tests/test_sso_blocks.py:474/482`）⇒ 未被消费的过期 state **无清理入口、持续累积** | (A) 宜登记 |
 | A5 | `WorkspaceManager.create` / `destroy` | `app\tool_execution\workspace.py:35/:53` | 生产只调 `path_for`（`service.py:290`）⇒ 宿主侧**从不创建/销毁**（卷实际由**容器内 tmpfs** 承担，见 §3.3 裁决） | (A)/(B) 边界，宜登记 |
 | B | `object_storage_url`（`settings.py:15`）、`ToolExecutionService._record_blocked`（`service.py:667`）、`paths.BlacklistedPath`（`paths.py:38`）、`CommandGate.evaluate`（`blacklist.py:320`）、`parse_revoke_response`（`gateway_token.py:93`） | 同左 | **`app/` 内无读者/无调用**（`_record_blocked`、`BlacklistedPath`、`parse_revoke_response` **全仓仅定义处命中 = 死代码**；`object_storage_url` 仅 `scripts\staging_preflight.py` 按 env 直读） | (B) 登记（其中三个建议经确认后清理）。**✅ 处置（2026-09-14，用户授权）**：`_record_blocked` / `BlacklistedPath` / `parse_revoke_response` **曾为死代码（全仓仅定义处命中），已于 2026-09-14 删除** —— 依据：① 符号检索仅定义处命中；② 字符串形态（`"_record_blocked"` 等）与 `getattr`/反射检索均 0 命中；③ 删前将 `_record_blocked` 定义改名跑全量仍 `1694 passed, 31 skipped`（测试不引用）；④ 删后同命令仍 `1694 passed, 31 skipped` + `compileall` exit=0。**`object_storage_url` / `CommandGate.evaluate` 保留登记、本次未处置**。 |
@@ -871,13 +881,20 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **检索盲区（本清单的边界，不得读成"已穷尽"）**：**通过 `getattr` / 字符串拼接 / 反射构造的调用方查不到**（如 `app\conversation\execution.py:415` 的 `getattr(task_store, "set_pending_approval", None)`、`app\bootstrap.py:755-770` 按 `f"{key}_endpoint"` 拼字段名）；本次未穷举 `app/planner`、`app/commercial`、`app/content`、`app/workforce`、`app/conversation` 的**模块内部**未引用符号。
 
-### U26 门禁 §B14 判据 D / E / F 的取证对象**在生产路径不存在**（证据来自原型） — ❌ **未闭环（2026-09-14 只读侦察新增）**
+### U26 门禁 §B14 判据 D / E / F 的取证对象**在生产路径不存在**（证据来自原型） — ⚠️ **部分变更（2026-09-14 接线后：取证对象在生产**已存在**，但**仍未取证**）**
 
 **事实（带证据）**：① **生产路径上没有人 mint** —— mint 的 app 侧唯一客户端 `GatewayTokenClient`（`app\tool_execution\gateway_token.py:41-47`）的**唯一消费者是 `DshAdapter`**（`app\runtime\adapters\dsh.py:264`），而 **`DshAdapter` 未注册进运行时**（见 §U25 A3）⇒ **生产不 mint**；② **生产路径上没有人把令牌放进容器** —— `ContainerExecutor.create_kwargs`（`app\tool_execution\executor.py:118-141`）**完全没有 `environment` 字段**，唯一注入容器 env 的是 `DshAdapter.build_turn_env`（`dsh.py:233-246`，**不可达**），且其依赖的 `turn_runner` **仓库内无任何实现**（全仓仅定义处 + 测试 Fake）；③ **`app/model_gateway` 在全部编排文件（`docker-compose*.yml` / `Dockerfile` / `.env*.example`）中 grep 零命中** ⇒ **网关进程连部署落点都没有**。
 
 **⇒ 后果（必须写清）**：**§B14 判据 D / E / F 的取证对象**（容器内 `baseURL`、`apiKeyEnv`、短期令牌）**在生产装配下不存在** —— 相关证据来自**原型**（`_dsh-gateway-verify\`），**不是生产路径**。**⇒ 在这三条上不得表述为"生产已验"**；**准确表述只能是**「**原型形态下已验证；生产装配下取证对象尚不存在**」。**受影响范围**：§B14 **D / E / F**（**E 直接受影响、F 最受影响**）；**A / C′ / G 与三条红线不受影响**（均围绕供应商密钥与外网，与"谁铸令牌"无关）。**§B17**：判据 1 的 **D 受影响**、**判据 3 需重判**。
 
 **解锁（与 §U24 同一根因）**：需先解决 **P1（真实的"进入新 turn"入口）** 与 **P2（令牌在册状态如何被网关数据面看见）**；**否则补方案 (c) 或替代① 都会变成第 4 个"存在但无调用方"**（前三个：`/__revoke`、`rotation_window_seconds`、`TokenBindingStore.record`）。**判据**：在**生产装配**下取得 D / E / F 的原始证据（容器内 env / 令牌来源 / 无供应商密钥），**不得以原型证据替代**。
+
+**⚠️ 2026-09-14 更新（随 §U24 接线，口径由「不存在」改为「存在但未取证」）**：上述**事实 ①② 已被本次接线推翻**——
+① **生产路径现在会 mint**：`build_tool_execution` → `TurnTokenController`（`app/bootstrap.py::_build_turn_token_controller`）消费 `model_gateway_base_url` / `model_gateway_mint_secret`，在 ⑧ 前 `mint`；
+② **生产路径现在会把令牌放进容器**：`ContainerSpec` 增 `environment`（`create_kwargs` 与 `docker_args()` 同口径），装配处注入 `TurnTokenController.open_turn(...)` 产出的 env（`dsh.build_token_env`）。
+**事实 ③ 仍成立**：`app/model_gateway` 在编排文件中仍**零命中**（网关部署落点未落）。
+
+**⇒ 口径更正（务必照此表述）**：§B14 判据 **D / E / F 的取证对象**在生产装配下**已存在**（不再是"不存在"），但**本次**用的是**假 Docker 客户端 / 测试替身**、**未起真容器、未跑真实 dsh turn** ⇒ **D / E / F 的原始运行期证据**（容器内 env / `/proc/*/environ` / 令牌来源 / 无供应商密钥）**仍未重取**。**⇒ 准确表述只能是**：「**生产装配下已具备 mint + env 注入路径；D / E / F 的原始证据仍未重取**」，**不得表述为"生产已验"**。**重取条件**：真实 dsh turn 驱动（`turn_runner`，A3 待接线）+ 起真执行容器。
 
 **取证（本机）**：`tests/test_conversation_message_redaction.py`（8 用例：脱敏单测 + 三个写入点 + 「功能没坏」等价验证 + 内存全表检索守护）+ `tests/test_dsh_execution_postgres.py::test_usecase_32_c1_3_no_body_original_in_conversation_messages`（**真库检索守护，DSN 门控**）。**「功能没坏」等价验证**：`GET /api/v1/conversations/{id}` 仍返回消息、`messages_total` 正确、重放仍返回首次结果（逐字段相等）。**反假 2 组**：① 摘要把原文写回该列 ⇒ 守护用例 **7 红**；② 重放改依赖用户消息 ⇒ 「功能没坏」+ 既有重放用例 **2 红**。契约同步：`docs/api-contract.md`「对话式 AI 员工平台」条；变更留痕：`docs/change-record.md`。
 
