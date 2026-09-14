@@ -8,6 +8,19 @@
 
 ## 记录
 
+### 2026-09-14 · §8 U25 E5 裁决登记（`app/commercial/plan.py` 不属本期 ⇒ 预留）+ `delivery-gates.md:58` 套餐口径更正（纯口径登记，无代码改动）—— 可回退
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（用户裁决：**E5（`app/commercial/plan.py` 整模块：`QuotaService` / `PlanVersion` / 套餐版本化 / 超额策略）不属本期 ⇒ 预留**） |
+| **变更** | **纯文档口径登记，无任何代码 / 迁移 / 测试改动**。① 规格 §8 U25「U25 扩围 · E1–E6 定性」小节 **E5 条**由「🔴 证据不足，待真源裁决」**改写为**「✅ 已裁决：不属本期 ⇒ 预留（2026-09-14，用户裁决）」，并补齐「保留 / 明确不达 / 将来接线时须先做」三行。② `docs/delivery-gates.md:58` **保持 `[x]` 勾选状态不变**，仅把「套餐」更正为「**套餐配置**」并加注（注 2026-09-14）。 |
+| **原因** | E5 条原登记为「真源自相矛盾」：`delivery-gates.md:58` 已勾「套餐」 vs 上位规格 `:190` 决策 D1「不在本期实现计费、白标、配额售卖」 vs `capability-ownership-map.md:55`「🟡 部分交付（G0）」。用户裁决以 D1 为准 ⇒ E5 不属本期，据此消解三处口径冲突。 |
+| **影响面** | 不改任何行为、接口、数据模型、权限模型；**不改** `migrations/*`；**未删** `app/commercial/plan.py`、**未删**表 `workbench_plan_versions`（`migrations/006_commercial_g0.sql:25`）；`delivery-gates.md:58` **勾选状态不撤回**（仍为 `[x]`）⇒ 属口径更正，非验收撤回。 |
+| **验证（已做）** | ✅ 引注锚点逐条核对：D1 = `2026-09-12-conversational-agent-platform-design.md:190`；`delivery-gates.md:58`（原已勾「套餐」）；`capability-ownership-map.md:55`（「🟡 部分交付（G0）」）；G0 验收第 4 条 = `2026-09-06-commercial-g0-design.md:172`「超出套餐额度时按租户策略阻断、降级或进入审批」；表定义 = `migrations/006_commercial_g0.sql:25` `CREATE TABLE IF NOT EXISTS workbench_plan_versions`。✅ 回归：`py -m pytest -o addopts=""` ⇒ **`1709 passed, 31 skipped`**（与基线一致，**纯文档改动 ⇒ 用例数不得变化**）；`py -m compileall -q app` ⇒ **exit=0**。 |
+| **未验证（不得读成已验）** | ① 配额/超额策略**执行链路的额度检查点落点**真源未指定，本次**未探明**（将来接线前须先做）；② 除 `delivery-gates.md:58` 外，`docs/` 其它文档中**是否还有与「配额已强制」相关的口径**未做穷举（`capability-ownership-map.md:55` 的「🟡 部分交付（G0）」本次**未改**，仅作为消解对象在 E5 条中引用）。 |
+| **回退方式** | 恢复规格 §8 U25「U25 扩围 · E1–E6 定性」小节 **E5 条**原措辞（「🔴 证据不足，待真源裁决」及原「真源自相矛盾」整句），并把 `docs/delivery-gates.md:58` 恢复为原句（`- [x] 私有部署 G0 租户、工作区、客户管理员、套餐与追加式用量账本`）即可；**本条仅为口径登记，无代码改动，无代码回退项**。**未经确认不得执行回滚。** |
+| **依据** | 用户 2026-09-14 裁决：「E5（`app/commercial/plan.py` 整模块：`QuotaService` / `PlanVersion` / 套餐版本化 / 超额策略）不属本期 ⇒ 预留」；上位规格 [`2026-09-12-conversational-agent-platform-design.md`](superpowers/specs/2026-09-12-conversational-agent-platform-design.md):190 决策 D1；[`delivery-gates.md`](delivery-gates.md):58；[`capability-ownership-map.md`](capability-ownership-map.md):55；[`2026-09-06-commercial-g0-design.md`](superpowers/specs/2026-09-06-commercial-g0-design.md):172；`migrations/006_commercial_g0.sql:25` |
+
 ### 2026-09-14 · §8 U25 扩围 E6 `DisabledPublisher` 死代码删除 + E1–E6 定性登记（代码删除，非地基变更）—— 可回退
 
 | 项 | 内容 |
