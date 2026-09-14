@@ -114,6 +114,15 @@ def test_container_spec_is_hardened(executor, client) -> None:
         assert "noexec" in tmpfs[WORKSPACE_MOUNT]
         assert "nosuid" in tmpfs[WORKSPACE_MOUNT]
         assert "nodev" in tmpfs[WORKSPACE_MOUNT]
+        # G7（2026-09-15 真容器实测更正）：`uid/gid/mode` 必须**显式钉死**，不得依赖 Docker 默认值——
+        # Docker 对 `--tmpfs` 的默认是 `mode=1777`，但**一旦容器带 `--workdir` 指向该 tmpfs**，
+        # 该挂载会被改写成 `mode=755`（root:root）⇒ 以 65534 运行的工具**无法写工作卷**
+        # （实测 `PermissionError: [Errno 13]`）。显式指定后，行为与是否设 workdir 无关。
+        assert "uid=65534" in tmpfs[WORKSPACE_MOUNT]
+        assert "gid=65534" in tmpfs[WORKSPACE_MOUNT]
+        assert "mode=700" in tmpfs[WORKSPACE_MOUNT]  # 工作卷：仅执行者可读写
+        assert "mode=1777" in tmpfs[TMP_MOUNT]  # /tmp 保持标准
+        assert "mode=1777" in tmpfs[DEV_SHM_MOUNT]  # /dev/shm 保持标准
         # 不得挂 docker.sock
         mounts = host.get("Mounts") or []
         assert all("docker.sock" not in (m.get("Source") or "") for m in mounts)
@@ -137,6 +146,34 @@ def test_effective_identity_and_capabilities_inside_container(executor) -> None:
         assert code == 0, logs
         assert "65534 65534" in logs  # 非 root 生效
         assert "CapEff:\t0000000000000000" in logs  # cap 全剥夺
+    finally:
+        executor.remove_container(container)
+
+
+def test_workspace_is_owned_by_exec_user_and_writable(executor) -> None:
+    """G7 功能回归：工作卷必须**由执行者拥有且可写**（真容器实测，不只看挂载字符串）。
+
+    动机（2026-09-15 实测）：工作卷的可写性曾依赖 Docker 对 `--tmpfs` 的默认值；
+    一旦容器带 `--workdir` 指向工作卷，该挂载会被改写成 `root:root mode=755` ⇒ 工具写失败。
+    本用例断言「归属 + 权限 + 真能写入」三件事，使该回归**与是否设 workdir 无关**。
+    """
+    container = executor.create(
+        tool_key="cmd.run",
+        params=cmd(
+            "import os,stat;"
+            "s=os.stat('/workspace');"
+            "print('MODE', oct(stat.S_IMODE(s.st_mode)), 'UID', s.st_uid, 'GID', s.st_gid);"
+            "open('/workspace/probe.txt','w').write('x');"
+            "print('WROTE_OK')"
+        ),
+        workspace_path=workspace("g7"),
+    )
+    try:
+        code = container.wait(timeout=TIMEOUT_SECONDS)["StatusCode"]
+        logs = container.logs().decode()
+        assert code == 0, logs
+        assert "MODE 0o700 UID 65534 GID 65534" in logs, logs
+        assert "WROTE_OK" in logs, logs
     finally:
         executor.remove_container(container)
 

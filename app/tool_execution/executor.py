@@ -8,13 +8,20 @@
     - `pids_limit` / `mem_limit` / `nano_cpus`（= `docker --cpus`）/ 单次执行硬上限；
     - **超时 = 拒绝并终止容器**（fail-closed）；
     - 网络面**仅内网桥**（`internal=True`，**无外网出口**）；
-    - 工作卷 `/workspace` **生成即空、运行结束销毁**，挂载选项 `noexec,nosuid,nodev`；
+    - 工作卷 `/workspace` **生成即空、运行结束销毁**，挂载选项 `noexec,nosuid,nodev,uid,gid,mode`
+      （**`uid/gid/mode` 必须显式**，理由见下方常量注释与 G7 实测）；
     - 镜像**必须用 digest**（`@sha256:`），不得用 tag。
 
 工作卷形态说明（如实登记）：Docker **不支持**在 bind / volume 挂载上传 `noexec,nosuid,nodev`
 （实测 `docker run -v vol:/w:noexec → invalid mode: noexec,nosuid,nodev`），唯一能同时满足
 「`noexec,nosuid,nodev` + 与容器根不同设备 + 生成即空 + 随容器销毁」的是容器内 **tmpfs**。
 故 `/workspace` 采用 tmpfs；宿主侧 `WORKBENCH_EXEC_WORKSPACE_ROOT` 仍由 ③ 路径闸门消费。
+
+G7（2026-09-15 真容器实测）：tmpfs 的**归属与权限必须显式钉死**，不得依赖 Docker 默认值——
+默认 `mode=1777,uid=0,gid=0`（工作卷一度是"全局可写"）；且**一旦给容器加 `--workdir` 指向该
+tmpfs，该挂载会被改写成 `mode=755`（root:root）**，以 65534 运行的工具随即写不了工作卷。
+现工作卷固定 `uid=65534,gid=65534,mode=700`，`/tmp` 与 `/dev/shm` 固定 `mode=1777`；
+回归见 `tests/test_container_executor.py::test_workspace_is_owned_by_exec_user_and_writable`。
 
 孤儿容器（§3.3 生命周期）：按 `workbench.exec.managed` 标签清扫（启动时 + 周期，见
 `cleanup.py`）；**孤儿数超 `WORKBENCH_EXEC_ORPHAN_LIMIT` → 拒绝新执行并记 error（fail-closed，
@@ -33,14 +40,29 @@ from .log import get_logger
 WORKSPACE_MOUNT = "/workspace"
 TMP_MOUNT = "/tmp"
 DEV_SHM_MOUNT = "/dev/shm"
-EXEC_USER = "65534:65534"
+EXEC_UID = 65534
+EXEC_GID = 65534
+EXEC_USER = f"{EXEC_UID}:{EXEC_GID}"
 INTERNAL_NETWORK_NAME = "workbench-exec-internal"
 MANAGED_LABEL = "workbench.exec.managed"
 RUN_LABEL = "workbench.exec.run"
 FALLBACK_SCRATCH_SIZE_MB = 64
 DEFAULT_ORPHAN_LIMIT = 8
 
-TMPFS_OPTIONS = "rw,noexec,nosuid,nodev"
+# tmpfs 挂载选项（§3.3）。
+# **`uid/gid/mode` 必须显式给出，不得依赖 Docker 默认值**——依据 2026-09-15 真容器实测：
+#   - Docker 对 `--tmpfs` 的默认是 `mode=1777`（`uid=0,gid=0`，全局可写）；
+#   - 但**一旦容器带 `--workdir` 指向该 tmpfs**，该挂载会被改写成 `mode=755`（`root:root`）
+#     ⇒ 以 65534 运行的工具**无法写入工作卷**（实测 `PermissionError: [Errno 13]`）；
+#   - 显式指定后，行为与是否设 workdir 无关（避免将来加 CWD 时静默失效）。
+# 工作卷 = 仅执行者可读写（700）；`/tmp` 与 `/dev/shm` 保持标准 `1777`。
+TMPFS_COMMON_OPTIONS = "rw,noexec,nosuid,nodev"
+WORKSPACE_TMPFS_OPTIONS = (
+    f"{TMPFS_COMMON_OPTIONS},uid={EXEC_UID},gid={EXEC_GID},mode=700"
+)
+SCRATCH_TMPFS_OPTIONS = (
+    f"{TMPFS_COMMON_OPTIONS},uid={EXEC_UID},gid={EXEC_GID},mode=1777"
+)
 
 
 def _digest_pinned(image: str) -> bool:
@@ -113,11 +135,11 @@ class ContainerSpec:
             "--network",
             self.network_name,
             "--tmpfs",
-            f"{self.workspace_mount}:{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
+            f"{self.workspace_mount}:{WORKSPACE_TMPFS_OPTIONS},size={self.scratch_size_mb}m",
             "--tmpfs",
-            f"{TMP_MOUNT}:{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
+            f"{TMP_MOUNT}:{SCRATCH_TMPFS_OPTIONS},size={self.scratch_size_mb}m",
             "--tmpfs",
-            f"{DEV_SHM_MOUNT}:{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
+            f"{DEV_SHM_MOUNT}:{SCRATCH_TMPFS_OPTIONS},size={self.scratch_size_mb}m",
         ]
         for key in sorted(self.environment):
             args.extend(["-e", f"{key}={self.environment[key]}"])
@@ -143,9 +165,9 @@ class ContainerSpec:
             "mem_limit": f"{self.memory_mb}m",
             "nano_cpus": int(self.cpus * 1_000_000_000),
             "tmpfs": {
-                self.workspace_mount: f"{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
-                TMP_MOUNT: f"{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
-                DEV_SHM_MOUNT: f"{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
+                self.workspace_mount: f"{WORKSPACE_TMPFS_OPTIONS},size={self.scratch_size_mb}m",
+                TMP_MOUNT: f"{SCRATCH_TMPFS_OPTIONS},size={self.scratch_size_mb}m",
+                DEV_SHM_MOUNT: f"{SCRATCH_TMPFS_OPTIONS},size={self.scratch_size_mb}m",
             },
         }
         if self.environment:
