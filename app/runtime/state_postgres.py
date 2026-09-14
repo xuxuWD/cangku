@@ -95,6 +95,20 @@ class PostgresRuntimeStateStore:
             raise KeyError(run_id)
         return decode_state(dict(zip(STATE_COLUMNS, row)))
 
+    def remove(self, run_id: str) -> None:
+        """删除一个运行状态（⑥ 失败回滚用，§4.1.3：使该次请求**零残留**）。
+
+        与内存实现（`RuntimeStateStore.remove`）语义对齐：`run_id` 是主键、全局唯一，
+        故按它删除天然不会越到其他租户；**幂等**，删不存在的行无副作用（DELETE 命中 0 行）。
+        写法与同类仓储 `PostgresRunRecordStore.delete` 一致（事务包一条 DELETE）。
+        """
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_runtime_states WHERE run_id = %s", (run_id,)
+                    )
+
     def list_for_tenant(self, tenant_id: str, *, statuses: Iterable[str] | None = None) -> list[RuntimeState]:
         statement = f"SELECT {_COLUMNS} FROM workbench_runtime_states WHERE tenant_id = %s"
         params: tuple[Any, ...] = (tenant_id,)
