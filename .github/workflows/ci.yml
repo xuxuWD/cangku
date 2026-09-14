@@ -99,3 +99,70 @@ jobs:
         run: npm ci --ignore-scripts
       - name: node --test
         run: node --test
+
+  postgres:
+    # 覆盖「真连库」的两个模块：tests/test_tool_action_store_postgres.py 与
+    # tests/test_dsh_execution_postgres.py。它们由 WORKBENCH_TEST_DATABASE_URL 门控，
+    # 无该变量即**整体 skip**（默认 backend job 不提供 ⇒ 那时它们是 skip、不受守护）。
+    # 本 job 提供一次性真库、按仓库自身 apply_migrations 建表，并要求 `skipped == 0`，
+    # 从而把「默认 skip ⇒ 无人跑 ⇒ 假守护」堵死。
+    name: 后端真库（Postgres service + *_postgres.py）
+    runs-on: ubuntu-latest
+    env:
+      # 仅指向本 job 的临时 CI 容器；非真实环境凭据、不含任何仓库密钥。
+      WORKBENCH_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/workbench
+    services:
+      postgres:
+        # 与仓库既有一次性真库演练同源，按摘要钉死以防镜像漂移（pgvector 0.8.0 / PG16）。
+        image: pgvector/pgvector:0.8.0-pg16@sha256:a132765ec351c65111b5b675928a3a0515a466a40f97277329db8b8209ad8bc9
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: workbench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: 应用迁移（仓库自身的 app.migrations.apply_migrations）
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import psycopg
+          from app.migrations import apply_migrations
+          dsn = os.environ["WORKBENCH_TEST_DATABASE_URL"]
+          with psycopg.connect(dsn) as conn:
+              applied = apply_migrations(conn, Path("migrations"))
+          print("newly applied:", applied)
+          PY
+      - name: 真库用例（必须真跑，skipped 必须为 0）
+        run: |
+          python -m pytest -o addopts="" \
+            tests/test_tool_action_store_postgres.py \
+            tests/test_dsh_execution_postgres.py \
+            --junitxml=postgres-junit.xml
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("postgres-junit.xml").getroot()
+          suites = root.findall(".//testsuite") or [root]
+          tests = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          failed = sum(int(s.get("failures", 0)) + int(s.get("errors", 0)) for s in suites)
+          print(f"真库用例：tests={tests} skipped={skipped} failed={failed}")
+          # 判定依据：模块整体 skip 时 pytest 仍返回 0 ⇒ 必须显式要求「真跑了且无一 skip」。
+          sys.exit(0 if tests > 0 and skipped == 0 and failed == 0 else 1)
+          PY

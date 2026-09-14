@@ -16,8 +16,9 @@
   - 目标库必须是**已完成全部迁移（含 `027_dsh_tool_execution`）**的库；
     本文件**不建表、不迁移**，缺表时应**显式失败**而不是静默跳过。
   - 只操作 `TENANT` 这一个租户的数据，每个用例前后自清（按外键逆序删）。
-  - ⚠️ **局限（如实声明）**：默认 CI 不提供该环境变量 ⇒ 本文件默认是 skip 状态，
-    **不在「一键跑全量」的覆盖范围内**；要真正受它守护，必须在带库的环境里显式跑一次。
+  - ⚠️ **覆盖现状（2026-09-14 更新）**：默认 `pytest` 全量（无库环境）下本文件整体 skip；
+    真库改由 `.github/workflows/ci.yml` 的 **`postgres` job** 提供该变量并**要求 `skipped == 0`**
+    ⇒ 已纳入 CI 守护，不再是"无人跑"。**未验证**：该 job 尚未在 GitHub Actions 上实跑过。
   - ⚠️ **另一处局限（如实声明）**：`_compensate` 仅对实现了 `remove` 的 state_store 才撤销
     运行状态；`PostgresRuntimeStateStore` **已实现 `remove`**（与内存分支对齐）⇒ 两分支下
     ⑥ 失败后 `workbench_runtime_states` 行均被清除。
@@ -541,8 +542,9 @@ def test_usecase_32_c1_3_no_body_original_in_conversation_messages(connection) -
         SELECT COUNT(*) FROM workbench_conversation_messages
         WHERE content LIKE '%' || %s || '%';   -- 分别以正文原文 / path 参数值 / '"tool_key"' 传入
 
-    ⚠️ **局限（如实声明）**：默认 CI 不提供 `WORKBENCH_TEST_DATABASE_URL` ⇒ 本模块整体 skip；
-    **未在真库上跑过 ⇒ 该断言「未验证」**（见 §8 U23 判据①）。
+    ⚠️ **覆盖现状（2026-09-14 更新）**：默认 `pytest` 全量下本模块整体 skip；真库改由
+    `.github/workflows/ci.yml` 的 `postgres` job 提供 `WORKBENCH_TEST_DATABASE_URL` 并要求
+    `skipped == 0` ⇒ 该断言已纳入 CI 守护。**未验证**：该 job 尚未在 GitHub Actions 上实跑过。
     """
     service, conversations, _idempotency = _build_execution_service(
         connection, tool_execution=_SucceedingToolExecution()
