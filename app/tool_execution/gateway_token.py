@@ -75,12 +75,21 @@ class GatewayTokenClient:
 
 
 def build_terminal_state_revoker(
-    *, base_url: str, admin_secret: str, timeout_seconds: float = 10.0
+    *,
+    base_url: str,
+    admin_secret: str,
+    timeout_seconds: float = 10.0,
+    client: GatewayTokenClient | None = None,
 ):
-    """构造「turn 终态触发吊销」的可调用对象（注入 `ContainerExecutor(token_revoker=…)`）。"""
-    client = GatewayTokenClient(
-        base_url=base_url, admin_secret=admin_secret, timeout_seconds=timeout_seconds
-    )
+    """构造「turn 终态触发吊销」的可调用对象（注入 `ContainerExecutor(token_revoker=…)`）。
+
+    `client` 可注入**已构造**的控制面客户端，使「每 turn 铸造」与「终态吊销」**共用同一个
+    客户端实例**（`app/tool_execution/turn_token.py` 即如此）；缺省时自建一个（既有口径不变）。
+    """
+    if client is None:
+        client = GatewayTokenClient(
+            base_url=base_url, admin_secret=admin_secret, timeout_seconds=timeout_seconds
+        )
 
     def revoke(bound: str) -> None:
         client.revoke(bound)

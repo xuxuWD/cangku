@@ -36,6 +36,31 @@ FORBIDDEN_IN_CONTAINER_ENV_NAMES = frozenset(
 )
 
 
+def build_token_env(
+    *, token: str, gateway_base_url: str, vendor_api_key: str = ""
+) -> dict[str, str]:
+    """容器内**短期令牌**环境（**唯一事实源**：常量 + 禁止名单都在本函数里收口）。
+
+    只放两项：`baseURL` → **网关内网地址**；`apiKeyEnv` → **短期网关令牌**（非供应商密钥）。
+    任何**供应商密钥**都不进容器 —— 若令牌本身就是供应商密钥，直接拒绝；禁止字段名一律剔除。
+
+    > 落点说明（为什么抽在这里、而不在 `tool_execution`）：常量（`ENV_BASE_URL` / `ENV_API_KEY`）
+    > 与禁止名单（`FORBIDDEN_IN_CONTAINER_ENV_NAMES`）的**定义处就是本模块**；把构造函数与它们
+    > 放在同一模块，才能保证「注入内容」与「禁令名单」**不形成第二事实源**。容器执行侧
+    > （`app/tool_execution/turn_token.py`）**只调用本函数**，不复制常量。
+    """
+    if not isinstance(token, str) or not token.strip():
+        raise DshProfileLockError("容器内短期令牌不得为空")
+    if not isinstance(gateway_base_url, str) or not gateway_base_url.strip():
+        raise DshProfileLockError("容器内 baseURL 无落点（未配置模型网关地址）")
+    env = {ENV_BASE_URL: gateway_base_url, ENV_API_KEY: token}
+    if vendor_api_key and vendor_api_key in env.values():
+        raise DshProfileLockError("供应商密钥不得进入容器环境")
+    for name in FORBIDDEN_IN_CONTAINER_ENV_NAMES:
+        env.pop(name, None)
+    return env
+
+
 @dataclass(frozen=True)
 class DisabledPlugin:
     """一条禁用项：`plugin_id` 是 `--patch` 里按 id 打的；`package` 是上游包名（用于取证/断言）。"""
@@ -231,18 +256,22 @@ class DshAdapter(AgentRuntimeAdapter):
         return self.profile.env()
 
     def build_turn_env(self, *, token: str) -> dict[str, str]:
-        """组装容器内环境变量：baseURL → 网关；API Key → **短期令牌**（非供应商密钥）。"""
+        """组装容器内环境变量：baseURL → 网关；API Key → **短期令牌**（非供应商密钥）。
+
+        令牌面的常量 / 禁止名单 / 供应商密钥拒绝性自检**全部复用模块级 `build_token_env`**
+        （唯一事实源，不在本方法内复写）。
+        """
         env = dict(self.profile_env)
-        env[ENV_BASE_URL] = self.config.gateway_base_url
-        env[ENV_API_KEY] = token
+        env.update(
+            build_token_env(
+                token=token,
+                gateway_base_url=self.config.gateway_base_url,
+                vendor_api_key=self.config.vendor_api_key,
+            )
+        )
         env["DSH_HOME"] = self.config.dsh_home_mount
         env["DSH_MODEL"] = self.config.model
         env["DSH_PROVIDER"] = self.config.provider
-        # 拒绝性自检：供应商密钥绝不出现在此（含其字段名）。
-        if self.config.vendor_api_key and self.config.vendor_api_key in env.values():
-            raise DshProfileLockError("供应商密钥不得进入容器环境")
-        for name in FORBIDDEN_IN_CONTAINER_ENV_NAMES:
-            env.pop(name, None)
         return env
 
     def _bound_for(self, context: RuntimeContext, session: str, generation: int) -> str:

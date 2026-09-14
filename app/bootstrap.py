@@ -655,6 +655,8 @@ def build_tool_execution(
     migrate: bool = True,
     runtime_service=None,
     tool_actions=_UNSET,
+    token_store=None,
+    token_registry=None,
 ):
     """按 backend 装配段二工具执行服务（规格 §4.1.6-2）。
 
@@ -662,7 +664,10 @@ def build_tool_execution(
     - 装配失败（缺件 / 配置非法）**不抛进程级异常**：记 `error` 告警并返回 `None`，
       即"拒绝启用真实执行，但不拒绝整个服务进程启动"（§4.1.6-3）；
     - `tool_actions` 由 `app/main.py` 传入与 `RuntimeService` 共用的**同一 027 仓储实例**；
-      未显式传入（`_UNSET`，如单测直连）时才在内部装配。
+      未显式传入（`_UNSET`，如单测直连）时才在内部装配；
+    - `token_store` / `token_registry` 是 ②④ 的**权威状态**（§3.5 P1 第 3 条 / §8 U24）：
+      由 `app/main.py` 传入**装配期单例**，与 `build_exec_callback_guard`（判定侧）**共用同一实例**。
+      未传入时（单测直连）内部新建——此时 mint 侧与回调判定侧**不共享**，②④ 会恒 `403`。
     """
     validate_runtime_settings(settings)
     if settings.agent_runtime_backend != "dsh":
@@ -689,7 +694,14 @@ def build_tool_execution(
             # 配置缺失 / 留空 ⇒ 空列表 ⇒ 不使用旧密钥（fail-closed）。
             previous=parse_previous_body_keys(settings.body_encryption_previous_keys),
         )
-        executor = ContainerExecutor.from_settings(settings)
+        # ②④⑤ 的令牌控制面（§8 U24 收口）：mint 侧写、判定侧读，**共用同一 store/registry**。
+        turn_tokens = _build_turn_token_controller(
+            settings, store=token_store, registry=token_registry
+        )
+        # 终态同步吊销（⑤）经 `from_settings` 注入（§8 U25 A2 缺口收口）。
+        executor = ContainerExecutor.from_settings(
+            settings, token_revoker=turn_tokens.on_terminal
+        )
         workspace = WorkspaceManager(settings.exec_workspace_root)
         tool_execution = ToolExecutionService(
             catalog=catalog,
@@ -709,6 +721,7 @@ def build_tool_execution(
                 if runtime_service is not None
                 else None
             ),
+            turn_tokens=turn_tokens,
         )
     except ToolExecutionConfigError as exc:
         get_logger().error("段二真实执行装配失败，已拒绝启用：%s", exc)
@@ -719,9 +732,31 @@ def build_tool_execution(
         run_records=run_records,
         tool_actions=tool_actions,
         catalog=catalog,
+        turn_tokens=turn_tokens,
     ):
         return None
     return tool_execution
+
+
+def _build_turn_token_controller(settings: Settings, *, store=None, registry=None):
+    """装配 §3.5 P1 第 3 条 ②④⑤ 的令牌控制面（**消费既有 `model_gateway_mint_secret`**）。
+
+    配置项**不新增**：网关地址与网关控制面密钥分别复用 `model_gateway_base_url` /
+    `model_gateway_mint_secret`（后者此前在 `app/` 内**零消费者**，本次开始消费）。
+    """
+    from .tool_execution.active_execution import ActiveExecutionRegistry
+    from .tool_execution.token_binding import TokenBindingStore
+    from .tool_execution.turn_token import TurnTokenController
+
+    return TurnTokenController(
+        store=store if store is not None else TokenBindingStore(),
+        registry=registry if registry is not None else ActiveExecutionRegistry(),
+        gateway_base_url=settings.model_gateway_base_url,
+        mint_secret=settings.model_gateway_mint_secret,
+        timeout_seconds=float(settings.model_gateway_upstream_timeout_seconds),
+        # 供应商密钥：控制器只把它用于「拒绝性自检」，**绝不注入容器**（§3.5 P1）。
+        vendor_api_key=settings.model_gateway_upstream_api_key,
+    )
 
 
 def _build_tool_action_store(settings: Settings, *, connection=None, migrate: bool = True):
@@ -956,12 +991,16 @@ def build_conversation_execution_service(
     )
 
 
-def build_exec_callback_guard(settings: Settings, *, audit=None):
+def build_exec_callback_guard(settings: Settings, *, audit=None, store=None, registry=None):
     """装配工作台侧的「执行回调接收」②④ 判定组件（规格 §3.5 P1 第 3 条 ②④ / §8 U21 裁决）。
 
     2026-09-14 返工（§8 U21 裁决「候选②：边车纯转发 + 判定回工作台」）：判定落点回到**工作台**
     的权威状态处——`expected` 从 `ActiveExecutionRegistry`（会话当前代次）重建、**绝不取自请求体**，
     与令牌自持绑定（`TokenBindingStore`，mint 时落）做 `constant-time` 比对。边车不再持有这些状态。
+
+    `store` / `registry` 由 `app/main.py` 传入**装配期单例**，与 mint 侧
+    （`build_tool_execution` → `TurnTokenController`）**共用同一实例**（§8 U24：不共享则 ②④ 恒 `403`）。
+    未传入时（单测直连）内部新建。
     """
     validate_runtime_settings(settings)
     from .tool_execution.active_execution import ActiveExecutionRegistry
@@ -969,7 +1008,9 @@ def build_exec_callback_guard(settings: Settings, *, audit=None):
     from .tool_execution.token_binding import TokenBindingStore
 
     return WorkbenchCallbackGuard(
-        store=TokenBindingStore(), registry=ActiveExecutionRegistry(), audit=audit
+        store=store if store is not None else TokenBindingStore(),
+        registry=registry if registry is not None else ActiveExecutionRegistry(),
+        audit=audit,
     )
 
 

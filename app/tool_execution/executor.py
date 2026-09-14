@@ -23,7 +23,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 from .errors import ToolExecutionConfigError, WorkspaceError
@@ -85,10 +85,16 @@ class ContainerSpec:
     workspace_mount: str = WORKSPACE_MOUNT
     scratch_size_mb: int = FALLBACK_SCRATCH_SIZE_MB
     network_name: str = INTERNAL_NETWORK_NAME
+    # 容器内环境（短期网关令牌等）：内容由 `dsh.build_token_env` 生成（**唯一事实源**），
+    # 只含「网关内网地址 + 短期令牌」；**供应商密钥不进容器**。默认空 = 不注入任何 env。
+    environment: Mapping[str, str] = field(default_factory=dict)
 
     def docker_args(self, workspace_path: str) -> list[str]:
-        """加固口径的 CLI 等价 argv（工作卷为 tmpfs，故无 `-v` 宿主绑定）。"""
-        return [
+        """加固口径的 CLI 等价 argv（工作卷为 tmpfs，故无 `-v` 宿主绑定）。
+
+        env 与 `create_kwargs` **同口径**（同一 `self.environment`，防两份口径漂移）。
+        """
+        args = [
             "run",
             "--rm",
             "--read-only",
@@ -112,14 +118,17 @@ class ContainerSpec:
             f"{TMP_MOUNT}:{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
             "--tmpfs",
             f"{DEV_SHM_MOUNT}:{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
-            self.image,
         ]
+        for key in sorted(self.environment):
+            args.extend(["-e", f"{key}={self.environment[key]}"])
+        args.append(self.image)
+        return args
 
     def create_kwargs(
         self, *, labels: Mapping[str, str], command: list[str]
     ) -> dict[str, object]:
         """Docker SDK 的 `containers.run(..., **kwargs)` 参数（加固口径唯一来源）。"""
-        return {
+        kwargs: dict[str, object] = {
             "image": self.image,
             "command": command,
             "detach": True,
@@ -139,6 +148,9 @@ class ContainerSpec:
                 DEV_SHM_MOUNT: f"{TMPFS_OPTIONS},size={self.scratch_size_mb}m",
             },
         }
+        if self.environment:
+            kwargs["environment"] = dict(self.environment)
+        return kwargs
 
 
 @dataclass(frozen=True)
@@ -211,7 +223,13 @@ class ContainerExecutor:
         self.token_revoker = token_revoker
 
     @classmethod
-    def from_settings(cls, settings) -> "ContainerExecutor":
+    def from_settings(cls, settings, *, token_revoker: Callable[[str], None] | None = None) -> "ContainerExecutor":
+        """按配置装配；`token_revoker` = **终态同步吊销**出口（⑤），由装配处注入（§3.5 P1 ⑤）。
+
+        此前本方法**不接受也不传** `token_revoker`（§8 U25 A2 登记的"真缺口"），故生产恒为 `None`
+        且 `_revoke_on_terminal` 首行即 `return`。**本次一并收口**：装配处传入
+        `TurnTokenController.on_terminal`（内部用 `build_terminal_state_revoker` 做网关吊销）。
+        """
         return cls(
             image_digest=settings.exec_image_digest,
             pids_limit=settings.exec_pids_limit,
@@ -219,11 +237,12 @@ class ContainerExecutor:
             cpu_quota=settings.exec_cpu_quota,
             timeout_seconds=settings.exec_timeout_seconds,
             orphan_limit=settings.exec_orphan_limit,
+            token_revoker=token_revoker,
         )
 
     # ------------------------------------------------------------------ 装配
 
-    def build_spec(self) -> ContainerSpec:
+    def build_spec(self, *, environment: Mapping[str, str] | None = None) -> ContainerSpec:
         return ContainerSpec(
             image=self.image_digest,
             pids_limit=self.pids_limit,
@@ -233,6 +252,7 @@ class ContainerExecutor:
             workspace_mount=self.workspace_mount,
             scratch_size_mb=self.scratch_size_mb,
             network_name=self.network_name,
+            environment=dict(environment or {}),
         )
 
     def client(self) -> Any:
@@ -289,11 +309,18 @@ class ContainerExecutor:
 
     # ------------------------------------------------------------------ 执行
 
-    def create(self, *, tool_key: str, params: Mapping[str, Any], workspace_path: str) -> Any:
+    def create(
+        self,
+        *,
+        tool_key: str,
+        params: Mapping[str, Any],
+        workspace_path: str,
+        environment: Mapping[str, str] | None = None,
+    ) -> Any:
         """创建并启动一个加固容器（**工作卷 = 容器内 tmpfs**）；调用方负责销毁。"""
         command = _command_for(tool_key, params)
         self._ensure_internal_network()
-        spec = self.build_spec()
+        spec = self.build_spec(environment=environment)
         kwargs = spec.create_kwargs(
             labels={MANAGED_LABEL: "1", RUN_LABEL: _run_id_from(workspace_path)},
             command=command,
@@ -320,10 +347,19 @@ class ContainerExecutor:
         params: Mapping[str, Any],
         workspace_path: str,
         spec: ContainerSpec | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> ExecutionOutcome:
-        """真实执行一次工具调用：超时 → **拒绝并终止容器**（fail-closed）。"""
+        """真实执行一次工具调用：超时 → **拒绝并终止容器**（fail-closed）。
+
+        `environment` = 本次 turn 的容器内环境（**短期网关令牌**；由控制面 mint 后注入）。
+        """
         self.enforce_orphan_limit()
-        container = self.create(tool_key=tool_key, params=params, workspace_path=workspace_path)
+        container = self.create(
+            tool_key=tool_key,
+            params=params,
+            workspace_path=workspace_path,
+            environment=environment,
+        )
         timed_out = False
         status_code: int | None = None
         try:
@@ -425,13 +461,21 @@ class DeterministicFakeExecutor:
         return tuple(self._calls)
 
     def execute(
-        self, *, tool_key: str, params, workspace_path: str, spec: ContainerSpec | None = None
+        self,
+        *,
+        tool_key: str,
+        params,
+        workspace_path: str,
+        spec: ContainerSpec | None = None,
+        environment=None,
     ) -> ExecutionOutcome:
         self._calls.append(
             {
                 "tool_key": tool_key,
                 "workspace_path": workspace_path,
                 "param_count": len(params) if params is not None else 0,
+                # 只记**键名**（供断言"env 已注入"），**绝不记值**（防令牌明文进测试产物）。
+                "environment_keys": sorted(environment) if environment else [],
             }
         )
         summary: dict[str, object] = {

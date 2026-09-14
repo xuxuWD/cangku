@@ -49,8 +49,9 @@ from .settings import get_settings, resolve_cors_options, validate_runtime_setti
 from .runtime.authorization import ExecutionNotAuthorized
 from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable
 from .tool_execution.errors import ToolExecutionError
+from .tool_execution.active_execution import ActiveExecutionRegistry
 from .tool_execution.callback_guard import CallbackRateLimiter, shared_secret_matches
-from .tool_execution.token_binding import BindingDenied
+from .tool_execution.token_binding import BindingDenied, TokenBindingStore
 from .tool_execution.cleanup import build_body_cleanup_task, build_orphan_cleanup_task
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.records import FinishReason, RunRecordNotFound
@@ -145,6 +146,11 @@ runtime_service = build_runtime_service(
     state_store=runtime_state_store,
     tool_actions=tool_action_store,
 )
+# ②④ 的权威状态（§3.5 P1 第 3 条 / §8 U24）：**装配期单例**，`build_tool_execution`
+# （mint 侧写：`TokenBindingStore.record` + `ActiveExecutionRegistry.register`）与
+# `build_exec_callback_guard`（判定侧读）**必须共用同一实例**，否则 ②④ 恒 `403`。
+exec_authority_store = TokenBindingStore()
+exec_authority_registry = ActiveExecutionRegistry()
 # 段二（dsh 接入段）：backend=mock 时为 None；backend=dsh 且缺件时记 error 但不退进程（§4.1.6-2/-3）。
 tool_execution_service = build_tool_execution(
     settings,
@@ -152,6 +158,8 @@ tool_execution_service = build_tool_execution(
     audit=audit_service,
     runtime_service=runtime_service,
     tool_actions=tool_action_store,
+    token_store=exec_authority_store,
+    token_registry=exec_authority_registry,
 )
 # 孤儿容器清扫（§3.3 生命周期 / §8 U17 ⑥）：启动时 + 按 WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS
 # 周期，**跑在 API 进程内**；未启用真实执行（backend=mock）时不注册（不引入后台线程）。
@@ -181,7 +189,12 @@ conversation_execution_service = build_conversation_execution_service(
 # 段二（dsh 接入段）执行回调接收 + ②④ 判定（§3.5 P1 第 3 条 / §8 U21 裁决「候选②」）：
 # 边车是**无状态纯转发**，②④ 判定落回**工作台**的权威状态处——`expected` 从工作台权威状态重建
 # （`ActiveExecutionRegistry`，**绝不取自请求体**），与令牌自持绑定做 `constant-time` 比对。
-workbench_callback_guard = build_exec_callback_guard(settings, audit=audit_service)
+workbench_callback_guard = build_exec_callback_guard(
+    settings,
+    audit=audit_service,
+    store=exec_authority_store,
+    registry=exec_authority_registry,
+)
 # 边车 → 工作台 的限流（§8 U21 裁决：`100` rps，超限 `429`）；进程内令牌桶（多副本为「每副本」口径）。
 exec_callback_limiter = CallbackRateLimiter(rate_per_second=100.0)
 content_store = build_content_store(settings)

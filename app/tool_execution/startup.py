@@ -15,11 +15,15 @@ def assert_real_execution_ready(
     run_records,
     tool_actions,
     catalog,
+    turn_tokens=None,
 ) -> bool:
     """断言真实执行所需的装配件齐备；返回 `True` = 放行，`False` = 拒绝启用（已记 error）。
 
     - `backend=dsh` 时 `tool_execution`、`run_records`、`tool_actions` 三者必须非 `None`；
-    - `ToolSpecCatalog` 中每个工具的每个参数都必须显式声明 `param_roles`。
+    - `ToolSpecCatalog` 中每个工具的每个参数都必须显式声明 `param_roles`；
+    - `turn_tokens`（短期网关令牌控制面，§3.5 P1 第 3 条 ②④⑤）**可选传入**：传入时把它的
+      `problems()`（如缺 `WORKBENCH_MODEL_GATEWAY_MINT_SECRET` / 网关地址）一并纳入 ⇒
+      **缺失即拒绝启用真实执行**（`False`，只记 error、**不打挂进程**）。
     """
     problems: list[str] = []
     if tool_execution is None:
@@ -32,6 +36,8 @@ def assert_real_execution_ready(
         problems.append("ToolSpecCatalog 未装配")
     else:
         problems.extend(catalog.param_role_problems())
+    if turn_tokens is not None:
+        problems.extend(turn_tokens.problems())
 
     if problems:
         logger = get_logger()

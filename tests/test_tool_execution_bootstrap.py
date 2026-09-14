@@ -57,6 +57,9 @@ def _dsh_settings(tmp_path, **overrides) -> Settings:
         body_encryption_key=base64.b64encode(os.urandom(32)).decode("ascii"),
         exec_workspace_root=str(tmp_path),
         exec_image_digest="registry.local/dsh@sha256:abc",
+        # §3.5 P1 第 3 条 ②④⑤：令牌控制面为**真实执行的前置件**（缺件即拒绝启用，见 startup 断言）。
+        model_gateway_base_url="http://gw.internal:8080",
+        model_gateway_mint_secret="unit-test-mint-secret",
     )
     base.update(overrides)
     return Settings(**base)

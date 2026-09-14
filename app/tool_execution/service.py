@@ -168,10 +168,14 @@ class ToolExecutionService:
         needs_approval_fn: Callable[[str, str, str], bool] | None = None,
         now: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
+        turn_tokens=None,
     ) -> None:
         self.catalog = catalog
         self.body_cipher = body_cipher
         self.executor = executor
+        # ⑧ 前的**短期网关令牌**接线（§3.5 P1 第 3 条 ②④⑤）：一次 turn = 一次 ⑧ 执行。
+        # 为 `None`（如单测直连 / backend=mock）时**不注入任何 env**（既有行为不变）。
+        self.turn_tokens = turn_tokens
         self.workspace = workspace
         self.tool_actions = tool_actions
         self.run_records = run_records
@@ -442,10 +446,22 @@ class ToolExecutionService:
         action: ToolAction | None,
     ) -> Mapping[str, object]:
         try:
+            # ⑧ 前进入新 turn（§3.5 P1 第 3 条）：mint + 落自持绑定 + 登记当前执行；返回容器内 env。
+            # 终态吊销由 `ContainerExecutor(token_revoker=…)` 触发（容器到达终态即 retire + revoke）。
+            environment = None
+            if self.turn_tokens is not None:
+                environment = self.turn_tokens.open_turn(
+                    tenant_id=request.tenant_id,
+                    session_id=request.task_id,
+                    run_id=request.run_id,
+                )
             outcome = self.executor.execute(
-                tool_key=spec.key, params=params, workspace_path=workspace_path
+                tool_key=spec.key,
+                params=params,
+                workspace_path=workspace_path,
+                environment=environment,
             )
-        except Exception as exc:  # noqa: BLE001 - 执行异常一律 502
+        except Exception as exc:  # noqa: BLE001 - 铸令牌 / 执行异常一律 502
             self._fail(request, spec, key="runtime_error", action=action, cause=exc)
         if getattr(outcome, "timed_out", False):
             self._fail(request, spec, key="timeout", action=action)
