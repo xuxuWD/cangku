@@ -436,7 +436,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("INBOX_RETENTION_DAYS", "WORKBENCH_INBOX_RETENTION_DAYS"),
     )
 
-    # ---- 段二（dsh 接入段）新增配置：共 23 项 ----
+    # ---- 段二（dsh 接入段）新增配置：共 24 项 ----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
     # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。
     # 命名口径：只认 `WORKBENCH_` 前缀（由 env_prefix 自动派生），**不设裸名别名** ——
@@ -459,6 +459,11 @@ class Settings(BaseSettings):
     artifact_export_enabled: bool = False  # fail-closed：关闭时 artifact.export 不装配
     # 正文密文密钥：32 字节原始密钥的 base64；必填非空、不进仓库、不复用备份加密密钥。
     body_encryption_key: str = ""
+    # 旧正文密文密钥（多值；§8 U22 裁决）：轮换期**仅用于解密**，且**进程启动时读入** ——
+    # 轮换 = 改配置 + 重启（**无热轮换**）；窗口结束后由运维从配置移除 + 重启（进程不再持有）。
+    # 格式与主密钥同口径（base64(32 字节原始密钥)），**多值以逗号分隔**（见 parse_previous_body_keys）。
+    # fail-closed：缺失 / 留空 ⇒ 不使用旧密钥；解不开一律抛 `BodyCipherError`，绝不静默降级。
+    body_encryption_previous_keys: str = ""
     # 正文密文 TTL 清理周期（秒）：清理在启动时 + 按此周期执行，决定密钥轮换窗口长度。
     body_cleanup_interval_seconds: int = Field(default=60, ge=10, le=86400)
     model_gateway_base_url: str = ""  # 容器内 baseURL 指向的网关地址；供应商域名不得出现在本项
@@ -519,6 +524,20 @@ def parse_cors_origins(raw: str) -> list[str]:
         if not remainder or any(mark in remainder for mark in ("/", "?", "#")):
             raise ValueError(f"CORS 允许来源不能包含路径或查询：{origin}")
     return origins
+
+
+def parse_previous_body_keys(raw: str) -> list[str]:
+    """解析旧正文密文密钥（多值；§8 U22 裁决）：**逗号分隔**，逐项去空白，空项忽略。
+
+    真源（§3.4 R3）只把**单值**主密钥 `WORKBENCH_BODY_ENCRYPTION_KEY` 定死为「32 字节原始密钥的
+    `base64`」，**未规定多值格式**。此处取既有配置风格里最贴近的一种 —— **逗号分隔**（与
+    `cors_allowed_origins` / `content_scrape_allowed_domains` 的分隔方式一致），且 **base64
+    字符集不含逗号**，故分隔无歧义。每个非空项仍是「`base64`(32 字节原始密钥)」，格式与长度
+    校验交给 `BodyCipher.from_base64`（非法即抛 `ToolExecutionConfigError`，拒绝启用真实执行）。
+
+    **缺失 / 留空 ⇒ 返回空列表**（= 不使用旧密钥，fail-closed）。
+    """
+    return [item.strip() for item in (raw or "").split(",") if item.strip()]
 
 
 def resolve_cors_options(settings: Settings) -> dict[str, object] | None:

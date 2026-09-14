@@ -123,7 +123,7 @@ def test_staging_template_states_secret_values_are_not_written() -> None:
     assert "AUTH_TOKEN" in content
 
 
-# 段二（dsh 接入段）新增的 23 项配置：Settings 字段名。
+# 段二（dsh 接入段）新增的 24 项配置：Settings 字段名。
 # 与规格 §4、门禁 §B15、`.env.staging.example` 是同一份清单，改一处必须三处同步。
 STAGE2_SETTINGS_FIELDS = (
     "agent_runtime_backend",
@@ -138,6 +138,7 @@ STAGE2_SETTINGS_FIELDS = (
     "dsh_version",
     "artifact_export_enabled",
     "body_encryption_key",
+    "body_encryption_previous_keys",
     "body_cleanup_interval_seconds",
     "model_gateway_base_url",
     "model_gateway_token_ttl_seconds",
@@ -153,7 +154,7 @@ STAGE2_SETTINGS_FIELDS = (
 
 
 def test_stage2_settings_are_declared() -> None:
-    """23 项必须真实存在于 Settings（防止清单与实现漂移）。"""
+    """24 项必须真实存在于 Settings（防止清单与实现漂移）。"""
     missing = [
         name for name in STAGE2_SETTINGS_FIELDS if name not in Settings.model_fields
     ]
@@ -162,7 +163,7 @@ def test_stage2_settings_are_declared() -> None:
 
 
 def test_staging_template_covers_every_stage2_setting() -> None:
-    """staging 模板必须覆盖段二全部 23 项，否则部署方按模板配置仍会缺项。"""
+    """staging 模板必须覆盖段二全部 24 项，否则部署方按模板配置仍会缺项。"""
     keys = template_keys(STAGING_TEMPLATE)
 
     missing = [
@@ -210,6 +211,7 @@ def test_stage2_defaults_are_pinned() -> None:
         "exec_workspace_root",
         "dsh_version",
         "body_encryption_key",
+        "body_encryption_previous_keys",
         "model_gateway_base_url",
         "model_gateway_upstream_base_url",
         "model_gateway_upstream_api_key",

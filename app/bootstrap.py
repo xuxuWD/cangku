@@ -23,7 +23,7 @@ from .planner.service import PlannerService
 from .planner.store import InMemoryPlanProposalStore
 from .repository import PostgresTaskRepository, TaskRepository
 from .sessions import InMemorySessionRevocationStore
-from .settings import Settings, validate_runtime_settings
+from .settings import Settings, parse_previous_body_keys, validate_runtime_settings
 from .workforce.store import (
     InMemoryWorkforceDirectoryStore,
     PostgresWorkforceDirectoryStore,
@@ -683,7 +683,12 @@ def build_tool_execution(
         catalog = build_tool_spec_catalog()
         if tool_actions is _UNSET:
             tool_actions = _build_tool_action_store(settings, connection=connection, migrate=migrate)
-        body_cipher = BodyCipher.from_base64(settings.body_encryption_key)
+        body_cipher = BodyCipher.from_base64(
+            settings.body_encryption_key,
+            # 旧密钥在**进程启动时**读入（§8 U22：轮换 = 改配置 + 重启，**无热轮换**）。
+            # 配置缺失 / 留空 ⇒ 空列表 ⇒ 不使用旧密钥（fail-closed）。
+            previous=parse_previous_body_keys(settings.body_encryption_previous_keys),
+        )
         executor = ContainerExecutor.from_settings(settings)
         workspace = WorkspaceManager(settings.exec_workspace_root)
         tool_execution = ToolExecutionService(
