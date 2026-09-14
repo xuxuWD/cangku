@@ -257,6 +257,20 @@
 | **未验证** | ⚠️ **未验证**多副本/纠删码、S3 分片上传、生命周期、跨版本升级、压测（本项目当前均未使用）；⚠️ **已知限制**：凭据须为 **JSON 安全字符**（含 `"`/`\` 会启动失败，**fail-closed 不静默降级**） |
 | **依据** | 自主可控方案 §8 第 7 项 / **§11.12**；许可清单【MinIO 替代候选取证】；门禁 §B16 |
 
+### 2026-09-14 · 修复缺陷 N4：`ExternalAdapter.health()` 的 `status` 改为透传上游自报（与 N3 同口径）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（**已实施并验证**） |
+| **变更** | [`app/runtime/adapters/common.py`](../app/runtime/adapters/common.py) `ExternalAdapter.health()`（原关键行 `:190` → 现行 `:191-194`）：`summary = {"runtime": self.endpoint, "status": "ok"}` → `raw_status = raw.get("status"); summary = {"runtime": self.endpoint, "status": raw_status if isinstance(raw_status, str) else "ok"}`。**测试**：[`tests/test_runtime_adapters.py`](../tests/test_runtime_adapters.py) **更正 1 处把 N4 固化的断言**（`test_external_health_is_reduced_to_safe_summary`：`status` 期望 `"ok"` → `"unavailable"`）+ **新增 1 用例** `test_external_health_passes_through_upstream_declared_status`（正面验证） |
+| **原因** | 缺陷 **N4**（规格 §8 U25 补充表，上一轮 N3 修复时发现，**与 N3 同症、另一处**）：`ExternalAdapter.health()` **把 `status` 写死为 `"ok"`**，**丢弃**上游 `GET {endpoint}/health` 自报的 `status` ⇒ **deerflow / codex_worker / hermes / agentscope 四个外部运行时**在下游自报不可用（如 `unavailable`）时**运维面板仍显示 ok** ⇒ **运维面板误判** |
+| **影响面** | ① `status` **改为如实透传上游自报值**（不再写死 `"ok"`）；② **字段白名单 / 过滤语义未动**（仍为 `runtime` + `status` + 可选 `version/capabilities/sandbox/reason`）；③ **未上报 `status` 或类型不符 ⇒ 维持既有默认 `ok`**（`status` 在外部契约中为**可选**字段，`docs/runtime-onboarding-request.md` §1.4；`tests/test_runtime_api.py:46` 既已要求不自报 status 的 `mock` 显示 `ok`）—— **与 N3 缺省口径一致，未自造新默认口径**；④ **不动**：`RuntimeRegistry.health()`（N3 已修处）、`constructors`、`migrations/`、审计动作码 |
+| **回退方式** | 将该行还原为 `"status": "ok"` 的旧写法即可（**文件级、无数据迁移**；⚠️ 回退即回到缺陷 N4）。**未经确认不得执行回滚。** |
+| **验证** | ✅ **正面**：上游自报 `unavailable` ⇒ `AgentScopeAdapter(...).health() == {'runtime': 'https://agentscope', 'status': 'unavailable', 'reason': '维护中'}`（**原始输出见下**）；✅ **缺省口径**：上游未上报 status ⇒ 仍为 `{'runtime': 'http://deerflow', 'status': 'ok', 'version': 'v3'}`；✅ **回归全量**：`py -m pytest -o addopts=""` ⇒ **`1709 passed, 31 skipped`**（基线 **1708 passed, 31 skipped** ＋ **本批新增 1 用例**，**无既有用例被跳过或删除**）＋ `py -m compileall -q app tests` ⇒ **exit=0** |
+| **反假（1 组真变红）** | 把 `status` **改回写死 `"ok"`** ⇒ `py -m pytest -o addopts="" tests/test_runtime_adapters.py::test_external_health_is_reduced_to_safe_summary tests/test_runtime_adapters.py::test_external_health_passes_through_upstream_declared_status -q` ⇒ **`2 failed`**：前者 `tests\test_runtime_adapters.py:179: AssertionError: {'status': 'unavailable'} != {'status': 'ok'}`，后者 `AssertionError: {'status': 'ok'} != {'status': 'unavailable'}`。**还原**后同两用例通过（`2 passed`），复跑 `tests/test_runtime_adapters.py tests/test_runtime_registry_config.py` ⇒ **`39 passed`**。 |
+| **未验证** | ⚠️ **真实外部运行时未接入**（deerflow / codex_worker / hermes / agentscope 的生产 endpoint 均未联调）⇒ **未起服务实证** `GET /api/v1/runtimes/health` 对这些键的输出（面板里**根本没有这些键**），本修复只保证"若外部 adapter 注册进注册表，其自报 `status` 会被如实输出"；⚠️ **其它 adapter 的 `health()` 契约未逐一核**（本轮只核 `ExternalAdapter` 一族 + `DshAdapter` / `RAGFlowAdapter` 为 N3 已核）；⚠️ **"缺 `status` 时改为 fail-closed 默认"真源未规定 ⇒ 未做、需另裁决**（同 N3） |
+| **依据** | 规格 §8 **U25 补充表 N4 行**；`docs/runtime-onboarding-request.md` §1.4（`status` 为可选字段）；N3 修法 [`app/runtime/registry.py:85-86`](../app/runtime/registry.py)（**同口径**）；`tests/test_runtime_api.py:46`（既有 `mock` ⇒ `ok` 断言） |
+
 ### 2026-09-14 · 修复缺陷 N3：`RuntimeRegistry.health()` 的 `status` 改为按 adapter 自报输出
 
 | 项 | 内容 |
