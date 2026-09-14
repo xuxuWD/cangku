@@ -11,11 +11,9 @@
 
 from __future__ import annotations
 
-import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
 
 from .errors import ToolExecutionConfigError
 
@@ -88,14 +86,3 @@ def build_terminal_state_revoker(
         client.revoke(bound)
 
     return revoke
-
-
-def parse_revoke_response(payload: str) -> dict[str, Any]:  # pragma: no cover - 便捷解析
-    """把 `/__revoke` 的响应文本解析为计数（仅原型取证脚本用）。"""
-    text = (payload or "").strip()
-    if text.startswith("revoked "):
-        text = text[len("revoked ") :]
-    try:
-        return {"revoked": int(text)}
-    except ValueError:
-        return json.loads(text)

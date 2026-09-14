@@ -664,25 +664,6 @@ class ToolExecutionService:
         params[body_params[0]] = self.body_cipher.decrypt(action.body_ciphertext)
         return params
 
-    def _record_blocked(self, action: ToolAction, semantics: FailureSemantics) -> None:
-        """（保留）供调用方按失败语义补记审计；九步闸门内统一走 `_raise_blocked` / `_fail`。"""
-        if semantics.audit_action is None or self.audit is None:
-            return
-        self.audit.record(
-            semantics.audit_action,
-            tenant_id=action.tenant_id,
-            actor_id=action.requested_by,
-            target_type="tool_action",
-            target_id=action.action_id,
-            detail={
-                "tool_key": action.tool_key,
-                "risk_level": action.risk_level.value,
-                "status": action.status.value,
-                "reason": semantics.reason_code.value if semantics.reason_code else None,
-                "run_id": action.run_id,
-            },
-        )
-
 
 def _default_id() -> str:
     from uuid import uuid4

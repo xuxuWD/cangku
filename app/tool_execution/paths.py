@@ -35,10 +35,6 @@ class PathDenied(ValueError):
     """路径不在允许范围内（③ → 403 `path_denied`）。"""
 
 
-class BlacklistedPath(PathDenied):
-    """命中 C 类路径黑名单（④-2 → 403 `blacklisted`）。"""
-
-
 def _posix(value: str) -> str:
     return os.path.expanduser(value).replace("\\", "/")
 
