@@ -8,6 +8,20 @@
 
 ## 记录
 
+### 2026-09-14 · 正文密文密钥轮换的**旧密钥配置落点**（新增外置配置，§8 U22 裁决）—— 配置面变更（可回退）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（随 §8 U22 裁决「触发方式 = 启动时读配置；旧密钥入新配置项」实现登记） |
+| **变更** | ① **新增外置配置 `WORKBENCH_BODY_ENCRYPTION_PREVIOUS_KEYS`（多值）**：`app/settings.py` 增 `body_encryption_previous_keys: str = ""`（**默认空 = 不使用旧密钥**）；**多值格式 = 逗号分隔的 `base64`(32 字节原始密钥)**（真源未规定多值格式 → 取既有逗号分隔风格；`base64` 字符集不含逗号，分隔无歧义）；解析器 `app/settings.py::parse_previous_body_keys`（空 / 空白 / 仅分隔符 ⇒ 空列表）。② **启动时接线（唯一读入点）**：`app/bootstrap.py::build_tool_execution` 装配处把 `previous` 传给 `BodyCipher.from_base64(...)` —— **进程启动时读入一次、运行期不重读**（**无热轮换**）。③ **三处台账同批同步**：`app/settings.py`（段二 **23 → 24 项**）/ `.env.staging.example`（新增该项，**留空占位、无真实值**）/ `tests/test_env_templates.py` 的 `STAGE2_SETTINGS_FIELDS`（**23 → 24** + 纳入「fail-closed 默认留空」清单）；规格 §4 与门禁 §B15 的项数同批改为 **24**。 |
+| **原因** | §8 U22：双密钥机制（新密钥加密 / 旧密钥**仅解密**）已实现，但**没有「上一把密钥」的配置落点 / 格式 / 销毁口径** ⇒ 生产上无人能把旧密钥交给进程 ⇒ 轮换**事实上无法执行**。 |
+| **影响面** | ① **配置面**：新增 1 项外置配置（**进程启动时读入**）；**不改数据模型、不改权限模型、不动迁移 `027`、不新增审计动作码**；② **窗口长度公式 `rotation_window_seconds` 未改动**（按裁决）；③ **fail-closed**：配置缺失 / 为空 ⇒ 不使用旧密钥；解密失败仍**抛 `BodyCipherError`**（不静默返回空）；④ **明确无热轮换**（未实现任何运行期重载 / 热加载）。 |
+| **验证（已做）** | ✅ `tests/test_tool_execution_bootstrap.py` 三用例（轮换端到端 / 窗口外失效 / fail-closed，装配处真路径）；✅ `tests/test_body_cipher.py` 多值解析两用例；✅ `tests/test_env_templates.py` 三守护用例（23 → 24）复绿；✅ **反假 2 组**（见下行原始输出）；✅ `py -m compileall -q app` exit=0。**末行与全量回归见规格 §8 U22 与门禁 §B15**（本文件不重复全量数字）。 |
+| **反假原始输出（改坏 → 变红 → 还原）** | **组 1**（`app/bootstrap.py` 装配处**忽略 `previous`**）：`py -m pytest -o addopts="" tests/test_tool_execution_bootstrap.py::test_body_key_rotation_end_to_end_via_bootstrap -q` ⇒ **`1 failed`**，`E app.tool_execution.errors.BodyCipherError: 正文密文校验失败（密钥不匹配或数据被篡改）`。**组 2**（`app/tool_execution/body_cipher.py` 的 `decrypt` 失败**改为 `return ""`**）：`py -m pytest -o addopts="" tests/test_tool_execution_bootstrap.py::test_body_key_rotation_outside_window_fails_closed tests/test_tool_execution_bootstrap.py::test_body_previous_keys_missing_or_blank_is_fail_closed tests/test_body_cipher.py::test_wrong_key_raises -q` ⇒ **`3 failed`**，`Failed: DID NOT RAISE <class 'app.tool_execution.errors.BodyCipherError'>`。两处均已还原并复绿。 |
+| **未验证（不得读成已验）** | ① **是否真跑了「进程重启」** —— 本轮以「**重新调用装配函数构造新实例**」**等价模拟**「重启后读入配置」，**并非真实进程重启**（未起两进程、未做滚动重启）；② **多副本 / 多进程窗口一致性**（密钥集为**进程内对象**，多副本各自读配置）；③ **真库下的轮换路径**（`workbench_tool_actions.body_ciphertext` 真行 + 真解密）；④ **生产旧密钥的来源与保管**（从哪来、存哪、谁有权读、如何注入）**未定 / 未验证**；⑤ 旧密钥**多值**仅做「解析 + 解密可用」用例，**未验证「同时保留多把旧密钥」的运维流程**。 |
+| **回退方式** | 还原 `app/settings.py` / `app/bootstrap.py` / `.env.staging.example` / `tests/test_env_templates.py` / `tests/test_body_cipher.py` / `tests/test_tool_execution_bootstrap.py`，并回退规格 §4 / §8 U22 与门禁 §B15 的相关段落 ⇒ 回到「旧密钥无配置落点、轮换不可执行」状态。**未经确认不得执行回滚。** |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §3.4 约束 1 / §4 / §8 U22；门禁 [`dsh-integration-preflight-checklist.md`](dsh-integration-preflight-checklist.md) §B15；实现 `app/tool_execution/body_cipher.py` / `app/settings.py` / `app/bootstrap.py`；测试 `tests/test_body_cipher.py` / `tests/test_tool_execution_bootstrap.py` / `tests/test_env_templates.py` |
+
 ### 2026-09-14 · 执行回调面**返工**：边车纯转发 + ②④ 判定回工作台 + 专用回调网（网络面 / 信任面变更，§8 U21 裁决「候选②」）
 
 | 项 | 内容 |
