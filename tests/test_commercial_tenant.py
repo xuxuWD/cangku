@@ -28,6 +28,30 @@ def test_deleting_tenant_can_return_to_active_via_state_machine():
         transition_tenant(deleting, TenantStatus.EXPORTING, Actor("owner-1", "customer_admin"))
 
 
+def test_execute_delete_edge_deleting_to_deleted_allowed_others_rejected():
+    """`DELETING → DELETED` 允许边（`execute_delete` 经状态机走此边）；其它非法边仍被拒。"""
+    tenant = Tenant(name="客户 A", owner_id="owner-1", status=TenantStatus.DELETING)
+
+    transition_tenant(tenant, TenantStatus.DELETED, Actor("owner-1", "customer_admin"))
+    assert tenant.status == TenantStatus.DELETED
+
+    # 不得给其它非法边开口子：只有「处于 DELETING」才可到 DELETED。
+    for status in (TenantStatus.TRIAL, TenantStatus.ACTIVE, TenantStatus.SUSPENDED, TenantStatus.EXPORTING):
+        with pytest.raises(CommercialPolicyError):
+            transition_tenant(
+                Tenant(name="客户 A", owner_id="owner-1", status=status),
+                TenantStatus.DELETED,
+                Actor("owner-1", "customer_admin"),
+            )
+    # DELETED 为终态：不得回流。
+    with pytest.raises(CommercialPolicyError):
+        transition_tenant(
+            Tenant(name="客户 A", owner_id="owner-1", status=TenantStatus.DELETED),
+            TenantStatus.ACTIVE,
+            Actor("owner-1", "customer_admin"),
+        )
+
+
 def test_resources_are_scoped_to_tenant_and_workspace():
     tenants = InMemoryCommercialRepository()
     first = tenants.create_workspace("tenant-a", "工作区 1")

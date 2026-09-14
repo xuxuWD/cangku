@@ -130,6 +130,8 @@ def test_postgres_lifecycle_store_scopes_reads_and_updates_by_tenant():
     statements = connection.cursor_instance.statements
     assert any("WHERE id = %s AND tenant_id = %s" in sql for sql, _ in statements)
     assert any("WHERE tenant_id = %s AND kind = %s" in sql for sql, _ in statements)
+    # 排序确定性（E2+E3 真库演练暴露）：list_for_tenant 必须带确定性 ORDER BY，与 list_pending 同口径。
+    assert any("ORDER BY created_at, id" in sql for sql, _ in statements)
     assert any("WHERE id = %s AND tenant_id = %s" in sql for sql, _ in statements if sql.startswith("UPDATE"))
 
 

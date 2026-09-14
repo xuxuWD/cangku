@@ -1,0 +1,89 @@
+"""`PostgresLifecycleJobStore.list_for_tenant` 的**真库**确定性排序回归。
+
+背景（E2+E3 真库演练暴露，已证实）：`list_for_tenant` 原 SQL **无 `ORDER BY`**，而
+`execute_delete` 取 `jobs[-1]` 作「最近的删除作业」⇒ 同租户多条 `kind=delete` 时依赖物理行序、
+可能选错作业。本文件把「加确定性排序后语义确定」变成可重复的真库回归。
+
+口径（沿用 `tests/test_tool_action_store_postgres.py` 先例）：
+  - DSN 从环境变量 **`WORKBENCH_TEST_DATABASE_URL`** 读；**未设置即整体 skip**，
+    因此不影响默认 `pytest` 全量（无库环境不会红）。
+  - 目标库必须是**已完成全部迁移（含 006/007）**的库；本文件**不建表、不迁移**，
+    缺表时应**显式失败**而不是静默跳过。
+  - 只操作 `TENANT` 这一个租户的数据，每个用例前后自清（按外键逆序删）。
+  - ⚠️ **覆盖现状**：本文件未纳入 `.github/workflows/ci.yml` 的 `postgres` job 的命令
+    （该 job 目前只跑另两个真库模块）⇒ 默认全量下整体 skip。**未验证**：真库路径尚未在 CI 上实跑过。
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import UTC, datetime
+
+import pytest
+
+from app.commercial.lifecycle import LifecycleJob, PostgresLifecycleJobStore
+
+DSN = os.environ.get("WORKBENCH_TEST_DATABASE_URL", "")
+
+pytestmark = pytest.mark.skipif(
+    not DSN,
+    reason="未设置 WORKBENCH_TEST_DATABASE_URL，跳过真库集成测试（见本文件 docstring 的局限声明）",
+)
+
+TENANT = "test-lifecycle-pg"
+
+
+@pytest.fixture()
+def store():
+    psycopg = pytest.importorskip("psycopg")
+    connection = psycopg.connect(DSN, autocommit=True)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO workbench_tenants (id, name, owner_id, status)
+            VALUES (%s, '客户PG', 'owner-pg', 'deleting')
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (TENANT,),
+        )
+        cursor.execute("DELETE FROM workbench_lifecycle_jobs WHERE tenant_id = %s", (TENANT,))
+    yield PostgresLifecycleJobStore(connection)
+    with connection.cursor() as cursor:
+        cursor.execute("DELETE FROM workbench_lifecycle_jobs WHERE tenant_id = %s", (TENANT,))
+        cursor.execute("DELETE FROM workbench_tenants WHERE id = %s", (TENANT,))
+    connection.close()
+
+
+def _job(job_id: str, requested_at: datetime) -> LifecycleJob:
+    return LifecycleJob(
+        tenant_id=TENANT,
+        kind="delete",
+        status="cooling_down",
+        requested_by="admin-pg",
+        execute_after=requested_at,
+        id=job_id,
+        requested_at=requested_at,
+        final_exported=True,
+    )
+
+
+def test_list_for_tenant_orders_by_created_at_then_id(store) -> None:
+    """插入顺序与时间顺序不一致时，真库仍按 `created_at, id` 升序返回。"""
+    # 故意先插入时间更晚的 ⇒ 插入顺序 != 时间顺序（无 ORDER BY 时末位会选错）。
+    store.create(_job("job-newer", datetime(2026, 9, 12, 8, 0, tzinfo=UTC)))
+    store.create(_job("job-older", datetime(2026, 9, 10, 8, 0, tzinfo=UTC)))
+
+    listed = store.list_for_tenant(TENANT, kind="delete")
+
+    assert [job.id for job in listed] == ["job-older", "job-newer"]
+
+
+def test_list_for_tenant_breaks_same_timestamp_ties_by_id(store) -> None:
+    """同刻多行：次级键 `id` 使顺序仍确定。"""
+    same = datetime(2026, 9, 12, 8, 0, tzinfo=UTC)
+    store.create(_job("job-b", same))
+    store.create(_job("job-a", same))
+
+    listed = store.list_for_tenant(TENANT, kind="delete")
+
+    assert [job.id for job in listed] == ["job-a", "job-b"]

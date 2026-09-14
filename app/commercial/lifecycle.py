@@ -126,7 +126,12 @@ class InMemoryLifecycleJobStore:
 
     def list_for_tenant(self, tenant_id: str, *, kind: str | None = None) -> list[LifecycleJob]:
         with self._lock:
-            return [job for job in self._jobs.values() if job.tenant_id == tenant_id and (kind is None or job.kind == kind)]
+            jobs = [job for job in self._jobs.values() if job.tenant_id == tenant_id and (kind is None or job.kind == kind)]
+        # 确定性排序，口径与 `list_pending` 一致（PG 侧 = `ORDER BY created_at, id`）。
+        # 依据：E2+E3 真库演练暴露——调用方按"取最近的删除作业"使用本列表，若无确定顺序
+        # 则依赖字典/物理行序，同租户多条 `kind=delete` 时可能选错作业。
+        jobs.sort(key=lambda job: (job.requested_at, job.id))
+        return jobs
 
     def list_pending(self, *, kind: str, limit: int = 100) -> list[LifecycleJob]:
         with self._lock:
@@ -275,7 +280,10 @@ class CommercialLifecycleService:
     def execute_delete(self, tenant_id: str, *, now: datetime | None = None) -> None:
         current = now or datetime.now(UTC)
         jobs = self.job_store.list_for_tenant(tenant_id, kind="delete")
-        job = jobs[-1] if jobs else None
+        # 「最近的删除作业」= 按 (requested_at, id) 显式取最新（与存储层 `ORDER BY created_at, id` 同口径）。
+        # 依据：E2+E3 真库演练暴露——原 `jobs[-1]` 依赖物理行序，同租户多条 `kind=delete` 时可能选错作业；
+        # 这里显式取 max，即便后端返回顺序变化语义仍确定。
+        job = max(jobs, key=lambda candidate: (candidate.requested_at, candidate.id), default=None)
         if job is None or job.execute_after is None:
             raise CommercialPolicyError("没有待执行的删除任务")
         if current < job.execute_after:
@@ -287,10 +295,13 @@ class CommercialLifecycleService:
         if self.audit is None:
             raise CommercialPolicyError("删除执行必须写入审计（未配置审计通道）")
         tenant = self.repository.get_tenant(tenant_id)
+        # 经状态机 `DELETING → DELETED`（与 `cancel_delete` 对称）：不直接改状态字段，非法边由
+        # `transition_tenant` 拒绝。请求人权限已在 `request_delete` 经 `_ensure_admin` 校验；worker 代表
+        # 平台执行，作业未存请求角色（`requested_by` 只有 user_id）⇒ 以平台身份（super_admin）执行状态迁移，
+        # 仅为通过 `ensure_tenant_admin`，不冒充具体客户管理员；此处只强制 `DELETING → DELETED` 这一条边。
+        transition_tenant(tenant, TenantStatus.DELETED, Actor(job.requested_by, "super_admin"))
         if hasattr(self.repository, "set_tenant_status"):
             self.repository.set_tenant_status(tenant_id, TenantStatus.DELETED)
-        else:
-            tenant.status = TenantStatus.DELETED
         job.status = "completed"
         self.job_store.save(job)
         self.audit.record(
@@ -449,6 +460,10 @@ class PostgresLifecycleJobStore:
             with c.cursor() as cur:
                 sql="SELECT id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported FROM workbench_lifecycle_jobs WHERE tenant_id = %s"; params=[tenant_id]
                 if kind is not None: sql += " AND kind = %s"; params.append(kind)
+                # 确定性排序，口径与 `list_pending` 一致（内存侧按 (requested_at, id)）。
+                # 依据：E2+E3 真库演练暴露——调用方"取最近的删除作业"，无 `ORDER BY` 时依赖物理行序，
+                # 同租户多条 `kind=delete` 时可能选错作业。
+                sql += " ORDER BY created_at, id"
                 cur.execute(sql, tuple(params)); rows=cur.fetchall()
         return [LifecycleJob(tenant_id=str(r[1]), kind=str(r[2]), status=str(r[3]), requested_by=str(r[5]), execute_after=r[4], id=str(r[0]), requested_at=r[6] if isinstance(r[6], datetime) else datetime.now(UTC), final_exported=bool(r[7])) for r in rows]
     def list_pending(self, *, kind: str, limit: int = 100) -> list[LifecycleJob]:

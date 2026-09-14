@@ -15,6 +15,7 @@ from app.commercial.lifecycle import (
     DeletionNotPending,
     InMemoryExportPackageStore,
     InMemoryLifecycleJobStore,
+    LifecycleJob,
 )
 from app.commercial.repository import InMemoryCommercialRepository, ResourceNotFound
 from app.commercial.tenant import Actor, CommercialPolicyError, TenantStatus
@@ -366,3 +367,93 @@ def test_cancel_without_pending_delete_raises():
 
     with pytest.raises(DeletionNotPending):
         service.cancel_delete(Actor("owner-1", "customer_admin"), tenant.id)
+
+
+# ---------------------------------------------------------------------------
+# E2+E3 真库演练暴露：list_for_tenant 排序确定性 + execute_delete 走状态机
+# （内存实现；PG 实现见 tests/test_commercial_lifecycle_postgres.py 门控用例）
+# ---------------------------------------------------------------------------
+
+
+def test_list_for_tenant_orders_deterministically_by_time_then_id():
+    """插入顺序与时间顺序不一致时，仍按 (requested_at, id) 升序返回（与 list_pending 同口径）。"""
+    store = InMemoryLifecycleJobStore()
+    newer = LifecycleJob(
+        tenant_id="tenant-ord", kind="delete", status="cooling_down", requested_by="admin-1",
+        requested_at=datetime(2026, 9, 12, 10, 0, tzinfo=UTC), id="job-newer",
+    )
+    older = LifecycleJob(
+        tenant_id="tenant-ord", kind="delete", status="cooling_down", requested_by="admin-1",
+        requested_at=datetime(2026, 9, 10, 10, 0, tzinfo=UTC), id="job-older",
+    )
+    # 故意先插入时间更晚的 ⇒ 插入顺序 != 时间顺序
+    store.create(newer)
+    store.create(older)
+
+    listed = store.list_for_tenant("tenant-ord", kind="delete")
+
+    assert [job.id for job in listed] == ["job-older", "job-newer"]
+
+
+def test_list_for_tenant_breaks_same_timestamp_ties_by_id():
+    """同刻多行：以 id 作稳定次级键 ⇒ 顺序仍确定（不依赖插入/物理行序）。"""
+    store = InMemoryLifecycleJobStore()
+    same = datetime(2026, 9, 12, 10, 0, tzinfo=UTC)
+    store.create(LifecycleJob(
+        tenant_id="tenant-tie", kind="delete", status="cooling_down", requested_by="admin-1",
+        requested_at=same, id="job-b",
+    ))
+    store.create(LifecycleJob(
+        tenant_id="tenant-tie", kind="delete", status="cooling_down", requested_by="admin-1",
+        requested_at=same, id="job-a",
+    ))
+
+    listed = store.list_for_tenant("tenant-tie", kind="delete")
+
+    assert [job.id for job in listed] == ["job-a", "job-b"]
+
+
+def test_execute_delete_targets_most_recent_delete_job():
+    """同租户多条删除作业时，执行的是「最近」那条（显式取最新，不依赖行序）。"""
+    repository, tenant, service = seeded_service(cooldown_days=7)
+    tenant.status = TenantStatus.DELETING  # 测试造景：租户已进入冷静期（等价 request_delete 的效果）
+    newer = LifecycleJob(
+        tenant_id=tenant.id, kind="delete", status="cooling_down", requested_by="admin-1",
+        requested_at=datetime(2026, 9, 12, 8, 0, tzinfo=UTC),
+        execute_after=datetime(2026, 9, 13, 8, 0, tzinfo=UTC), final_exported=True, id="job-newer",
+    )
+    older = LifecycleJob(
+        tenant_id=tenant.id, kind="delete", status="cooling_down", requested_by="admin-1",
+        requested_at=datetime(2026, 9, 10, 8, 0, tzinfo=UTC),
+        execute_after=datetime(2026, 9, 11, 8, 0, tzinfo=UTC), final_exported=True, id="job-older",
+    )
+    service.job_store.create(newer)  # 先插入时间更晚的 ⇒ 插入顺序 != 时间顺序
+    service.job_store.create(older)
+
+    service.execute_delete(tenant.id, now=datetime(2026, 9, 14, 8, 0, tzinfo=UTC))
+
+    assert service.get_job("job-newer").status == "completed"
+    assert service.get_job("job-older").status == "cooling_down"
+    assert service.tenant_status(tenant.id) == TenantStatus.DELETED
+
+
+def test_execute_delete_goes_through_state_machine(monkeypatch):
+    from app.commercial import lifecycle as lifecycle_module
+
+    repository, tenant, service = seeded_service(cooldown_days=7)
+    actor = Actor("admin-1", "customer_admin")
+    job = service.request_delete(actor, tenant.id)
+    service.mark_final_exported(job.id)
+    seen: list[TenantStatus] = []
+    real = lifecycle_module.transition_tenant
+
+    def spy(tenant_obj, target, spy_actor):
+        seen.append(target)
+        return real(tenant_obj, target, spy_actor)
+
+    monkeypatch.setattr(lifecycle_module, "transition_tenant", spy)
+
+    service.execute_delete(tenant.id, now=job.execute_after)
+
+    # 断言：删除执行经 `transition_tenant`（状态机）而非直接改状态字段。
+    assert seen == [TenantStatus.DELETED]
