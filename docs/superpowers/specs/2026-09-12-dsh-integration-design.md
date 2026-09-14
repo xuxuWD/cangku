@@ -881,7 +881,21 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **检索盲区（本清单的边界，不得读成"已穷尽"）**：**通过 `getattr` / 字符串拼接 / 反射构造的调用方查不到**（如 `app\conversation\execution.py:415` 的 `getattr(task_store, "set_pending_approval", None)`、`app\bootstrap.py:755-770` 按 `f"{key}_endpoint"` 拼字段名）；本次未穷举 `app/planner`、`app/commercial`、`app/content`、`app/workforce`、`app/conversation` 的**模块内部**未引用符号。
 
-### U26 门禁 §B14 判据 D / E / F 的取证对象**在生产路径不存在**（证据来自原型） — ⚠️ **部分变更（2026-09-14 接线后：取证对象在生产**已存在**，但**仍未取证**）**
+### U26 门禁 §B14 判据 D / E / F —— ✅ **已取证（2026-09-14，生产装配 + 真容器）**，**形态未达真实 dsh turn**
+
+**取证结论（2026-09-14，P1 接线后重取）**：在 `build_tool_execution(...)`（**真装配**）+ 真 `ContainerExecutor` + **真容器** + **真网关进程**（`python -m app.model_gateway`）下：
+- **D ✅**：容器内 PID1 持有**短期令牌**（`len=43`、前缀掩码 `8FF9A9…`），**非供应商密钥**；**反证**：容器内**用该令牌**访问网关数据面得 **`502`**（网关已接受令牌、仅因上游不可达）——**若令牌无效会是 `401`**。
+- **E ✅**：**四条明文扫描对供应商密钥命中全 0** —— 容器 env **0** ／ `/proc/*/environ` **0** ／ argv **0** ／ **容器内全盘**（4872 文件 / 147 MB，跳 26）**0**；附加 `docker inspect` 全量 JSON **0**；`baseURL` 存在（`http://b14-gateway:8080`，**指向网关**）；`FORBIDDEN_IN_CONTAINER_ENV_NAMES` 命中 `[]`。
+- **F ✅**：① **每 turn 新铸**（两枚不同掩码）② 绑定 `t-b14:task-b14:1` ⑤ **终态吊销**（网关 `/__tokens` **已不在册** + 终态后回调**恒拒 403**）⑥ **孤儿上限**（实机演示抛 `OrphanTokenLimitExceeded`）③④ 指向既有用例。
+- **②④ 写入生效（原始输出）**：`store.lookup(token1)` / `registry.current_for('task-b14')` / `guard.authorize` 三处**均有值**；同实例断言 `turn_tokens.store is store` / `guard.store is store` = `True`。
+- **反假 3 组**：① 供应商密钥进 env ⇒ **抛 `DshProfileLockError`**（拒绝后 registry 无残留）② 去掉 revoke ⇒ 「终态不在册」断言**变红** ③ 不共享单例 ⇒ **`BindingDenied(403)`**。
+
+**🔴 仍未取证（形态限制，不得省略）**：① **未走真实 dsh turn**（容器内跑的是**探测脚本**，`turn_runner` 未装配）⇒ 严格说取到的是「**容器内进程**持何种凭据」**而非**「容器内 **dsh** 持何种凭据」；② **未用真实生产执行镜像**（用的是**机制验证镜像** `python:3.12-slim@sha256:78387bc…`）；③ 网关以**容器内真进程**运行（原因见下）；④ 孤儿上限未在运行中网关打满；⑤ F③/F④ 仅指向既有用例；⑥ 边车端到端未复跑。
+
+**环境事实（本次查得更细，供后续复用）**：**Windows 宿主 ↔ `workbench-exec-internal` 内网容器不可路由** —— TCP 可连、**HTTP 空响应**；**`-p` 在内网桥上不生效**。⇒ 驱动须在**同内网容器内**运行（本次即如此）。
+
+> ⚠️ **以下为「P1 接线前」的历史记录（保留备查，勿再据此判断现状）**：
+
 
 **事实（带证据）**：① **生产路径上没有人 mint** —— mint 的 app 侧唯一客户端 `GatewayTokenClient`（`app\tool_execution\gateway_token.py:41-47`）的**唯一消费者是 `DshAdapter`**（`app\runtime\adapters\dsh.py:264`），而 **`DshAdapter` 未注册进运行时**（见 §U25 A3）⇒ **生产不 mint**；② **生产路径上没有人把令牌放进容器** —— `ContainerExecutor.create_kwargs`（`app\tool_execution\executor.py:118-141`）**完全没有 `environment` 字段**，唯一注入容器 env 的是 `DshAdapter.build_turn_env`（`dsh.py:233-246`，**不可达**），且其依赖的 `turn_runner` **仓库内无任何实现**（全仓仅定义处 + 测试 Fake）；③ **`app/model_gateway` 在全部编排文件（`docker-compose*.yml` / `Dockerfile` / `.env*.example`）中 grep 零命中** ⇒ **网关进程连部署落点都没有**。
 
