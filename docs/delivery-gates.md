@@ -79,7 +79,7 @@
 
 > **CI 强制范围**：第 2–4 条中机器可判定的部分由 `.github/workflows/ci.yml` 在 push / PR 上执行——后端 `pytest` + `compileall`、`admin-web` 与 `companion-pwa` 的 `vitest run` + 生产构建、`desktop` 的 `node --test`（跳过 Electron 二进制下载）。第 1、5、6 条属人工约定，CI 不覆盖。**已在 GitHub Actions 实跑通过**：push 触发 run `34591258934`（当时 v7 版工作流），4 个 job 全绿（后端 31s / 管理台 14s / 伴侣端 13s / 桌面端 13s）；首次实跑为 run `34590744934`。门禁命令与安全约束另由 `tests/test_ci_assets.py` 静态守护。
 >
-> **真库 job（2026-09-14 新增）**：工作流新增第 5 个 job **`postgres`**——用一次性 `pgvector/pgvector:0.8.0-pg16`（按镜像摘要钉死）起真库、以**仓库自身的 `app.migrations.apply_migrations`** 应用 `migrations/*.sql`、设 `WORKBENCH_TEST_DATABASE_URL`，只跑两个「真连库」模块（`tests/test_tool_action_store_postgres.py` / `tests/test_dsh_execution_postgres.py`）并**要求 `skipped == 0`**；用于把这两个此前「无 DSN 即整体 skip ⇒ CI 与一键跑全量都不含它 ⇒ 未受守护」的模块纳入 CI。默认 `backend` job（无库）行为不变。**✅ 已在 GitHub Actions 实跑通过（2026-09-14）**：push `c17ae5d` 触发 run **`34834157946`**（`2026-09-14T10:38Z` 起）——**run 级 `conclusion=success` ⇒ 5 个 job 全绿**（含本 `postgres` job，显示名「后端真库（Postgres service + *_postgres.py）」）；在此之前本机一次性容器已验证其步骤可跑通。（**原"未验证：该 job 尚未在 GitHub Actions 实跑过"一项，据此销掉。**）该 job 另有 **6 条静态守护**（`tests/test_ci_assets.py`：job 存在 / **镜像摘要值钉死为常量** / 应用仓库自身迁移 / 设 DSN / 只跑那两个模块 / **`skipped == 0` 零容忍**）⇒ **防止被删除或改弱**。
+> **真库 job（2026-09-14 新增）**：工作流新增第 5 个 job **`postgres`**——用一次性 `pgvector/pgvector:0.8.0-pg16`（按镜像摘要钉死）起真库、以**仓库自身的 `app.migrations.apply_migrations`** 应用 `migrations/*.sql`、设 `WORKBENCH_TEST_DATABASE_URL`，逐个跑「真连库」模块（当前 3 个：`tests/test_tool_action_store_postgres.py` / `tests/test_dsh_execution_postgres.py` / `tests/test_commercial_lifecycle_postgres.py`）并**要求 `skipped == 0`**；用于把这些此前「无 DSN 即整体 skip ⇒ CI 与一键跑全量都不含它 ⇒ 未受守护」的模块纳入 CI（模块清单可增列，守护方式不变）。默认 `backend` job（无库）行为不变。**✅ 已在 GitHub Actions 实跑通过（2026-09-14）**：push `c17ae5d` 触发 run **`34834157946`**（`2026-09-14T10:38Z` 起）——**run 级 `conclusion=success` ⇒ 5 个 job 全绿**（含本 `postgres` job，显示名「后端真库（Postgres service + *_postgres.py）」）；在此之前本机一次性容器已验证其步骤可跑通。（**原"未验证：该 job 尚未在 GitHub Actions 实跑过"一项，据此销掉。**）该 job 另有 **6 条静态守护**（`tests/test_ci_assets.py`：job 存在 / **镜像摘要值钉死为常量** / 应用仓库自身迁移 / 设 DSN / 逐个逐字断言所列真库模块（漏跑任一模块即红） / **`skipped == 0` 零容忍**）⇒ **防止被删除或改弱**。
 
 RAGFlow/AgentScope 当前仅完成开发期适配器契约与受控注册表验证；`FakeTransport` 测试不等于真实 staging 或真实平台账号验收。
 
@@ -88,5 +88,6 @@ RAGFlow/AgentScope 当前仅完成开发期适配器契约与受控注册表验�
 | 日期 | 原口径 | 新口径 | 理由 |
 | --- | --- | --- | --- |
 | 2026-09-11 | 设备绑定、生产密钥轮换和真实统一登录验收 | 生产密钥轮换与真实统一登录验收（**移除设备绑定**） | 产品决定登录采用「注册申请 + 管理员审批」制：申请人提交账号/密码/职位/个人信息，管理员审批通过即可登录，重复手机号有提示，角色由管理员在审批时指定。设备绑定在该模型下不再是必要条件，故从门禁移除并明确不做；该项剩余部分（密钥轮换、统一登录）仍需外部资源，保持未勾选。 |
+| 2026-09-15 | `postgres` job 只跑 2 个「真连库」模块 | `postgres` job **逐个跑 3 个**（纳入 `tests/test_commercial_lifecycle_postgres.py`） | 新增的真库模块（PG 侧排序确定性等）由 `WORKBENCH_TEST_DATABASE_URL` 门控、本机与默认 `backend` job 均无该变量 ⇒ **整体 skip，无人自动跑**；纳入后该模块随 job 一并真跑，且 `skipped == 0` 判定与镜像摘要钉死均未放宽，另由 `tests/test_ci_assets.py` 逐字断言所列模块（漏跑任一即红）。**未改变**任何既有代码事实。 |
 
 > 口径变更只调整**要求本身**，不改变任何既有代码事实；变更后 9 项未勾选门禁与 `docs/delivery-readiness-checklist.md` 保持同步。
