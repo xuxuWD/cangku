@@ -1,7 +1,7 @@
 import pytest
 
 from app.commercial.repository import InMemoryCommercialRepository, ResourceNotFound
-from app.commercial.tenant import Actor, CommercialPolicyError, TenantStatus
+from app.commercial.tenant import Actor, CommercialPolicyError, Tenant, TenantStatus, transition_tenant
 
 
 def test_tenant_state_transitions_require_authorized_actor():
@@ -14,6 +14,18 @@ def test_tenant_state_transitions_require_authorized_actor():
 
     with pytest.raises(CommercialPolicyError):
         tenants.suspend_tenant(tenant.id, actor=Actor("employee-1", "employee"))
+
+
+def test_deleting_tenant_can_return_to_active_via_state_machine():
+    """裁决 5：`DELETING → ACTIVE` 允许边；非法边仍被拒绝。"""
+    tenant = Tenant(name="客户 A", owner_id="owner-1", status=TenantStatus.DELETING)
+
+    transition_tenant(tenant, TenantStatus.ACTIVE, Actor("owner-1", "customer_admin"))
+    assert tenant.status == TenantStatus.ACTIVE
+
+    deleting = Tenant(name="客户 A", owner_id="owner-1", status=TenantStatus.DELETING)
+    with pytest.raises(CommercialPolicyError):
+        transition_tenant(deleting, TenantStatus.EXPORTING, Actor("owner-1", "customer_admin"))
 
 
 def test_resources_are_scoped_to_tenant_and_workspace():

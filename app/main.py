@@ -62,7 +62,7 @@ from .content.scraper import ScrapeDenied, ScrapeFailed
 from .content.publication_service import PublicationNotAllowed
 from .content.publication_store import PublicationNotFound
 from .content.publisher import PublicationFailed, PublicationNotConfigured
-from .commercial.lifecycle import CommercialLifecycleService, LifecycleJob
+from .commercial.lifecycle import CommercialLifecycleService, DeletionNotPending, LifecycleJob
 from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
 from .agent_services import ModelNotAllowed
@@ -865,6 +865,19 @@ def request_commercial_export(context: UserContext = Depends(current_user)) -> L
 def request_commercial_deletion(context: UserContext = Depends(current_user)) -> LifecycleJobView:
     try:
         job = commercial_lifecycle.request_delete(Actor(context.user_id, context.role), context.tenant_id)
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="租户不存在") from exc
+    return _lifecycle_view(job)
+
+
+@app.post("/api/v1/commercial/deletion-requests/cancel", response_model=LifecycleJobView)
+def cancel_commercial_deletion(context: UserContext = Depends(current_user)) -> LifecycleJobView:
+    try:
+        job = commercial_lifecycle.cancel_delete(Actor(context.user_id, context.role), context.tenant_id)
+    except DeletionNotPending as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CommercialPolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ResourceNotFound as exc:

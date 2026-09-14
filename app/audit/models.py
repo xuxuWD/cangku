@@ -59,6 +59,8 @@ class AuditAction(StrEnum):
     TOOL_BLOCKED = "tool.blocked"
     # 商业化保留策略变更（真源 commercial-g0-design.md:118「任何保留策略变化都写入审计」）
     COMMERCIAL_RETENTION_UPDATED = "commercial.retention.updated"
+    # 租户删除执行（真源 commercial-g0-design.md:114/:174「删除流程包含……审计记录」）
+    COMMERCIAL_DELETION_EXECUTED = "commercial.deletion.executed"
 
 
 class AuditDetailNotAllowed(ValueError):

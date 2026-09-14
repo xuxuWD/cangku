@@ -51,7 +51,8 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.TOOL_EXECUTED.value == "tool.executed"
     assert AuditAction.TOOL_BLOCKED.value == "tool.blocked"
     assert AuditAction.COMMERCIAL_RETENTION_UPDATED.value == "commercial.retention.updated"
-    assert len(set(AuditAction)) == 48
+    assert AuditAction.COMMERCIAL_DELETION_EXECUTED.value == "commercial.deletion.executed"
+    assert len(set(AuditAction)) == 49
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

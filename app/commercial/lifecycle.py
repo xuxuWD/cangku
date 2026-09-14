@@ -7,7 +7,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from .repository import InMemoryCommercialRepository, ResourceNotFound
-from .tenant import Actor, CommercialPolicyError, TenantStatus
+from .tenant import Actor, CommercialPolicyError, TenantStatus, transition_tenant
 from ..audit.models import AuditAction
 from ..audit.service import AuditService
 
@@ -45,6 +45,14 @@ UNIMPLEMENTED_EXPORT_CATEGORIES: frozenset[str] = frozenset(EXPORT_RESOURCE_CATE
 # 导出脱敏契约（docs/api-contract.md:144）：以下内容**一律不导出**。
 EXPORT_REDACTED_FIELDS: tuple[str, ...] = ("密码", "Cookie", "验证码", "令牌", "原始 API 密钥", "客户原文")
 
+# 导出包过期时长（用户裁决 2026-09-14 第 2 条）：`expires_at = created_at + 7 天`。
+# 真源 commercial-g0-design.md:110 只要求「带过期时间」、**未给时长**；本值由裁决补齐。
+EXPORT_PACKAGE_TTL = timedelta(days=7)
+
+
+class DeletionNotPending(CommercialPolicyError):
+    """撤销删除申请时找不到处于冷静期内、可撤销的删除作业。"""
+
 
 @dataclass
 class LifecycleJob:
@@ -79,6 +87,7 @@ class LifecycleJobStore(Protocol):
     def get(self, job_id: str, *, tenant_id: str | None = None) -> LifecycleJob: ...
     def save(self, job: LifecycleJob) -> LifecycleJob: ...
     def list_for_tenant(self, tenant_id: str, *, kind: str | None = None) -> list[LifecycleJob]: ...
+    def list_pending(self, *, kind: str, limit: int = 100) -> list[LifecycleJob]: ...
 
 
 class RetentionPolicyStore(Protocol):
@@ -118,6 +127,15 @@ class InMemoryLifecycleJobStore:
     def list_for_tenant(self, tenant_id: str, *, kind: str | None = None) -> list[LifecycleJob]:
         with self._lock:
             return [job for job in self._jobs.values() if job.tenant_id == tenant_id and (kind is None or job.kind == kind)]
+
+    def list_pending(self, *, kind: str, limit: int = 100) -> list[LifecycleJob]:
+        with self._lock:
+            pending = [
+                job for job in self._jobs.values()
+                if job.kind == kind and job.status not in ("completed", "cancelled")
+            ]
+        pending.sort(key=lambda job: (job.requested_at, job.id))
+        return pending[:limit]
 
 
 class InMemoryRetentionPolicyStore:
@@ -208,12 +226,13 @@ class CommercialLifecycleService:
         }
 
     def store_export_package(
-        self, tenant_id: str, job_id: str, *, expires_at: datetime
+        self, tenant_id: str, job_id: str, *, expires_at: datetime, created_at: datetime | None = None
     ) -> ExportPackage:
         """把脱敏导出载荷写入 `workbench_export_packages`。
 
         `expires_at` 由调用方显式给出：真源只要求「带过期时间的下载包」，**未给定时长**
-        ⇒ 本方法**不自造默认时长**（取值需先裁决）。
+        ⇒ 本方法**不自造默认时长**（取值由 2026-09-14 裁决 = 7 天，见 `EXPORT_PACKAGE_TTL`）。
+        `created_at` 缺省为当前时刻；给出时与 `expires_at` 同源（保证 `expires_at = created_at + 7 天`）。
         """
         self.repository.get_tenant(tenant_id)
         package = ExportPackage(
@@ -221,6 +240,7 @@ class CommercialLifecycleService:
             job_id=job_id,
             payload=self.build_export_payload(tenant_id),
             expires_at=expires_at,
+            **({} if created_at is None else {"created_at": created_at}),
         )
         return self.export_store.save(package)
 
@@ -262,6 +282,10 @@ class CommercialLifecycleService:
             raise CommercialPolicyError("删除仍在冷静期内")
         if not job.final_exported:
             raise CommercialPolicyError("删除前必须完成最终导出")
+        # fail-closed：真源要求删除流程「包含……审计记录」（commercial-g0-design.md:114/:174），
+        # 没有审计通道就拒绝执行删除，绝不无审计地删租户。
+        if self.audit is None:
+            raise CommercialPolicyError("删除执行必须写入审计（未配置审计通道）")
         tenant = self.repository.get_tenant(tenant_id)
         if hasattr(self.repository, "set_tenant_status"):
             self.repository.set_tenant_status(tenant_id, TenantStatus.DELETED)
@@ -269,6 +293,100 @@ class CommercialLifecycleService:
             tenant.status = TenantStatus.DELETED
         job.status = "completed"
         self.job_store.save(job)
+        self.audit.record(
+            AuditAction.COMMERCIAL_DELETION_EXECUTED,
+            tenant_id=tenant_id,
+            actor_id=job.requested_by,
+            target_type="tenant",
+            target_id=tenant_id,
+            detail={"kind": job.kind, "status": TenantStatus.DELETED.value},
+        )
+
+    def complete_export_job(self, job_id: str, *, now: datetime | None = None) -> LifecycleJob:
+        """执行一次导出作业：落库脱敏载荷 → 标记作业完成 → 按裁决 4 置「最终导出」。
+
+        `expires_at = 完成时刻 + EXPORT_PACKAGE_TTL（7 天）`（裁决 2026-09-14 第 2 条）。
+        幂等：作业已 `completed` 时直接返回，不重复落库 / 不重复置位。
+        """
+        current = now or datetime.now(UTC)
+        job = self.job_store.get(job_id)
+        if job.kind != "export":
+            raise CommercialPolicyError("导出任务不存在")
+        if job.status == "completed":
+            return job
+        self.store_export_package(
+            job.tenant_id, job.id, created_at=current, expires_at=current + EXPORT_PACKAGE_TTL
+        )
+        job.status = "completed"
+        self.job_store.save(job)
+        # 裁决 4：删除申请之后**首次完成**的导出即「最终导出」。
+        target = self._final_export_target(job.tenant_id)
+        if target is not None:
+            self.mark_final_exported(target.id)
+        return job
+
+    def _final_export_target(self, tenant_id: str) -> LifecycleJob | None:
+        """返回本次导出应关联的删除作业（裁决 4），无则 None。
+
+        判定口径（用户裁决 2026-09-14 第 4 条，用**既有字段**实现，不需新增列）：
+        删除作业（`kind="delete"`）处于冷静期（`status="cooling_down"`）且尚未 `final_exported`
+        时，本次导出即「删除申请之后首次完成的导出」⇒ 置位并与其关联。
+        - 删除申请**之前**完成的导出：当时不存在待执行的删除作业 ⇒ 不置位；
+        - 同一删除申请的**第二次及以后**完成的导出：`final_exported` 已为真 ⇒ 不重复置位。
+        """
+        pending = [
+            job for job in self.job_store.list_for_tenant(tenant_id, kind="delete")
+            if job.status == "cooling_down" and not job.final_exported
+        ]
+        if not pending:
+            return None
+        pending.sort(key=lambda job: (job.requested_at, job.id))
+        return pending[-1]
+
+    def cancel_delete(self, actor: Actor, tenant_id: str) -> LifecycleJob:
+        """撤销最近的删除申请：租户经状态机 `DELETING → ACTIVE`，作业标记 `cancelled`。
+
+        **不绕过状态机**：状态回退经 `transition_tenant`（裁决 2026-09-14 第 5 条新增允许边）。
+        撤销后该删除作业不再被 worker 执行（`list_pending` 排除 `cancelled`）。
+        """
+        self._ensure_admin(actor, tenant_id)
+        pending = [
+            job for job in self.job_store.list_for_tenant(tenant_id, kind="delete")
+            if job.status == "cooling_down"
+        ]
+        if not pending:
+            raise DeletionNotPending("没有可撤销的删除申请")
+        pending.sort(key=lambda job: (job.requested_at, job.id))
+        job = pending[-1]
+        tenant = self.repository.get_tenant(tenant_id)
+        # 经状态机校验并回退；越权 / 非法边由 `transition_tenant` 拒绝。
+        transition_tenant(tenant, TenantStatus.ACTIVE, actor)
+        if hasattr(self.repository, "set_tenant_status"):
+            self.repository.set_tenant_status(tenant_id, TenantStatus.ACTIVE)
+        job.status = "cancelled"
+        self.job_store.save(job)
+        return job
+
+    def run_pending_jobs(self, *, limit: int = 100, now: datetime | None = None) -> dict[str, int]:
+        """worker 周期任务入口：处理待执行导出与到期删除作业。
+
+        由 `app.worker` 的 beat 任务调用；**不在 HTTP 请求线程执行**（契约 docs/api-contract.md:148）。
+        返回本次处理的作业计数（供观测）。
+        """
+        current = now or datetime.now(UTC)
+        completed_exports = 0
+        for job in self.job_store.list_pending(kind="export", limit=limit):
+            self.complete_export_job(job.id, now=current)
+            completed_exports += 1
+        executed_deletions = 0
+        for job in self.job_store.list_pending(kind="delete", limit=limit):
+            if job.execute_after is None or current < job.execute_after:
+                continue
+            if not job.final_exported:
+                continue
+            self.execute_delete(job.tenant_id, now=current)
+            executed_deletions += 1
+        return {"exports": completed_exports, "deletions": executed_deletions}
 
     def set_retention(self, tenant_id: str, policy: dict[str, int], actor: Actor) -> None:
         self._ensure_admin(actor, tenant_id)
@@ -332,6 +450,15 @@ class PostgresLifecycleJobStore:
                 sql="SELECT id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported FROM workbench_lifecycle_jobs WHERE tenant_id = %s"; params=[tenant_id]
                 if kind is not None: sql += " AND kind = %s"; params.append(kind)
                 cur.execute(sql, tuple(params)); rows=cur.fetchall()
+        return [LifecycleJob(tenant_id=str(r[1]), kind=str(r[2]), status=str(r[3]), requested_by=str(r[5]), execute_after=r[4], id=str(r[0]), requested_at=r[6] if isinstance(r[6], datetime) else datetime.now(UTC), final_exported=bool(r[7])) for r in rows]
+    def list_pending(self, *, kind: str, limit: int = 100) -> list[LifecycleJob]:
+        with self._connection() as c:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported FROM workbench_lifecycle_jobs WHERE kind = %s AND status NOT IN ('completed', 'cancelled') ORDER BY created_at, id LIMIT %s",
+                    (kind, limit),
+                )
+                rows=cur.fetchall()
         return [LifecycleJob(tenant_id=str(r[1]), kind=str(r[2]), status=str(r[3]), requested_by=str(r[5]), execute_after=r[4], id=str(r[0]), requested_at=r[6] if isinstance(r[6], datetime) else datetime.now(UTC), final_exported=bool(r[7])) for r in rows]
 
 class PostgresRetentionPolicyStore:

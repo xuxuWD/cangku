@@ -42,7 +42,7 @@ export interface AuditLogState {
   error: AuditErrorShape | null
 }
 
-// 审计动作中文标签；键必须覆盖后端 AuditAction 的全部 48 个取值（有漂移守护测试）。
+// 审计动作中文标签；键必须覆盖后端 AuditAction 的全部 49 个取值（有漂移守护测试）。
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'account.registration.requested': '注册申请已提交',
   'account.registration.approved': '注册申请已通过',
@@ -92,6 +92,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'tool.executed': '工具已执行',
   'tool.blocked': '工具执行被拦截',
   'commercial.retention.updated': '保留策略已更新',
+  'commercial.deletion.executed': '租户删除已执行',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

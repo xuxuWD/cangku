@@ -63,7 +63,8 @@ def transition_tenant(tenant: Tenant, target: TenantStatus, actor: Actor) -> Ten
         TenantStatus.ACTIVE: {TenantStatus.SUSPENDED, TenantStatus.EXPORTING, TenantStatus.DELETING},
         TenantStatus.SUSPENDED: {TenantStatus.ACTIVE, TenantStatus.DELETING},
         TenantStatus.EXPORTING: {TenantStatus.ACTIVE},
-        TenantStatus.DELETING: {TenantStatus.DELETED},
+        # 裁决 2026-09-14 第 5 条：撤销删除申请后回到 `ACTIVE`（`DELETING → ACTIVE` 允许边）。
+        TenantStatus.DELETING: {TenantStatus.DELETED, TenantStatus.ACTIVE},
         TenantStatus.DELETED: set(),
     }
     if target not in allowed[tenant.status]:

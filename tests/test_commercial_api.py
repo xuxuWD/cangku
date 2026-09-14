@@ -46,3 +46,40 @@ def test_usage_endpoint_returns_server_calculated_values_only():
     assert response.status_code == 200
     assert response.json()["tenant_id"] == "tenant-commercial"
     assert response.json()["units"] >= 3
+
+
+def test_customer_admin_can_cancel_delete_request_and_return_active():
+    from app import main
+
+    main.commercial_repository.ensure_test_tenant(
+        "tenant-commercial-cancel", owner_id="owner-1", admins={"admin-1"}
+    )
+    owner = headers(user="owner-1", tenant="tenant-commercial-cancel")
+    delete = client.post("/api/v1/commercial/deletion-requests", headers=owner)
+    assert delete.status_code == 202
+    assert delete.json()["status"] == "cooling_down"
+
+    cancel = client.post("/api/v1/commercial/deletion-requests/cancel", headers=owner)
+
+    assert cancel.status_code == 200
+    assert cancel.json()["status"] == "cancelled"
+    summary = client.get("/api/v1/commercial/tenant", headers=owner)
+    assert summary.json()["status"] == "active"
+
+
+def test_cancel_without_pending_request_returns_409_and_employee_403():
+    from app import main
+
+    main.commercial_repository.ensure_test_tenant(
+        "tenant-commercial-cancel-none", owner_id="owner-1", admins={"admin-1"}
+    )
+    owner = headers(user="owner-1", tenant="tenant-commercial-cancel-none")
+
+    nothing = client.post("/api/v1/commercial/deletion-requests/cancel", headers=owner)
+    assert nothing.status_code == 409
+
+    denied = client.post(
+        "/api/v1/commercial/deletion-requests/cancel",
+        headers=headers(role="employee", user="owner-1", tenant="tenant-commercial-cancel-none"),
+    )
+    assert denied.status_code == 403
