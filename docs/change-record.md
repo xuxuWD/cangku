@@ -8,6 +8,19 @@
 
 ## 记录
 
+### 2026-09-14 · §8 U27 登记：E1–E4 实施暴露的「真源未定义 ⇒ 未实施」缺口 1–5（纯登记，无代码改动）—— 可回退
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-14（随 E1–E4 实施暴露的缺口登记；**本条仅登记缺口，无代码改动**） |
+| **变更** | **纯文档登记，无任何代码 / 迁移 / 测试 / 前端改动**。在规格 `docs\superpowers\specs\2026-09-12-dsh-integration-design.md` §8 **紧接 U26 之后**新增 **U27「E1–E4 实施暴露的「真源未定义 ⇒ 未实施」清单 — ❌ 待裁决」**：表格 5 条（① 计量/定价口径未定义（E1 只能做方案 A）；② 导出包过期时长未定义；③ 导出载荷数据面未实现（15 类全为空数组）；④ 「最终导出」的判定规则未定义（E3 前置）；⑤ 撤销删除申请后的状态未定义（撤销入口前置））+ 条目末一句禁令（未裁决前不得声称"计费已启用""导出包过期策略已生效""导出已实现数据导出""删除链路已闭合"）。 |
+| **原因** | E1–E4 实施过程中，上述 5 处缺口**均因真源未定义而停下、未实施**（依宪法「没真源不开工」）。须**回写真源留痕**，避免这些缺口在后续被误读为「已实现 / 已生效」；同时把「需哪些裁决」写清楚，供后续逐项裁决。 |
+| **影响面** | 不改任何行为、接口、数据模型、权限模型；**不改** `app/`、`migrations/`、`tests/`、`docs/api-contract.md`、前端；**不改** `docs\delivery-gates.md`、`docs\capability-ownership-map.md`（二者属另一次裁决范围）。 |
+| **验证（已做）** | ✅ 引注逐条核对（登记时按**实际行号**书写，其中 3 处与本轮草拟行锚不符已更正：`lifecycle.py` 的 `LifecycleJob` 实为 `:50-58`（非 `:13-22`）、`mark_final_exported` 实为 `:245`（非 `:138`）、`private-deployment-runbook.md` 的撤销要求实为 `:64`（非 `:65`））：`2026-09-12-usage-billing-page-design.md:49/:66`；`2026-09-06-commercial-g0-design.md:96/:110/:114/:173`；`docs\api-contract.md:142-144/:148`；`app\commercial\lifecycle.py:43/:50-58/:71/:193/:210-217/:245`；`migrations\028_workbench_export_packages.sql:15`；`app\commercial\tenant.py:61-68`；`app\main.py:819/:837/:853/:864/:875`；`docs\private-deployment-runbook.md:64`；`docs\external-dependency-acceptance-plan.md:182`；`app\settings.py` **无计价配置**（检索 `cost`/`price`/`pricing`/`计量`/`计价`/`billing`/`cents` 等 **0 命中**）；`store_export_package` / `mark_final_exported` 全仓**仅测试命中**（`tests\test_commercial_lifecycle.py:117` / `:48`）。✅ 回归：`py -m pytest -o addopts=""` ⇒ **`1723 passed, 31 skipped`**（与基线一致，**纯文档改动 ⇒ 用例数不得变化**）；`py -m compileall -q app` ⇒ **exit=0**。 |
+| **未验证（不得读成已验）** | ① 上述「生产无调用方 / 无读者」依据为**静态检索**（`getattr` / 字符串拼接 / 反射构造的调用方**未穷尽**，同 §8 U25 已声明的检索盲区）；② 无真库 / staging 参与（本条不涉数据读写）；③ 第 2/3/4/5 条的「未实施」仅据**当前代码只读排查**，其后续落地本身**未验证**。 |
+| **回退方式** | 删除规格 §8 新增的 **U27 整节**（`### U27 E1–E4 实施暴露的「真源未定义 ⇒ 未实施」清单 — ❌ 待裁决` 至该节末禁令句）即可；**本条仅为缺口登记，无代码改动，无代码回退项**。**未经确认不得执行回滚。** |
+| **依据** | 规格 [`2026-09-12-dsh-integration-design.md`](superpowers/specs/2026-09-12-dsh-integration-design.md) §8 U27；[`2026-09-12-usage-billing-page-design.md`](superpowers/specs/2026-09-12-usage-billing-page-design.md):49/:66；[`2026-09-06-commercial-g0-design.md`](superpowers/specs/2026-09-06-commercial-g0-design.md):96/:110/:114/:173；[`api-contract.md`](api-contract.md):142-144/:148；[`private-deployment-runbook.md`](private-deployment-runbook.md):64；[`external-dependency-acceptance-plan.md`](external-dependency-acceptance-plan.md):182；实现 `app\commercial\lifecycle.py` / `app\commercial\tenant.py` / `app\runtime\service.py` / `app\main.py`；迁移 `migrations\028_workbench_export_packages.sql` |
+
 ### 2026-09-14 · §8 U25 E5 裁决登记（`app/commercial/plan.py` 不属本期 ⇒ 预留）+ `delivery-gates.md:58` 套餐口径更正（纯口径登记，无代码改动）—— 可回退
 
 | 项 | 内容 |

@@ -978,6 +978,20 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **同批提示**：32②(c1) 的**库内三处 SQL 检索**与 (c2) 的**日志文件逐一 grep** 本轮**均未在真库 / 真实日志上取证**（见 §8 U15 相关未验证项）。
 
+### U27 E1–E4 实施暴露的「真源未定义 ⇒ 未实施」清单 — ❌ 待裁决
+
+**性质**：下列 5 处缺口，是 **E1–E4（2026-09-14）实施过程中「因真源未定义而停下、未实施」**的部分（依宪法「没真源不开工」）。**登记目的 = 防止它们在后续被误读为「已实现 / 已生效」**；**每一处都待真源裁决后才能实施**。
+
+| # | 缺口 | 证据（文件:行，逐字） | 当前状态 | 需裁决什么 |
+|---|---|---|---|---|
+| 1 | **计量/定价口径未定义（E1 只能做方案 A）** | ① `docs\superpowers\specs\2026-09-12-usage-billing-page-design.md:49`「**不解释 `units` 的业务含义**：账本里没有单位语义，页面只如实展示原值，不猜测是 token / 次数 / 条数。」；② 同文件 `:66`「2. **`units` 语义未定义**：只展示原值，不标注单位。」；③ `docs\superpowers\specs\2026-09-06-commercial-g0-design.md:96`「客户端不能提交自己的预算或计费结果；服务端根据**租户套餐、岗位预算和任务快照**计算」—— 而 **E5 已裁「不属本期」**（`app/commercial/plan.py` 整模块预留，见 `docs\change-record.md` 2026-09-14 条）⇒ **该计算的依据不存在**；④ `app\settings.py` **无任何计价配置**（检索 `cost` / `price` / `pricing` / `计量` / `计价` / `billing` / `cents` 等 **0 命中**）。 | **已按用户裁决落地方案 A** —— 运行终态记 `units=1`、`cost_cents` **恒 0**（`app\runtime\service.py` 的 `_record_usage_on_terminal`，现行 `:355`，`units=1` 于 `:383` / `cost_cents=0` 于 `:384`；commit `f719e60`）；`units` 语义**沿用「未定义、只展示原值」**。 | `units` 的业务语义与 `cost_cents` 的单价来源（若需定价 ⇒ 属**新增真源**，牵动 `migrations` 与三处台账）。 |
+| 2 | **导出包过期时长未定义** | `docs\superpowers\specs\2026-09-06-commercial-g0-design.md:110`「导出任务异步执行，生成**带过期时间**的下载包」—— **未给时长**；全仓检索**无取值**。 | 迁移 `028` 已建 `workbench_export_packages.expires_at TIMESTAMPTZ NOT NULL`（`migrations\028_workbench_export_packages.sql:15`，**真库演练已验证 DDL 与强制力**）；但 `expires_at` 是**显式入参**（`app\commercial\lifecycle.py:71` `ExportPackage.expires_at`、`:210-217` `store_export_package(*, expires_at)`），**生产装配下没有任何调用方传入**（`store_export_package` 全仓**仅测试命中** `tests\test_commercial_lifecycle.py:117`）⇒ 与 U25 同族的「存在但无调用方」。 | 过期时长取值。**⇒ 在此之前不得表述为「导出包过期策略已生效」。** |
+| 3 | **导出载荷数据面未实现（15 类全为空数组）** | 真源类别清单 `docs\superpowers\specs\2026-09-06-commercial-g0-design.md:100-110`（用户、岗位、数字员工配置；任务、运行、步骤、产物元数据；知识文档元数据、版本和引用关系；记忆、成长提案和审核记录；用量账本和审计记录）；脱敏契约 `docs\api-contract.md:142-144`「导出内容经过脱敏，不包含密码、Cookie、验证码、令牌、原始 API 密钥或客户原文」；G0 验收 5（同规格 `:173`「5. 客户管理员可以申请并下载脱敏导出包。」）。 | `app\commercial\lifecycle.py` 的 `build_export_payload`（`:193`）已产出**真结构**（真源 15 类）、随机密约定，但**商业化服务不持有这些数据的读取通道** ⇒ 15 类**全部为空数组**，已显式登记于 `UNIMPLEMENTED_EXPORT_CATEGORIES`（`lifecycle.py:43`；commit `a597d8e`）。 | 是否本期建数据面。**⇒ 在此之前不得表述为「导出已实现数据导出」。** |
+| 4 | **「最终导出」的判定规则未定义（E3 前置）** | `docs\superpowers\specs\2026-09-06-commercial-g0-design.md:114`「租户删除采用两步流程：管理员申请 → 冷静期 → 执行删除。**删除前必须生成最终导出包并记录确认人**」与 `docs\api-contract.md:148`「冷静期结束前必须完成最终导出」**均未定义「哪次导出算最终」**；且 `app\commercial\lifecycle.py:50-58` 的 `LifecycleJob` **无「导出作业 ↔ 删除作业」关联**（字段仅 `tenant_id` / `kind` / `status` / `requested_by` / `execute_after` / `id` / `requested_at` / `final_exported`）。 | `mark_final_exported`（`app\commercial\lifecycle.py:245`）**仍未接线**（E3 未实施；全仓**仅测试命中** `tests\test_commercial_lifecycle.py:48`，生产无调用方）。 | 判定规则（建议候选：**删除申请后首次完成的导出即「最终」**；或由管理员显式标记）。 |
+| 5 | **撤销删除申请后的状态未定义（撤销入口前置）** | 真源要求可撤销 —— `docs\private-deployment-runbook.md:64`「……申请删除后**撤销**或等待冷静期的流程演练」、`docs\external-dependency-acceptance-plan.md:182`「……申请删除后**撤销**或等冷静期……」；但 `app\commercial\tenant.py:61-68` 的 `transition_tenant` 允许边中 `TenantStatus.DELETING: {TenantStatus.DELETED}`（`:66`）**只允许 → `DELETED`**，**无回到可用态的边**。 | **无撤销端点**（`app\main.py` 的 5 条 `/api/v1/commercial/*` 路由 `:819` / `:837` / `:853` / `:864` / `:875` 中**没有**）；且**不得**用 `set_tenant_status` 绕过状态机（那会引入新问题）。 | 撤销后回到哪个状态（建议：**`DELETING → ACTIVE`，并在 `transition_tenant` 增加该允许边**）。 |
+
+**⇒ 上述 1–5 未裁决前：不得声称"计费已启用""导出包过期策略已生效""导出已实现数据导出""删除链路已闭合"。**
+
 ---
 
 ## 9. 评审记录与本轮修订说明（2026-09-12）
