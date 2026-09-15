@@ -458,6 +458,15 @@ class Settings(BaseSettings):
         default=30, ge=1, le=3650,
         validation_alias=AliasChoices("KNOWLEDGE_REVIEW_GRACE_DAYS", "WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS"),
     )
+    # 到期扫描 beat 间隔（秒；§4 N3）：worker 的 `knowledge-review-scan` 周期任务用。
+    # 下限 30s 防止把 beat 打成忙轮询；上限 7 天（更长等于事实停用，应显式关任务而非拉长间隔）。
+    knowledge_review_scan_interval_seconds: int = Field(
+        default=3600, ge=30, le=7 * 24 * 3600,
+        validation_alias=AliasChoices(
+            "KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS",
+            "WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS",
+        ),
+    )
     # 跨源部署（桌面端远程模式 / PWA 伴侣端）：非 development 环境只在显式配置来源后
     # 才注册 CORS；留空即视为「不允许任何跨源」（fail-closed）。
     cors_allowed_origins: str = Field(

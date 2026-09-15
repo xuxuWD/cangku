@@ -42,6 +42,12 @@ _ACTION_ARCHIVED = AuditAction.KNOWLEDGE_DOC_ARCHIVED
 _ACTION_REVIEWED = AuditAction.KNOWLEDGE_DOC_REVIEWED
 _ACTION_REVIEW_DUE = AuditAction.KNOWLEDGE_DOC_REVIEW_DUE
 
+# worker 系统路径的操作者标识（beat 任务没有用户；审计按租户逐条写，actor 恒为它）。
+# 刻意**不**伪装成超级管理员：该上下文只用于租户作用域与审计记录，若被误用到权限判定路径
+# 会直接 fail-closed（"system" 不在 MANAGE_ROLES）。
+SYSTEM_ACTOR_ID = "system:worker"
+SYSTEM_ROLE = "system"
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -250,6 +256,38 @@ class KnowledgeGovernanceService:
         return count
 
     # ------------------------------------------------------------ 检索谓词守卫 & 指标
+
+    def scan_review_due_across_tenants(self, *, now=None, limit: int = 500) -> dict[str, int]:
+        """**worker 系统路径**（§4 N3）：跨租户到期扫描，把 published 且过 `review_due_at` 的文档置 needs_review。
+
+        与 `scan_review_due`（手动端点用）的三点刻意差异：
+
+        1. **无用户上下文**：beat 任务没有操作者，故不走 `ensure_can_manage`——本方法**不经 HTTP 暴露**，
+           只有 worker 装配（`app.worker.configure_runtime`）会拿到服务实例；
+        2. **跨租户**：候选来自 `store.list_due_across_tenants`（唯一跨租户查询），写回逐条回到
+           租户作用域（`mark_review_due` 带该文档的 tenant_id）；
+        3. **审计 actor 固定** `system:worker`，**按租户逐条**写 `knowledge.doc.review_due`
+           （不合并、不跨租户串写；每个租户各得一条自己的审计）。
+
+        幂等：候选只含 published 且已到期；已置 needs_review 的不再进候选，重复执行不重复计数。
+        返回 `{"candidates": n, "flipped": n}`（供 beat 观测；`flipped` 是实际置位数）。
+        """
+        ts = now or _utcnow()
+        candidates = self.store.list_due_across_tenants(now=ts, limit=limit)
+        flipped = 0
+        for doc in candidates:
+            context = UserContext(doc.tenant_id, SYSTEM_ACTOR_ID, SYSTEM_ROLE)
+            updated = self.store.mark_review_due(context, doc.document_id, now=ts)
+            if updated is None:
+                continue  # 竞态（已被人工置位 / 状态已变）：跳过，不计入
+            flipped += 1
+            self._record(
+                context,
+                _ACTION_REVIEW_DUE,
+                updated.document_id,
+                {"document_id": updated.document_id, "status": updated.status.value},
+            )
+        return {"candidates": len(candidates), "flipped": flipped}
 
     def list_documents(
         self,

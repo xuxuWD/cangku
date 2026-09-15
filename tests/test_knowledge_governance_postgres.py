@@ -110,6 +110,51 @@ def test_draft_can_be_archived_directly(service) -> None:
         assert cursor.fetchone()[0] == "archived"
 
 
+def test_worker_scan_across_tenants_on_postgres(service) -> None:
+    """N3 真库：跨租户候选 SQL（唯一跨租户查询）一次扫描两个租户的到期文档，写回逐条带租户。"""
+    svc, connection = service
+    other = "test-knowledge-gov-pg-b"
+    with connection.cursor() as cursor:
+        cursor.execute("DELETE FROM workbench_knowledge_documents WHERE tenant_id = %s", (other,))
+    try:
+        now = datetime.now(UTC)
+        seeds = (
+            (TENANT, "pg-w-a", -1),  # 到期
+            (other, "pg-w-b", -2),  # 到期（另一租户）
+            (TENANT, "pg-w-future", +1),  # 未到期
+        )
+        for tenant_id, doc_id, delta_days in seeds:
+            ctx = UserContext(tenant_id, ADMIN, "super_admin")
+            svc.register_document(
+                ctx, document_id=doc_id, title=doc_id, owner_id="acct-owner",
+                version="1", source_key="manual",
+            )
+            svc.publish_document(ctx, doc_id, owner_id="acct-owner")
+            svc.store.update_status(
+                ctx, doc_id, new_status=KnowledgeDocStatus.PUBLISHED,
+                review_due_at=now + timedelta(days=delta_days),
+            )
+
+        result = svc.scan_review_due_across_tenants(now=now)
+        assert result == {"candidates": 2, "flipped": 2}
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT tenant_id, document_id, status FROM workbench_knowledge_documents "
+                "WHERE document_id IN (%s, %s, %s) ORDER BY tenant_id, document_id",
+                ("pg-w-a", "pg-w-b", "pg-w-future"),
+            )
+            rows = [tuple(row) for row in cursor.fetchall()]
+        assert rows == [
+            (TENANT, "pg-w-a", "needs_review"),
+            (TENANT, "pg-w-future", "published"),
+            (other, "pg-w-b", "needs_review"),
+        ]
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM workbench_knowledge_documents WHERE tenant_id = %s", (other,))
+
+
 def test_check_constraint_forbids_illegal_status(service) -> None:
     """CHECK 约束：非法状态值直接落库失败（status IN 白名单）。"""
     svc, connection = service

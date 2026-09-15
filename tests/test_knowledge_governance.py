@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -331,6 +333,124 @@ def test_antifake_needs_review_is_excluded(service: KnowledgeGovernanceService) 
     _publish(service, "doc-anti2")
     service.store.update_status(_admin(), "doc-anti2", new_status=KnowledgeDocStatus.NEEDS_REVIEW)
     assert all(d.document_id != "doc-anti2" for d in service.list_published_eligible(_admin()))
+
+
+# ------------------------------------------------------------ worker beat 到期扫描（§4 N3）
+
+SYSTEM_ACTOR = "system:worker"
+
+
+def _tenant_ctx(tenant_id: str) -> UserContext:
+    """指定租户的管理上下文（seed 与查库用；跨租户扫描本身不需要上下文）。"""
+    return UserContext(tenant_id, ADMIN, "super_admin")
+
+
+def _seed_due(service: KnowledgeGovernanceService, tenant_id: str, document_id: str, *, due):
+    """seed：在指定租户登记→发布一篇文档，并把 `review_due_at` 直写为 due（非被测路径）。"""
+    ctx = _tenant_ctx(tenant_id)
+    service.register_document(
+        ctx, document_id=document_id, title=document_id, owner_id="acct-owner", version="1", source_key="manual"
+    )
+    service.publish_document(ctx, document_id, owner_id="acct-owner")
+    if due is not None:
+        service.store.update_status(
+            ctx, document_id, new_status=KnowledgeDocStatus.PUBLISHED, review_due_at=due
+        )
+
+
+def test_worker_scan_flips_due_docs_across_tenants(service: KnowledgeGovernanceService) -> None:
+    """正常流程：两个租户各一篇到期文档 → 一次扫描全置 needs_review；审计逐租户一条、actor=system:worker。"""
+    now = datetime.now(UTC)
+    _seed_due(service, "t-a", "doc-a", due=now - timedelta(days=1))
+    _seed_due(service, "t-b", "doc-b", due=now - timedelta(hours=2))
+    _seed_due(service, "t-a", "doc-future", due=now + timedelta(days=1))  # 未到期
+
+    result = service.scan_review_due_across_tenants(now=now)
+
+    assert result == {"candidates": 2, "flipped": 2}
+    # 查库验证（逐租户）
+    assert service.store.get_document(_tenant_ctx("t-a"), "doc-a").status is KnowledgeDocStatus.NEEDS_REVIEW
+    assert service.store.get_document(_tenant_ctx("t-b"), "doc-b").status is KnowledgeDocStatus.NEEDS_REVIEW
+    assert service.store.get_document(_tenant_ctx("t-a"), "doc-future").status is KnowledgeDocStatus.PUBLISHED
+    # 审计：每个租户各得一条自己的 review_due 记录，actor 固定 system:worker（不伪装管理员）
+    for tenant, doc_id in (("t-a", "doc-a"), ("t-b", "doc-b")):
+        records = service.audit.store.list_recent(tenant)
+        matched = [r for r in records if r.action.value == "knowledge.doc.review_due" and r.target_id == doc_id]
+        assert len(matched) == 1, (tenant, doc_id, records)
+        assert matched[0].actor_id == SYSTEM_ACTOR
+
+
+def test_worker_scan_is_idempotent(service: KnowledgeGovernanceService) -> None:
+    """幂等：重复扫描不重复置位、不重复计数（第二轮 candidates=0、flipped=0）。"""
+    now = datetime.now(UTC)
+    _seed_due(service, "t-a", "doc-idem", due=now - timedelta(days=1))
+    assert service.scan_review_due_across_tenants(now=now)["flipped"] == 1
+    assert service.scan_review_due_across_tenants(now=now) == {"candidates": 0, "flipped": 0}
+
+
+def test_worker_scan_ignores_draft_archived_and_future(service: KnowledgeGovernanceService) -> None:
+    """谓词边界（反假锚点）：draft / archived / 已 needs_review / 未到期 一律不进候选。"""
+    now = datetime.now(UTC)
+    past = now - timedelta(days=1)
+    ctx = _tenant_ctx("t-a")
+    # draft：已登记未发布，且直写历史到期时间（模拟脏数据）→ 不得进候选
+    service.register_document(
+        ctx, document_id="doc-draft", title="d", owner_id="acct-owner", version="1", source_key="manual"
+    )
+    service.store.update_status(ctx, "doc-draft", new_status=KnowledgeDocStatus.DRAFT, review_due_at=past)
+    # archived：已归档但仍有历史到期时间 → 不得进候选
+    _seed_due(service, "t-a", "doc-arch", due=past)
+    service.archive_document(ctx, "doc-arch")
+    # needs_review：已置位 → 不在候选
+    _seed_due(service, "t-a", "doc-nr", due=past)
+    service.store.update_status(ctx, "doc-nr", new_status=KnowledgeDocStatus.NEEDS_REVIEW)
+    # published 未到期 → 不在候选
+    _seed_due(service, "t-a", "doc-fut", due=now + timedelta(days=1))
+
+    assert service.scan_review_due_across_tenants(now=now) == {"candidates": 0, "flipped": 0}
+    # 边界内文档状态未被误改
+    assert service.store.get_document(ctx, "doc-draft").status is KnowledgeDocStatus.DRAFT
+    assert service.store.get_document(ctx, "doc-arch").status is KnowledgeDocStatus.ARCHIVED
+
+
+def test_worker_scan_respects_limit(service: KnowledgeGovernanceService) -> None:
+    """临界值：limit=1 只处理最早到期的一篇，其余留待下一轮（按 review_due_at 先到先处理）。"""
+    now = datetime.now(UTC)
+    _seed_due(service, "t-a", "doc-old", due=now - timedelta(days=3))
+    _seed_due(service, "t-a", "doc-new", due=now - timedelta(days=1))
+
+    result = service.scan_review_due_across_tenants(now=now, limit=1)
+
+    assert result == {"candidates": 1, "flipped": 1}
+    assert service.store.get_document(_tenant_ctx("t-a"), "doc-old").status is KnowledgeDocStatus.NEEDS_REVIEW
+    assert service.store.get_document(_tenant_ctx("t-a"), "doc-new").status is KnowledgeDocStatus.PUBLISHED
+
+
+def test_worker_beat_registers_and_runs_the_scan_task(monkeypatch) -> None:
+    """接线：beat 排程存在且间隔取配置；未接线返回零值（不伪造）；接线后真跑服务。"""
+    from app import worker
+    from app.settings import get_settings
+
+    entry = worker.celery_app.conf.beat_schedule["knowledge-review-scan"]
+    assert entry["task"] == "app.worker.scan_knowledge_review_due"
+    assert entry["schedule"] == get_settings().knowledge_review_scan_interval_seconds
+
+    # 未接线：零值（与 publish_outbox / run_lifecycle_jobs 同口径），绝不伪造
+    monkeypatch.setattr(worker, "_knowledge_review_scanner", None)
+    assert worker.scan_knowledge_review_due() == {"candidates": 0, "flipped": 0}
+
+    # 接线后：真跑（内存服务 + 到期文档 → 置位）
+    now = datetime.now(UTC)
+    svc = KnowledgeGovernanceService(
+        InMemoryKnowledgeGovStore(),
+        audit=AuditService(InMemoryAuditStore()),
+        review_grace_days=30,
+    )
+    _seed_due(svc, "t-a", "doc-beat", due=now - timedelta(days=1))
+    monkeypatch.setattr(worker, "_knowledge_review_scanner", svc)
+
+    assert worker.scan_knowledge_review_due() == {"candidates": 1, "flipped": 1}
+    assert svc.store.get_document(_tenant_ctx("t-a"), "doc-beat").status is KnowledgeDocStatus.NEEDS_REVIEW
 
 
 # ------------------------------------------------------------ API 层 HTTP 语义（规格 §3.2）

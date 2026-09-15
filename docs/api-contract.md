@@ -318,7 +318,7 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 - `POST /api/v1/knowledge/documents/{document_id}/publish?owner_id=`：发布（发布闸门：owner 必填；仅 `draft` → `published`）。无 owner `422`，状态冲突 `409`。返回更新后的文档视图。
 - `POST /api/v1/knowledge/documents/{document_id}/archive`：归档（`draft` / `published` / `under_review` / `needs_review` → `archived`，§2.2「any → archived」**允许 draft 直接判废**；仅 `archived` 终态出发 `409`）。返回更新后的文档视图。
 - `POST /api/v1/knowledge/documents/{document_id}/review?approved=true|false`：人工复核（`under_review` / `needs_review` → 通过 `published`（刷新 `last_reviewed_at` + `review_due_at` 顺延宽限）或判废 `archived`；状态非法 `409`）。返回更新后的文档视图。
-- `POST /api/v1/knowledge/review-scan`：手动触发到期扫描（published 且已过 `review_due_at` → `needs_review`；幂等，重复触发不重复计数）。返回 `{"reviewed_due": int}`。
+- `POST /api/v1/knowledge/review-scan`：手动触发到期扫描（published 且已过 `review_due_at` → `needs_review`；幂等，重复触发不重复计数）。返回 `{"reviewed_due": int}`。**自动调度**：worker beat 任务 `knowledge-review-scan`（`app.worker.scan_knowledge_review_due`）按 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`（默认 3600s）周期执行同一扫描（跨租户候选、写回逐条带租户、审计 actor `system:worker`）；扫描不在 HTTP 请求线程执行。
 - `GET /api/v1/knowledge/metrics`：Freshness Index（仅 `super_admin`）。返回 `{"published", "needs_review", "archived", "total", "freshness_ratio"}`，其中 `freshness_ratio = published/total`（`total=0` 时取 1.0）。
 - `GET /api/v1/knowledge/governance/eligible?limit=`：检索谓词守卫白名单出口（仅 `super_admin`）。只返回 `status='published'` 且未过 `review_due_at` 的文档，供检索组合件在请求 WeKnora 前取白名单（空集 = fail-closed）。
 

@@ -14,7 +14,7 @@
 > **环境**：Docker `wb-test-postgres-1`（postgres 16，端口 55433），库 `workbench_test`；沿用 030/031 既有容器口径，未新增容器。
 
 - **从零应用迁移**：32 条（`001` → `032_knowledge_governance`），含新表 `workbench_knowledge_documents`（复合主键 `(tenant_id, document_id)` + 状态 CHECK 约束 + 两个索引，`IF NOT EXISTS` 幂等）。
-- **真库用例 `tests/test_knowledge_governance_postgres.py`：6 条全绿**：① 登记 + 状态流（draft→published→needs_review→published）真库持久化 + 复核时间戳落库；② **`draft` 可直接归档**（any→archived，§2.2 裁定）真库持久化；③ 状态 CHECK 约束拦截非法状态值；④ 谓词守卫真库语义（仅 published 且未过 `review_due_at` 进白名单；过期即下线）；⑤ `mark_review_due` / 到期扫描真库可用且幂等；⑥ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
+- **真库用例 `tests/test_knowledge_governance_postgres.py`：7 条全绿**：① 登记 + 状态流（draft→published→needs_review→published）真库持久化 + 复核时间戳落库；② **`draft` 可直接归档**（any→archived，§2.2 裁定）真库持久化；③ **N3 跨租户到期扫描**（两个租户各一篇到期 → 一次扫描全置位、未到期不动，写回逐条带租户）；④ 状态 CHECK 约束拦截非法状态值；⑤ 谓词守卫真库语义（仅 published 且未过 `review_due_at` 进白名单；过期即下线）；⑥ `mark_review_due` / 到期扫描真库可用且幂等；⑦ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
 - **反假口径**：draft 不进白名单（只发布可检索）、needs_review 被谓词排除、状态机 25 条边逐边锁定（§2.2 裁定，`test_transition_matrix_locks_section_2_2_ruling`）——真库与内存双端覆盖。
 - **未验证（如实登记）**：`scoped_search` 与真实 WeKnora 的端到端检索（N2 落点：WeKnora 检索为知识库级、无文档级过滤参数，本期实现为「检索后按白名单收敛」的接口面兜底，标注见 `app/knowledge_governance/scoped_search.py`）；CI 侧取证见下。
 - **CI 侧（2026-09-15）**：run `34960179880`（知识治理层初交付 push）与 run `34960954584`（口径裁定 push）**6/6 job 全绿**（含 backend 全量 pytest 在本仓库 Linux 环境通过）。⚠️ 上述两轮的 **postgres job 清单尚未包含本模块**（`ci.yml` 当时硬编码五个模块）⇒ 那时**不得读成「真库回归已被 CI 守护」**；本轮已补齐（`ci.yml` 加入 `test_knowledge_governance_postgres.py`，并在 `tests/test_ci_assets.py` 把 job 清单六条逐字钉死）。
@@ -101,6 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_docs_status ON workbench_knowledge_docu
 - **复核规则**：`needs_review`/`stale` 进入检索谓词**排除集**（§2.3）；人工复核后可回 `published`（刷新 `last_reviewed_at`/`review_due_at`）或 `archived`。
 - **口径裁定（2026-09-15，用户拍板）**：末行「any → 归档」为**准确口径**——**`draft` 可直接归档**（登记后即判废，无需先发布）；§3.2 旧表曾把「draft→archived 直跳」列为 409，属**笔误**，已更正。`archived` 为终态（不回 `published`），`published→draft` / `needs_review→draft` 回退与 `draft→under_review` 一律非法。
 - **事件触发而非日历**（§6.3）：到期入 `needs_review` 由**到期扫描 worker**（beat）批量置位 + 可配置 `WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS`；**不**由检索时顺手改状态（避免读路径写库）。
+  - **落地（§4 N3，2026-09-15）**：beat 任务 `app.worker.scan_knowledge_review_due`（排程键 `knowledge-review-scan`，间隔 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`）；跨租户取候选（`store.list_due_across_tenants`，**唯一跨租户查询**）→ 逐条以租户作用域置位 → 审计 actor 固定 `system:worker`、**按租户逐条**写。手动端点 `POST /api/v1/knowledge/review-scan` 保留（人工触发/排障）。
 
 ### 2.3 事项 D：检索谓词守卫（pre-filter，§6.4 硬要求）
 
@@ -135,6 +136,7 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS` | 30 | 到期扫描前置宽限（天）；`review_due_at` 未设的 published 文档不计入到期 |
+| `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS` | 3600 | 到期扫描 beat 间隔（秒；范围 30–604800）。worker 的 `knowledge-review-scan` 任务按此周期执行（§4 N3，2026-09-15 落地） |
 | `WORKBENCH_KNOWLEDGE_GOVERNANCE_ENABLED` | false | 治理层总开关（fail-closed：关闭时**不**做文档级过滤，保持既有检索行为） |
 
 ### 2.7 审计
@@ -187,7 +189,8 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 | --- | --- | --- |
 | N1 | **存量文档（无登记）**：治理开启后，WeKnora 中已存在但未登记进治理表的文档如何处理 | **默认：不检索**（fail-closed，未登记视为不受控）；提供一次性「导入登记」迁移脚本（读 WeKnora 文档列表 → 批量登记为 draft，owner 待人工补）——需用户确认是否本期做导入脚本 |
 | N2 | **文档级过滤的落点**：WeKnora 检索是知识库级，文档级白名单如何下传 | 两个方案：① 检索后按文档白名单**收敛结果**（简单，但「文本已被检索」——违反 §6.4 的 pre-filter 精神，仅当 WeKnora 无文档级过滤时兜底）；② 要求 WeKnora 支持文档级过滤参数（需上游接口面）。**裁决后定**——若上游不支持，选 ① 并明确记录「是接口面限制的兜底，不是设计偏好」 |
-| N3 | 复核**到期扫描 worker**（beat 任务） | 与 `app/worker` 现有 beat 集成；本期先提供**手动触发端点**（`POST /api/v1/knowledge/review-scan`），自动调度留后续 |
+| N3 | 复核**到期扫描 worker**（beat 任务） | ✅ **已落地（2026-09-15）**：`app.worker.scan_knowledge_review_due`（排程键 `knowledge-review-scan`，间隔可外置 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`，默认 1h）；候选跨租户、写回带租户、审计 actor=`system:worker`；手动端点 `POST /api/v1/knowledge/review-scan` 保留。**未验证**：worker 进程在真实部署拓扑下的 beat 联调（本机与 CI 均未起 Celery beat）。 |
+| N6 | **首轮复核对齐**：`publish_document` 目前**不设** `review_due_at`（保持为空）⇒ 未被人工复核过的已发布文档**永不进入到期周期**（beat 只能捞到「复核过一次」的文档） | **待裁决**：A) 发布时置 `review_due_at = now + grace`（让首轮到期闭环，与 §2.6「到期扫描前置宽限」措辞一致）；B) 维持现状（首轮到期须人工设位）。**未擅自改**（属已交付行为，超出 N3 范围）。 |
 | N4 | 文档级权限（某些文档仅部分岗位可见） | **不做**：文档级可见性收敛到知识库绑定粒度（`004`）；文档级 RBAC 属重造授权，明示排除 |
 | N5 | 语义缓存 | 本期不建缓存；预留「key 含租户+角色+治理版本」口径，实现缓存时遵守 |
 

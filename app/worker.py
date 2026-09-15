@@ -17,8 +17,14 @@ class LifecycleRunnerProtocol(Protocol):
         ...
 
 
+class KnowledgeReviewScannerProtocol(Protocol):
+    def scan_review_due_across_tenants(self, *, now=None, limit: int = 500) -> dict[str, int]:
+        ...
+
+
 _outbox_publisher: OutboxPublisherProtocol | None = None
 _lifecycle_runner: LifecycleRunnerProtocol | None = None
+_knowledge_review_scanner: KnowledgeReviewScannerProtocol | None = None
 
 
 def configure_outbox_publisher(publisher: OutboxPublisherProtocol | None) -> None:
@@ -33,13 +39,19 @@ def configure_lifecycle(runner: LifecycleRunnerProtocol | None) -> None:
     _lifecycle_runner = runner
 
 
+def configure_knowledge_review(scanner: KnowledgeReviewScannerProtocol | None) -> None:
+    """注入知识治理到期扫描器（`KnowledgeGovernanceService` 满足该协议）；测试可置 None。"""
+    global _knowledge_review_scanner
+    _knowledge_review_scanner = scanner
+
+
 def configure_runtime(*, settings=None, connection=None, redis_client=None, audit=None) -> OutboxPublisherProtocol:
     """Wire a production Outbox publisher and lifecycle runner into this Celery process."""
     if settings is None:
         settings = get_settings()
     if settings.storage_backend != "postgres":
         raise ValueError("Worker 必须使用 PostgreSQL")
-    from .bootstrap import build_commercial_components, build_outbox_publisher
+    from .bootstrap import build_commercial_components, build_knowledge_governance_service, build_outbox_publisher
 
     if connection is None:
         from psycopg_pool import ConnectionPool
@@ -53,8 +65,16 @@ def configure_runtime(*, settings=None, connection=None, redis_client=None, audi
     _, _, lifecycle = build_commercial_components(
         settings, connection=connection, migrate=False, audit=audit
     )
+    # N3：知识治理到期扫描（跨租户候选 → 逐条置 needs_review，审计 actor=system:worker）。
+    # 显式传 store ⇒ 复用同一连接且**不跑迁移**（`build_knowledge_governance_service` 缺省会自建池并跑迁移）。
+    from .knowledge_governance.store import PostgresKnowledgeGovStore
+
+    governance = build_knowledge_governance_service(
+        settings, store=PostgresKnowledgeGovStore(connection), audit=audit
+    )
     configure_outbox_publisher(publisher)
     configure_lifecycle(lifecycle)
+    configure_knowledge_review(governance)
     return publisher
 
 
@@ -78,6 +98,12 @@ def create_celery_app() -> Celery:
             "lifecycle-jobs": {
                 "task": "app.worker.run_lifecycle_jobs",
                 "schedule": 30.0,
+            },
+            # N3：知识治理到期扫描（默认 1h，可由 WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS 外置覆盖）。
+            # 只在 worker 进程接线后生效；未接线时任务返回零值，不伪造扫描结果。
+            "knowledge-review-scan": {
+                "task": "app.worker.scan_knowledge_review_due",
+                "schedule": settings.knowledge_review_scan_interval_seconds,
             },
         },
     )
@@ -121,3 +147,15 @@ def run_lifecycle_jobs() -> dict[str, int]:
     if runner is None:
         return {"exports": 0, "deletions": 0}
     return runner.run_pending_jobs(limit=100)
+
+
+@celery_app.task
+def scan_knowledge_review_due() -> dict[str, int]:
+    """知识治理到期扫描（§4 N3）：跨租户把 published 且过 `review_due_at` 的文档置 needs_review。
+
+    与 `publish_outbox` / `run_lifecycle_jobs` 同口径：**未接线即返回零值**，绝不伪造扫描结果。
+    """
+    scanner = _knowledge_review_scanner
+    if scanner is None:
+        return {"candidates": 0, "flipped": 0}
+    return scanner.scan_review_due_across_tenants(limit=500)

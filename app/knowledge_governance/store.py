@@ -5,7 +5,8 @@
 
 其中 `list_published_eligible` 是「检索谓词守卫」的核心落点（§2.3 pre-filter 白名单）：
 只返回 `status='published'` 且未过期（`review_due_at IS NULL OR review_due_at > now`）的文档，
-供检索组合件 `scoped_search` 使用；`list_needs_review` 返回到期扫描候选（§2.2 事件触发）。
+供检索组合件 `scoped_search` 使用；`list_needs_review` 返回到期扫描候选（§2.2 事件触发）；
+`list_due_across_tenants` 是 worker beat 到期扫描（§4 N3）的**跨租户**候选来源（唯一跨租户查询）。
 状态机迁移的合法性由 service 层在 `transition_allowed` 判定后再落库；仓储层用 WHERE 守卫
 做最后防线（`mark_review_due` 仅 published 且已到期才更新）。
 """
@@ -27,14 +28,25 @@ from .models import (
 )
 
 MAX_LIMIT = 200
+# 到期扫描（worker 系统路径）候选上限：批量任务一次最多处理的文档数。
+SCAN_MAX_LIMIT = 1000
 
 
 def _clamp(limit: int) -> int:
     return max(1, min(int(limit), MAX_LIMIT))
 
 
+def _clamp_scan(limit: int) -> int:
+    return max(1, min(int(limit), SCAN_MAX_LIMIT))
+
+
 class KnowledgeGovStore(Protocol):
-    """知识文档治理读写；所有查询严格限定本租户。"""
+    """知识文档治理读写；除 `list_due_across_tenants` 外，所有查询严格限定本租户。
+
+    `list_due_across_tenants` 是**唯一的跨租户查询**，且刻意只此一处：它是 worker 到期扫描
+    （§4 N3）的候选来源，**不经任何 HTTP 路由暴露**（仅被 service 的系统方法调用）；
+    置位仍回到租户作用域的 `mark_review_due`（双保险：候选跨租户、写回带租户）。
+    """
 
     def register_document(self, context, *, doc):
         ...
@@ -54,6 +66,9 @@ class KnowledgeGovStore(Protocol):
         ...
 
     def list_needs_review(self, context, *, now):
+        ...
+
+    def list_due_across_tenants(self, *, now, limit=500):
         ...
 
     def mark_review_due(self, context, document_id, *, now):
@@ -160,6 +175,23 @@ class InMemoryKnowledgeGovStore:
                 and doc.review_due_at <= now
             ]
         return out
+
+    def list_due_across_tenants(self, *, now, limit=500) -> list[KnowledgeDoc]:
+        """worker 到期扫描候选（**唯一跨租户查询**，§4 N3）：published 且 review_due_at ≤ now。
+
+        排序（确定性，与 PG 侧 `ORDER BY review_due_at, tenant_id, document_id` 同口径）；
+        只读候选、不改状态：置位由 service 用租户作用域的 `mark_review_due` 逐条写回。
+        """
+        with self._lock:
+            due = [
+                doc
+                for (tid, _k), doc in self._docs.items()
+                if doc.status is KnowledgeDocStatus.PUBLISHED
+                and doc.review_due_at is not None
+                and doc.review_due_at <= now
+            ]
+        due.sort(key=lambda d: (_dt_or_min(d.review_due_at), d.tenant_id, d.document_id))
+        return due[: _clamp_scan(limit)]
 
     def mark_review_due(self, context, document_id: str, *, now) -> KnowledgeDoc:
         """published 且已到期 → needs_review；不满足返回 None（由 service 判幂等 / 冲突）。"""
@@ -380,6 +412,28 @@ class PostgresKnowledgeGovStore:
                 rows = cursor.fetchall()
         return [self._hydrate_doc(row) for row in rows]
 
+    def list_due_across_tenants(self, *, now, limit=500) -> list[KnowledgeDoc]:
+        """worker 到期扫描候选（**唯一跨租户查询**，§4 N3）：published 且 review_due_at ≤ now。
+
+        刻意不加 `tenant_id` 谓词（与其它查询相反）：候选须跨租户，否则每个 beat 周期都要
+        先枚举租户再逐租户扫（多一轮往返且要维护租户清单）；**写回**仍逐条带租户（见
+        `mark_review_due`），因此「跨租户只发生在读候选这一步」。排序确定性：
+        `review_due_at, tenant_id, document_id`（内存侧同口径）。
+        """
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT {self._DOC_COLUMNS} FROM workbench_knowledge_documents
+                    WHERE status = %s AND review_due_at IS NOT NULL AND review_due_at <= %s
+                    ORDER BY review_due_at ASC, tenant_id ASC, document_id ASC
+                    LIMIT %s
+                    """,
+                    (KnowledgeDocStatus.PUBLISHED.value, now, _clamp_scan(limit)),
+                )
+                rows = cursor.fetchall()
+        return [self._hydrate_doc(row) for row in rows]
+
     def mark_review_due(self, context, document_id: str, *, now) -> KnowledgeDoc:
         """published 且已到期 → needs_review；不满足返回 None（service 判幂等 / 冲突）。"""
         with self._connection() as connection:
@@ -434,4 +488,5 @@ __all__ = [
     "InMemoryKnowledgeGovStore",
     "PostgresKnowledgeGovStore",
     "MAX_LIMIT",
+    "SCAN_MAX_LIMIT",
 ]
