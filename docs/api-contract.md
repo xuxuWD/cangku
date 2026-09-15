@@ -322,6 +322,8 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 - `GET /api/v1/knowledge/metrics`：Freshness Index（仅 `super_admin`）。返回 `{"published", "needs_review", "archived", "total", "freshness_ratio"}`，其中 `freshness_ratio = published/total`（`total=0` 时取 1.0）。
 - `GET /api/v1/knowledge/governance/eligible?limit=`：检索谓词守卫白名单出口（仅 `super_admin`）。只返回 `status='published'` 且未过 `review_due_at` 的文档，供检索组合件在请求 WeKnora 前取白名单（空集 = fail-closed）。
 
+**存量文档导入（非 API，运维脚本）**：`scripts/knowledge_import_register.py`——读清单文件（JSON `{"documents":[{"document_id","title"?,"version"?}]}` / CSV 含 `document_id` 表头）→ 逐条登记为 `draft`（`source_key='migration'`、owner 留空待人工补）。**默认 dry-run**（`--apply` 才写库）、逐行拒绝不静默丢弃（有拒绝时退出码 1）、幂等（已登记跳过）、审计 actor 取 `--actor-id`。**已知缺口**：规格原文的「读 WeKnora 文档列表」未实现（上游列表接口面未核实，不臆造接口），清单由运维导出。
+
 任务视图至少包含：任务号、租户、项目、发起人、数字员工、标题、风险等级、预算、幂等键、状态和审计数量。真实运行阶段还需增加步骤、产物、证据、回滚和失败原因。
 
 ## 统一事件

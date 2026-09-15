@@ -14,7 +14,7 @@
 > **环境**：Docker `wb-test-postgres-1`（postgres 16，端口 55433），库 `workbench_test`；沿用 030/031 既有容器口径，未新增容器。
 
 - **从零应用迁移**：32 条（`001` → `032_knowledge_governance`），含新表 `workbench_knowledge_documents`（复合主键 `(tenant_id, document_id)` + 状态 CHECK 约束 + 两个索引，`IF NOT EXISTS` 幂等）。
-- **真库用例 `tests/test_knowledge_governance_postgres.py`：7 条全绿**：① 登记 + 状态流（draft→published→needs_review→published）真库持久化 + 复核时间戳落库；② **`draft` 可直接归档**（any→archived，§2.2 裁定）真库持久化；③ **N3 跨租户到期扫描**（两个租户各一篇到期 → 一次扫描全置位、未到期不动，写回逐条带租户）；④ 状态 CHECK 约束拦截非法状态值；⑤ 谓词守卫真库语义（仅 published 且未过 `review_due_at` 进白名单；过期即下线）；⑥ `mark_review_due` / 到期扫描真库可用且幂等；⑦ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
+- **真库用例 `tests/test_knowledge_governance_postgres.py`：8 条全绿**：① 登记 + 状态流（draft→published→needs_review→published）真库持久化 + 复核时间戳落库；② **`draft` 可直接归档**（any→archived，§2.2 裁定）真库持久化；③ **N3 跨租户到期扫描**（两个租户各一篇到期 → 一次扫描全置位、未到期不动，写回逐条带租户）；④ **N1 导入登记脚本**（经服务层闸门写 draft + `source_key='migration'` + owner 留空；重复导入幂等 skipped）；⑤ 状态 CHECK 约束拦截非法状态值；⑥ 谓词守卫真库语义（仅 published 且未过 `review_due_at` 进白名单；过期即下线）；⑦ `mark_review_due` / 到期扫描真库可用且幂等；⑧ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
 - **反假口径**：draft 不进白名单（只发布可检索）、needs_review 被谓词排除、状态机 25 条边逐边锁定（§2.2 裁定，`test_transition_matrix_locks_section_2_2_ruling`）——真库与内存双端覆盖。
 - **未验证（如实登记）**：`scoped_search` 与真实 WeKnora 的端到端检索（N2 落点：WeKnora 检索为知识库级、无文档级过滤参数，本期实现为「检索后按白名单收敛」的接口面兜底，标注见 `app/knowledge_governance/scoped_search.py`）；CI 侧取证见下。
 - **CI 侧（2026-09-15）**：run `34960179880`（知识治理层初交付 push）与 run `34960954584`（口径裁定 push）**6/6 job 全绿**（含 backend 全量 pytest 在本仓库 Linux 环境通过）。⚠️ 上述两轮的 **postgres job 清单尚未包含本模块**（`ci.yml` 当时硬编码五个模块）⇒ 那时**不得读成「真库回归已被 CI 守护」**；本轮已补齐（`ci.yml` 加入 `test_knowledge_governance_postgres.py`，并在 `tests/test_ci_assets.py` 把 job 清单六条逐字钉死）。
@@ -191,7 +191,7 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 
 | # | 项 | 状态 |
 | --- | --- | --- |
-| N1 | **存量文档（无登记）**：治理开启后，WeKnora 中已存在但未登记进治理表的文档如何处理 | **默认：不检索**（fail-closed，未登记视为不受控）；提供一次性「导入登记」迁移脚本（读 WeKnora 文档列表 → 批量登记为 draft，owner 待人工补）——需用户确认是否本期做导入脚本 |
+| N1 | **存量文档（无登记）** | ✅ **已落地（2026-09-15，用户确认本期做）**：脚本 `scripts/knowledge_import_register.py`——读**清单文件**（JSON / CSV）→ 逐条经服务层闸门登记为 `draft`（`source_key='migration'`、**owner 留空待人工补**）；**默认 dry-run**（不加 `--apply` 绝不写库）、逐行拒绝不静默丢弃、幂等（已登记一律 skipped）、审计 actor = `--actor-id`。**已知缺口（据实登记）**：规格原文「读 WeKnora 文档列表」**未实现**——WeKnora **文档列表接口面未核实**（D1 只定死检索与详情两个接口），脚本改由运维导出清单喂入，**不臆造上游接口**；上游接口面确认后再加数据源（导入核心已与数据源解耦）。真库回归见 §0（`test_import_register_script_against_postgres`）。 |
 | N2 | **文档级过滤的落点**：WeKnora 检索是知识库级，文档级白名单如何下传 | 两个方案：① 检索后按文档白名单**收敛结果**（简单，但「文本已被检索」——违反 §6.4 的 pre-filter 精神，仅当 WeKnora 无文档级过滤时兜底）；② 要求 WeKnora 支持文档级过滤参数（需上游接口面）。**裁决后定**——若上游不支持，选 ① 并明确记录「是接口面限制的兜底，不是设计偏好」 |
 | N3 | 复核**到期扫描 worker**（beat 任务） | ✅ **已落地（2026-09-15）**：`app.worker.scan_knowledge_review_due`（排程键 `knowledge-review-scan`，间隔可外置 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`，默认 1h）；候选跨租户、写回带租户、审计 actor=`system:worker`；手动端点 `POST /api/v1/knowledge/review-scan` 保留。**未验证**：worker 进程在真实部署拓扑下的 beat 联调（本机与 CI 均未起 Celery beat）。 |
 | N6 | **首轮复核对齐** | ✅ **已裁决并落地（2026-09-15，用户拍板 A）**：**发布即置** `review_due_at = 发布时刻 + grace_days`（§2.2 / §2.6）⇒ 未被人工复核过的已发布文档**也进入到期周期**，首轮到期由扫描触发；回归锚点 `test_first_review_cycle_closes_from_publish`（内存）+ 真库发布读回断言。 |

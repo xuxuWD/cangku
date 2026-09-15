@@ -167,6 +167,35 @@ def test_worker_scan_across_tenants_on_postgres(service) -> None:
             cursor.execute("DELETE FROM workbench_knowledge_documents WHERE tenant_id = %s", (other,))
 
 
+def test_import_register_script_against_postgres(service) -> None:
+    """N1 真库：导入脚本经服务层闸门写 `draft` + `source_key='migration'` + owner 留空；重复导入幂等。"""
+    svc, connection = service
+    from scripts.knowledge_import_register import IMPORT_SOURCE_KEY, ImportEntry, run_import
+
+    entries = [ImportEntry("pg-imp-1", title="存量一", version="2"), ImportEntry("pg-imp-2")]
+    report = run_import(svc, _admin(), entries, apply=True)
+    assert report.created == ("pg-imp-1", "pg-imp-2")
+    assert report.rejected == ()
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT document_id, status, source_key, owner_id, version "
+            "FROM workbench_knowledge_documents "
+            "WHERE tenant_id = %s AND document_id IN (%s, %s) ORDER BY document_id",
+            (TENANT, "pg-imp-1", "pg-imp-2"),
+        )
+        rows = [tuple(row) for row in cursor.fetchall()]
+    assert rows == [
+        ("pg-imp-1", "draft", IMPORT_SOURCE_KEY, "", "2"),
+        ("pg-imp-2", "draft", IMPORT_SOURCE_KEY, "", "1"),
+    ]
+
+    # 幂等：重复导入全部 skipped
+    second = run_import(svc, _admin(), entries, apply=True)
+    assert second.created == ()
+    assert second.skipped == ("pg-imp-1", "pg-imp-2")
+
+
 def test_check_constraint_forbids_illegal_status(service) -> None:
     """CHECK 约束：非法状态值直接落库失败（status IN 白名单）。"""
     svc, connection = service
