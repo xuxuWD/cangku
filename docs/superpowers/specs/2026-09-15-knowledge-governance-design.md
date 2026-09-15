@@ -16,7 +16,12 @@
 - **从零应用迁移**：32 条（`001` → `032_knowledge_governance`），含新表 `workbench_knowledge_documents`（复合主键 `(tenant_id, document_id)` + 状态 CHECK 约束 + 两个索引，`IF NOT EXISTS` 幂等）。
 - **真库用例 `tests/test_knowledge_governance_postgres.py`：8 条全绿**：① 登记 + 状态流（draft→published→needs_review→published）真库持久化 + 复核时间戳落库；② **`draft` 可直接归档**（any→archived，§2.2 裁定）真库持久化；③ **N3 跨租户到期扫描**（两个租户各一篇到期 → 一次扫描全置位、未到期不动，写回逐条带租户）；④ **N1 导入登记脚本**（经服务层闸门写 draft + `source_key='migration'` + owner 留空；重复导入幂等 skipped）；⑤ 状态 CHECK 约束拦截非法状态值；⑥ 谓词守卫真库语义（仅 published 且未过 `review_due_at` 进白名单；过期即下线）；⑦ `mark_review_due` / 到期扫描真库可用且幂等；⑧ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
 - **反假口径**：draft 不进白名单（只发布可检索）、needs_review 被谓词排除、状态机 25 条边逐边锁定（§2.2 裁定，`test_transition_matrix_locks_section_2_2_ruling`）——真库与内存双端覆盖。
-- **未验证（如实登记）**：**真实 WeKnora** 未接入——本机已用**假 WeKnora（本地 HTTP 服务，非 MockTransport）**完成三场景联调（见 §0「本机联调」段），但真实 WeKnora 实例的接口面与语义**仍未核实**（N2 落点：WeKnora 检索为知识库级、无文档级过滤参数，本期实现为「检索后按白名单收敛」的接口面兜底，标注见 `app/knowledge_governance/scoped_search.py`）；CI 侧取证见下。
+- ✅ **真实 WeKnora 实例联调（N2，2026-09-15，本机自建；非 staging、非 CI）**：按官方镜像 `wechatopenai/weknora-{app,docreader}:v0.8.0` + `paradedb/paradedb:v0.22.2-pg17` + `redis:7.0-alpine` 起 compose（app 8181，DB/Redis 仅容器内网），用 `config/builtin_models.yaml` 声明式注册**本机 bge-m3（1024 维）** 为 Embedding 内置模型，另起一个**本机 OpenAI 兼容 embedding 端点**（脚手架，仓库外）供其调用。**脚手架与联调环境均在仓库外**（`D:\徐徐AI学习\_weknora-verify\`，跑完按清理纪律处置），未进仓库。
+  - **接口面核实（逐条对齐 `app/knowledge.py` 的解析假设）**：`X-API-Key` 鉴权 ✓（错误密钥 401）；缺 `knowledge_base_id(s)`/`knowledge_ids` 全给 ⇒ 400 `At least one knowledge_base_id, knowledge_base_ids, knowledge_ids, or scoped tag must be provided`；响应 `success` + `data[]`（`id` / `content` / `knowledge_id` / `knowledge_title` / `chunk_index` / `score`）与适配器解析**逐字段吻合**。
+  - **文档级过滤（N2 关键，结论与上游文档相反）**：`knowledge_ids` 参数**存在**，但请求**只要带 `knowledge_base_ids`（或单数 `knowledge_base_id`）就被静默忽略**——服务端 SQL 全程无 `"knowledge_id" =` 谓词（关键词路与向量路三条 SQL 逐一核对），连**不存在的文档 id** 也照常返回整库（**fail-open**，无报错、无降级提示）；实测 12 场景矩阵：`只给 kb` = 两篇（基线）、`kb + ids=[A]` = **两篇**（应为 A）、`kb + ids=[B]` = 两篇、`kb + ids=[不存在]` = **两篇**（应为 0）、`kb(单数) + ids=[A]` = 两篇；而**只给 `knowledge_ids`、不给 kb** 时：`ids=[A]` ⇒ 只 A、`ids=[B]` ⇒ 只 B、`ids=[不存在]` ⇒ **0 命中**，SQL 均有 `"knowledge_id" =` 谓词（并按文档反解出 kb 谓词）。⇒ **方案② 下传在上游当前版本对「kb + 白名单」这一我方用法不生效**，**①下游收敛是唯一真实生效的防线**；②保留为前向兼容口，**不得**因已下传而放松收敛（回归锚点已按此实测改写注释）。
+  - **解析链路踩坑（供私有部署复用）**：① KB 必须**建库时**指定 `embedding_model_id`（事后走 `PUT /initialization/config/:kb_id` 会因 `llm_model_id` 必填而 400；不指定则知识永远停在 `processing`、chunks/embeddings 为 0）；② 上游 SSRF 校验默认拦截 `host.docker.internal`（解析报 `base URL SSRF check failed: hostname ... is restricted`）⇒ 内网自建模型端点须进 `SSRF_WHITELIST`；③ 上游文档示例的 `status: "published"` 被真实实例 400 拒绝（**只接受 `draft` / `publish`**）。
+  - **未验证（不得外推）**：① 上游更高版本与其它检索驱动（elasticsearch / qdrant / milvus 等）下 `knowledge_ids` 口径**未复测**；② **原文「文本未被检索」这一 pre-filter 语义在本机拓扑下无法证明**（带 kb 时过滤被上游忽略 ⇒ 白名单外文本**确实进入了检索管线**，只是返回后被收敛）；③ 本机为 Windows + Docker Desktop + bge-m3 + 无 LLM（摘要/问题生成未启用）的最小拓扑，**客户侧与生产拓扑未验收**。
+- **未验证（如实登记）**：~~**真实 WeKnora** 未接入~~ ⇒ **已部分销账**（2026-09-15 真实实例联调，见下条）；**仍未接入**：真实 **staging / 客户侧** WeKnora、真实 LLM（摘要/问答链路）、上游更高版本与其它检索驱动。原「N2 落点＝知识库级、无文档级过滤参数」的表述**已被实测更正**（参数存在但在带 kb 时被忽略，见 §4 N2）。
 - **本机联调（2026-09-15，非 staging、非 CI）**：以「本机 Redis（隔离 db）+ 测试库 + 真 Celery 进程 + 假 WeKnora」搭最小拓扑，实证两项此前未验的链路（**脚手架放系统临时目录，跑完已删；未进仓库**）：
   - **N3 beat 周期触发闭环**：独立 `celery beat`（间隔配 30s）+ 独立 `celery worker`（Windows 必须 solo 池；`-B` 内嵌 beat 在 Windows 不可用，Celery 明确报错）⇒ beat 日志 `Sending due task knowledge-review-scan` → worker 端 `succeeded ... {'candidates': 1, 'flipped': 1}` → 查库 `status: published→needs_review`、`updated_at` 与派发时刻**毫秒级吻合**（22:08:19 本地 ↔ `14:08:19.795976+00`）→ 审计落 `knowledge.doc.review_due`（**actor=`system:worker`**）；后续周期 `candidates=0`（幂等）。
   - **检索谓词守卫真实 HTTP 三场景**（真实 `WeKnoraKnowledgeAdapter` + `scoped_search` + 假 WeKnora 计请求数）：① 治理**关闭** ⇒ 返回 3 条、请求 +1（与今天一致）；② 治理**开启+白名单空** ⇒ **返回 0 条且请求计数不变**（fail-closed 真「未请求 WeKnora」）；③ 治理**开启+有 published** ⇒ 只返回白名单内 `chunk-1@doc-pub`，未登记 / 未发布引用被收敛剔除、请求 +1。
@@ -119,7 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_docs_status ON workbench_knowledge_docu
 1. 由 `KnowledgeAccessRegistry.resolve` 得到 **knowledge_base_ids**（既有，租户内岗位/员工绑定）；
 2. 由治理服务查该租户 **`status='published'` 且未过 `review_due_at`** 的文档集（**pre-filter**）→ 得到文档级白名单；
 3. 白名单空 → 直接返回空结果（**fail-closed**，不请求 WeKnora）；
-4. 否则把白名单传给 WeKnora（或按文档集合聚合成其查询参数——WeKnora 检索是知识库级，文档级过滤在返回后再收敛，见 §5 N2 的开项）。
+4. 否则把白名单作为 `knowledge_ids` **下传** WeKnora（**N2 方案②**，2026-09-15 裁决）；**返回后仍按白名单收敛**——实测上游在带 kb 参数时会忽略 `knowledge_ids`（见 §4 N2），故收敛是当前真实生效的防线。检索是知识库级 + 文档级双层谓词。
 
 **clearance 要求（§6.4）**：一切范围/权限从**服务端已校验身份断言**（`UserContext.tenant_id`/role）推导；客户端传入的设置一律忽略。语义缓存（如有）key 须含租户 + 角色 + **治理策略版本**。
 
@@ -198,7 +203,7 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 | # | 项 | 状态 |
 | --- | --- | --- |
 | N1 | **存量文档（无登记）** | ✅ **已落地（2026-09-15，用户确认本期做）**：脚本 `scripts/knowledge_import_register.py`——读**清单文件**（JSON / CSV）→ 逐条经服务层闸门登记为 `draft`（`source_key='migration'`、**owner 留空待人工补**）；**默认 dry-run**（不加 `--apply` 绝不写库）、逐行拒绝不静默丢弃、幂等（已登记一律 skipped）、审计 actor = `--actor-id`。**已知缺口（据实登记）**：规格原文「读 WeKnora 文档列表」**未实现**——WeKnora **文档列表接口面未核实**（D1 只定死检索与详情两个接口），脚本改由运维导出清单喂入，**不臆造上游接口**；上游接口面确认后再加数据源（导入核心已与数据源解耦）。真库回归见 §0（`test_import_register_script_against_postgres`）。 |
-| N2 | **文档级过滤的落点**：WeKnora 检索是知识库级，文档级白名单如何下传 | 两个方案：① 检索后按文档白名单**收敛结果**（简单，但「文本已被检索」——违反 §6.4 的 pre-filter 精神，仅当 WeKnora 无文档级过滤时兜底）；② 要求 WeKnora 支持文档级过滤参数（需上游接口面）。**裁决后定**——若上游不支持，选 ① 并明确记录「是接口面限制的兜底，不是设计偏好」 |
+| N2 | **文档级过滤的落点**：WeKnora 检索是知识库级，文档级白名单如何下传 | ✅ **已裁决并落地（2026-09-15，用户拍板「改方案②」）**：白名单作为 `knowledge_ids` **下传给上游**（前向兼容），同时**保留下游白名单收敛**。**同日以真实 WeKnora 实例（v0.8.0 + postgres 检索驱动，本机自建）实测校正了口径**——上游**确实有** `knowledge_ids` 参数，但**只要请求同时带 `knowledge_base_ids`（或单数 `knowledge_base_id`）就静默忽略它**（服务端 SQL 无该谓词；未知文档 id 也照常返回整库，fail-open、无报错）；只有「只给 `knowledge_ids`、不给任何 kb 参数」时才真正下推（并按文档反解出 kb 谓词）。⇒ **①（下游收敛）是当前真实生效的防线，属必需而非可选**；②保留为前向兼容下传口，**不得**因「已下传」放松收敛。落地物：`app/knowledge.py`（`knowledge_ids` 可选下传）、`app/knowledge_governance/scoped_search.py`（下传 + 收敛并存）、回归锚点 2 条（`test_scoped_search_pushes_whitelist_downstream` / `test_scoped_search_converges_when_upstream_ignores_filter`）+ 适配器 2 条；真源标注见 `scoped_search.py` 模块 docstring。**未验证**：上游更高版本 / 其它检索驱动（elasticsearch、qdrant 等）下的同口径未复测。 |
 | N3 | 复核**到期扫描 worker**（beat 任务） | ✅ **已落地（2026-09-15）**：`app.worker.scan_knowledge_review_due`（排程键 `knowledge-review-scan`，间隔可外置 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`，默认 1h）；候选跨租户、写回带租户、审计 actor=`system:worker`；手动端点 `POST /api/v1/knowledge/review-scan` 保留。**本机联调已实证 beat 周期触发闭环**（§0「本机联调」段；真 Celery + 30s 间隔 + 毫秒级时间戳吻合 + 审计落痕）。**未验证**：staging / 生产拓扑下的 beat 联调（本机为最小拓扑：Windows + solo 池 + 隔离 Redis db）。 |
 | N6 | **首轮复核对齐** | ✅ **已裁决并落地（2026-09-15，用户拍板 A）**：**发布即置** `review_due_at = 发布时刻 + grace_days`（§2.2 / §2.6）⇒ 未被人工复核过的已发布文档**也进入到期周期**，首轮到期由扫描触发；回归锚点 `test_first_review_cycle_closes_from_publish`（内存）+ 真库发布读回断言。 |
 | N4 | 文档级权限（某些文档仅部分岗位可见） | **不做**：文档级可见性收敛到知识库绑定粒度（`004`）；文档级 RBAC 属重造授权，明示排除 |
@@ -210,6 +215,8 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 ## 5. 风险与红线
 
 1. **检索谓词守卫是安全门**（§6.4）：pre-filter 必须在**请求 WeKnora 前**完成；「检索后裁剪 = 已读到机密内容」是安全回归，反假必测。
+   - ⚠️ **实测差距（2026-09-15，真实实例，不得淡化）**：上游 v0.8.0 在请求带 kb 参数时**忽略 `knowledge_ids`** ⇒ 我方「kb + 白名单」用法下，**白名单外文本确实进入了上游检索管线**（只是返回后被收敛剔除）。即 §6.4 的 pre-filter 精神在当前上游版本上**只能部分达成**：**白名单空 ⇒ 不请求**（完全达成）；**白名单非空 ⇒ 未发布文本仍被上游检索**（未达成，靠返回后收敛兜底）。
+   - ⇒ **处置**：① 不隐藏该差距（本条即证据）；② 收敛兜底为**必需**（回归锚点锁定）；③ 待上游修复「kb + knowledge_ids 组合」后复测，届时可升级为真正的 pre-filter；④ **不得**为「绕过该差距」而改成「只给 knowledge_ids」请求形态——那会丢掉上游侧的知识库边界（实测跨库组合行为混合不可靠，见 §0）。**登记为未决项（见 §4 N2 未验证）**。
 2. **只归档不够，必须从谓词下线**（§6.3）：`archived`/`needs_review` 文档绝不能进检索结果（即使 WeKnora 侧仍可查）。
 3. **治理层不是第二个真源**：WeKnora 索引仍是检索事实源；治理层只守卫「哪些可检索/何时复核」，不复制正文或重建索引。
 4. **人工在环**：复核与发布是人工事件；到期自动进 `needs_review` 但不自动归档/自动下线（除非 2.2 状态机明文如此）。

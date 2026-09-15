@@ -55,6 +55,7 @@ class WeKnoraKnowledgeAdapter:
         context: UserContext,
         query: str,
         knowledge_base_ids: Iterable[str],
+        knowledge_ids: Iterable[str] | None = None,
     ) -> list[KnowledgeCitation]:
         requested = list(dict.fromkeys(knowledge_base_ids))
         if context.tenant_id != self.tenant_id:
@@ -64,15 +65,30 @@ class WeKnoraKnowledgeAdapter:
         if not requested or not set(requested).issubset(self.knowledge_base_ids):
             raise PolicyError("请求的知识库不在当前岗位授权范围内")
 
+        payload: dict[str, object] = {"query": query, "knowledge_base_ids": requested}
+        # N2 方案②（2026-09-15 裁决）：文档级白名单作为 `knowledge_ids` 下传给上游
+        # （上游文档语义：「进一步限定到指定知识（文件）」）。
+        #
+        # ⚠️ 真实实例实测（WeKnora v0.8.0 + postgres 检索驱动，2026-09-15）：**只要请求里带了
+        # `knowledge_base_ids`（或单数 `knowledge_base_id`），上游就静默忽略 `knowledge_ids`**
+        # ——服务端 SQL 里完全没有该谓词，未知 id 也照常返回整库（fail-open，无报错、无降级提示）。
+        # 只有「只给 `knowledge_ids`、不给任何 kb 参数」时该过滤才真正下推到 SQL。
+        # ⇒ 本参数**保留为前向兼容的下传口**（上游修复后即生效），但**绝不能**因为「已下传」
+        # 而放松下游白名单收敛——真实生效的防线是 `scoped_search` 的返回后收敛（①）。
+        # 见 `scoped_search.py` 模块 docstring 与规格 §4 N2。
+        scoped_knowledge_ids = list(dict.fromkeys(knowledge_ids or []))
+        if scoped_knowledge_ids:
+            payload["knowledge_ids"] = scoped_knowledge_ids
+
         response = self.client.post(
             f"{self.base_url}/api/v1/knowledge-search",
             headers={"X-API-Key": self.api_key, "Accept": "application/json"},
-            json={"query": query, "knowledge_base_ids": requested},
+            json=payload,
             timeout=self.timeout,
         )
         response.raise_for_status()
-        payload = response.json()
-        if payload.get("success") is False:
+        body = response.json()
+        if body.get("success") is False:
             raise RuntimeError("WeKnora 知识检索未完成")
         return [
             KnowledgeCitation(
@@ -82,7 +98,7 @@ class WeKnoraKnowledgeAdapter:
                 knowledge_id=str(item.get("knowledge_id") or ""),
                 score=float(item["score"]) if item.get("score") is not None else None,
             )
-            for item in payload.get("data", [])
+            for item in body.get("data", [])
         ]
 
     def search_for_role(self, context: UserContext, role_key: str, query: str, registry) -> list[KnowledgeCitation]:

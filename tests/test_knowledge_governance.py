@@ -266,14 +266,16 @@ class _FakeRegistry:
 
 
 class _SpyAdapter:
-    """记录是否被调用；返回可配置的引用列表。"""
+    """记录是否被调用、以及**下传的文档级白名单**（N2 方案②）；返回可配置的引用列表。"""
 
     def __init__(self, citations=None):
         self.calls = 0
         self.citations = citations or []
+        self.knowledge_ids_calls: list[list[str] | None] = []
 
-    def search(self, context, query, knowledge_base_ids):
+    def search(self, context, query, knowledge_base_ids, knowledge_ids=None):
         self.calls += 1
+        self.knowledge_ids_calls.append(None if knowledge_ids is None else list(knowledge_ids))
         return self.citations
 
 
@@ -322,7 +324,7 @@ def test_scoped_search_converges_after_search(service: KnowledgeGovernanceServic
 
 
 def test_scoped_search_disabled_keeps_legacy_behavior(service: KnowledgeGovernanceService) -> None:
-    """治理开关关闭 → 与今天完全一致：不过滤（直接透传并请求）。"""
+    """治理开关关闭 → 与今天完全一致：不过滤（直接透传并请求），且**不下传**文档级白名单。"""
     adapter = _SpyAdapter(citations=[_citation("c1", "doc-any", "任意文档")])
     scoped = build_scoped_search(
         governance=service, registry=_FakeRegistry(["kb-1"]), adapter=adapter, enabled=False
@@ -330,6 +332,47 @@ def test_scoped_search_disabled_keeps_legacy_behavior(service: KnowledgeGovernan
     result = scoped(_admin(), "content-operator", "报销")
     assert adapter.calls == 1
     assert len(result) == 1
+    assert adapter.knowledge_ids_calls == [None]  # 关闭态不得下传（保持既有检索行为）
+
+
+def test_scoped_search_pushes_whitelist_downstream(service: KnowledgeGovernanceService) -> None:
+    """N2 方案②：白名单作为 `knowledge_ids` **下传给上游**（pre-filter 落到检索语义内）。
+
+    反假锚点：把下传去掉（回到「只在下游收敛」）本用例必须变红——「文本已被检索」是安全回归（§6.4）。
+    """
+    _register(service, document_id="doc-g", owner_id="acct-owner")
+    _publish(service, "doc-g")  # 已发布 → 进白名单
+    _register(service, document_id="doc-draft", owner_id="acct-owner")  # draft → 不在白名单
+    adapter = _SpyAdapter(citations=[_citation("chunk-1", "doc-g", "报销需要提交发票。")])
+    scoped = build_scoped_search(
+        governance=service, registry=_FakeRegistry(["kb-1"]), adapter=adapter, enabled=True
+    )
+    scoped(_admin(), "content-operator", "报销")
+    assert adapter.knowledge_ids_calls == [["doc-g"]]  # 只下传白名单内的文档
+
+
+def test_scoped_search_converges_when_upstream_ignores_filter(service: KnowledgeGovernanceService) -> None:
+    """纵深兜底：上游**忽略** `knowledge_ids` 时，返回结果仍被白名单收敛（② + ① 并存）。
+
+    **这不是假设场景**（2026-09-15 真实 WeKnora v0.8.0 实测）：只要请求带 `knowledge_base_ids`，
+    上游就静默忽略 `knowledge_ids`（SQL 无该谓词），未知文档 id 也照常返回整库（fail-open）
+    ⇒ 下游收敛是当前**真实生效**的防线。
+
+    反假锚点：删掉下游收敛（只留②）本用例必须变红——上游版本差异不得让未发布文档泄露。
+    """
+    _register(service, document_id="doc-g", owner_id="acct-owner")
+    _publish(service, "doc-g")
+    adapter = _SpyAdapter(citations=[
+        _citation("chunk-1", "doc-g", "报销需要提交发票。"),
+        _citation("chunk-2", "doc-draft", "未发布的机密。"),  # 上游没按过滤返回
+        _citation("chunk-3", "doc-unknown", "未登记的机密。"),
+    ])
+    scoped = build_scoped_search(
+        governance=service, registry=_FakeRegistry(["kb-1"]), adapter=adapter, enabled=True
+    )
+    result = scoped(_admin(), "content-operator", "报销")
+    assert [c.citation_id for c in result] == ["chunk-1"]
+    assert adapter.knowledge_ids_calls == [["doc-g"]]  # ② 与 ① 同时生效
 
 
 def _citation(citation_id: str, knowledge_id: str, content: str) -> object:

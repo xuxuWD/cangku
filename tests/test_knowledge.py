@@ -94,6 +94,54 @@ def test_weknora_adapter_reads_document_metadata_with_scope_validation() -> None
     assert document.parse_status == "completed"
 
 
+def test_weknora_adapter_pushes_knowledge_ids_when_provided() -> None:
+    """N2 方案②：显式传入文档级白名单时，作为 `knowledge_ids` 下传（pre-filter 落到上游检索语义内）。"""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.read()))
+        return httpx.Response(200, json={"success": True, "data": []})
+
+    adapter = WeKnoraKnowledgeAdapter(
+        tenant_id="t-1",
+        api_key="scoped-key",
+        knowledge_base_ids={"kb-1"},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        base_url="https://weknora.internal",
+    )
+
+    adapter.search(
+        UserContext("t-1", "u-1", "employee"), "如何报销", ["kb-1"], knowledge_ids=["doc-2", "doc-1", "doc-2"]
+    )
+
+    # 去重且只下传指定文档；知识库范围仍在（上游要求至少一个 kb 参数）
+    assert seen[0]["knowledge_ids"] == ["doc-2", "doc-1"]
+    assert seen[0]["knowledge_base_ids"] == ["kb-1"]
+
+
+def test_weknora_adapter_omits_empty_knowledge_ids() -> None:
+    """未传 / 空白名单**不得**下传空数组——空数组的语义在上游不可靠，静默放宽是安全回归。"""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.read()))
+        return httpx.Response(200, json={"success": True, "data": []})
+
+    adapter = WeKnoraKnowledgeAdapter(
+        tenant_id="t-1",
+        api_key="scoped-key",
+        knowledge_base_ids={"kb-1"},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        base_url="https://weknora.internal",
+    )
+
+    context = UserContext("t-1", "u-1", "employee")
+    adapter.search(context, "如何报销", ["kb-1"])
+    adapter.search(context, "如何报销", ["kb-1"], knowledge_ids=[])
+
+    assert all("knowledge_ids" not in body for body in seen)
+
+
 def test_weknora_adapter_resolves_scope_from_role_registry() -> None:
     calls = 0
 

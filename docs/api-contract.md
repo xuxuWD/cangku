@@ -309,7 +309,9 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 权限：登记 / 发布 / 归档 / 复核 / 到期扫描 / 列表 / 指标 / 白名单全部**仅 `super_admin`**；其他角色一律 `403`。跨租户或不存在的文档一律 `404`（不泄露存在性）。
 
-检索谓词守卫（§2.3）：治理总开关 `WORKBENCH_KNOWLEDGE_GOVERNANCE_ENABLED`（默认 false）**关闭时**检索行为与今天完全一致（不过滤）；**开启时**检索入口在请求 WeKnora 前取本租户 `status='published'` 且未过 `review_due_at` 的文档白名单，**白名单为空 → fail-closed 直接返回空结果、不请求 WeKnora**；非空时检索返回后按文档白名单收敛（WeKnora 检索为知识库级，文档级过滤落点走 N2 方案①，是接口面限制的兜底，不是设计偏好）。过期 / 归档文档从检索**下线**，「只归档没删除也没用，必须从谓词下线」。
+检索谓词守卫（§2.3，**N2 已落定并含实测校正**）：治理总开关 `WORKBENCH_KNOWLEDGE_GOVERNANCE_ENABLED`（默认 false）**关闭时**检索行为与今天完全一致（不过滤，也不下传白名单）；**开启时**检索入口在请求 WeKnora 前取本租户 `status='published'` 且未过 `review_due_at` 的文档白名单，**白名单为空 → fail-closed 直接返回空结果、不请求 WeKnora**；非空时把白名单作为 **`knowledge_ids` 下传**（方案②，前向兼容）+ **返回后按白名单收敛**（①）。过期 / 归档文档从检索**下线**，「只归档没删除也没用，必须从谓词下线」。
+
+> ️ **上游实测差异（2026-09-15，WeKnora v0.8.0 + postgres 驱动，真实实例）**：上游 `POST /api/v1/knowledge-search` 虽有 `knowledge_ids` 参数，但**只要请求带了 `knowledge_base_id(s)` 就被静默忽略**（服务端 SQL 无该谓词；不存在的文档 id 也照常返回整库，fail-open）。⇒ 适配器**仍按知识库范围 + 文档白名单双下传**（前向兼容），但**当前真实生效的防线是返回后收敛**，绝不可因「已下传」而删除收敛。**不得**为规避此差异改成「只给 `knowledge_ids`」请求形态（会丢掉上游侧知识库边界）。上游修复后须复测并更新本节。
 
 审计动作码（§2.7，只记文档标识/标题/状态/负责人/版本/来源，**不落正文**）：`knowledge.doc.registered` / `knowledge.doc.published` / `knowledge.doc.archived` / `knowledge.doc.reviewed` / `knowledge.doc.review_due`。
 
