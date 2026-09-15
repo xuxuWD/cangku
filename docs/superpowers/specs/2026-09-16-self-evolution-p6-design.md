@@ -303,7 +303,7 @@ CREATE TABLE IF NOT EXISTS workbench_skill_pointers (
 - ✅ **接口层**：7 条（生命周期 / 只读运行视图 / 未启用 503 / 越权 403 / 非法载荷 422 / 404 / 归档 409）；**CLI** 4 条（fail-closed 两条 + 参数面）。
 - ✅ **真库 4 条**（`wb-test-postgres-1:55433`，迁移 `033` 应用后；见 §0.1）。
 - ✅ **全量回归（含真库）**：`1971 passed / 0 failed / 0 skipped`。
-- ⏳ **CI 取证**：待推送后回填（run 号与六 job 结论）。
+- ✅ **CI 取证（2026-09-16）**：run `35032636606`（主提交 `6250345`）**6/6 job success**；后端 `1886 passed + 85 skipped = 1971`（与本机全量计数一致）。**当场发现真库 job 计数仍为 `tests=53`（与上轮相同）** ⇒ `test_evolution_postgres.py` **未被纳入**该 job 的**显式模块清单**（`ci.yml` 是文件列表、不是 glob）⇒ 已补 `ci.yml` 并复跑：run `35032856961`（`0bbe861`）**6/6 success**、**真库 `tests=57 skipped=0 failed=0`**（53 + 4 条 P6a 真库用例）。
 
 ---
 
