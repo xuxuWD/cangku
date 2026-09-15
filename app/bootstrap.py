@@ -1119,13 +1119,15 @@ def build_memory_service(settings: Settings, *, store=None, embedding=None, audi
     )
 
 
-def build_skills_service(settings: Settings, *, store=None, audit=None):
+def build_skills_service(settings: Settings, *, store=None, audit=None, memory=None):
     """装配技能服务（P4 §2.3/§2.4）。
 
     - `allowed_sources` = `WORKBENCH_SKILL_SOURCE_ALLOWLIST` 逗号分隔；**空 = 技能层关闭**
       （可登记、不可启用，fail-closed，规格 §2.7）。
     - `catalog_tool_keys` 取自既有 `ToolSpecCatalog`（**同一实例语义**：技能 `allowed-tools`
       必须与执行闸门工具目录取交集，§2.4）。
+    - `memory`（可选）= P3 记忆服务实例（M3 打通：技能经验沉淀入事实类记忆，§2.8）；
+      未注入时经验沉淀返回 503（fail-closed，不静默降级）。
     - 未显式传入 store 时按存储模式自建。
     """
     validate_runtime_settings(settings)
@@ -1160,4 +1162,6 @@ def build_skills_service(settings: Settings, *, store=None, audit=None):
         audit=audit,
         # M5 裁决（2026-09-15）：技能包正文体积上限（库内落库，服务端校验）。
         max_content_bytes=settings.skill_content_max_bytes,
+        # M3 打通（2026-09-15）：技能经验沉淀依赖的 P3 记忆服务实例（可为 None → 503）。
+        memory=memory,
     )

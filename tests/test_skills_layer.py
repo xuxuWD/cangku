@@ -298,3 +298,83 @@ def test_audit_actions_registered(service: SkillService) -> None:
     actions = {item.action.value for item in service.audit.store.list_recent(TENANT)}
     assert AuditAction.SKILL_SUBMITTED.value in actions
     assert AuditAction.SKILL_APPROVED.value in actions
+
+
+# ------------------------------------------------------------ M3 打通：技能 ↔ 记忆（经验沉淀）
+
+def _service_with_memory(service: SkillService) -> SkillService:
+    """构造注入了 P3 记忆服务实例的技能服务（M3 打通）。"""
+    from app.memory.embedding import FakeEmbeddingAdapter
+    from app.memory.service import MemoryService
+    from app.memory.store import InMemoryMemoryStore
+
+    memory = MemoryService(
+        InMemoryMemoryStore(), FakeEmbeddingAdapter(),
+        audit=AuditService(InMemoryAuditStore()),
+    )
+    return SkillService(
+        InMemorySkillStore(),
+        SkillPackageValidator(),
+        allowed_sources=SOURCES,
+        catalog_tool_keys=CATALOG_TOOLS,
+        audit=AuditService(InMemoryAuditStore()),
+        memory=memory,
+    )
+
+
+def test_experience_saved_as_fact_memory_with_skill_reference() -> None:
+    """M3：技能经验沉淀为事实类记忆，正文带技能引用前缀（可检索），归属操作者。"""
+    svc = _service_with_memory(service_factory())
+    skill = _submit(svc)
+
+    result = svc.save_experience(_actor(), skill.skill_key, skill.version, content="启动前必须先校验路径")
+
+    assert result["tagged_content"].startswith(f"[skill:{skill.skill_key}@{skill.version}] ")
+    # 查库：事实类记忆已落库，归属操作者。
+    facts, _ = svc.memory.store.list_facts(_actor(), owner_kind="user", owner_id=ALICE)
+    assert len(facts) == 1
+    assert facts[0].content == result["tagged_content"]
+    # 检索可命中（FakeAdapter 同文本最相似）。
+    hits = svc.memory.search_facts(_actor(), query="启动前必须先校验路径", scope=None)
+    assert any(f"[skill:{skill.skill_key}" in hit.content for hit in hits)
+
+
+def test_experience_is_idempotent() -> None:
+    """M3：相同经验文本重复提交返回同一条记忆（幂等），不重复沉淀。"""
+    svc = _service_with_memory(service_factory())
+    skill = _submit(svc)
+    text = "同一条经验"
+
+    first = svc.save_experience(_actor(), skill.skill_key, skill.version, content=text)
+    second = svc.save_experience(_actor(), skill.skill_key, skill.version, content=text)
+
+    assert first["fact"].memory_id == second["fact"].memory_id
+    assert first["idempotency_key"] == second["idempotency_key"]
+    facts, _ = svc.memory.store.list_facts(_actor(), owner_kind="user", owner_id=ALICE)
+    assert len(facts) == 1
+
+
+def test_experience_memory_unavailable_returns_503() -> None:
+    """M3：记忆层未注入时经验沉淀 → SkillMemoryUnavailable（503，fail-closed）。"""
+    from app.skills.models import SkillMemoryUnavailable
+
+    svc = service_factory()  # 未注入 memory
+    skill = _submit(svc)
+    with pytest.raises(SkillMemoryUnavailable):
+        svc.save_experience(_actor(), skill.skill_key, skill.version, content="经验")
+
+
+def test_experience_empty_content_rejected() -> None:
+    """M3：空经验文本 → 422。"""
+    svc = _service_with_memory(service_factory())
+    skill = _submit(svc)
+    with pytest.raises(InvalidSkillPackage):
+        svc.save_experience(_actor(), skill.skill_key, skill.version, content="   ")
+
+
+def test_experience_invisible_skill_returns_404() -> None:
+    """M3：他人未审技能 → SkillNotFound（404，不泄露存在性）。"""
+    svc = _service_with_memory(service_factory())
+    skill = _submit(svc)  # ALICE 提交
+    with pytest.raises(Exception):
+        svc.save_experience(_actor(BOB, "employee"), skill.skill_key, skill.version, content="经验")

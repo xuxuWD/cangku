@@ -76,6 +76,10 @@ class SkillSourceDenied(SkillError):
     """来源 key 不在部署注入白名单 → 403（§2.3，来源白名单 fail-closed）。"""
 
 
+class SkillMemoryUnavailable(SkillError):
+    """技能经验沉淀所需的记忆层未接线 / 不可用 → 503（M3 打通，不静默降级）。"""
+
+
 class SkillNotFound(LookupError):
     """技能包不存在、跨租户，或当前操作者无权可见 → 404。
 

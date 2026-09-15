@@ -104,6 +104,7 @@ from .memory.service import MemoryService
 from .skills.models import (
     InvalidSkillPackage,
     Skill,
+    SkillMemoryUnavailable,
     SkillNotFound,
     SkillSourceDenied,
     SkillStateConflict,
@@ -154,7 +155,8 @@ conversation_service = build_conversation_service(
 memory_service = build_memory_service(settings, audit=audit_service)
 # P4 技能层（规格 docs/superpowers/specs/2026-09-15-skill-layer-p4-design.md §2.3/§2.4）：
 # 来源白名单为空 = 技能层关闭（可登记、不可启用，fail-closed）；allowed-tools 与执行目录取交集。
-skills_service = build_skills_service(settings, audit=audit_service)
+# M3 打通：注入 P3 记忆服务实例 → 技能经验沉淀入事实类记忆（memory_service 已在上面装配）。
+skills_service = build_skills_service(settings, audit=audit_service, memory=memory_service)
 agent_config_service = build_agent_config_service(
     settings, store=workforce_directory_store, audit=audit_service
 )
@@ -1798,6 +1800,21 @@ class SkillContentResponse(BaseModel):
     content_sha256: str
 
 
+class SkillExperienceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class SkillExperienceResponse(BaseModel):
+    """技能经验沉淀结果（M3 打通；只回技能引用与幂等键，不重复大字段）。"""
+
+    skill_key: str
+    version: str
+    fact_id: str
+    idempotency_key: str
+    tagged_content: str
+
+
 class SkillListResponse(BaseModel):
     items: list[SkillView]
     total: int
@@ -1835,6 +1852,8 @@ def _skill_view(skill: Skill) -> SkillView:
 
 def _raise_skill_http(exc: Exception) -> NoReturn:
     """把技能领域异常映射成 HTTP 语义（规格 §3.2）。"""
+    if isinstance(exc, SkillMemoryUnavailable):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if isinstance(exc, SkillStateConflict):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, InvalidSkillPackage):
@@ -1978,6 +1997,40 @@ def get_skill_content(
         version=skill.version,
         content_body=skill.content_body,
         content_sha256=skill.content_sha256,
+    )
+
+
+@app.post("/api/v1/skills/{skill_key}/versions/{version}/memories", response_model=SkillExperienceResponse)
+def save_skill_experience(
+    skill_key: str,
+    version: str,
+    payload: SkillExperienceRequest,
+    context: UserContext = Depends(current_user),
+) -> SkillExperienceResponse:
+    """M3 打通：把技能使用经验沉淀为事实类记忆（技能引用可检索，幂等）。
+
+    技能须对当前操作者可见（本人/管理员，他人未审包 404）；记忆归属操作者自己；
+    相同经验文本重复提交幂等返回既有记录。记忆层未接线 → 503（fail-closed）。
+    """
+    try:
+        result = skills_service.save_experience(
+            context, skill_key, version, content=payload.content
+        )
+    except (
+        InvalidSkillPackage,
+        SkillNotFound,
+        SkillStateConflict,
+        SkillSourceDenied,
+        SkillMemoryUnavailable,
+        PolicyError,
+    ) as exc:
+        _raise_skill_http(exc)
+    return SkillExperienceResponse(
+        skill_key=skill_key,
+        version=version,
+        fact_id=result["fact"].memory_id,
+        idempotency_key=result["idempotency_key"],
+        tagged_content=result["tagged_content"],
     )
 
 

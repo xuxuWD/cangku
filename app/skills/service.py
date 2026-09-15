@@ -20,6 +20,7 @@ from ..domain import PolicyError, UserContext
 from .models import (
     Skill,
     SkillBinding,
+    SkillError,
     SkillStatus,
     ensure_can_review,
     ensure_can_submit,
@@ -48,6 +49,7 @@ class SkillService:
         catalog_tool_keys: frozenset[str],
         audit=None,
         max_content_bytes: int = 64 * 1024,
+        memory=None,
     ) -> None:
         self.store = store
         self.validator = validator
@@ -56,6 +58,9 @@ class SkillService:
         self.audit = audit
         # M5 裁决（2026-09-15）：技能包正文体积上限（库内落库，服务端校验；配置注入）。
         self.max_content_bytes = max_content_bytes
+        # M3 打通（2026-09-15）：技能经验沉淀依赖的 P3 记忆层（未注入时经验沉淀返回 503，
+        # 不静默降级——见 `save_experience`）。注入方 = `app/main.py` 装配的 `memory_service`。
+        self.memory = memory
 
     # ------------------------------------------------------------ 技能包
 
@@ -233,6 +238,56 @@ class SkillService:
         for skill in skills:
             union.update(skill.allowed_tools)
         return tuple(sorted(union & set(self.catalog_tool_keys)))
+
+    # ------------------------------------------------------------ M3 打通：技能 ↔ 记忆（经验沉淀）
+
+    def save_experience(self, context: UserContext, skill_key: str, version: str, *, content: str):
+        """把技能使用经验沉淀为**事实类记忆**（M3 打通，规格 §2.8 / §4 M3）。
+
+        - 前提：技能包对当前操作者可见（复用 `get_skill` 的归属 / 未审 404 语义）；
+        - 记忆正文加技能引用前缀 `[skill:{skill_key}@{version}] {content}`（可检索加工技能键；
+          检索时经向量/文本命中「这个技能怎么用」）；
+        - 归属操作者自己（`owner_kind=user, owner_id=context.user_id`），scope 固定 user（本人语义）；
+        - 幂等：`idempotency_key = skill-exp:{skill_key}:{version}:{sha256(content)[:16]}`——
+          同一经验文本重复提交返回既有记录，不重复沉淀；
+        - 记忆层未注入 / 不可用 → `SkillMemoryUnavailable`（503，fail-closed，不静默降级）。
+        """
+        skill = self.get_skill(context, skill_key, version)  # 可见性 + 404 语义
+        if self.memory is None:
+            from .models import SkillMemoryUnavailable
+
+            raise SkillMemoryUnavailable("技能经验沉淀依赖的记忆层未接线")
+        if not isinstance(content, str) or not content.strip():
+            from .models import InvalidSkillPackage
+
+            raise InvalidSkillPackage("经验内容不能为空")
+        tagged = f"[skill:{skill.skill_key}@{skill.version}] {content.strip()}"
+        idempotency_key = (
+            f"skill-exp:{skill.skill_key}:{skill.version}:"
+            f"{self._content_digest(content.strip())[:16]}"
+        )
+        try:
+            fact = self.memory.create_fact(
+                context,
+                content=tagged,
+                scope="user",
+                owner_kind="user",
+                owner_id=context.user_id,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:  # 记忆层业务异常（缺向量 / 预算 / 维度等）
+            if isinstance(exc, SkillError):
+                raise
+            from .models import SkillMemoryUnavailable
+
+            raise SkillMemoryUnavailable(f"技能经验沉淀失败：{exc}") from exc
+        return {"fact": fact, "tagged_content": tagged, "idempotency_key": idempotency_key}
+
+    @staticmethod
+    def _content_digest(text: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------ 内部
 

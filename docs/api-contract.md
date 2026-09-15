@@ -768,6 +768,7 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 
 - `POST /api/v1/skills`：提交技能包（申报）。请求体 `{"skill_key", "version", "name", "description", "license", "allowed_tools": [...], "source_key", "content_sha256", "content_body"?}`（未知字段 `422`）。成功 `201`，返回技能视图。**幂等**：同 `(tenant, skill_key, version)` 重复提交返回既有记录。`source_key` 不在白名单 `403`；`license`/`allowed_tools`/`description`/`content_body`（D11 类扫描 + 体积上限）不合法 `422`。**M5 裁决（2026-09-15）**：`content_body` 为技能包正文（库内落库，`031_skills_content`），体积上限 `WORKBENCH_SKILL_CONTENT_MAX_BYTES`（默认 64 KiB）；给出 `content_body` 时其指纹必须等于 `content_sha256`，不一致 `422`。
 - `GET /api/v1/skills/{skill_key}/versions/{version}/content`：返回技能包正文（`{"skill_key","version","content_body","content_sha256"}`）。仅本人/管理员可见；他人未审包按 `404`。列表接口**不返回** `content_body`（避免大响应）。
+- `POST /api/v1/skills/{skill_key}/versions/{version}/memories`：**M3 打通（2026-09-15）**——把技能使用经验沉淀为**事实类记忆**。请求体 `{"content": string, 1–2000 字符}`；记忆正文加技能引用前缀 `[skill:{skill_key}@{version}] {content}`（可检索），归属操作者自己（`owner_kind=user`），**幂等**（同 `(skill_key, version, content)` 重复提交返回既有记录）。技能对操作者不可见（他人未审包）→ `404`；空内容 → `422`；记忆层未接线 → `503`（fail-closed）。审计复用 `memory.fact.created`。
 - `GET /api/v1/skills?status=&limit=&offset=`：技能列表（管理员全看；普通员工只看自己提交的），必须分页。
 - `POST /api/v1/skills/{skill_key}/versions/{version}/review?approved=true|false`：审核（仅 `super_admin`；提交人自审 `403`）。
 - `POST /api/v1/skills/{skill_key}/versions/{version}/enable`：启用（approved/disabled→enabled；已启用幂等）。

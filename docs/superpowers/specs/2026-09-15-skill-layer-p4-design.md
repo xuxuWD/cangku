@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS workbench_skill_bindings (
 ### 2.8 与 P3 记忆层的关系（非依赖）
 
 - P4 不消费 P3 存储；但「技能引用」可作为事实类记忆（`POST /api/v1/memory/facts` 的 content = 技能键），打通 M2 沉淀层（迭代调研 §6.5 知识×工作流闭环的后半段）。
-- 本规格不实现该打通，仅登记为后续联动点。
+- **M3 打通已实现（2026-09-15）**：`POST /api/v1/skills/{key}/versions/{v}/memories` 技能经验 → 事实类记忆（正文带 `[skill:key@version]` 前缀、幂等、归属操作者，记忆层未接线 503）。
 
 ---
 
@@ -214,7 +214,7 @@ CREATE TABLE IF NOT EXISTS workbench_skill_bindings (
 | --- | --- | --- |
 | M1 | **MCP 客户端**（立项 §14.1 P4 原文含，本规格**砍出**） | 单独立项：连接外部 MCP server 需先过出网/凭据/资源三关评审（capability-map §4 D3 同款流程）；本层交付前 npm/pypi MCP SDK 不引入 |
 | M2 | 技能**市场 / 公开源下载** | 不做（来源白名单为部署注入受控 key） |
-| M3 | 技能 ↔ 记忆打通（技能引用入事实类记忆） | 登记为后续 P6 联动点，不本规格实现 |
+| M3 | 技能 ↔ 记忆打通（技能引用入事实类记忆） | ✅ **已实现（2026-09-15）**：`POST /api/v1/skills/{key}/versions/{v}/memories` 把技能经验沉淀为**事实类记忆**（正文带 `[skill:key@version]` 前缀可检索；幂等键由 `skill_key@version+content` 派生；归属操作者；记忆层未接线 → 503 fail-closed）。`app/main.py` 装配时注入 P3 `memory_service` 实例；审计复用 `memory.fact.created`。`tests/test_skills_layer.py` 5 用例 + 契约「技能（P4）」已同步 |
 | M4 | 技能**灰度 / 回滚**（版本切换自动回滚） | 属 P6（自进化）范围；本层只做「enabled ⇄ disabled」人工回退 |
 | M5 | 技能包**内容托管**（对象存储 vs 库内） | **已裁决（2026-09-15）：库内落库**——新增迁移 `031_skills_content.sql` 为 `workbench_skills` 加 `content_body` 列（技能包正文，TEXT），服务端校验体积上限（`WORKBENCH_SKILL_CONTENT_MAX_BYTES`，默认 64 KiB）+ 复用 `content_sha256` 指纹验证正文一致；对象存储路径留作后续（大文件技能再评审），本期**不接**对象存储 |
 
