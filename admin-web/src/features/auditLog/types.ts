@@ -93,6 +93,10 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'tool.blocked': '工具执行被拦截',
   'commercial.retention.updated': '保留策略已更新',
   'commercial.deletion.executed': '租户删除已执行',
+  'memory.fact.created': '记忆事实已创建',
+  'memory.fact.superseded': '记忆事实已作废',
+  'memory.rule.created': '记忆规则已创建',
+  'memory.profile.updated': '画像已更新',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

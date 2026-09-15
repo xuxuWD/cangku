@@ -10,6 +10,10 @@
     - 网络面**仅内网桥**（`internal=True`，**无外网出口**）；
     - 工作卷 `/workspace` **生成即空、运行结束销毁**，挂载选项 `noexec,nosuid,nodev,uid,gid,mode`
       （**`uid/gid/mode` 必须显式**，理由见下方常量注释与 G7 实测）；
+    - **容器 env 白名单**（G2，§3.3 凭据行）：注入容器的变量**只允许**
+      `ALLOWED_IN_CONTAINER_ENV_NAMES`（网关内网地址 + 短期网关令牌），**装配期逐键 fail-closed**；
+    - 工作卷 `noexec` 的**作用边界**（G8）：只能拦「**直接 exec** 工作卷内文件」，**拦不住用解释器
+      加载**（实测 `python /workspace/x.py` **可运行**）⇒ 第一道仍是 §3.2 的 **④-0 可执行文件来源校验**；
     - 镜像**必须用 digest**（`@sha256:`），不得用 tag。
 
 工作卷形态说明（如实登记）：Docker **不支持**在 bind / volume 挂载上传 `noexec,nosuid,nodev`
@@ -35,6 +39,7 @@ from typing import Any, Callable, Mapping
 
 from .errors import ToolExecutionConfigError, WorkspaceError
 from .log import get_logger
+from ..runtime.adapters.dsh import ALLOWED_IN_CONTAINER_ENV_NAMES
 
 # 容器内挂载点与固定加固常量（§3.3）。
 WORKSPACE_MOUNT = "/workspace"
@@ -109,7 +114,23 @@ class ContainerSpec:
     network_name: str = INTERNAL_NETWORK_NAME
     # 容器内环境（短期网关令牌等）：内容由 `dsh.build_token_env` 生成（**唯一事实源**），
     # 只含「网关内网地址 + 短期令牌」；**供应商密钥不进容器**。默认空 = 不注入任何 env。
+    # **白名单闸门（G2，§3.3 凭据行）**：键必须落在 `ALLOWED_IN_CONTAINER_ENV_NAMES` 内，
+    # 装配期逐键校验 fail-closed —— 不得依赖上游（铸令牌侧）自觉。
     environment: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """装配期 fail-closed：env 白名单外变量 / 非字符串值一律拒绝（§8 U28 残留 G2）。"""
+        beyond_whitelist = sorted(set(self.environment) - ALLOWED_IN_CONTAINER_ENV_NAMES)
+        if beyond_whitelist:
+            raise ToolExecutionConfigError(
+                "容器 env 白名单外变量被拒绝（G2，§3.3 凭据行）："
+                + "、".join(beyond_whitelist)
+            )
+        for name, value in self.environment.items():
+            if not isinstance(value, str):
+                raise ToolExecutionConfigError(
+                    f"容器 env 值必须为字符串（G2，§3.3 凭据行）：{name}"
+                )
 
     def docker_args(self, workspace_path: str) -> list[str]:
         """加固口径的 CLI 等价 argv（工作卷为 tmpfs，故无 `-v` 宿主绑定）。

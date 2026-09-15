@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -91,6 +91,16 @@ from .workforce import (
     RoleNotAvailable,
     WorkforceDirectoryService,
 )
+from .memory.models import (
+    InvalidMemory,
+    MemoryBudgetExceeded,
+    MemoryFact,
+    MemoryNotFound,
+    MemoryRule,
+    MemoryStateConflict,
+)
+from .memory.embedding import EmbeddingUnavailable
+from .memory.service import MemoryService
 from .conversation import (
     Conversation,
     ConversationMessage,
@@ -131,6 +141,9 @@ conversation_store = build_conversation_store(settings)
 conversation_service = build_conversation_service(
     settings, store=conversation_store, audit=audit_service
 )
+# P3 记忆层（规格 docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md §2.5/§2.8）：
+# 嵌入式服务开发环境缺 default 时由装配层回退到 FakeEmbeddingAdapter（仅验证链路）。
+memory_service = build_memory_service(settings, audit=audit_service)
 agent_config_service = build_agent_config_service(
     settings, store=workforce_directory_store, audit=audit_service
 )
@@ -142,8 +155,9 @@ tool_action_store = build_tool_action_store(settings)
 # 商业化仓储（租户 / 用量账本 / 生命周期）：在 `runtime_service` 之前装配，因为运行终态
 # 记账（`RuntimeService._record_usage_on_terminal`）与 `GET /api/v1/commercial/usage`
 # **必须读同一账本实例**——否则接口读到的恒为 0。
+# N2：把记忆层仓储注入生命周期服务（同一实例）→ 导出载荷含 memories、租户删除物理清场。
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(
-    settings, audit=audit_service
+    settings, audit=audit_service, memory_store=memory_service.store
 )
 runtime_service = build_runtime_service(
     settings,
@@ -1485,6 +1499,249 @@ def archive_conversation(
     except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
         _raise_conversation_http(exc)
     return _conversation_view(conversation)
+
+
+# ------------------------------------------------------------ P3 记忆层（规格 2026-09-15-memory-layer-p3-design.md §2）
+
+
+class MemoryFactView(BaseModel):
+    """事实类记忆视图：不含 embedding 向量本身、不含创建者 PII。"""
+
+    memory_id: str
+    content: str
+    scope: str
+    owner_kind: str
+    status: str
+    created_at: datetime | None = None
+
+
+class MemoryFactCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=8000)
+    scope: str = Field(default="user", max_length=64)
+    owner_kind: str = Field(default="user", max_length=64)
+    owner_id: str | None = Field(default=None, max_length=128)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class MemoryFactListResponse(BaseModel):
+    items: list[MemoryFactView]
+    total: int
+    limit: int
+    offset: int
+
+
+class MemoryFactSearchResponse(BaseModel):
+    items: list[MemoryFactView]
+
+
+class MemoryRuleView(BaseModel):
+    memory_id: str
+    rule_key: str
+    version: int
+    content: str
+    scope: str
+    owner_kind: str
+    status: str
+    created_at: datetime | None = None
+
+
+class MemoryRuleCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rule_key: str = Field(min_length=1, max_length=64)
+    content: str = Field(min_length=1, max_length=8000)
+    scope: str = Field(default="role", max_length=64)
+    owner_kind: str = Field(default="user", max_length=64)
+    owner_id: str | None = Field(default=None, max_length=128)
+
+
+class MemoryProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=128)
+    value: str = Field(min_length=1, max_length=4000)
+    owner_kind: str = Field(default="user", max_length=64)
+    owner_id: str | None = Field(default=None, max_length=128)
+
+
+class MemoryProfileResponse(BaseModel):
+    items: dict[str, str]
+
+
+def _memory_fact_view(fact: MemoryFact) -> MemoryFactView:
+    return MemoryFactView(
+        memory_id=fact.memory_id,
+        content=fact.content,
+        scope=fact.scope.value if hasattr(fact.scope, "value") else str(fact.scope),
+        owner_kind=fact.owner_kind.value if hasattr(fact.owner_kind, "value") else str(fact.owner_kind),
+        status=fact.status.value if hasattr(fact.status, "value") else str(fact.status),
+        created_at=fact.created_at,
+    )
+
+
+def _memory_rule_view(rule: MemoryRule) -> MemoryRuleView:
+    return MemoryRuleView(
+        memory_id=rule.memory_id,
+        rule_key=rule.rule_key,
+        version=rule.version,
+        content=rule.content,
+        scope=rule.scope.value if hasattr(rule.scope, "value") else str(rule.scope),
+        owner_kind=rule.owner_kind.value if hasattr(rule.owner_kind, "value") else str(rule.owner_kind),
+        status=rule.status.value if hasattr(rule.status, "value") else str(rule.status),
+        created_at=rule.created_at,
+    )
+
+
+def _raise_memory_http(exc: Exception) -> NoReturn:
+    """把记忆领域异常映射成 HTTP 语义（§3.2）；fail-closed：Embedding 失败 → 502。"""
+    if isinstance(exc, EmbeddingUnavailable):
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if isinstance(exc, MemoryStateConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, InvalidMemory):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, MemoryBudgetExceeded):
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    if isinstance(exc, MemoryNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, PolicyError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    raise exc
+
+
+@app.post("/api/v1/memory/facts", response_model=MemoryFactView, status_code=status.HTTP_201_CREATED)
+def create_memory_fact(
+    payload: MemoryFactCreateRequest, context: UserContext = Depends(current_user)
+) -> MemoryFactView:
+    """书写事实类记忆（人工采纳链：归属校验 → 预算闸门 → embedding 编码 → 落库 → 审计）。
+
+    §2.3：scope 由服务端校验为合法枚举；§2.5：embedding 服务不可达 → 502（fail-closed，不静默降级）。
+    幂等键：同 (tenant, owner_kind, owner_id, idempotency_key) 重放返回既有记录，不重复落库。
+    """
+    try:
+        fact = memory_service.create_fact(
+            context,
+            content=payload.content,
+            scope=payload.scope,
+            owner_kind=payload.owner_kind,
+            owner_id=payload.owner_id,
+            idempotency_key=payload.idempotency_key,
+        )
+    except (
+        InvalidMemory,
+        MemoryBudgetExceeded,
+        MemoryNotFound,
+        MemoryStateConflict,
+        PolicyError,
+        EmbeddingUnavailable,
+    ) as exc:
+        _raise_memory_http(exc)
+    return _memory_fact_view(fact)
+
+
+@app.get("/api/v1/memory/facts", response_model=MemoryFactListResponse)
+def list_memory_facts(
+    owner_kind: str = Query(default="user", max_length=64),
+    owner_id: str | None = Query(default=None, max_length=128),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> MemoryFactListResponse:
+    """事实类记忆列表：本人或 CEO/超级管理员；必须分页。"""
+    try:
+        items, total = memory_service.list_facts(
+            context,
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            limit=limit,
+            offset=offset,
+        )
+    except (InvalidMemory, MemoryNotFound, PolicyError) as exc:
+        _raise_memory_http(exc)
+    return MemoryFactListResponse(
+        items=[_memory_fact_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
+
+
+@app.post("/api/v1/memory/facts/{memory_id}/supersede", response_model=MemoryFactView)
+def supersede_memory_fact(memory_id: str, context: UserContext = Depends(current_user)) -> MemoryFactView:
+    """作废事实类记忆（supersede 软删链，不物理删除）；本人或 admin，他人 → 404。"""
+    try:
+        fact = memory_service.supersede_fact(context, memory_id)
+    except (InvalidMemory, MemoryNotFound, PolicyError) as exc:
+        _raise_memory_http(exc)
+    return _memory_fact_view(fact)
+
+
+@app.post("/api/v1/memory/search", response_model=MemoryFactSearchResponse)
+def search_memory_facts(
+    query: str = Query(min_length=1, max_length=8000),
+    limit: int = Query(default=20, ge=1, le=200),
+    context: UserContext = Depends(current_user),
+) -> MemoryFactSearchResponse:
+    """语义检索事实类记忆（§2.6）：scope 由服务端解析为 user 档（本人），客户端传值一律忽略。"""
+    try:
+        items = memory_service.search_facts(context, query=query, scope=None, limit=limit)
+    except (InvalidMemory, MemoryNotFound, PolicyError, EmbeddingUnavailable) as exc:
+        _raise_memory_http(exc)
+    return MemoryFactSearchResponse(items=[_memory_fact_view(item) for item in items])
+
+
+@app.post("/api/v1/memory/rules", response_model=MemoryRuleView, status_code=status.HTTP_201_CREATED)
+def create_memory_rule(
+    payload: MemoryRuleCreateRequest, context: UserContext = Depends(current_user)
+) -> MemoryRuleView:
+    """书写规则类记忆（§2.4 人工在环）：同一 (owner, rule_key) 已有 active → supersede 旧版并 version+1。"""
+    try:
+        rule = memory_service.create_rule(
+            context,
+            rule_key=payload.rule_key,
+            content=payload.content,
+            scope=payload.scope,
+            owner_kind=payload.owner_kind,
+            owner_id=payload.owner_id,
+        )
+    except (InvalidMemory, MemoryNotFound, MemoryStateConflict, PolicyError) as exc:
+        _raise_memory_http(exc)
+    return _memory_rule_view(rule)
+
+
+@app.put("/api/v1/memory/profile", response_model=MemoryProfileResponse)
+def update_memory_profile(
+    payload: MemoryProfileUpdateRequest, context: UserContext = Depends(current_user)
+) -> MemoryProfileResponse:
+    """覆写身份类画像键（§2.4 同键覆盖，记审计）；本人或 admin。"""
+    try:
+        memory_service.set_profile_key(
+            context,
+            key=payload.key,
+            value=payload.value,
+            owner_kind=payload.owner_kind,
+            owner_id=payload.owner_id,
+        )
+        profile = memory_service.get_profile(
+            context,
+            owner_kind=payload.owner_kind,
+            owner_id=payload.owner_id,
+        )
+    except (InvalidMemory, MemoryNotFound, MemoryBudgetExceeded, PolicyError) as exc:
+        _raise_memory_http(exc)
+    return MemoryProfileResponse(items=profile)
+
+
+@app.get("/api/v1/memory/profile", response_model=MemoryProfileResponse)
+def read_memory_profile(
+    owner_kind: str = Query(default="user", max_length=64),
+    owner_id: str | None = Query(default=None, max_length=128),
+    context: UserContext = Depends(current_user),
+) -> MemoryProfileResponse:
+    """读取身份类画像（KV，不进向量检索）；本人或 admin。"""
+    try:
+        profile = memory_service.get_profile(
+            context, owner_kind=owner_kind, owner_id=owner_id
+        )
+    except (InvalidMemory, MemoryNotFound, PolicyError) as exc:
+        _raise_memory_http(exc)
+    return MemoryProfileResponse(items=profile)
 
 
 @app.get("/api/v1/workforce/agents/{agent_key}/config", response_model=AgentConfigView)

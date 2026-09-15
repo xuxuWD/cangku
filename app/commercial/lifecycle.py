@@ -100,6 +100,18 @@ class ExportPackageStore(Protocol):
     def get(self, package_id: str, *, tenant_id: str | None = None) -> ExportPackage: ...
 
 
+class MemoryExportStore(Protocol):
+    """P3 记忆层的生命周期读取/清理接口（N2 接线；实现 = `app.memory.store` 的
+    `PostgresMemoryStore`/`InMemoryMemoryStore`，仅使用与商业化握手的最小面）。
+
+    注：`delete_all_for_tenant` 是**租户整体删除**语义（生命周期 CLI/worker 专用），
+    与业务侧「事实类 supersede 软删」不冲突——软删留给正常业务，删除流程物理清场。
+    """
+
+    def list_all_for_tenant(self, tenant_id: str, *, since=None) -> list[object]: ...
+    def delete_all_for_tenant(self, tenant_id: str) -> int: ...
+
+
 class InMemoryLifecycleJobStore:
     def __init__(self) -> None:
         self._jobs: dict[str, LifecycleJob] = {}
@@ -186,6 +198,7 @@ class CommercialLifecycleService:
         job_store: LifecycleJobStore | None = None,
         retention_store: RetentionPolicyStore | None = None,
         export_store: ExportPackageStore | None = None,
+        memory_store: MemoryExportStore | None = None,
         audit: AuditService | None = None,
     ) -> None:
         if cooldown_days < 1:
@@ -195,6 +208,9 @@ class CommercialLifecycleService:
         self.job_store = job_store or InMemoryLifecycleJobStore()
         self.retention_store = retention_store or InMemoryRetentionPolicyStore()
         self.export_store = export_store or InMemoryExportPackageStore()
+        # P3 记忆层生命周期通道（N2）：注入后导出载荷含 memories 数据、删除流程物理清场；
+        # 未注入时保持「memories 未实现（空数组）」现状（既有契约与测试不变）。
+        self.memory_store = memory_store
         # 保留策略变更必须写入审计（真源 commercial-g0-design.md:118）。
         # 未配置审计通道时 `set_retention` 会 fail-closed（见下），不静默跳过。
         self.audit = audit
@@ -216,17 +232,32 @@ class CommercialLifecycleService:
     def build_export_payload(self, tenant_id: str) -> dict[str, object]:
         """构造租户导出载荷（真源 commercial-g0-design.md §6.1）。
 
-        结构按真源类别清单产出；**当前每一类都没有现成读取方法**（商业化服务不持有
-        users/roles/agents/tasks/runs/steps/artifacts/knowledge_*/memories/growth_proposals/
-        approvals/usage/audits 的读取通道）⇒ 一律为空数组（**未实现**，见
-        `UNIMPLEMENTED_EXPORT_CATEGORIES`）；**不臆造字段、不假装有数据**。
-        载荷只承载元数据/脱敏字段（契约 docs/api-contract.md:144）。
+        结构按真源类别清单产出；**未注入跨模块读取通道的类别一律为空数组**（**未实现**，
+        见 `UNIMPLEMENTED_EXPORT_CATEGORIES`）；**不臆造字段、不假装有数据**。
+        已注入的通道（P3 记忆层 `memory_store`）会填充实际数据并从 `unimplemented_categories`
+        移除该类别。载荷只承载元数据/脱敏字段（契约 docs/api-contract.md:144）。
         """
         self.repository.get_tenant(tenant_id)
+        resources: dict[str, object] = {category: [] for category in EXPORT_RESOURCE_CATEGORIES}
+        unimplemented = set(UNIMPLEMENTED_EXPORT_CATEGORIES)
+        if self.memory_store is not None:
+            memories = self.memory_store.list_all_for_tenant(tenant_id)
+            resources["memories"] = [
+                {
+                    "memory_id": memory.memory_id,
+                    "scope": memory.scope.value if hasattr(memory.scope, "value") else str(memory.scope),
+                    "status": memory.status.value if hasattr(memory.status, "value") else str(memory.status),
+                    "content": memory.content,
+                    "created_at": memory.created_at.isoformat() if memory.created_at is not None else None,
+                }
+                for memory in memories
+            ]
+            # 已接线：memories 不再属于「未实现」类别（其余类别保持现状）。
+            unimplemented.discard("memories")
         return {
             "tenant_id": tenant_id,
-            "resources": {category: [] for category in EXPORT_RESOURCE_CATEGORIES},
-            "unimplemented_categories": sorted(UNIMPLEMENTED_EXPORT_CATEGORIES),
+            "resources": resources,
+            "unimplemented_categories": sorted(unimplemented),
             "redaction": list(EXPORT_REDACTED_FIELDS),
         }
 
@@ -302,6 +333,10 @@ class CommercialLifecycleService:
         transition_tenant(tenant, TenantStatus.DELETED, Actor(job.requested_by, "super_admin"))
         if hasattr(self.repository, "set_tenant_status"):
             self.repository.set_tenant_status(tenant_id, TenantStatus.DELETED)
+        # N2：租户删除 = 物理清场（记忆层生命周期方法）。软删语义只留给正常业务；
+        # 删除流程按租户整体销毁记忆数据，避免孤儿数据残留。
+        if self.memory_store is not None:
+            self.memory_store.delete_all_for_tenant(tenant_id)
         job.status = "completed"
         self.job_store.save(job)
         self.audit.record(

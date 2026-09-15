@@ -418,6 +418,26 @@ class Settings(BaseSettings):
     hermes_timeout_seconds: float = Field(
         default=30.0, validation_alias=AliasChoices("HERMES_TIMEOUT_SECONDS", "WORKBENCH_HERMES_TIMEOUT_SECONDS"),
     )
+    # ---- P3 记忆层（embedding / 记忆写入）新增配置 ----
+    # 口径见 docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md §2.5 / §2.8：
+    # 本地 embedding 服务（Qwen3-Embedding-0.6B 或同协议实现）地址；**缺失即拒绝启动**（fail-closed）。
+    embedding_base_url: str = Field(
+        default="", validation_alias=AliasChoices("EMBEDDING_BASE_URL", "WORKBENCH_EMBEDDING_BASE_URL")
+    )
+    embedding_timeout_seconds: float = Field(
+        default=10.0, ge=1, le=60,
+        validation_alias=AliasChoices("EMBEDDING_TIMEOUT_SECONDS", "WORKBENCH_EMBEDDING_TIMEOUT_SECONDS"),
+    )
+    embedding_max_tokens: int = Field(
+        default=8192, ge=1, le=32768,
+        validation_alias=AliasChoices("EMBEDDING_MAX_TOKENS", "WORKBENCH_EMBEDDING_MAX_TOKENS"),
+    )
+    # 记忆写入每日成本熔断（整数分）：0 = 走员工 daily_budget_cents 语义（本期只做实例内近似累计，
+    # 见规格 §2.9.3；生产真实口径走「用量账本」，未接线时以本实例累计作为每日预算闸门）。
+    memory_daily_budget_cents: int = Field(
+        default=0, ge=0,
+        validation_alias=AliasChoices("MEMORY_DAILY_BUDGET_CENTS", "WORKBENCH_MEMORY_DAILY_BUDGET_CENTS"),
+    )
     # 跨源部署（桌面端远程模式 / PWA 伴侣端）：非 development 环境只在显式配置来源后
     # 才注册 CORS；留空即视为「不允许任何跨源」（fail-closed）。
     cors_allowed_origins: str = Field(

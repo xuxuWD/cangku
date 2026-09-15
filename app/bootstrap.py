@@ -30,11 +30,13 @@ from .workforce.store import (
 )
 
 
-def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True, audit: AuditService | None = None):
+def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True, audit: AuditService | None = None, memory_store=None):
     """Build tenant, usage, and lifecycle persistence as one coordinated unit.
 
     `audit` 注入生命周期服务：真源要求「任何保留策略变化都写入审计」
     （`commercial-g0-design.md:118`）；未注入时 `set_retention` fail-closed。
+    `memory_store`（可选）为 P3 记忆层生命周期通道（N2）：注入后租户导出载荷含 memories
+    数据、租户删除流程物理清场；未注入保持「memories 未实现」现状。
     """
     validate_runtime_settings(settings)
     from .commercial.lifecycle import (
@@ -59,6 +61,7 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
             job_store=InMemoryLifecycleJobStore(),
             retention_store=InMemoryRetentionPolicyStore(),
             export_store=InMemoryExportPackageStore(),
+            memory_store=memory_store,
             audit=audit,
         )
         return repository, usage, lifecycle
@@ -78,6 +81,7 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
         job_store=PostgresLifecycleJobStore(connection),
         retention_store=PostgresRetentionPolicyStore(connection),
         export_store=PostgresExportPackageStore(connection),
+        memory_store=memory_store,
         audit=audit,
     )
     return repository, usage, lifecycle
@@ -1052,4 +1056,64 @@ def build_agent_config_service(settings: Settings, *, store, audit=None):
         audit=audit,
         allowed_model_keys=registered_model_keys(settings),
         allowed_tools=allowed_tool_names(settings),
+    )
+
+
+def build_memory_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配记忆仓储（P3 记忆层，迁移 029）。
+
+    与其它仓储同一约定：postgres 模式强制持久化（自建连接池 + 随启动执行迁移）；
+    内存实现只在 development 允许（延续「生产禁止内存仓储」的约束）。
+    """
+    from .memory.store import InMemoryMemoryStore, PostgresMemoryStore
+
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存记忆仓储")
+        return InMemoryMemoryStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresMemoryStore(connection)
+    raise ValueError("不支持的记忆存储类型")
+
+
+def build_embedding_adapter(settings: Settings):
+    """按配置装配 embedding 适配器（§2.5）。
+
+    开发环境缺省回退到 `FakeEmbeddingAdapter`（仅验证链路，不接真实模型）；
+    **生产/staging 环境缺 `WORKBENCH_EMBEDDING_BASE_URL` → 抛错拒绝启动**（fail-closed，§2.8）：
+    数据不出内网是记忆层底线，不允许生产环境偷偷落到 Fake 适配器。
+    """
+    from .memory.embedding import EmbeddingAdapter, FakeEmbeddingAdapter
+
+    if not settings.embedding_base_url:
+        if settings.env != "development":
+            raise ValueError("生产环境必须配置 WORKBENCH_EMBEDDING_BASE_URL（本地 embedding 服务地址）")
+        return FakeEmbeddingAdapter()
+    return EmbeddingAdapter(
+        settings.embedding_base_url,
+        timeout_seconds=settings.embedding_timeout_seconds,
+        max_tokens=settings.embedding_max_tokens,
+    )
+
+
+def build_memory_service(settings: Settings, *, store=None, embedding=None, audit=None):
+    """装配记忆服务（P3 §2.4/§2.8）：未显式传入时自建仓储与嵌入适配器。"""
+    validate_runtime_settings(settings)
+    from .memory.service import MemoryService
+
+    memory_store = store if store is not None else build_memory_store(settings)
+    embedding_adapter = embedding if embedding is not None else build_embedding_adapter(settings)
+    return MemoryService(
+        memory_store,
+        embedding_adapter,
+        audit=audit,
+        daily_budget_cents=settings.memory_daily_budget_cents,
     )

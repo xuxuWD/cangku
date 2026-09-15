@@ -35,6 +35,15 @@ FORBIDDEN_IN_CONTAINER_ENV_NAMES = frozenset(
     {"DEEPSEEK_API_KEY_SUPPLIER", "MODEL_GATEWAY_UPSTREAM_API_KEY", "OPENAI_API_KEY_SUPPLIER"}
 )
 
+# 容器内 env 的**白名单**（§3.3 凭据行 / §8 **U28** 残留 **G2**，2026-09-15）：我方经
+# `-e` / `environment` 注入容器的变量**只允许**下列两项 —— `baseURL`（网关内网地址）与
+# `apiKeyEnv`（短期网关令牌）。白名单是**闸门**：执行侧（`app/tool_execution/executor.py` 的
+# `ContainerSpec`）在**装配期逐键校验**，白名单外一律 fail-closed，**不依赖上游自觉**。
+# 逐项口径（值来源 / 最长 TTL / 绑定语义）见规格 §3.3 凭据行。
+# **本集合必须等于 `build_token_env` 的产出键集合**（防两处事实源漂移）：
+#   `tests/test_container_executor.py::test_env_whitelist_accepts_the_token_env_and_matches_its_source`
+ALLOWED_IN_CONTAINER_ENV_NAMES = frozenset({ENV_BASE_URL, ENV_API_KEY})
+
 
 def build_token_env(
     *, token: str, gateway_base_url: str, vendor_api_key: str = ""
@@ -43,6 +52,7 @@ def build_token_env(
 
     只放两项：`baseURL` → **网关内网地址**；`apiKeyEnv` → **短期网关令牌**（非供应商密钥）。
     任何**供应商密钥**都不进容器 —— 若令牌本身就是供应商密钥，直接拒绝；禁止字段名一律剔除。
+    产出键集合必须**恰好等于** `ALLOWED_IN_CONTAINER_ENV_NAMES`（G2 白名单，执行侧据此逐键校验）。
 
     > 落点说明（为什么抽在这里、而不在 `tool_execution`）：常量（`ENV_BASE_URL` / `ENV_API_KEY`）
     > 与禁止名单（`FORBIDDEN_IN_CONTAINER_ENV_NAMES`）的**定义处就是本模块**；把构造函数与它们
@@ -58,6 +68,13 @@ def build_token_env(
         raise DshProfileLockError("供应商密钥不得进入容器环境")
     for name in FORBIDDEN_IN_CONTAINER_ENV_NAMES:
         env.pop(name, None)
+    # G2 白名单自检：本函数是**唯一事实源**，一旦将来新增键而忘了同步白名单，此处即 fail-closed
+    # （否则执行侧会在装配期以"白名单外变量"为由拒绝，报错点离成因更远）。
+    beyond_whitelist = sorted(set(env) - ALLOWED_IN_CONTAINER_ENV_NAMES)
+    if beyond_whitelist:
+        raise DshProfileLockError(
+            "容器 env 超出白名单（G2，§3.3 凭据行）：" + "、".join(beyond_whitelist)
+        )
     return env
 
 

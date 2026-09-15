@@ -52,7 +52,12 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.TOOL_BLOCKED.value == "tool.blocked"
     assert AuditAction.COMMERCIAL_RETENTION_UPDATED.value == "commercial.retention.updated"
     assert AuditAction.COMMERCIAL_DELETION_EXECUTED.value == "commercial.deletion.executed"
-    assert len(set(AuditAction)) == 49
+    # P3 记忆层（2026-09-15）：新增四个动作码，值必须稳定为契约字符串。
+    assert AuditAction.MEMORY_FACT_CREATED.value == "memory.fact.created"
+    assert AuditAction.MEMORY_FACT_SUPERSEDED.value == "memory.fact.superseded"
+    assert AuditAction.MEMORY_RULE_CREATED.value == "memory.rule.created"
+    assert AuditAction.MEMORY_PROFILE_UPDATED.value == "memory.profile.updated"
+    assert len(set(AuditAction)) == 53
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

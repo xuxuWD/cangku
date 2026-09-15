@@ -19,6 +19,9 @@ from app.commercial.lifecycle import (
 )
 from app.commercial.repository import InMemoryCommercialRepository, ResourceNotFound
 from app.commercial.tenant import Actor, CommercialPolicyError, TenantStatus
+from app.memory.embedding import FakeEmbeddingAdapter
+from app.memory.service import MemoryService
+from app.memory.store import InMemoryMemoryStore
 
 
 def seeded_service(cooldown_days=7):
@@ -457,3 +460,77 @@ def test_execute_delete_goes_through_state_machine(monkeypatch):
 
     # 断言：删除执行经 `transition_tenant`（状态机）而非直接改状态字段。
     assert seen == [TenantStatus.DELETED]
+
+
+# ---------------------------------------------------------------------------
+# N2：P3 记忆层生命周期接线（注入 memory_store 后导出含 memories、删除物理清场）
+# 口径：docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md §4 N2
+# ---------------------------------------------------------------------------
+
+
+def _service_with_memory_store(cooldown_days=7):
+    """构造注入了 InMemoryMemoryStore 的生命周期服务，返回 (repo, tenant, service, memory_store)。"""
+    repository = InMemoryCommercialRepository()
+    tenant = repository.create_tenant("客户 A", owner_id="owner-1")
+    repository.add_customer_admin(tenant.id, "admin-1")
+    memory_store = InMemoryMemoryStore()
+    service = CommercialLifecycleService(
+        repository,
+        cooldown_days=cooldown_days,
+        memory_store=memory_store,
+        audit=AuditService(InMemoryAuditStore()),
+    )
+    return repository, tenant, service, memory_store
+
+
+def test_export_payload_includes_memories_when_store_injected():
+    """注入 memory_store 后：导出载荷的 memories 类别含实际数据，且该类别移出 unimplemented。"""
+    from app.domain import UserContext
+
+    repository, tenant, service, memory_store = _service_with_memory_store()
+    svc = MemoryService(memory_store, FakeEmbeddingAdapter(), audit=AuditService(InMemoryAuditStore()))
+    actor = UserContext(tenant.id, "u-1", "super_admin")
+    svc.create_fact(
+        actor, content="客户偏好邮件沟通", scope="user",
+        owner_kind="user", owner_id="u-1", idempotency_key="lc-export-1",
+    )
+
+    payload = service.build_export_payload(tenant.id)
+
+    memories = payload["resources"]["memories"]
+    assert len(memories) == 1
+    assert memories[0]["content"] == "客户偏好邮件沟通"
+    assert memories[0]["scope"] == "user"
+    assert "memories" not in payload["unimplemented_categories"]
+    # 其余类别保持未实现（不臆造数据）。
+    assert set(payload["resources"].keys()) == set(EXPORT_RESOURCE_CATEGORIES)
+    assert "users" in payload["unimplemented_categories"]
+
+
+def test_execute_delete_purges_memories_when_store_injected():
+    """删除执行后：租户记忆被物理清场（list_all_for_tenant 返回空），且其它租户数据不受影响。"""
+    from app.domain import UserContext
+
+    repository, tenant, service, memory_store = _service_with_memory_store(cooldown_days=1)
+    svc = MemoryService(memory_store, FakeEmbeddingAdapter())
+    actor = UserContext(tenant.id, "u-1", "super_admin")
+    svc.create_fact(
+        actor, content="待清场记忆", scope="user",
+        owner_kind="user", owner_id="u-1", idempotency_key="lc-purge-1",
+    )
+    # 另一个租户的数据必须保留（隔离）。
+    other_tenant = repository.create_tenant("客户 B", owner_id="owner-2")
+    svc.create_fact(
+        UserContext(other_tenant.id, "u-9", "super_admin"),
+        content="别的租户记忆", scope="user",
+        owner_kind="user", owner_id="u-9", idempotency_key="lc-other-1",
+    )
+
+    delete_job = service.request_delete(Actor("admin-1", "customer_admin"), tenant.id)
+    service.mark_final_exported(delete_job.id)
+    service.execute_delete(tenant.id, now=delete_job.execute_after + timedelta(seconds=1))
+
+    assert service.tenant_status(tenant.id) == TenantStatus.DELETED
+    assert memory_store.list_all_for_tenant(tenant.id) == []
+    # 其它租户不受牵连。
+    assert len(memory_store.list_all_for_tenant(other_tenant.id)) == 1

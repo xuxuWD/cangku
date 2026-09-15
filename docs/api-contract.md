@@ -721,4 +721,32 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 
 > 上述三项与本节其余内容**已于 2026-09-14 落地**（原「尚未实现」表述已失效）；实现时若与本表冲突，同样以规格评审结论为准并回改本节。
 
+## 记忆与画像（P3 记忆层）
+
+> 口径：`docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md`（迁移 `029_memory_layer`）。
+> **维度固定 1024**（Qwen3-Embedding-0.6B，自托管本地 HTTP 服务，Apache-2.0；**数据不出内网**，生产/staging 必须配置 `WORKBENCH_EMBEDDING_BASE_URL`，缺失即拒绝启动）。
+> **状态 2026-09-15：已落地**（契约与实现一致；若有冲突以规格评审结论为准并回改本节）。
+
+**分类口径**：三类记忆互不合并——
+- **身份类（画像）**：KV，**不进向量检索、每轮常驻会话上下文**；同键覆盖（UPSERT）。
+- **规则类**：整段文本准则；**强制人工在环**；更新走 supersede 链（`status='superseded'` + `superseded_by`），版本号递增。
+- **事实类**：短句 + 向量；**向量检索**（pgvector HNSW，cosine）；作废走 supersede 软删链，**不物理删除**。
+- 一切按**租户隔离**（写进约束）；跨租户与改他人记忆一律 `404`（不泄露存在性）。
+
+**权限与隔离**（与 P1 对话层同口径）：
+- 写：本人「自己的记忆」（`owner_kind=user, owner_id=自己`）；规则类写仅 `super_admin`（视为治理操作）。
+- 读：本人自己的；`ceo` / `super_admin` 可读本租户内他人记忆。
+- `scope`（user/role/project/organization）**由服务端解析校验**；检索时客户端传入的 scope **一律忽略并重算**（本期固定解析为 user 档 = 本人语义）。
+- 未认证 `401`；越权 `403`；embedding 服务不可达写路径 `502`（fail-closed，**不静默降级为「无向量」入库**）。
+
+**审计**：`memory.fact.created` / `memory.fact.superseded` / `memory.rule.created` / `memory.profile.updated`。明细键为最小集（`memory_id` / `scope` / `owner_kind` / `rule_key` / `version`，已入白名单），**不落记忆正文**。
+
+- `POST /api/v1/memory/facts`：写事实类记忆。请求体 `{"content": string, "scope": string, "owner_kind": "user"|"agent", "owner_id"?: string, "idempotency_key": string}`（未知字段 `422`；非法 scope/owner_kind `422`；空/超长 content `422`）。成功 `201`，返回记忆视图（`memory_id`/`content`/`scope`/`owner_kind`/`status`/`created_at`，**不含 embedding 向量**）。**幂等**：同 `(tenant, owner_kind, owner_id, idempotency_key)` 重放返回既有记录，不重复落库、不重复审计。embedding 失败 → `502`。
+- `GET /api/v1/memory/facts`：事实类列表，**必须分页**（`limit` 1–200 默认 50，`offset`）。可选 `owner_kind`/`owner_id` 过滤；默认 user 档本人。
+- `POST /api/v1/memory/facts/{memory_id}/supersede`：作废事实类（软删链不物理删）。他人/跨租户 → `404`。
+- `POST /api/v1/memory/search?query=...&limit=...`：语义检索事实类（query 必填，1–8000 字符）。**scope 由服务端解析**，客户端传值忽略。返回命中列表（按相似度降序）。
+- `POST /api/v1/memory/rules`：写规则类记忆。请求体 `{"rule_key", "content", "scope", "owner_kind", "owner_id"}`；同一 `(owner, rule_key)` 已有 active → 自动 supersede 旧版并 `version+1`（版本快照可回滚）。
+- `PUT /api/v1/memory/profile`：覆写身份类画像键 `{"key", "value", "owner_kind", "owner_id"}`；同键覆盖。返回当前画像。
+- `GET /api/v1/memory/profile?owner_kind=&owner_id=`：读取画像（KV 字典）。
+
 

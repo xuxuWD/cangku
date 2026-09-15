@@ -256,7 +256,7 @@
 | --- | --- |
 | 位置 | **生产：与工作台分主机**（不同宿主、不同 Docker 网络/编排域）；两者之间只经一个受控执行接口。**开发期允许本机 Docker，但仅用于机制验证，不得据此声称隔离达成**（评测附录 B#14，与清单 A2 对齐） |
 | 网络 | **仅内网桥（`--internal`，无外网出口）+ 仅模型网关与执行回调边车可达**（2026-09-13 裁决路径①；**原 `--network none` 口径与 dsh 架构不相容**，见门禁 §F8.2）；模型调用**经工作台侧模型网关**发起（**真实供应商密钥只在网关**，容器内仅短命令牌——见 §3.5）。**〔2026-09-14 更新（§8 U20 方案 b-1）〕** 该内网桥内新增**执行回调边车**（`app/exec_callback`，**只监听一个端口、只暴露一个端点** `POST /internal/exec-callback`）；执行容器可**入向**到达它，回调经边车判定后由 **`边车 → 工作台`** 的受控出向调用交回工作台——**工作台 app 容器不得接入该内网桥**（否则把工作台整个 API 面暴露给执行容器）。 |
-| 文件系统 | 根**只读**；只挂一个**专用空工作目录**到 `/workspace`，挂载选项 **`nosuid,nodev,noexec`**；**工作卷与容器根不同设备**；**不挂 `docker.sock`**、不挂宿主设备节点。**〔2026-09-13 用户裁决·实现口径〕落点 = 容器内 `tmpfs`**（`rw,noexec,nosuid,nodev`,`uid=65534`,`gid=65534`,`mode=700`；`/tmp` 与 `/dev/shm` 为 `rw,noexec,nosuid,nodev,uid=65534,gid=65534,mode=1777`）。**〔2026-09-15 G7：`uid/gid/mode` 必须显式写出，不得依赖 Docker 默认值〕**依据真容器实测——Docker 对 `--tmpfs` 的默认是 `mode=1777,uid=0,gid=0`（工作卷＝**全局可写**），且**一旦容器带 `--workdir` 指向该 tmpfs，该挂载会被改写成 `mode=755`（`root:root`）** ⇒ 以 65534 运行的工具**无法写入工作卷**（`PermissionError [Errno 13]`）；显式指定后行为与是否设 workdir 无关。回归见 `tests/test_container_executor.py::test_workspace_is_owned_by_exec_user_and_writable` 与 `::test_container_spec_is_hardened`；裁决与取证全文见 §8 **U28**。**理由**：Docker **不支持**在 bind / volume 上设置 `nosuid,nodev,noexec`（实测 `-v vol:/w:noexec,nosuid,nodev` → `invalid mode`），而 **tmpfs 是同时满足**「三项挂载选项 + 与容器根不同设备 + 生成即空 + 随容器销毁」的**唯一原生手段**。**影响**：工作卷**不再落在宿主目录**（产物导出仍走 `artifact.export`）；宿主侧 `WORKBENCH_EXEC_WORKSPACE_ROOT` 保留，语义收窄为「③ 路径闸门的宿主锚点」。**登记**：变更记录「执行工作卷落点」条 |
+| 文件系统 | 根**只读**；只挂一个**专用空工作目录**到 `/workspace`，挂载选项 **`nosuid,nodev,noexec`**；**工作卷与容器根不同设备**；**不挂 `docker.sock`**、不挂宿主设备节点。**〔2026-09-13 用户裁决·实现口径〕落点 = 容器内 `tmpfs`**（`rw,noexec,nosuid,nodev`,`uid=65534`,`gid=65534`,`mode=700`；`/tmp` 与 `/dev/shm` 为 `rw,noexec,nosuid,nodev,uid=65534,gid=65534,mode=1777`）。**〔2026-09-15 G7：`uid/gid/mode` 必须显式写出，不得依赖 Docker 默认值〕**依据真容器实测——Docker 对 `--tmpfs` 的默认是 `mode=1777,uid=0,gid=0`（工作卷＝**全局可写**），且**一旦容器带 `--workdir` 指向该 tmpfs，该挂载会被改写成 `mode=755`（`root:root`）** ⇒ 以 65534 运行的工具**无法写入工作卷**（`PermissionError [Errno 13]`）；显式指定后行为与是否设 workdir 无关。回归见 `tests/test_container_executor.py::test_workspace_is_owned_by_exec_user_and_writable` 与 `::test_container_spec_is_hardened`；裁决与取证全文见 §8 **U28**。**理由**：Docker **不支持**在 bind / volume 上设置 `nosuid,nodev,noexec`（实测 `-v vol:/w:noexec,nosuid,nodev` → `invalid mode`），而 **tmpfs 是同时满足**「三项挂载选项 + 与容器根不同设备 + 生成即空 + 随容器销毁」的**唯一原生手段**。**影响**：工作卷**不再落在宿主目录**（产物导出仍走 `artifact.export`）；宿主侧 `WORKBENCH_EXEC_WORKSPACE_ROOT` 保留，语义收窄为「③ 路径闸门的宿主锚点」。**登记**：变更记录「执行工作卷落点」条。**〔2026-09-15 **G8**：`noexec` 的作用边界〕** 真容器实测（`docs/sandbox-boundary-decision.md` §3.1 Probe 2）：工作卷内 `chmod 755` 的脚本**直接执行被拒**（`PermissionError [Errno 13]`）⇒ `noexec` **只拦「直接 exec 工作卷内文件」**；但 **`python /workspace/x.py` 仍可运行** ⇒ **拦不住「用解释器加载」**（容器内必有解释器，这是工具能运行的前提）。**故本项不得被读成"工作卷内不可能执行任何代码"**：**第一道仍是 §3.2 的 ④-0 可执行文件来源校验**，`noexec` 只是**第二道**（§3.2 局限 5）。 |
 | 路径原子性 | ③ 的校验与 ⑧ 的打开必须**原子化**（fd 传递 / `openat2 RESOLVE_BENEATH`），消除 TOCTOU 与硬链接绕过 |
 | 权限 | **非 root**；`--cap-drop ALL`；禁止 `--privileged`；**`--security-opt no-new-privileges`** |
 | 资源 | `--pids-limit` / `--memory` / **`--cpus`（重审补，宪法部署检查要求 CPU 上限）** / **单次执行硬上限（超时，默认值见 §4）**；**超时语义 = 拒绝并终止容器**（fail-closed）；`/tmp` 与 `/dev/shm` 须限额并置 `noexec`（若实测某工具必需例外，须在本规格登记理由） |
@@ -265,7 +265,7 @@
 | 生命周期 | 每次运行一个容器，正常路径**任务结束即销毁**；**超时/崩溃路径必须有孤儿容器回收**（按 run 标签清扫：启动时 + 周期） |
 | 同步语义 | 执行在请求链路内**同步**完成（P2 **已定**），因此**必须有单次执行硬上限**；并发与排队不在本段 |
 | 输出 | 路径**虚拟化** + **反向脱敏**（不暴露宿主路径）；产物须**显式导出**（= `artifact.export`，`critical`）并过内容安全检查 |
-| 凭据 | 容器内**不得持有任何长寿命密钥**（**已定口径，2026-09-13 裁决路径①**）：**容器内唯一注入物 = 我们签发的短期网关令牌**；**供应商密钥只在容器外的模型网关**。短期令牌**六条**见 §3.5 |
+| 凭据 | 容器内**不得持有任何长寿命密钥**（**已定口径，2026-09-13 裁决路径①**）：**容器内唯一注入物 = 我们签发的短期网关令牌**；**供应商密钥只在容器外的模型网关**。短期令牌**六条**见 §3.5。**〔2026-09-15 **G2**：容器内 env 白名单（逐项列名 + 值来源 + TTL + 绑定）〕** 我方经 `-e` / `environment` 注入容器的变量**只允许下列两项**（常量 `ALLOWED_IN_CONTAINER_ENV_NAMES`，定义处 `app/runtime/adapters/dsh.py`，**唯一事实源**）：① `DEEPSEEK_BASE_URL` ＝ **模型网关的「内网」地址**（值来源：配置 `WORKBENCH_MODEL_GATEWAY_BASE_URL`；**不得是供应商域名**；非凭据，无 TTL）；② `DEEPSEEK_API_KEY` ＝ **我们签发的短期网关令牌**（值来源：控制面**每 turn 现铸**；**不是供应商密钥**）。**白名单是闸门**：`ContainerSpec` 在**装配期逐键校验**，白名单外变量与非字符串值一律 fail-closed（`ToolExecutionConfigError`），**不依赖上游自觉**；回归 `tests/test_turn_token_wiring.py::test_env_whitelist_rejects_variable_outside_the_list` 与 `::test_env_whitelist_matches_the_token_env_source_exactly`（后者锁「白名单 ≡ `build_token_env` 产出集合」，防两处事实源漂移）。**令牌 TTL 与绑定语义**：TTL 配置 `WORKBENCH_MODEL_GATEWAY_TOKEN_TTL_SECONDS`（默认 300s、上限 3600s）；**硬约束 = TTL ≥ `WORKBENCH_EXEC_TIMEOUT_SECONDS`**（否则执行中途令牌先过期，见 §4）；令牌**绑死 `(tenant, session, generation)`**、**每 turn 新铸**、容器达终态**同步吊销**（§3.5 P1 ③⑤）⇒ 实际可用窗口被**终态吊销**截断，**不得跨 run 复用**。**〔同轮更正〕** 材料 `sandbox-boundary-decision.md` 原写「令牌 TTL **≤** 单次执行硬上限」，**与 §4 的硬约束方向相反**，已按 §4 更正为 **≥**；"不跨 run 复用"由**绑定 + 终态吊销**保证，**不由 TTL 保证**。容器内 `env` 的其余变量均来自**镜像与 Docker 运行时默认值**（`PATH` / `HOSTNAME` 等），**一律不得承载凭据**。 |
 
 ### 3.4 结果与审计（A1 的落地）
 
@@ -679,6 +679,58 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 | 33 | **正文不进入任何对外通道**（**J7 = 丙案，2026-09-13 新增**；**Q1 条款引用：§3.4 约束 1 / 3 / 4 与审计明细最小集 / §4.1.3（幂等表不落正文）/ 契约「审计与落库口径」**）：① `tool.executed` / `tool.blocked` 审计明细**不含**正文，也**不含** `args_digest`；② 决议端点响应体、`201` / `202` 响应体**不含**正文、密文、宿主路径、凭据；③ **`artifact.export` 的导出通道不得携带流程密文**（导出内容与审批密文列无关）；④ 日志中 grep 不到正文与密文 | 异常 | P0 | 把正文或密文写进审计/日志/响应体 → 必须红；导出物中出现流程密文 → 必须红 |
 | 34 | **`param_roles` 全覆盖断言**（**P1 新增，2026-09-13**）：构造「`ToolSpecCatalog` 中**任一参数未声明 `param_roles`**」→ **启动期断言拒绝启用真实执行并告警（记 `error`）**，且**不拒绝整个服务进程启动**；反向断言：8 个工具的**每个参数都已在 §3.1.1 显式标注** | 异常 | P0 | 把未声明参数当作"默认 `control`"放行 → 必须红（该 fail-open 口径已作废）；去掉该断言 → 必须红 |
 | 35 **【✅ 已实现·2026-09-14（§8 U20 方案 b-1「边车单端口回调面」→ 同日 §8 U21 返工为「候选②：边车纯转发 + 判定回工作台」）；取证 ＝ `tests/test_exec_callback.py`（工作台六条 + 边车纯转发 + 单进程端到端）+ 网络隔离 `tests/test_exec_callback_network.py`（执行容器不可达工作台、不可达回调网）】** | **短期令牌的绑定强制与恒时比对**（**2026-09-13 用户裁决新增**；**条款引用：§3.5 P1 第 3 条的「② 与 ④ 的校验点」注**）：**校验点 ＝ 工作台控制面** —— **执行侧回调工作台**（`artifact.export` 导出 / 请求授权）时，工作台按令牌**反查**其 `(tenant, session, generation)` 并与**当前执行**比对（**constant-time**）。① **令牌与当前执行不匹配**（为 run-A 签发、却用于 run-B 的回调）→ **拒绝**（`403`，不泄露存在性）并记审计；② **跨租户**（令牌租户 ≠ 目标租户）→ **拒绝**；③ **代次不匹配**（同会话旧代次令牌）→ **拒绝**；④ **反向**：完全匹配 → **放行**；⑤ **容器侧伪造绑定声明无效果**（服务端只以自己的权威记录为准，**不读容器声明**）；⑥ **网关数据面不做绑定**（不得在网关加绑定校验，也不得把网关侧 `bound` 当作安全边界）—— 现状实测见前置清单 §B14 F 行与 `_dsh-gateway-verify\out\30-binding-gw.log` | 异常 | P0 | 去掉反查或比对 → 必须红；把 ①–③ 任一情形放行 → 必须红；**把恒时比对换成短路比较**（用「先比长度、再逐字节提前返回」的替身实现）→ 必须红（**④ 以「调用 constant-time 原语」为判据，不以计时为判据**）；把校验点挪到**网关数据面** → 与 §3.5 P1 口径不符，同样必须红 |
+| 36 | **逃逸回归 36 · 越界写**（**G5 新增，2026-09-15**；条款：§3.3 文件系统行「根只读」）：容器内向 `/etc/probe.txt` 写入 → `EROFS`（`Read-only file system`），**不得出现写入成功** | 异常 | P0 | 把 `read_only` 关掉（根挂成可写）→ 必须红 |
+| 37 | **逃逸回归 37 · 越界读**（条款：§3.3 权限行「非 root」）：读 `/etc/shadow` → `PermissionError`，且输出中**不得回显任何内容** | 异常 | P0 | **改回 root（`--user 0:0`）→ 必须红**（2026-09-15 实测：红，`READ_OK 474`）。**⚠ 判据修正**：**仅把 `--cap-drop ALL` 置空不构成有效放宽**——非 root 用户的 effective caps 本就为空（实测 `CapEff=0`），故"加回 cap"类改法**不会**让本条变红（实测仍绿） |
+| 38 | **逃逸回归 38 · 软链穿越**（与 §3.2 局限 6 同族）：工作卷内建 `→/etc` 符号链接，「写穿」与「读敏感文件」两条都必须被拒 | 异常 | P0 | **改回 root（`--user 0:0`）→ 必须红**（2026-09-15 实测：红）。同上，**仅置空 `cap_drop` 不构成有效放宽** |
+| 39 | **逃逸回归 39 · HTTP 出网**（条款：§3.3 网络行）：对 `1.1.1.1:443`、`1.1.1.1:80`、`8.8.8.8:53` 三条 TCP 全部 `Network is unreachable` | 异常 | P0 | 把内网桥换成普通桥（`internal=False`）→ **必须红**（2026-09-15 实测：红，退化为 `TimeoutError`，不再是 `Network is unreachable`） |
+| 40 | **逃逸回归 40 · DNS 外泄**（**= G1 的 CI 复测点**）：外部域名解析必须失败（`gaierror`），**不得解析出地址** | 异常 | P0 | 把内网桥换成普通桥 → **必须红**（2026-09-15 实测：红，`DNS_RESOLVED 172.66.147.243` ⇒ **真的外泄**） |
+| 41 | **逃逸回归 41 · 云元数据**（**= G4 的 CI 复测点**）：`169.254.169.254:80` 必须不可达 | 异常 | P0 | 放开网络（去掉 `--internal`）→ 必须红；**但 2026-09-15 实测"未红"**：本机（Windows + Docker Desktop）**没有云元数据端点** ⇒ 可达性断言恒成立，**该条反假方式在本机与 CI（ubuntu-latest）均不可构造**，只能在**具备元数据端点的宿主**（云主机）上验证 ⇒ 标为**未取证的判据**（断言本身仍有效：不可达即通过） |
+| 42 | **逃逸回归 42 · 环境变量泄密**（条款：§3.3 凭据行 **G2**）：容器内 env **只**承载白名单注入项；**宿主侧 canary 变量名/值与供应商密钥名一律不得出现**；令牌**值不回显**（只判等） | 异常 | P0 | 去掉 `ContainerSpec` 白名单校验 → **必须红**（2026-09-15 实测：**已红**，`test_env_whitelist_rejects_variable_outside_the_list` 报 `DID NOT RAISE`）。**⚠ 未做的一半**：把宿主 `os.environ` 整体灌进容器这一反假**未构造**（需另改装配） |
+| 43 | **逃逸回归 43 · fork 炸弹**（条款：§3.3 资源行）：`--pids-limit` 必须真拦住（必须探测到 `OSError` 的 `EAGAIN/EINVAL`） | 异常 | P0 | 去掉 `--pids-limit` → **必须红**（2026-09-15 实测：红，`FORKED 200 FORK_ERR NONE`） |
+| 44 | **逃逸回归 44 · 提权**（**= G3 的复测点**）：`os.setuid(0)` 与 `os.unshare(CLONE_NEWUSER)` 均被拒 | 异常 | P0 | **改回 root（`--user 0:0`）→ 必须红**（2026-09-15 实测：红，`RUNNING_AS 0 0`）；**⚠ 仅置空 `cap_drop` 不构成有效放宽**（实测仍绿，见行 37 的判据修正） |
+| 45 | **逃逸回归 45 · 持久化外溢**（条款：§3.3 工作目录 / 生命周期行）：**同一 `workspace_path`** 的第二个容器必须看到**空**工作卷（工作卷随容器销毁、不落宿主共享位置） | 异常 | P0 | 把工作卷换成宿主 bind / 命名卷、或跳过销毁 → 必须红。**⚠ 反假未做**（2026-09-15：需改工作卷落点，本轮未构造）；**断言已实跑通过**（`SECOND_SEES []`） |
+| 46 | **逃逸回归 46 · 逃逸面侦察**：无 `docker.sock`、无宿主盘挂载（`/mnt/c`）、`CapEff`/`CapBnd` 全 0、`NoNewPrivs=1`、`Seccomp=2`、`/sys` 不可写 | 异常 | P0 | **改回 root（`--user 0:0`）→ 必须红**（2026-09-15 实测：红，`CAPEFF`/`CAPBND` 非 0）；**实测更正**：**"把根挂成可写"不会让本条变红**（`/sys` 由 sysfs 自身写保护，实测仍绿）；挂 `docker.sock` → 应红（**未构造**） |
+| 47 | **逃逸回归 47 · 磁盘耗尽**（条款：§3.3 资源行 `/tmp` 与工作卷限额）：写超工作卷配额 → `ENOSPC`（errno 28），**不得把宿主磁盘写满** | 异常 | P0 | 去掉工作卷 tmpfs 的 `size` 配额 → **必须红**（2026-09-15 实测：红，`WRITTEN_MB 64 FILL_ERR NONE`） |
+| 48 | **逃逸回归 48 · Windows 穿透通道**：**执行容器内**不得存在 `cmd.exe` / `powershell.exe` / `/mnt/c`。**限定**：**只覆盖"容器内"这一面**；宿主 Windows 的 drvfs 与 unix socket 两条通道属 **R7**（桌面端是否承载工具执行），**本条不得读成"Windows 穿透通道已收口"** | 异常 | P0 | 把宿主盘挂进容器（挂 `/mnt/c`）→ 必须红。**⚠ 反假未做**（2026-09-15：需改装配构造宿主盘挂载）；**断言已实跑通过**（`CMD_EXE False` / `POWERSHELL False` / `HOST_MNT False` / `CMD_BLOCKED FileNotFoundError`） |
+
+**G5 实测证据（2026-09-15，本机 Windows + Docker Desktop 29.7.2，钉死镜像 `python:3.12-slim@sha256:78387bc3…`）**
+
+- **一次运行结果**：`py -m pytest -o addopts="" tests/test_exec_sandbox_escape.py` ⇒ **14 passed**（13 条逃逸 + 1 条静态兜底），耗时 ~10s。**逐条原始输出**（容器内 stdout，非转述）：
+
+| # | 容器内原始输出 |
+| --- | --- |
+| 36 | `WRITE_BLOCKED OSError Read-only file system` |
+| 37 | `READ_BLOCKED PermissionError Permission denied` |
+| 38 | `SYMLINK_CREATED True` / `SYMLINK_WRITE_BLOCKED OSError Read-only file system` / `SYMLINK_READ_BLOCKED PermissionError Permission denied` |
+| 39 | `EGRESS_BLOCKED 1.1.1.1 443 OSError Network is unreachable` / `EGRESS_BLOCKED 1.1.1.1 80 OSError Network is unreachable` / `EGRESS_BLOCKED 8.8.8.8 53 OSError Network is unreachable` |
+| 40 | `DNS_BLOCKED gaierror Temporary failure in name resolution` |
+| 41 | `METADATA_BLOCKED OSError Network is unreachable` |
+| 42 | `ENV_KEYS ["DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","GPG_KEY","HOME","HOSTNAME","LANG","PATH","PYTHON_SHA256","PYTHON_VERSION"]` / `TOKEN_INJECTED True` / `BASE_URL_INJECTED True` |
+| 43 | `FORKED 63 FORK_ERR OSError subtype=BlockingIOError errno=11`（`pids_limit=64`） |
+| 44 | `RUNNING_AS 65534 65534` / `SETUID_BLOCKED PermissionError` / `UNSHARE_BLOCKED PermissionError` |
+| 45 | 第一个容器 `FIRST_WROTE ['persist.txt']`；同一 `workspace_path` 的第二个容器 `SECOND_SEES []` |
+| 46 | `DOCKER_SOCK False` / `HOST_MNT False` / `CAPEFF 0000000000000000` / `CAPBND 0000000000000000` / `NONEWPRIVS 1` / `SECCOMP 2` / `SYS_WRITE_BLOCKED OSError Read-only file system` |
+| 47 | `WRITTEN_MB 8 FILL_ERR OSError 28`（`scratch_size_mb=8`） |
+| 48 | `CMD_EXE False` / `POWERSHELL False` / `HOST_MNT False` / `CMD_BLOCKED FileNotFoundError` |
+
+- **反假矩阵（逐条"改坏 → 跑 → 必须变红 → 还原"）**：
+
+| 组 | 放宽了什么 | 实测结果 | 结论 |
+| --- | --- | --- | --- |
+| A | `create_kwargs` 的 `read_only=True` → `False` | **36 红**（`WRITE_BLOCKED PermissionError`，不再是 `Read-only file system`）；38 / 46 **仍绿** | 断言有效；**并证明多层防线独立生效**（关只读根后，非 root 与 sysfs 仍在挡） |
+| B | `cap_drop=["ALL"]` → `[]`（保留 Docker 默认能力） | **仅 46 红**（`CAPBND 00000000a80425fb`，而 `CAPEFF` 仍为 `0`）；37 / 44 **仍绿** | **判据修正**：对**非 root 用户**，`--cap-drop ALL` 主要削的是 **bounding set**，effective 集本就为空 ⇒ "加回 cap"类改法**不是**有效放宽 |
+| B2 | `user` → `0:0` **且** `cap_drop` → `[]` | **37 红**（`READ_OK 474`，真读到 `/etc/shadow`）、**38 红**、**44 红**（`RUNNING_AS 0 0`）、**46 红** | 「改回 root」是行 37/38/44/46 的**有效**反假方式 |
+| C | `internal=True` → `False`（删旧网重建为普通桥） | **39 红**（退化为 `TimeoutError`）、**40 红**（`DNS_RESOLVED 172.66.147.243`，**真外泄**）；**41 未红** | 网络隔离断言有效；41 的反假**在无云元数据端点的宿主上不可构造** |
+| D | `create_kwargs` 去掉 `pids_limit` | **43 红**（`FORKED 200 FORK_ERR NONE`） | 断言有效 |
+| E | 工作卷 tmpfs 去掉 `size` 配额 | **47 红**（`WRITTEN_MB 64 FILL_ERR NONE`） | 断言有效 |
+| F | `ContainerSpec.__post_init__` 白名单校验置空 | **G2 用例红**（`DID NOT RAISE ToolExecutionConfigError`） | 断言有效（容器侧 42 的"宿主 env 灌入"反假**未构造**） |
+
+- **还原核对**：A–F 全部已还原；还原后 `git diff --numstat app/tool_execution/executor.py` 仍为 **`21 0`**（仅本轮正式改动），且 `tests/test_exec_sandbox_escape.py + tests/test_container_executor.py` ⇒ **27 passed**；`workbench-exec-internal` 复核为 **`Internal=true`**，托管容器残留 **0**。
+- **全量回归（Docker 已就绪）**：`py -m pytest -o addopts=""` ⇒ **`1761 passed, 33 skipped`、0 failed**；33 条 skip **全部**为 `WORKBENCH_TEST_DATABASE_URL` 门控的真库用例（**Docker 相关 skip 已归零**）。
+- **仍未验证**：① **CI 侧**（`sandbox` job 尚无 push 运行记录）；② **真实生产执行宿主（客户侧）**未复测；③ 行 41 / 45 / 48 的**反假方式未构造**；④ 42 的"宿主 env 整体灌入"反假未构造。
+
+
+**G5（2026-09-15）逃逸回归的落点与边界**：用例 36–48 固化为 `tests/test_exec_sandbox_escape.py`（**真容器**；无 Docker 或缺钉死镜像即**整组 skip**），并在 `.github/workflows/ci.yml` 的 **`sandbox` job** 中**真跑且要求 `skipped == 0`**（防"默认 skip ⇒ 无人跑 ⇒ 假守护"）。用例 39–41 与 44 同时是 **G1 / G3 / G4 在 Linux 宿主上的复测点**。**本机取证已完成**（见上方实测块：13 条全绿、逐条原始输出、反假矩阵 A–F）。**未验证（不得读成已通过）**：① **CI 实跑结果**（`sandbox` job 尚无 push 运行记录）；② **真实生产执行宿主（客户侧）仍未复测**；③ 行 41 / 45 / 48 的**反假方式未构造**。
 
 **反假测试纪律**：标「必须红」的每条都要**真的改坏跑一遍确认变红**再还原，并把结果写进汇报。
 
@@ -1029,14 +1081,27 @@ POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval
 
 **四、残留未闭环（不得视为已收口）**
 
-| # | 残留 | 状态 |
+> **2026-09-15 同日后半轮**：**G2 / G5 / G8 三项已收口**（见下节**五**）；本表按当日收口状态更新。
+> **口径**：✅ 只表示"规格 + 实现 + 回归已就位"，**不表示已取证**——取证状态逐条写在"证据"列。
+
+| # | 残留 | 状态 | 证据 / 未验证 |
+| --- | --- | --- | --- |
+| G2 | 容器内 **env 白名单**未定义（短期令牌若经 env 注入，任何能执行代码的路径都能读到） | ✅ **已收口（2026-09-15）** | 规格 §3.3 **凭据行**（逐项列名 + 值来源 + TTL + 绑定语义）；实现 `app/runtime/adapters/dsh.py`（`ALLOWED_IN_CONTAINER_ENV_NAMES` + 构造器自检）与 `app/tool_execution/executor.py`（`ContainerSpec.__post_init__` 装配期逐键 fail-closed）；回归 `tests/test_turn_token_wiring.py::test_env_whitelist_rejects_variable_outside_the_list` / `::test_env_whitelist_matches_the_token_env_source_exactly`（**已实跑：改坏必红、还原即绿**）。**容器侧亦已取证（2026-09-15）**：逃逸用例 **42** 真容器实跑通过——容器内 `ENV_KEYS` 只多出镜像/Docker 默认项（`GPG_KEY` / `HOME` / `HOSTNAME` / `LANG` / `PATH` / `PYTHON_SHA256` / `PYTHON_VERSION`），**无宿主 canary、无供应商密钥名** |
+| G5 | **13 条逃逸用例进 CI + 反假**（现 §5 仅覆盖部分） | ✅ **已固化并已本机取证（2026-09-15）** | 用例 **36–48** 已进 §5（含**逐条原始输出**与**反假矩阵 A–F**）；实现 `tests/test_exec_sandbox_escape.py`；CI 新增 **`sandbox` job**（真容器 + `skipped == 0` 强制）。**取证（已做）**：本机 Docker Desktop 29.7.2 真容器 **14 passed**；反假 A–F 逐组「改坏→变红→还原」（A `read_only=False`→36 红；B `cap_drop=[]`→仅 46 红；B2 `--user 0:0`→37/38/44/46 红；C 普通桥→39/40 红；D 去 `pids_limit`→43 红；E 去 tmpfs `size`→47 红；F 白名单置空→G2 用例红）；还原后 `git diff` 仅保留正式改动、27 条真容器用例全绿。**未验证**：① **CI 实跑**（`sandbox` job 尚无 push 运行记录）；② **真实生产执行宿主（客户侧）**未复测；③ 行 **41 / 45 / 48** 的**反假方式未构造**（41 见该行说明）；④ 行 42 的"宿主 env 整体灌入"反假未构造 |
+| G8 | **`noexec` 作用边界**未写进 §3.3：实测 `python /workspace/*.py` **可运行** ⇒ `noexec` **挡不住解释器**，第一道仍是 §3.2 的 ④-0 来源校验 | ✅ **已写（2026-09-15）** | 规格 §3.3 **文件系统行**末段（G8 括注）；`app/tool_execution/executor.py` 模块 docstring 同步 |
+| — | G1/G3/G4 的**生产宿主与 CI 复测** | 🟡 **本机已复测、CI 待跑、生产宿主未复测** | **本机（Linux 容器）已由逃逸回归用例 39–41、44 复测通过**（2026-09-15 真容器原始输出见 §5 实测块）；`sandbox` job 在 **Linux（ubuntu-latest）** 再跑一遍 ⇒ 覆盖"CI 复测"（**尚无运行记录**）；**真实生产执行宿主（客户侧）仍未复测** |
+| R7 | **桌面端（Windows 本地）是否承载工具执行**（drvfs 与 unix socket 两条穿透通道） | ❌ 未裁决（用例 48 已注明其边界） | — |
+| R8 | **E1（eBPF 运行时强制）是否纳入下一阶段** | ❌ 未裁决 | — |
+
+**五、G2 / G5 / G8 收口（2026-09-15 同日后半轮）**
+
+| # | 收口内容 | 落点（规格 / 实现 / 回归） |
 | --- | --- | --- |
-| G2 | 容器内 **env 白名单**未定义（短期令牌若经 env 注入，任何能执行代码的路径都能读到） | ❌ 未定 |
-| G5 | **13 条逃逸用例进 CI + 反假**（现 §5 仅覆盖部分） | ❌ 未做 |
-| G8 | **`noexec` 作用边界**未写进 §3.3：实测 `python /workspace/*.py` **可运行** ⇒ `noexec` **挡不住解释器**，第一道仍是 §3.2 的 ④-0 来源校验 | ❌ 未写 |
-| — | G1/G3/G4 的**生产宿主与 CI 复测** | ❌ 未做（仅本机） |
-| R7 | **桌面端（Windows 本地）是否承载工具执行**（drvfs 与 unix socket 两条穿透通道） | ❌ 未裁决 |
-| R8 | **E1（eBPF 运行时强制）是否纳入下一阶段** | ❌ 未裁决 |
+| **G2** | 容器 env **白名单**（两项：`DEEPSEEK_BASE_URL`＝网关内网地址、`DEEPSEEK_API_KEY`＝短期网关令牌；白名单外变量与非字符串值**装配期 fail-closed**） | 规格 §3.3 凭据行；`app/runtime/adapters/dsh.py`（`ALLOWED_IN_CONTAINER_ENV_NAMES` + 构造器自检）；`app/tool_execution/executor.py`（`ContainerSpec.__post_init__`）；`tests/test_turn_token_wiring.py`（2 条，**不起容器**） |
+| **G5** | 13 条逃逸用例固化为**回归**（越界写 / 越界读 / 软链穿越 / HTTP 出网 / DNS 外泄 / 云元数据 / 环境变量泄密 / fork 炸弹 / 提权 / 持久化外溢 / 逃逸面侦察 / 磁盘耗尽 / Windows 穿透通道） | 规格 §5 用例 **36–48**；`tests/test_exec_sandbox_escape.py`；`.github/workflows/ci.yml` 新增 **`sandbox-escape` job**（拉取钉死镜像 → 真跑 → 强制 `skipped == 0`） |
+| **G8** | `noexec` **作用边界**措辞（只拦"直接 exec"、**拦不住解释器加载**；第一道仍是 ④-0） | 规格 §3.3 文件系统行末段；`app/tool_execution/executor.py` docstring |
+
+**同日消解的一处真源冲突（登记）**：材料 `sandbox-boundary-decision.md` §2 的 G2 建议写「令牌 TTL **≤** 单次执行硬上限」，与 §4 的硬约束「**TTL ≥ `WORKBENCH_EXEC_TIMEOUT_SECONDS`**」**方向相反**。按"执行中途令牌不得先过期"的**功能必需**判定，**以 §4 为准（≥）**，并在 §3.3 凭据行写明；"不得跨 run 复用"由**绑定 + 终态同步吊销**保证，**不由 TTL 保证**。
 
 
 ---

@@ -189,6 +189,34 @@ def test_container_spec_carries_environment_in_both_forms() -> None:
     assert "-e" not in bare.docker_args("/w")
 
 
+# ==================================================== G2 容器 env 白名单（§3.3 凭据行 / §8 U28）
+
+def test_env_whitelist_rejects_variable_outside_the_list() -> None:
+    """G2（2026-09-15）：装配期逐键校验——**白名单外变量必须 fail-closed**。
+
+    容器内只允许出现 `build_token_env` 的产出（网关内网地址 + 短期网关令牌）。
+    闸门**不得**依赖上游（铸令牌侧）自觉（与 §3.2 九步闸门同口径）；本用例不起真容器。
+    """
+    executor = _executor(_FakeDockerClient())
+    with pytest.raises(ToolExecutionConfigError):
+        executor.build_spec(environment={"MODEL_GATEWAY_UPSTREAM_API_KEY": VENDOR_KEY})
+    with pytest.raises(ToolExecutionConfigError):
+        executor.build_spec(environment={"PATH": "/usr/bin:/bin"})
+    with pytest.raises(ToolExecutionConfigError):
+        executor.build_spec(environment={ENV_API_KEY: 123})
+
+
+def test_env_whitelist_matches_the_token_env_source_exactly() -> None:
+    """G2：白名单**必须恰好等于** `build_token_env` 的产出键集合（防两处事实源漂移）。"""
+    from app.runtime.adapters.dsh import ALLOWED_IN_CONTAINER_ENV_NAMES, build_token_env
+
+    env = build_token_env(token="tok-x", gateway_base_url=GATEWAY_URL)
+    assert ALLOWED_IN_CONTAINER_ENV_NAMES == set(env)
+    # 白名单内的两项必须被装配路径接受（否则闸门会误伤正常路径）。
+    spec = _executor(_FakeDockerClient()).build_spec(environment=dict(env))
+    assert spec.create_kwargs(labels={}, command=["x"])["environment"] == env
+
+
 def test_real_execute_injects_env_records_binding_and_revokes_on_terminal(gateway) -> None:
     """真实 `execute`（假 Docker）：容器 spec 有 env、store/registry 有写入、终态 retire + revoke。"""
     store, registry = TokenBindingStore(), ActiveExecutionRegistry()

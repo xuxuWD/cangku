@@ -61,6 +61,12 @@ class AuditAction(StrEnum):
     COMMERCIAL_RETENTION_UPDATED = "commercial.retention.updated"
     # 租户删除执行（真源 commercial-g0-design.md:114/:174「删除流程包含……审计记录」）
     COMMERCIAL_DELETION_EXECUTED = "commercial.deletion.executed"
+    # P3 记忆层（真源 specs/2026-09-15-memory-layer-p3-design.md §2.7）：
+    # 只记标识与受控枚举（scope / owner_kind / rule_key / version），**不记记忆正文**。
+    MEMORY_FACT_CREATED = "memory.fact.created"
+    MEMORY_FACT_SUPERSEDED = "memory.fact.superseded"
+    MEMORY_RULE_CREATED = "memory.rule.created"
+    MEMORY_PROFILE_UPDATED = "memory.profile.updated"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -106,6 +112,12 @@ ALLOWED_DETAIL_KEYS = frozenset(
         # 工具执行（Y3 最小集：工具标识与风险档，均为服务端声明的受控值）
         "tool_key",
         "risk_level",
+        # P3 记忆层（只记标识与受控枚举，不记正文；口径见 memory-layer-p3-design §2.7）
+        "memory_id",
+        "scope",
+        "owner_kind",
+        "rule_key",
+        "version",
     }
 )
 

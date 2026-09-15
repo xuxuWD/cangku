@@ -168,3 +168,33 @@ def test_postgres_job_requires_zero_skipped() -> None:
     # 判定依据：模块整体 skip 时 pytest 仍返回 0；必须显式零容忍 skipped（tests>0 且 skipped==0），
     # 否则「整模块被跳过」会被当成通过——这正是该 job 相对 backend job 的存在理由。
     assert "tests > 0 and skipped == 0 and failed == 0" in job
+
+
+# sandbox job 的执行镜像**逐字钉死**：与 Dockerfile:14 / tests/test_container_executor.py:28 /
+# tests/test_exec_sandbox_escape.py 同一取值（tag 可变、digest 不可变）。
+EXEC_IMAGE = (
+    "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
+)
+
+
+def test_sandbox_job_exists_and_runs_the_real_container_regressions() -> None:
+    content = read_workflow()
+
+    # 判定依据（G5 / 规格 §8 U28）：两组真容器回归由「Docker + 钉死镜像」门控 ⇒ 默认 backend job
+    # 里是 skip、不受守护；必须有一个顶层 job 把它们跑起来，否则「固化」只是纸面动作。
+    assert re.search(r"^  sandbox:", content, re.M), "jobs 中缺少 sandbox 任务"
+
+    job = read_job("sandbox")
+    assert "tests/test_exec_sandbox_escape.py" in job, "sandbox 任务未跑逃逸回归"
+    assert "tests/test_container_executor.py" in job, "sandbox 任务未跑加固口径回归"
+    # 必须显式拉取钉死镜像：失败即 job 失败，不得静默降级为整组 skip。
+    assert "docker pull" in job
+    assert EXEC_IMAGE in job, "sandbox 任务的执行镜像与钉死值不符"
+
+
+def test_sandbox_job_requires_zero_skipped() -> None:
+    job = read_job("sandbox")
+
+    # 判定依据（同 postgres job）：无 Docker / 缺镜像时整组 skip 且 pytest 仍返回 0，
+    # 必须要求「真跑了且无一 skip」，否则该 job 会在环境退化后静默变成"永远绿"。
+    assert "tests > 0 and skipped == 0 and failed == 0" in job
