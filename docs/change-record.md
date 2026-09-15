@@ -453,3 +453,16 @@
 | **未验证（不得读成已验）** | ① `scoped_search` 与真实 WeKnora 端到端检索未做（N2 接口面兜底，同规格 §0 登记）；② CI `postgres` job 尚未在 GitHub Actions 跑新真库用例（含本轮回归锚点），待 push 后观察。 |
 | **回退方式** | 把规格 §3.2 该行改回「draft→archived 直跳 ⇒ 409」、删 §2.2 裁定段与 §3.3 新增反假条款、删 `test_transition_matrix_locks_section_2_2_ruling` 与真库 `test_draft_can_be_archived_directly`；`_TRANSITIONS` 是否同步改需**另行裁定**（当前实现按 §2.2）。**未经确认不得执行回滚。** |
 | **依据** | 用户 2026-09-15 裁决（拍板「按 §2.2 口径执行，draft 可直接归档」）；规格 §2.2 状态机表末行；交付说明登记的冲突点 |
+
+### 2026-09-15 · 知识治理真库用例纳入 CI postgres job（补齐规格 §3.4 承诺 + 钉死 job 模块清单断言）—— CI 门禁变更（可回退）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-15 |
+| **变更** | ① `.github/workflows/ci.yml` 的 **postgres job** 模块清单由 5 个增至 **6 个**：加入 `tests/test_knowledge_governance_postgres.py`（job 注释同步「六个模块」并补模块名）；② `tests/test_ci_assets.py::test_postgres_job_runs_only_the_real_db_modules` 由「三模块逐字断言」补全为 **六模块逐字断言**（补 `test_memory_postgres.py` / `test_skills_postgres.py` / `test_knowledge_governance_postgres.py`），并加注释说明教训。③ 规格 §0 补「CI 侧」段（两轮 run 6/6 全绿 + **如实标注两轮 postgres job 未含本模块**）、§3.4 标注已纳入。 |
+| **原因** | 规格 §3.4 明文承诺「CI 真库 job 纳入 `test_knowledge_governance_postgres.py`」，但交付时 `ci.yml` 的 postgres job 是**硬编码模块清单**，未同步加入 ⇒ 新模块在 CI 里**永远 skip**（backend job 无 DSN；postgres job 不选它），属「规格已承诺、实现未做到」的收口缺口。另发现既有守护缺口：`test_ci_assets.py` 只钉住前三个模块，**P3 的 memory 与 P4 的 skills 模块同样未被断言覆盖**（同源漂移风险）。 |
+| **影响面** | 改 `.github/workflows/ci.yml`（postgres job 清单 + 注释）、`tests/test_ci_assets.py`（+3 断言与注释）、规格 `2026-09-15-knowledge-governance-design.md`（§0/§3.4）、`change-record.md`（本条）。**未改** 任何应用代码 / `migrations/*` / 其它 job。**未扩大** job 范围（其余 5 个 `*_postgres.py`：account/audit/planner/orchestration/runtime_state 仍不在该 job——属既有状况，本轮**未擅自纳入**）。 |
+| **验证（已做）** | ✅ 基线 `tests/test_ci_assets.py` ⇒ **12 passed**；✅ **反假 1 组真变红**：从 `ci.yml` 删掉 `tests/test_knowledge_governance_postgres.py` 行 ⇒ `test_postgres_job_runs_only_the_real_db_modules` **1 failed**（`assert 'tests/test_knowledge_governance_postgres.py' in 'python -m pytest -o addopts="" …'`）；还原后复绿。 |
+| **未验证（不得读成已验）** | ⚠️ **CI 取证未发生**：本改动 push 前的两轮 run（`34960179880` / `34960954584`）其 postgres job **不含本模块**（清单当时为 5 个）⇒ **不得声称「真库回归已被 CI 守护」**；补齐后需**下一轮 push 触发的 run** 的 postgres job 日志（`真库用例：tests=N skipped=0 failed=0`）方可销账。⚠️ 本机无 GitHub Actions 等效环境，静态断言只能证明「清单与断言对齐」。 |
+| **回退方式** | 删 `ci.yml` postgres job 中的 `tests/test_knowledge_governance_postgres.py` 行（注释同步还原为「五个模块」）、删 `test_ci_assets.py` 新增 3 条断言与注释、回退规格 §0/§3.4 与删本条记录。**未经确认不得执行回滚。** |
+| **依据** | 规格 §3.4（承诺纳入）；`docs/delivery-gates.md`（全量测试与编译门禁）；`ci.yml` postgres job 现存 `skipped == 0` 口径（tests>0 且 skipped==0 方通过） |

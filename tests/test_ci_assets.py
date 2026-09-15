@@ -157,9 +157,15 @@ def test_postgres_job_runs_only_the_real_db_modules() -> None:
 
     # 判定依据：本 job 只跑这几个由 DSN 门控的真库模块，命令里必须逐个出现；
     # 用「全称逐字断言」而非「包含任意一个」——后者在漏跑某个模块时仍会通过。
+    # ⚠️ 教训（2026-09-15）：本断言此前只覆盖前三个模块，P3/P4 新增的 memory/skills 模块
+    # 与知识治理模块先后漏守护——「job 里写了的」与「断言钉住的」必须逐条对齐，
+    # 否则新增真库模块时只需忘改 ci.yml 一处，用例仍全绿而模块在 CI 里永远 skip。
     assert "tests/test_tool_action_store_postgres.py" in command
     assert "tests/test_dsh_execution_postgres.py" in command
     assert "tests/test_commercial_lifecycle_postgres.py" in command
+    assert "tests/test_memory_postgres.py" in command
+    assert "tests/test_skills_postgres.py" in command
+    assert "tests/test_knowledge_governance_postgres.py" in command
 
 
 def test_postgres_job_requires_zero_skipped() -> None:
