@@ -26,6 +26,7 @@
 - ✅ **CI 销账（N3，2026-09-15）**：run **`34975994837`**（N3 落地 push）**6/6 job conclusion=success**；postgres job 原始日志：`tests/test_knowledge_governance_postgres.py ....... [100%]`（**7 条**，含 N3 跨租户扫描用例）、**`真库用例：tests=52 skipped=0 failed=0`**。⚠️ **CI 不覆盖 Celery beat 进程本身**（排程键与任务函数由单测断言，接线后真跑用内存仓储验证）；**真实 beat 周期触发在 staging 仍未联调**（见 §4 N3 未验证项）。
 - ✅ **CI 销账（N6，2026-09-15）**：run **`34976875982`**（N6 裁决落地 push）**6/6 job conclusion=success**；postgres job 原始日志 **`真库用例：tests=52 skipped=0 failed=0`**（含「发布即置 `review_due_at`」的真库读回断言）。仍不覆盖 Celery beat 进程（同 N3 未验证项）。
 - ✅ **CI 销账（N1，2026-09-15）**：run **`34978102235`**（N1 导入脚本 push）**6/6 job conclusion=success**；postgres job 原始日志：`tests/test_knowledge_governance_postgres.py ........ [100%]`（**8 条**，含导入脚本真库用例）、**`真库用例：tests=53 skipped=0 failed=0`**。⚠️ **CI 不执行 CLI 脚本本身**（`scripts/` 只过 `compileall` 语法检查；CLI 端到端取证在本机测试库完成，见 change-record N1 条）。
+- ✅ **CI 销账（N7，2026-09-15）**：run **`34981707832`**（N7 fail-closed 落地 push）**6/6 job conclusion=success**；postgres job 原始日志 **`真库用例：tests=53 skipped=0 failed=0`**（真库 fixture 已按 N7 注入 audit）。⚠️ CI 不运行 worker 进程（「漏注入 audit ⇒ 任务显式失败」的任务层表现仍未取证，见 §4 N7 相关登记）。
 
 ---
 
