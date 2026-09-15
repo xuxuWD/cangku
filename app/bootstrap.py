@@ -1197,3 +1197,34 @@ def build_knowledge_governance_service(settings: Settings, *, store=None, audit=
         audit=audit,
         review_grace_days=settings.knowledge_review_grace_days,
     )
+
+
+def build_weknora_search_runtime(settings, *, client=None):
+    """装配 WeKnora 检索运行时（`app/knowledge.py::WeKnoraSearchRuntime`）。
+
+    规格 2026-09-15-knowledge-governance-design.md §2.6：
+    - 两个凭据**都空** ⇒ 返回 `None`（检索端点 503，不返回空结果以免被读成「没查到」）；
+    - **只配一半** ⇒ `raise ValueError`（明显配置错误，起栈即失败；与 `build_embedding_adapter` 同口径）；
+    - 都配置 ⇒ 构造共享 `httpx.Client`（适配器按请求构造，见运行时容器 docstring）。
+    """
+    base_url = (settings.weknora_base_url or "").strip()
+    api_key = (settings.weknora_api_key or "").strip()
+    if not base_url and not api_key:
+        return None
+    if not base_url or not api_key:
+        raise ValueError(
+            "WeKnora 检索配置不完整：WORKBENCH_WEKNORA_BASE_URL 与 WORKBENCH_WEKNORA_API_KEY 必须同时配置"
+            "（两者都留空表示不提供检索入口）"
+        )
+    from .knowledge import WeKnoraSearchRuntime
+
+    if client is None:
+        import httpx
+
+        client = httpx.Client(timeout=settings.weknora_timeout_seconds)
+    return WeKnoraSearchRuntime(
+        client=client,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=settings.weknora_timeout_seconds,
+    )

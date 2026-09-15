@@ -467,6 +467,20 @@ class Settings(BaseSettings):
             "WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS",
         ),
     )
+    # 知识检索入口（`POST /api/v1/knowledge/search`，规格 §2.3 接线）：
+    # WeKnora 只读检索服务地址与凭据。**两者皆空 = 未配置 ⇒ 该端点 503**（不返回空结果，
+    # 以免把「服务没接」读成「没查到」）；**只配一半 ⇒ 启动即失败**（明显配置错误，
+    # 与 P3 `embedding_base_url` 同口径）。环境变量名与运维脚本（N1 导入）保持一致。
+    weknora_base_url: str = Field(
+        default="", validation_alias=AliasChoices("WEKNORA_BASE_URL", "WORKBENCH_WEKNORA_BASE_URL")
+    )
+    weknora_api_key: str = Field(
+        default="", validation_alias=AliasChoices("WEKNORA_API_KEY", "WORKBENCH_WEKNORA_API_KEY")
+    )
+    weknora_timeout_seconds: float = Field(
+        default=10.0, ge=1, le=60,
+        validation_alias=AliasChoices("WEKNORA_TIMEOUT_SECONDS", "WORKBENCH_WEKNORA_TIMEOUT_SECONDS"),
+    )
     # 跨源部署（桌面端远程模式 / PWA 伴侣端）：非 development 环境只在显式配置来源后
     # 才注册 CORS；留空即视为「不允许任何跨源」（fail-closed）。
     cors_allowed_origins: str = Field(

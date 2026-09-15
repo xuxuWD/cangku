@@ -209,3 +209,32 @@ class WeKnoraKnowledgeAdapter:
             enable_status=str(item.get("enable_status") or "unknown"),
             updated_at=updated_at,
         )
+
+
+@dataclass(frozen=True)
+class WeKnoraSearchRuntime:
+    """按租户构造适配器的运行时容器（检索入口用）。
+
+    为什么需要它：`WeKnoraKnowledgeAdapter` 的构造参数含 **`tenant_id` 与「知识库授权集上限」**
+    ⇒ 一个实例只能服务**一个租户 + 一组授权范围**，**不能做成全局单例**（多租户会串范围）。
+    而 `httpx.Client` 线程安全且自带连接池 ⇒ 这里只共享客户端，**按请求**给适配器：
+    「本次调用已解析出的租户 + 授权集」直接作为实例参数，适配器自身的 `⊆` 校验照常生效。
+
+    装配点见 `app/bootstrap.py::build_weknora_search_runtime`（未配置返回 `None`；只配一半启动失败）。
+    """
+
+    client: httpx.Client
+    base_url: str
+    api_key: str
+    timeout: float
+
+    def adapter_for(self, *, tenant_id: str, knowledge_base_ids: Iterable[str]) -> WeKnoraKnowledgeAdapter:
+        """给「本租户 + 本次已授权的知识库集合」构造适配器（不新增连接、不重读配置）。"""
+        return WeKnoraKnowledgeAdapter(
+            tenant_id=tenant_id,
+            api_key=self.api_key,
+            knowledge_base_ids=knowledge_base_ids,
+            base_url=self.base_url,
+            client=self.client,
+            timeout=self.timeout,
+        )

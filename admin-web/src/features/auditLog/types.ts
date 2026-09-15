@@ -107,6 +107,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'knowledge.doc.archived': '知识文档已归档',
   'knowledge.doc.reviewed': '知识文档已复核',
   'knowledge.doc.review_due': '知识文档已到期待复核',
+  'knowledge.search.blocked': '知识检索被守卫拦截',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

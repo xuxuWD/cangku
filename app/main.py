@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -117,6 +120,7 @@ from .knowledge_governance.models import (
     KnowledgeDocStateConflict,
     ensure_can_read_metrics as ensure_knowledge_metrics_read,
 )
+from .knowledge_governance.scoped_search import build_scoped_search
 from .knowledge_governance.service import KnowledgeGovernanceService
 from .conversation import (
     Conversation,
@@ -132,6 +136,7 @@ from .conversation.execution import ConversationExecutionError
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
+logger = logging.getLogger(__name__)
 settings = get_settings()
 validate_runtime_settings(settings)
 # 跨源部署：development 走本机来源正则；其他环境仅在显式配置允许来源时注册 CORS。
@@ -150,6 +155,12 @@ knowledge_access_registry = build_knowledge_access_registry(settings)
 # 知识治理层（规格 docs/superpowers/specs/2026-09-15-knowledge-governance-design.md §2）：
 # 总开关默认 false（fail-closed）——关闭时不作文档级过滤，保持既有检索行为。
 knowledge_governance_service = build_knowledge_governance_service(settings, audit=audit_service)
+# 知识检索入口（规格 §2.3 接线）：WeKnora 只读服务运行时。未配置 ⇒ None（端点 503）；
+# 只配一半 ⇒ 装配期抛错（起栈即失败）。客户端共享，适配器按请求构造（见运行时容器）。
+weknora_search_runtime = build_weknora_search_runtime(settings)
+if weknora_search_runtime is not None:
+    # 进程退出时关闭共享客户端（FastAPI 0.136 已移除 `add_event_handler`，`on_event` 已弃用 ⇒ 用 atexit）。
+    atexit.register(weknora_search_runtime.client.close)
 workforce_directory_store = build_workforce_directory_store(settings)
 workforce_directory_service = WorkforceDirectoryService(
     workforce_directory_store,
@@ -2212,6 +2223,23 @@ def _raise_knowledge_gov_http(exc: Exception) -> NoReturn:
     raise exc
 
 
+def _raise_knowledge_search_http(exc: Exception) -> NoReturn:
+    """检索入口的上游失败映射（规格 §2.3 接线段）：超时 504、其余上游失败 502。
+
+    **不得吞异常返回空结果**（那会把「上游坏了」读成「没查到」）。对外只给固定文案：
+    上游原文（含主机名 / URL）只进日志，不回显给客户端。
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        logger.warning("知识检索上游超时：%s", exc)
+        raise HTTPException(status_code=504, detail="知识检索服务超时，请稍后重试") from exc
+    if isinstance(exc, PolicyError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if isinstance(exc, (httpx.HTTPError, RuntimeError)):
+        logger.warning("知识检索上游失败：%s", exc)
+        raise HTTPException(status_code=502, detail="知识检索服务暂不可用") from exc
+    raise exc
+
+
 @app.post("/api/v1/knowledge/documents", response_model=KnowledgeDocView, status_code=status.HTTP_201_CREATED)
 def register_knowledge_doc(
     payload: KnowledgeDocRegisterRequest, context: UserContext = Depends(current_user)
@@ -2326,6 +2354,154 @@ def knowledge_governance_eligible(
         _raise_knowledge_gov_http(exc)
     return KnowledgeDocListResponse(
         items=[_knowledge_doc_view(item) for item in docs], total=len(docs), limit=limit, offset=0
+    )
+
+
+# ------------------------------------------------------------ 知识检索入口（§2.3 接线）
+
+class KnowledgeSearchRequest(BaseModel):
+    """检索请求：**范围只能由服务端解析**——客户端只能选「用哪个岗位 / 哪个数字员工」，不得自带租户或知识库 id。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=500)
+    role_key: str | None = Field(default=None, max_length=64)
+    agent_key: str | None = Field(default=None, max_length=64)
+    limit: int = Field(default=10, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def _exactly_one_scope(self) -> "KnowledgeSearchRequest":
+        if bool(self.role_key) == bool(self.agent_key):
+            raise ValueError("role_key 与 agent_key 必须且只能提供一个")
+        return self
+
+
+class KnowledgeSearchCitationView(BaseModel):
+    citation_id: str
+    content: str
+    source_title: str
+    knowledge_id: str
+    score: float | None = None
+
+
+class KnowledgeSearchResponse(BaseModel):
+    items: list[KnowledgeSearchCitationView]
+    total: int
+    limit: int
+    truncated: bool
+    # 空结果归因：`no_binding`（该岗位/员工没有绑定）/ `empty_whitelist`（守卫拦截，fail-closed）/
+    # `no_hits`（白名单非空但无命中）；非空结果为 None。供运维区分「配置问题」与「真没查到」。
+    reason: str | None = None
+
+
+class _BoundRegistry:
+    """把「本次请求已解析出的知识库集合」交给谓词守卫（不回放第二次解析）。
+
+    守卫内部会调 `registry.resolve(context, role_key)`；而端点已按 `role_key` / `agent_key`
+    解析过一次（`registry.resolve` 支持 `agent_key`，守卫只传 `role_key`）⇒ 这里**只回放已解析结果**，
+    不重新解析、也不允许扩大（与测试 `_FakeRegistry` 同手法 ⇒ 守卫代码零改动）。
+    """
+
+    def __init__(self, knowledge_base_ids: set[str]) -> None:
+        self._ids = frozenset(knowledge_base_ids)
+
+    def resolve(self, _context: UserContext, _role_key: str) -> set[str]:
+        return set(self._ids)
+
+
+def _audit_blocked_search(context: UserContext, payload: KnowledgeSearchRequest, *, reason: str) -> None:
+    """拦截路径落审计（§2.7 扩展码）：只记受控字段（role_key / agent_key / reason），**不记查询正文**。
+
+    读操作例外：审计通道故障**不阻断检索**（只在日志留痕），失败也不静默——见下方 warning。
+    """
+    detail: dict[str, object] = {"reason": reason}
+    if payload.role_key:
+        detail["role_key"] = payload.role_key
+    if payload.agent_key:
+        detail["agent_key"] = payload.agent_key
+    try:
+        audit_service.record(
+            AuditAction.KNOWLEDGE_SEARCH_BLOCKED,
+            tenant_id=context.tenant_id,
+            actor_id=context.user_id,
+            target_type="knowledge_search",
+            target_id=payload.role_key or payload.agent_key or "",
+            detail=detail,
+        )
+    except Exception as exc:  # noqa: BLE001 —— 读操作不因审计通道故障而失败
+        logger.warning("知识检索拦截审计写入失败：%s", exc)
+
+
+@app.post("/api/v1/knowledge/search", response_model=KnowledgeSearchResponse)
+def knowledge_search(
+    payload: KnowledgeSearchRequest,
+    context: UserContext = Depends(current_user),
+) -> KnowledgeSearchResponse:
+    """知识检索（治理层唯一生产入口，规格 §2.3）：谓词守卫在请求 WeKnora **前**完成文档级 pre-filter。
+
+    口径：
+    - **仅 super_admin**；范围由服务端按 `role_key` / `agent_key` 解析（客户端不得自带租户/知识库）；
+    - 未配置 WeKnora 或治理开关关闭 ⇒ **503**（不提供「无守卫的检索入口」，避免造旁路）；
+    - 无绑定 / 白名单空 ⇒ **不请求上游**（fail-closed）并落 `knowledge.search.blocked` 审计；
+    - 上游超时 ⇒ 504、其余上游失败 ⇒ 502（`_raise_knowledge_search_http`）；
+    - `limit` 只做**服务端截断**（上游 `top_k` 语义未核实，不臆造）。
+    """
+    try:
+        _ensure_knowledge_admin(context)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if weknora_search_runtime is None or not settings.knowledge_governance_enabled:
+        raise HTTPException(status_code=503, detail="知识检索服务未启用")
+
+    role_key = payload.role_key or ""
+    resolved = knowledge_access_registry.resolve(context, role_key, payload.agent_key)
+    if not resolved:
+        _audit_blocked_search(context, payload, reason="no_binding")
+        return KnowledgeSearchResponse(
+            items=[], total=0, limit=payload.limit, truncated=False, reason="no_binding"
+        )
+
+    adapter = weknora_search_runtime.adapter_for(
+        tenant_id=context.tenant_id, knowledge_base_ids=resolved
+    )
+    guard = build_scoped_search(
+        governance=knowledge_governance_service,
+        registry=_BoundRegistry(resolved),
+        adapter=adapter,
+        enabled=True,
+    )
+    try:
+        citations = guard(context, role_key, payload.query)
+    except (httpx.HTTPError, RuntimeError, PolicyError) as exc:
+        _raise_knowledge_search_http(exc)
+
+    if not citations:
+        try:
+            whitelist = knowledge_governance_service.list_published_eligible(context)
+        except (InvalidKnowledgeDoc, KnowledgeDocNotFound, PolicyError) as exc:
+            _raise_knowledge_gov_http(exc)
+        reason = "empty_whitelist" if not whitelist else "no_hits"
+        if reason == "empty_whitelist":
+            _audit_blocked_search(context, payload, reason=reason)
+        return KnowledgeSearchResponse(
+            items=[], total=0, limit=payload.limit, truncated=False, reason=reason
+        )
+
+    return KnowledgeSearchResponse(
+        items=[
+            KnowledgeSearchCitationView(
+                citation_id=item.citation_id,
+                content=item.content,
+                source_title=item.source_title,
+                knowledge_id=item.knowledge_id,
+                score=item.score,
+            )
+            for item in citations[: payload.limit]
+        ],
+        total=len(citations),
+        limit=payload.limit,
+        truncated=len(citations) > payload.limit,
+        reason=None,
     )
 
 

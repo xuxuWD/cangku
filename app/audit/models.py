@@ -81,6 +81,9 @@ class AuditAction(StrEnum):
     KNOWLEDGE_DOC_ARCHIVED = "knowledge.doc.archived"
     KNOWLEDGE_DOC_REVIEWED = "knowledge.doc.reviewed"
     KNOWLEDGE_DOC_REVIEW_DUE = "knowledge.doc.review_due"
+    # 检索入口被守卫拦截（无绑定 / 白名单空，§2.3 fail-closed 路径）。只记 `role_key`/`agent_key`/`reason`，
+    # **绝不记查询正文**（自由文本 + 可能含个人信息，与「只记受控枚举」口径冲突）。
+    KNOWLEDGE_SEARCH_BLOCKED = "knowledge.search.blocked"
 
 
 class AuditDetailNotAllowed(ValueError):

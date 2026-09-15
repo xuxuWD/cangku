@@ -69,7 +69,8 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.KNOWLEDGE_DOC_ARCHIVED.value == "knowledge.doc.archived"
     assert AuditAction.KNOWLEDGE_DOC_REVIEWED.value == "knowledge.doc.reviewed"
     assert AuditAction.KNOWLEDGE_DOC_REVIEW_DUE.value == "knowledge.doc.review_due"
-    assert len(set(AuditAction)) == 63
+    assert AuditAction.KNOWLEDGE_SEARCH_BLOCKED.value == "knowledge.search.blocked"
+    assert len(set(AuditAction)) == 64
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

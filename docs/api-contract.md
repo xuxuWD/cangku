@@ -274,6 +274,8 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 工作台通过 WeKnora 适配器调用官方 `POST /api/v1/knowledge-search`。适配器固定绑定租户、受限 API Key 和知识库白名单，只返回检索片段及来源引用，不把 WeKnora 内部表结构暴露给客户端。知识库写入、Skill 安装、Shell、沙箱和提示词变更不属于该只读接口范围。
 
+> **生产检索入口（2026-09-16 接线）**：对外唯一的检索路径是 `POST /api/v1/knowledge/search`（见「知识治理」节），它**必须先过检索谓词守卫**——未经治理白名单 / 未发布 / 已过复核期的文档不进结果。适配器与守卫此前只有测试装配点，该路由把它们接进运行路径；`WORKBENCH_WEKNORA_BASE_URL` / `WORKBENCH_WEKNORA_API_KEY` 未配置时该路由 `503`（不返回空结果）。
+
 适配器同时支持只读文档详情查询（对应 WeKnora `GET /api/v1/knowledge/:id`），用于获取文档标题、所属知识库、解析状态、启用状态和更新时间；以及**只读文档列表**（对应 `GET /api/v1/knowledge-bases/{id}/knowledge`，分页 `page`/`page_size`/`parse_status`），供存量导入脚本取上游既有文档（规格 §4 N1）。工作台只保存文档 ID、知识库 ID、版本/更新时间和引用关系，不复制 WeKnora 原文；返回的租户或知识库范围不匹配时立即拒绝。
 
 > **租户标识口径**：适配器构造参数 `tenant_id` 必须是 **WeKnora 侧的空间标识**，且调用方 `UserContext.tenant_id` 必须与之同源（适配器靠二者相等强制隔离）。工作台内部租户号与 WeKnora 空间号之间**没有映射表**——混用会被判为「租户范围不匹配」。
@@ -315,7 +317,7 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 > ️ **上游实测差异（2026-09-15，WeKnora v0.8.0 + postgres 驱动，真实实例）**：上游 `POST /api/v1/knowledge-search` 虽有 `knowledge_ids` 参数，但**只要请求带了 `knowledge_base_id(s)` 就被静默忽略**（服务端 SQL 无该谓词；不存在的文档 id 也照常返回整库，fail-open）。⇒ 适配器**仍按知识库范围 + 文档白名单双下传**（前向兼容），但**当前真实生效的防线是返回后收敛**，绝不可因「已下传」而删除收敛。**不得**为规避此差异改成「只给 `knowledge_ids`」请求形态（会丢掉上游侧知识库边界）。上游修复后须复测并更新本节。
 
-审计动作码（§2.7，只记文档标识/标题/状态/负责人/版本/来源，**不落正文**）：`knowledge.doc.registered` / `knowledge.doc.published` / `knowledge.doc.archived` / `knowledge.doc.reviewed` / `knowledge.doc.review_due`。
+审计动作码（§2.7，只记文档标识/标题/状态/负责人/版本/来源，**不落正文**）：`knowledge.doc.registered` / `knowledge.doc.published` / `knowledge.doc.archived` / `knowledge.doc.reviewed` / `knowledge.doc.review_due`；检索入口被守卫拦截时记 `knowledge.search.blocked`（明细仅 `role_key` / `agent_key` / `reason`，**绝不记查询正文**；审计通道故障不阻断检索，只在日志留痕）。
 
 - `POST /api/v1/knowledge/documents`：登记知识文档（`draft`；仅 `super_admin`）。请求体 `{"document_id": string, "title"?, string, "owner_id"?, string, "version"? = "1", "source_key"? = "manual"}`，未知字段 `422`。**幂等**：同 `(tenant, document_id)` 重复登记返回既有记录（`201`）。成功 `201`，返回文档视图（不含正文）。
 - `GET /api/v1/knowledge/documents?status=&limit=&offset=`：文档列表（仅 `super_admin`），必须分页（`limit` 1–200 默认 50，`offset` ≥0）。`status` 可选 `draft|published|under_review|needs_review|archived`（非法 `422`）。返回 `{"items": [...], "total", "limit", "offset"}`。
@@ -325,6 +327,7 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 - `POST /api/v1/knowledge/review-scan`：手动触发到期扫描（published 且已过 `review_due_at` → `needs_review`；幂等，重复触发不重复计数）。返回 `{"reviewed_due": int}`。**自动调度**：worker beat 任务 `knowledge-review-scan`（`app.worker.scan_knowledge_review_due`）按 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`（默认 3600s）周期执行同一扫描（跨租户候选、写回逐条带租户、审计 actor `system:worker`）；扫描不在 HTTP 请求线程执行。
 - `GET /api/v1/knowledge/metrics`：Freshness Index（仅 `super_admin`）。返回 `{"published", "needs_review", "archived", "total", "freshness_ratio"}`，其中 `freshness_ratio = published/total`（`total=0` 时取 1.0）。
 - `GET /api/v1/knowledge/governance/eligible?limit=`：检索谓词守卫白名单出口（仅 `super_admin`）。只返回 `status='published'` 且未过 `review_due_at` 的文档，供检索组合件在请求 WeKnora 前取白名单（空集 = fail-closed）。
+- `POST /api/v1/knowledge/search`：**知识检索（治理层唯一生产入口，2026-09-16 接线，规格 §2.3）**。仅 `super_admin`。请求体 `{"query": string(1–500), "role_key"?: string, "agent_key"?: string, "limit"?: 1–50}`——`role_key` 与 `agent_key` **恰好给一个**（都传/都不传 `422`），**未知字段一律 `422`**（客户端不得自带租户或知识库 id）。范围由服务端 `KnowledgeAccessRegistry.resolve` 按租户解析，检索前先取白名单（`status='published'` 且未过 `review_due_at`）：**白名单空 ⇒ 不请求 WeKnora**。响应 `{"items": [{citation_id, content, source_title, knowledge_id, score}], "total", "limit", "truncated", "reason"}`，其中 `reason` 为空结果归因：`no_binding`（该岗位/员工未绑定任何知识库）/ `empty_whitelist`（被守卫拦截，fail-closed）/ `no_hits`（白名单非空但无命中）；非空结果为 `null`。`limit` **只在服务端截断**（`total` 仍是收敛后总数，超出时 `truncated=true`；不下传上游 `top_k`）。状态码：未登录 `401`；非 `super_admin` `403`；参数非法 `422`；**未配置 WeKnora 或治理开关关闭 `503`**（不提供「无守卫的检索入口」，不返回空结果以免被读成「没查到」）；上游超时 `504`、其余上游失败（连接失败/非 2xx/`success:false`）`502`（对外只给固定文案，**不回显上游地址与密钥**）。拦截路径落审计 `knowledge.search.blocked`（明细仅 `role_key`/`agent_key`/`reason`，**不记查询正文**）；正常检索不落审计。
 
 **存量文档导入（非 API，运维脚本）**：`scripts/knowledge_import_register.py`——**两种数据源**：
 

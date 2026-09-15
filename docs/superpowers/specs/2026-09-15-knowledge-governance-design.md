@@ -128,6 +128,17 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_docs_status ON workbench_knowledge_docu
 
 **clearance 要求（§6.4）**：一切范围/权限从**服务端已校验身份断言**（`UserContext.tenant_id`/role）推导；客户端传入的设置一律忽略。语义缓存（如有）key 须含租户 + 角色 + **治理策略版本**。
 
+**HTTP 检索入口（2026-09-16 接线，用户裁决「接进真实检索入口」）**：`POST /api/v1/knowledge/search`——治理层**唯一生产检索路径**（此前守卫与适配器只有测试装配点，等于空转）。
+
+- **权限**：仅 `super_admin`（与 `/knowledge/*` 治理面同口径）。请求体只允许 `query`（1–500）、`role_key` / `agent_key`（**恰好一个**）、`limit`（1–50，默认 10）；**`extra=forbid`** ⇒ 客户端**不得**自带租户或知识库 id（未知字段 `422`）。
+- **范围解析**：服务端 `KnowledgeAccessRegistry.resolve(context, role_key or "", agent_key)` 按租户解析；`agent_key` 存在时走数字员工绑定表（`role_key` 被忽略，已按实现核实）。
+- **执行顺序**：管理闸门 → 配置闸门 → 解析范围 → **空范围短路（不请求上游）** → 取白名单（守卫内）→ **空白名单短路（不请求上游）** → 下传 + 收敛 → 截断。守卫以「已解析范围」注入（端点解析一次，守卫不重复解析、不再扩大）⇒ `scoped_search.py` **零改动**。
+- **配置闸门**：`WORKBENCH_WEKNORA_BASE_URL` / `WORKBENCH_WEKNORA_API_KEY` **未配置** 或治理开关关闭 ⇒ **`503`**（不提供「无守卫的检索入口」；不返回空结果，以免被读成「没查到」）；**只配一半 ⇒ 启动即失败**。
+- **响应**：`{items[{citation_id, content, source_title, knowledge_id, score}], total, limit, truncated, reason}`；`reason ∈ {null, no_binding, empty_whitelist, no_hits}` 用于区分「配置问题」与「真没查到」。`limit` **只做服务端截断**（`total` 为收敛后总数），**不下传上游**（上游 `top_k` 语义未核实，不臆造）。
+- **状态码**：`401` 无身份 / `403` 非管理员 / `422` 参数非法 / `503` 未配置或治理关闭 / **`504` 上游超时** / **`502` 其余上游失败**（连接失败、非 2xx、`success:false`）；对外只给固定文案，**不回显上游地址与密钥**；**禁止吞异常返回空结果**。
+- **审计**：仅「拦截路径」落 `knowledge.search.blocked`（`reason ∈ {no_binding, empty_whitelist}`，明细只含 `role_key`/`agent_key`/`reason`，**绝不记查询正文**）；**正常检索不落审计**（读操作 + 无状态变更 + 避免自由文本入审计）。审计通道故障**不阻断检索**（读操作例外，只在日志留痕）。上游忽略过滤导致「收敛剔除」属**上游行为**，只记结构化日志计数，不入审计。
+- **未做（登记见 §4）**：普通员工入口（需「账号 → 岗位」映射，目前不存在）、`review_status` 过期提示（§2.5 的 `review_state_fn`）、限流、异步化、下传报文体积上限。
+
 ### 2.4 事项 E：Freshness Index（一等运营指标）
 
 ```sql
@@ -151,11 +162,14 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 | --- | --- | --- |
 | `WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS` | 30 | 复核宽限（天）：**发布即置** `review_due_at = 发布时刻 + 本值（N6 裁决 A）**，人工复核通过时按同值顺延；`review_due_at` 未设的 published 文档（存量 / 迁移）不计入到期 |
 | `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS` | 3600 | 到期扫描 beat 间隔（秒；范围 30–604800）。worker 的 `knowledge-review-scan` 任务按此周期执行（§4 N3，2026-09-15 落地） |
-| `WORKBENCH_KNOWLEDGE_GOVERNANCE_ENABLED` | false | 治理层总开关（fail-closed：关闭时**不**做文档级过滤，保持既有检索行为） |
+| `WORKBENCH_KNOWLEDGE_GOVERNANCE_ENABLED` | false | 治理层总开关（fail-closed：关闭时**不**做文档级过滤，保持既有检索行为；**关闭时检索端点返回 503**——不提供无守卫的检索入口） |
+| `WORKBENCH_WEKNORA_BASE_URL` | 空 | 检索上游（WeKnora）只读服务地址。**与 API Key 两者皆空 = 未配置 ⇒ 检索端点 `503`**；**只配一半 ⇒ 启动即失败**（2026-09-16 接线段） |
+| `WORKBENCH_WEKNORA_API_KEY` | 空 | 上游 API Key（**不回显、不进日志**；环境变量名与运维脚本 N1 一致） |
+| `WORKBENCH_WEKNORA_TIMEOUT_SECONDS` | 10.0 | 上游调用超时（秒；范围 1–60）。超时对外 `504` |
 
 ### 2.7 审计
 
-新动作码：`knowledge.doc.registered` / `knowledge.doc.published` / `knowledge.doc.archived` / `knowledge.doc.reviewed` / `knowledge.doc.review_due`；明细键最小集（`document_id` / `title` / `status` / `owner_id` / `version` / `source_key`，**不落正文**），入 `ALLOWED_DETAIL_KEYS`。
+新动作码：`knowledge.doc.registered` / `knowledge.doc.published` / `knowledge.doc.archived` / `knowledge.doc.reviewed` / `knowledge.doc.review_due` / **`knowledge.search.blocked`（2026-09-16 接线新增）**；明细键最小集（`document_id` / `title` / `status` / `owner_id` / `version` / `source_key`，**不落正文**），入 `ALLOWED_DETAIL_KEYS`。检索拦截审计只用**已有**键（`role_key` / `agent_key` / `reason`）⇒ **明细键零新增**；**不记 `query` 正文**。
 
 ---
 
@@ -191,10 +205,11 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 - 故意把 `draft→archived` 判为非法 → 「draft 可直接归档」用例必须变红（防口径回退，2026-09-15 裁定）。
 - 故意把发布改回不置 `review_due_at`（`None`）→ 「首轮复核闭环」用例必须变红（N6 裁决 A，2026-09-15）。
 - 故意拿未复核的 needs_review 文档做查询 → 「谓词排除」必须变红。
+- **检索端点（2026-09-16 接线段，`tests/test_knowledge_search_api.py`）**：删返回后收敛 → 「只返回白名单内文档」变红；白名单改取全量（含 draft）→ 该用例 + 「空白名单短路」变红；去掉空白名单短路 → 「上游零调用」变红（端点与守卫两侧各一条）；去掉管理闸门 → 「非管理员 403」变红；把上游失败吞成 200 空结果 → `502`/`504` 用例变红；去掉 `role_key`/`agent_key` 互斥校验 → 该用例变红。**六组均已实跑变红并还原**（change-record 2026-09-16 条取证）。
 
 ### 3.4 一键回归
 
-`pytest` 全量（含新 `tests/test_knowledge_governance*.py`）+ CI 真库 job 纳入 `test_knowledge_governance_postgres.py`（同 DSN 门控模式；**2026-09-15 已纳入** `ci.yml` postgres job，并由 `tests/test_ci_assets.py` 的「模块清单逐条钉死」断言守护——取证见 §0「CI 侧」）。
+`pytest` 全量（含新 `tests/test_knowledge_governance*.py` 与 **`tests/test_knowledge_search_api.py`（2026-09-16 接线新增）**）+ CI 真库 job 纳入 `test_knowledge_governance_postgres.py`（同 DSN 门控模式；**2026-09-15 已纳入** `ci.yml` postgres job，并由 `tests/test_ci_assets.py` 的「模块清单逐条钉死」断言守护——取证见 §0「CI 侧」）。**该端点不依赖真库**（内存后端即可覆盖门禁语义），但**需要上游可达才能端到端**：CI 不接 WeKnora ⇒ 上游行为只有本机假 WeKnora 证据（见 change-record 2026-09-16 条）。
 
 ---
 
@@ -207,6 +222,9 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 | N3 | 复核**到期扫描 worker**（beat 任务） | ✅ **已落地（2026-09-15）**：`app.worker.scan_knowledge_review_due`（排程键 `knowledge-review-scan`，间隔可外置 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`，默认 1h）；候选跨租户、写回带租户、审计 actor=`system:worker`；手动端点 `POST /api/v1/knowledge/review-scan` 保留。**本机联调已实证 beat 周期触发闭环**（§0「本机联调」段；真 Celery + 30s 间隔 + 毫秒级时间戳吻合 + 审计落痕）。**未验证**：staging / 生产拓扑下的 beat 联调（本机为最小拓扑：Windows + solo 池 + 隔离 Redis db）。 |
 | N6 | **首轮复核对齐** | ✅ **已裁决并落地（2026-09-15，用户拍板 A）**：**发布即置** `review_due_at = 发布时刻 + grace_days`（§2.2 / §2.6）⇒ 未被人工复核过的已发布文档**也进入到期周期**，首轮到期由扫描触发；回归锚点 `test_first_review_cycle_closes_from_publish`（内存）+ 真库发布读回断言。 |
 | N4 | 文档级权限（某些文档仅部分岗位可见） | **不做**：文档级可见性收敛到知识库绑定粒度（`004`）；文档级 RBAC 属重造授权，明示排除 |
+| N8 | **普通员工检索入口**（2026-09-16 接线时按用户裁决不做） | **不做（本期）**：检索端点仅 `super_admin`，范围由请求体的 `role_key`/`agent_key` 指定。**前置缺口**：全仓**没有「账号 → 岗位（`role_key`）」映射**（`UserContext` 只有系统角色 `super_admin`/`ceo`/`employee`），员工无法「按自己的岗位」检索 ⇒ 需先立「账号→岗位映射」专项（新表 + 迁移 + 权限模型 + 目录校验），再放开端点权限。**不得**为省事让普通用户自带 `role_key`（那可指定任意岗位 ⇒ 越权）。 |
+| N9 | **`review_status` 过期提示（§2.5）** | **不做（本期）**：白名单只放行 published 且未过期，该字段只可能在「检索后 / 收敛前」的毫秒级并发窗口出现；且需新增按引用批量查状态 + 契约字段 + 展示位 ⇒ 随 N8 一起做。`build_scoped_search` 的 `review_state_fn` 保持默认 `None`（不附加）。 |
+| N10 | **检索端点的限流 / 异步化 / 报文体积上限** | **不做（本期）**：单次上游调用同步阻塞在 HTTP 请求线程（超时上限 60s）；大租户下 `knowledge_ids` 下传报文体积与收敛集合内存**未设上限**；无 rate limit。三项均需监控数据支撑后再定（登记，不预设方案）。 |
 | N5 | 语义缓存 | 本期不建缓存；预留「key 含租户+角色+治理版本」口径，实现缓存时遵守 |
 | N7 | **worker 装配未注入 audit 时，到期扫描静默不写审计**（2026-09-15 本机联调发现） | ✅ **已裁决并落地（2026-09-15，用户拍板 B：fail-closed）**：`scan_review_due_across_tenants` 在 `audit is None` 时**抛 `PolicyError` 且不做任何写库**（检查置于扫描之前，不存在「先置位后抛错」的半成品）——与 `commercial.set_retention`「没有审计通道就拒绝变更」同口径；worker 任务因此**显式失败**（日志可见），不静默丢审计。回归锚点 `test_worker_scan_fails_closed_without_audit`（含「未写库」断言）。生产路径（模块级恒注入 audit）不受影响；development / 手工装配若复用扫描器**必须注入 audit**。 |
 
@@ -217,6 +235,7 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 1. **检索谓词守卫是安全门**（§6.4）：pre-filter 必须在**请求 WeKnora 前**完成；「检索后裁剪 = 已读到机密内容」是安全回归，反假必测。
    - ⚠️ **实测差距（2026-09-15，真实实例，不得淡化）**：上游 v0.8.0 在请求带 kb 参数时**忽略 `knowledge_ids`** ⇒ 我方「kb + 白名单」用法下，**白名单外文本确实进入了上游检索管线**（只是返回后被收敛剔除）。即 §6.4 的 pre-filter 精神在当前上游版本上**只能部分达成**：**白名单空 ⇒ 不请求**（完全达成）；**白名单非空 ⇒ 未发布文本仍被上游检索**（未达成，靠返回后收敛兜底）。
    - ⇒ **处置**：① 不隐藏该差距（本条即证据）；② 收敛兜底为**必需**（回归锚点锁定）；③ 待上游修复「kb + knowledge_ids 组合」后复测，届时可升级为真正的 pre-filter；④ **不得**为「绕过该差距」而改成「只给 knowledge_ids」请求形态——那会丢掉上游侧的知识库边界（实测跨库组合行为混合不可靠，见 §0）。**登记为未决项（见 §4 N2 未验证）**。
+   - ✅ **接线状态（2026-09-16 更新）**：本守卫**已接进生产路径**（`POST /api/v1/knowledge/search`，见 §2.3「HTTP 检索入口」）⇒ 「未登记/未发布不可检索」不再只是测试里的性质，而是运行路径上的行为。**但差距②仍然成立**：上游忽略 `knowledge_ids` 时，未发布文本仍会进入上游检索管线（只是返回后被收敛剔除）——**收敛是当前唯一真实生效的防线**，删它等于删除这道门。
 2. **只归档不够，必须从谓词下线**（§6.3）：`archived`/`needs_review` 文档绝不能进检索结果（即使 WeKnora 侧仍可查）。
 3. **治理层不是第二个真源**：WeKnora 索引仍是检索事实源；治理层只守卫「哪些可检索/何时复核」，不复制正文或重建索引。
 4. **人工在环**：复核与发布是人工事件；到期自动进 `needs_review` 但不自动归档/自动下线（除非 2.2 状态机明文如此）。
