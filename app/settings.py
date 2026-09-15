@@ -481,6 +481,17 @@ class Settings(BaseSettings):
         default=10.0, ge=1, le=60,
         validation_alias=AliasChoices("WEKNORA_TIMEOUT_SECONDS", "WORKBENCH_WEKNORA_TIMEOUT_SECONDS"),
     )
+    # P6a 自进化·评测集（口径见 docs/superpowers/specs/2026-09-16-self-evolution-p6-design.md §2.8）：
+    # 总开关默认 false（fail-closed）——关闭时**不装配任何评测组件**，管理端点 503、CLI 拒绝执行；
+    # 评测费用上限（整数分）：单次评测运行预计费用超过该值即中止并留痕（v1 内置探针为 0，接入模型类受评对象后收紧）。
+    evolution_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("EVOLUTION_ENABLED", "WORKBENCH_EVOLUTION_ENABLED"),
+    )
+    evolution_eval_max_cost_cents: int = Field(
+        default=500, ge=0, le=10_000_000,
+        validation_alias=AliasChoices("EVOLUTION_EVAL_MAX_COST_CENTS", "WORKBENCH_EVOLUTION_EVAL_MAX_COST_CENTS"),
+    )
     # 跨源部署（桌面端远程模式 / PWA 伴侣端）：非 development 环境只在显式配置来源后
     # 才注册 CORS；留空即视为「不允许任何跨源」（fail-closed）。
     cors_allowed_origins: str = Field(

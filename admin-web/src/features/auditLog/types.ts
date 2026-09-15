@@ -108,6 +108,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'knowledge.doc.reviewed': '知识文档已复核',
   'knowledge.doc.review_due': '知识文档已到期待复核',
   'knowledge.search.blocked': '知识检索被守卫拦截',
+  'evolution.case.changed': '评测用例已变更',
+  'evolution.eval.completed': '评测运行已完成',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

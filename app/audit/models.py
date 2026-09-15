@@ -84,6 +84,10 @@ class AuditAction(StrEnum):
     # 检索入口被守卫拦截（无绑定 / 白名单空，§2.3 fail-closed 路径）。只记 `role_key`/`agent_key`/`reason`，
     # **绝不记查询正文**（自由文本 + 可能含个人信息，与「只记受控枚举」口径冲突）。
     KNOWLEDGE_SEARCH_BLOCKED = "knowledge.search.blocked"
+    # P6a 自进化·评测集（真源 specs/2026-09-16-self-evolution-p6-design.md §2.9）：
+    # 用例变更与评测运行完成；只记标识 / 状态 / 计数 / 指纹，**不记用例内容与期望正文**。
+    EVOLUTION_CASE_CHANGED = "evolution.case.changed"
+    EVOLUTION_EVAL_COMPLETED = "evolution.eval.completed"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -149,6 +153,12 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "owner_id",
         "version",
         "source_key",
+        # P6a 自进化·评测集（只记标识 / 状态 / 计数 / 指纹，不记用例内容；口径见 self-evolution-p6 §2.9）
+        "case_id",
+        "eval_run_id",
+        "case_count",
+        "pass_count",
+        "suite_digest",
     }
 )
 

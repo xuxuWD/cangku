@@ -814,4 +814,32 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 - `DELETE /api/v1/skills/bindings?skill_key=&agent_key=`：解绑（active→disabled）。
 - `GET /api/v1/skills/agents/{agent_key}/tools`：返回该数字员工已启用技能的 `allowed-tools` 与执行目录的**交集**（服务端解析，fail-closed）。
 
+## 自进化·评测集（P6a）
+
+> 口径：`docs/superpowers/specs/2026-09-16-self-evolution-p6-design.md`（迁移 `033_evolution_eval`，A2 裁决：**P6a 先行**）。
+> **状态 2026-09-16：已实现（P6a）**；候选生成 / 准入闸门 / 指针灰度 / 回滚属 **P6b**（D13 判据达标后开工），**本节不承诺**任何 P6b 能力。
+> 评测集 = 用例库（`draft → published → archived`，软删 + supersede 软链）+ **离线评测运行器**（CLI `scripts/evolution_eval.py`）+ 采集器（只读拦截轨迹 → 草稿用例）。
+> 与 P4 的关系：**同一注册表、同一审计、同一人工闸门口径**；P6a **不改**工具面展开路径（指针化属 P6b）。
+
+**核心语义**：
+- **总开关** `WORKBENCH_EVOLUTION_ENABLED`（默认 `false`，fail-closed）：关闭时**不装配任何评测组件** ⇒ 本节全部端点 `503`，CLI 拒绝执行（退出码 1）。
+- **权限**：本节全部端点（含只读）**仅 `super_admin`**；越权 `403`；跨租户/不存在 `404`（不泄露存在性）。
+- **快照纪律**：`input_snapshot` 必须为对象、UTF-8 体积 ≤ 16 KiB，**任何层级含敏感键（api_key/token/password 等）一律 `422`**——快照不得成为第二份密钥副本。
+- **发布闸门（fail-closed）**：发布要求期望（`expectation`）**可执行**——`{"probe": <已注册受评对象>, "expect": "pass"|"blocked"}`（键集恰好两项；probe 必须已注册且能消费该快照形状），否则 `422`。**未标注期望的用例不得发布、不得进入评测**（不默认为通过）。
+- **变更走 supersede**：草稿可原地补全期望；**已发布用例的变更用新条目替代**（旧条目 `archived` + `superseded_by` 链到新条目，不物理删除、不原地覆盖）。
+- **评测运行只落判定与计数**：`suite_digest` = 当次所用已发布用例集指纹（事后可验证「考了什么」）；逐例明细仅含判定与计数（`status`/`expect`/`repeats`/`failed_repeats`），**不含用例正文**；费用为整数分，单次运行预计费用超过 `WORKBENCH_EVOLUTION_EVAL_MAX_COST_CENTS`（默认 500）即 fail-closed 中止并留痕（`aborted` 运行 + 审计）。
+- **运行方式**：v1 为**离线运行**（CLI，不在请求链路内自动触发）；内置受评对象 `runtime-safety-probe`（复用既有运行时安全判定，确定性、零费用）。**运行触发端点不在本期**。
+
+**审计**：`evolution.case.changed`（用例变更）/ `evolution.eval.completed`（运行完成，含 `aborted`）；明细键最小集（`case_id` / `eval_run_id` / `case_count` / `pass_count` / `suite_digest`，已入白名单），**不落用例内容与期望正文**。
+
+- `POST /api/v1/evolution/cases`：登记评测用例（缺省草稿）。请求体 `{"suite_key", "source": "run_trace"|"manual"|"regression"（默认 manual）, "input_snapshot": {...}, "expectation"?: {...}}`（未知字段 `422`；非法 suite_key / 来源 / 快照 / 期望 `422`）。成功 `201`，返回用例视图（含 `input_snapshot`/`expectation`/`input_digest`；`suite_key` 归一为小写）。
+- `GET /api/v1/evolution/cases?suite_key=&status=&source=&limit=&offset=`：用例列表，**必须分页**（`limit` 1–200 默认 50）。
+- `GET /api/v1/evolution/cases/{case_id}`：用例详情。
+- `POST /api/v1/evolution/cases/{case_id}/expectation`：补全草稿用例的期望 `{"expectation": {...}}`。**仅草稿**；已发布/已归档 → `409`。
+- `POST /api/v1/evolution/cases/{case_id}/publish`：发布用例（发布闸门见上）；重复发布幂等；已归档 → `409`。
+- `POST /api/v1/evolution/cases/{case_id}/archive`：归档用例（软删）；重复归档幂等。
+- `POST /api/v1/evolution/cases/{case_id}/supersede`：替代用例，请求体 `{"input_snapshot"?, "expectation"?}`（**至少一项**，否则 `422`）；成功返回**新条目**（草稿，继承套件与来源），旧条目 `archived` 且链到新条目。
+- `GET /api/v1/evolution/eval-runs?suite_key=&limit=&offset=`：评测运行列表（离线运行器产出；只读）。
+- `GET /api/v1/evolution/eval-runs/{eval_run_id}`：运行详情，含 `results`（逐例 `{case_id, passed, detail}`；明细不含正文）。
+
 

@@ -1228,3 +1228,39 @@ def build_weknora_search_runtime(settings, *, client=None):
         api_key=api_key,
         timeout=settings.weknora_timeout_seconds,
     )
+
+
+def build_evolution_service(settings: Settings, *, store=None, audit=None):
+    """装配 P6a 评测集服务（`app/evolution/`；规格 2026-09-16-self-evolution-p6-design.md §2.8）。
+
+    - 总开关 `WORKBENCH_EVOLUTION_ENABLED`（默认 false，fail-closed）：**关闭 ⇒ 返回 None**
+      （不装配任何评测组件；管理端点 503、CLI 拒绝执行）；
+    - `audit` 缺省跳过（与记忆层口径一致），生产装配必须注入：用例变更与评测运行都要留痕；
+    - 未显式传入 store 时按存储模式自建（同 P3/P4 模式：内存仅 development）。
+    """
+    if not settings.evolution_enabled:
+        return None
+    validate_runtime_settings(settings)
+    from .evolution.service import EvolutionService
+    from .evolution.store import InMemoryEvalStore, PostgresEvalStore
+
+    if store is None:
+        if settings.storage_backend == "memory":
+            if settings.env != "development":
+                raise ValueError("生产环境禁止使用内存评测集仓储")
+            store = InMemoryEvalStore()
+        elif settings.storage_backend == "postgres":
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+            store = PostgresEvalStore(connection)
+        else:
+            raise ValueError("不支持的评测集存储类型")
+    return EvolutionService(
+        store,
+        audit=audit,
+        enabled=True,
+        max_cost_cents=settings.evolution_eval_max_cost_cents,
+    )

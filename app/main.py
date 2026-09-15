@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -113,6 +113,19 @@ from .skills.models import (
     SkillStateConflict,
 )
 from .skills.service import SkillService
+from .evolution.models import (
+    EvalCase,
+    EvalCaseNotFound,
+    EvalCaseStateConflict,
+    EvalCostExceeded,
+    EvalDisabled,
+    EvalRun,
+    EvalSuiteEmpty,
+    EvalSuiteTooLarge,
+    InvalidEvalCase,
+    UnknownEvalSubject,
+)
+from .evolution.service import EvolutionService
 from .knowledge_governance.models import (
     InvalidKnowledgeDoc,
     KnowledgeDoc,
@@ -179,6 +192,9 @@ memory_service = build_memory_service(settings, audit=audit_service)
 # 来源白名单为空 = 技能层关闭（可登记、不可启用，fail-closed）；allowed-tools 与执行目录取交集。
 # M3 打通：注入 P3 记忆服务实例 → 技能经验沉淀入事实类记忆（memory_service 已在上面装配）。
 skills_service = build_skills_service(settings, audit=audit_service, memory=memory_service)
+# P6a 自进化·评测集（规格 2026-09-16-self-evolution-p6-design.md §2.8）：总开关默认 false（fail-closed）——
+# 关闭时不装配任何评测组件（管理端点 503、CLI 拒绝执行）；开启时按存储模式自建仓储（内存仅 development）。
+evolution_service: EvolutionService | None = build_evolution_service(settings, audit=audit_service)
 agent_config_service = build_agent_config_service(
     settings, store=workforce_directory_store, audit=audit_service
 )
@@ -2149,6 +2165,281 @@ def get_agent_knowledge_access(agent_key: str, context: UserContext = Depends(cu
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return _knowledge_access_view("agent", agent_key, knowledge_access_registry.resolve(context, agent_key, agent_key))
+
+
+# ------------------------------------------------------------ P6a 自进化·评测集（规格 2026-09-16-self-evolution-p6-design.md §2.2/§2.3）
+
+class EvalCaseCreateRequest(BaseModel):
+    """登记评测用例（缺省草稿）：期望可后续用 `POST .../expectation` 补全，发布是独立管理动作。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    suite_key: str = Field(min_length=1, max_length=64)
+    source: str = Field(default="manual", pattern="^(run_trace|manual|regression)$")
+    input_snapshot: dict
+    expectation: dict | None = None
+
+
+class EvalCaseExpectationRequest(BaseModel):
+    """补全草稿用例的期望（未发布即未生效；已发布用例的变更走 supersede）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expectation: dict
+
+
+class EvalCaseSupersedeRequest(BaseModel):
+    """用新用例替代旧用例（至少一项变更；旧条目 archived + superseded_by 链到新条目）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_snapshot: dict | None = None
+    expectation: dict | None = None
+
+
+class EvalCaseView(BaseModel):
+    case_id: str
+    suite_key: str
+    source: str
+    status: str
+    input_snapshot: dict
+    expectation: dict
+    input_digest: str
+    superseded_by: str | None = None
+    created_by: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class EvalCaseListResponse(BaseModel):
+    items: list[EvalCaseView]
+    total: int
+    limit: int
+    offset: int
+
+
+class EvalRunView(BaseModel):
+    eval_run_id: str
+    subject: str
+    suite_key: str
+    suite_digest: str
+    status: str
+    case_count: int
+    pass_count: int
+    cost_cents: int
+    created_by: str
+    created_at: datetime | None = None
+
+
+class EvalCaseResultView(BaseModel):
+    case_id: str
+    passed: bool
+    detail: dict
+
+
+class EvalRunDetailResponse(EvalRunView):
+    results: list[EvalCaseResultView]
+
+
+class EvalRunListResponse(BaseModel):
+    items: list[EvalRunView]
+    total: int
+    limit: int
+    offset: int
+
+
+def _evolution_service_or_503() -> EvolutionService:
+    """关闭时不装配任何评测组件：管理端点一律 503（不返回空结果，以免被读成「没有用例」）。"""
+    if evolution_service is None:
+        raise HTTPException(status_code=503, detail="自进化评测组件未启用")
+    return evolution_service
+
+
+def _eval_case_view(case: EvalCase) -> EvalCaseView:
+    return EvalCaseView(
+        case_id=case.case_id,
+        suite_key=case.suite_key,
+        source=case.source.value,
+        status=case.status.value,
+        input_snapshot=case.input_snapshot,
+        expectation=case.expectation,
+        input_digest=case.input_digest,
+        superseded_by=case.superseded_by,
+        created_by=case.created_by,
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+    )
+
+
+def _eval_run_view(run: EvalRun) -> EvalRunView:
+    return EvalRunView(
+        eval_run_id=run.eval_run_id,
+        subject=run.subject,
+        suite_key=run.suite_key,
+        suite_digest=run.suite_digest,
+        status=run.status.value,
+        case_count=run.case_count,
+        pass_count=run.pass_count,
+        cost_cents=run.cost_cents,
+        created_by=run.created_by,
+        created_at=run.created_at,
+    )
+
+
+def _raise_evolution_http(exc: Exception) -> NoReturn:
+    """把评测域异常映射成 HTTP 语义（规格 §4 裁决口径）。"""
+    if isinstance(exc, EvalDisabled):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(exc, EvalCaseNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, EvalCaseStateConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, (InvalidEvalCase, EvalSuiteTooLarge, EvalSuiteEmpty, UnknownEvalSubject, EvalCostExceeded)):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, PolicyError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    raise exc
+
+
+@app.post("/api/v1/evolution/cases", response_model=EvalCaseView, status_code=status.HTTP_201_CREATED)
+def create_eval_case(payload: EvalCaseCreateRequest, context: UserContext = Depends(current_user)) -> EvalCaseView:
+    """登记评测用例（仅 super_admin）：来源三选一；快照必须脱敏且不含敏感键。"""
+    service = _evolution_service_or_503()
+    try:
+        case = service.create_case(
+            context,
+            suite_key=payload.suite_key,
+            source=payload.source,
+            input_snapshot=payload.input_snapshot,
+            expectation=payload.expectation,
+        )
+    except (InvalidEvalCase, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    return _eval_case_view(case)
+
+
+@app.get("/api/v1/evolution/cases", response_model=EvalCaseListResponse)
+def list_eval_cases(
+    suite_key: str | None = Query(default=None, max_length=64),
+    case_status: str | None = Query(default=None, alias="status", max_length=32),
+    source: str | None = Query(default=None, max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> EvalCaseListResponse:
+    """评测用例列表（仅 super_admin；必须分页）。"""
+    service = _evolution_service_or_503()
+    try:
+        items, total = service.list_cases(
+            context, suite_key=suite_key, status=case_status, source=source, limit=limit, offset=offset
+        )
+    except (InvalidEvalCase, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    return EvalCaseListResponse(
+        items=[_eval_case_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
+
+
+@app.get("/api/v1/evolution/cases/{case_id}", response_model=EvalCaseView)
+def get_eval_case(case_id: str, context: UserContext = Depends(current_user)) -> EvalCaseView:
+    """用例详情（跨租户一律 404，不泄露存在性）。"""
+    service = _evolution_service_or_503()
+    try:
+        case = service.get_case(context, case_id)
+    except (InvalidEvalCase, EvalCaseNotFound, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    return _eval_case_view(case)
+
+
+@app.post("/api/v1/evolution/cases/{case_id}/expectation", response_model=EvalCaseView)
+def set_eval_case_expectation(
+    case_id: str,
+    payload: EvalCaseExpectationRequest,
+    context: UserContext = Depends(current_user),
+) -> EvalCaseView:
+    """补全草稿用例的期望（仅草稿；已发布用例的变更走 supersede）。"""
+    service = _evolution_service_or_503()
+    try:
+        case = service.set_expectation(context, case_id, payload.expectation)
+    except (InvalidEvalCase, EvalCaseNotFound, EvalCaseStateConflict, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    return _eval_case_view(case)
+
+
+@app.post("/api/v1/evolution/cases/{case_id}/publish", response_model=EvalCaseView)
+def publish_eval_case(case_id: str, context: UserContext = Depends(current_user)) -> EvalCaseView:
+    """发布用例：发布闸门要求期望可执行（fail-closed）；重复发布幂等。"""
+    service = _evolution_service_or_503()
+    try:
+        case = service.publish_case(context, case_id)
+    except (InvalidEvalCase, EvalCaseNotFound, EvalCaseStateConflict, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    return _eval_case_view(case)
+
+
+@app.post("/api/v1/evolution/cases/{case_id}/archive", response_model=EvalCaseView)
+def archive_eval_case(case_id: str, context: UserContext = Depends(current_user)) -> EvalCaseView:
+    """归档用例（软删，不物理删）；重复归档幂等。"""
+    service = _evolution_service_or_503()
+    try:
+        case = service.archive_case(context, case_id)
+    except (InvalidEvalCase, EvalCaseNotFound, EvalCaseStateConflict, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    return _eval_case_view(case)
+
+
+@app.post("/api/v1/evolution/cases/{case_id}/supersede", response_model=EvalCaseView)
+def supersede_eval_case(
+    case_id: str,
+    payload: EvalCaseSupersedeRequest,
+    context: UserContext = Depends(current_user),
+) -> EvalCaseView:
+    """替代用例（至少一项变更）：新条目为草稿，旧条目 archived 并链到新条目。"""
+    service = _evolution_service_or_503()
+    try:
+        case = service.supersede_case(
+            context, case_id, input_snapshot=payload.input_snapshot, expectation=payload.expectation
+        )
+    except (InvalidEvalCase, EvalCaseNotFound, EvalCaseStateConflict, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    return _eval_case_view(case)
+
+
+@app.get("/api/v1/evolution/eval-runs", response_model=EvalRunListResponse)
+def list_eval_runs(
+    suite_key: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> EvalRunListResponse:
+    """评测运行列表（离线运行器产出；只读，仅 super_admin）。"""
+    service = _evolution_service_or_503()
+    try:
+        items, total = service.list_runs(context, suite_key=suite_key, limit=limit, offset=offset)
+    except (InvalidEvalCase, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    return EvalRunListResponse(
+        items=[_eval_run_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
+
+
+@app.get("/api/v1/evolution/eval-runs/{eval_run_id}", response_model=EvalRunDetailResponse)
+def get_eval_run(eval_run_id: str, context: UserContext = Depends(current_user)) -> EvalRunDetailResponse:
+    """评测运行详情（含逐例判定；明细只含判定与计数，不含正文）。"""
+    service = _evolution_service_or_503()
+    try:
+        run = service.get_run(context, eval_run_id)
+        results = service.list_results(context, eval_run_id)
+    except (InvalidEvalCase, EvalCaseNotFound, PolicyError) as exc:
+        _raise_evolution_http(exc)
+    base = _eval_run_view(run)
+    return EvalRunDetailResponse(
+        **base.model_dump(),
+        results=[
+            EvalCaseResultView(case_id=item.case_id, passed=item.passed, detail=item.detail)
+            for item in results
+        ],
+    )
 
 
 # ------------------------------------------------------------ 知识治理层（规格 2026-09-15-knowledge-governance-design.md §2）

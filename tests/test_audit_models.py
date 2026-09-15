@@ -70,7 +70,10 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.KNOWLEDGE_DOC_REVIEWED.value == "knowledge.doc.reviewed"
     assert AuditAction.KNOWLEDGE_DOC_REVIEW_DUE.value == "knowledge.doc.review_due"
     assert AuditAction.KNOWLEDGE_SEARCH_BLOCKED.value == "knowledge.search.blocked"
-    assert len(set(AuditAction)) == 64
+    # P6a 自进化·评测集（2026-09-16）：两个动作码，值必须稳定为契约字符串（self-evolution-p6 §2.9）。
+    assert AuditAction.EVOLUTION_CASE_CHANGED.value == "evolution.case.changed"
+    assert AuditAction.EVOLUTION_EVAL_COMPLETED.value == "evolution.eval.completed"
+    assert len(set(AuditAction)) == 66
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:
