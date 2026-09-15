@@ -505,3 +505,16 @@
 | **未验证（不得读成已验）** | ① **WeKnora 直拉数据源未实现**（上游列表接口面未核实，规格 N1 已登记该缺口）；**「运维导出清单」的导出手段本身也未验证**——本机没有真实 WeKnora 实例，导出步骤是流程假设。② **未在任何真实存量租户上跑过导入**（本机演练用测试库 + 自造 2 条演示数据；生产/客户侧存量规模、超大批次、字段长度边界均未实测）。③ **CLI 在 Linux/容器内的行为未单独验证**（本机 Windows 跑通；**CI 侧已取证**：run `34978102235` 6/6 job success，`scripts/` 过 `compileall` 语法检查、真库 job 含导入用例 `tests=53 skipped=0 failed=0`，但**该 job 不执行 CLI 进程**——脚本端到端仍只在 Windows 本机验证过）。 |
 | **回退方式** | 删 `scripts/knowledge_import_register.py` 与 `tests/test_knowledge_import_register.py`；删 `tests/test_knowledge_governance_postgres.py` 的 `test_import_register_script_against_postgres`；回退规格 §0（用例数 8→7）与 §4 N1 行（还原为「需用户确认是否本期做」）、`api-contract.md` 该段；删本条记录。**未改应用代码与 migration ⇒ 无数据回退项（导入产生的行按治理流程归档/判废，不做物理删除）。未经确认不得执行回滚。** |
 | **依据** | 用户 2026-09-15 指示（「执行 N1 存量文档导入登记脚本」）；规格 §4 N1 行、§2.1（`source_key` 候选值含 `migration`）、§2.3（未登记 ⇒ fail-closed 不可检索）；`app/worker.py` 既有「显式传 store + 不跑迁移 + 审计不跳过」先例 |
+
+### 2026-09-15 · 知识治理本机联调：真 Celery beat 周期触发闭环 + 检索谓词守卫真实 HTTP 三场景（发现 N7 装配注意项）—— 无仓库代码改动（脚手架在系统临时目录，已删）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-15 |
+| **变更** | **本轮无仓库代码/配置改动**（`git status` 干净；联调脚手架 `seed.py` / `worker_boot.py` / `weknora_mock.py` / `search_drill.py` 全部放系统临时目录 `%TEMP%\wb-drill\`，跑完**已整目录删除**）。补的是**证据**与**真源登记**：规格 §0 新增「本机联调」段（两条链路取证 + N7 注意项）、§4 N3 未验证项收窄（staging 才未验）、§4 新增 **N7 待裁决**。 |
+| **原因** | 用户在 N1 交付后指示执行「真实联调」（起 worker beat + 导入 + 检索验证）。**本机无 staging 环境**（`wb-test-*` / `infra-*` 容器组属另一项目「自媒体内容生成器」，仅共享 PG 实例）⇒ 自建最小拓扑：**本机 Redis（隔离 db5）+ 测试库（`wb-test-postgres-1:55433`）+ 真 Celery worker/beat 进程 + 本地假 WeKnora（HTTP，计请求数）**。 |
+| **影响面** | 改 `docs/superpowers/specs/2026-09-15-knowledge-governance-design.md`（§0/§4）与 `change-record.md`（本条）。**未改** 任何 `app/**` / `scripts/**` / `tests/**` / `migrations/**` / `.env*` / `ci.yml`。演练数据（`beat-drill` / `search-drill` / `search-drill-empty` 三租户文档行）已从测试库删除（`DELETE 2` ⇒ 剩余 0）；**审计行按不可篡改口径保留**在测试库（非生产）。 |
+| **验证（已做）** | ✅ **N3 beat 周期触发闭环（真实 Celery，30s 间隔）**：`celery beat` 日志 `Sending due task knowledge-review-scan (app.worker.scan_knowledge_review_due)` → worker `succeeded in 0.019s: {'candidates': 1, 'flipped': 1}` → 查库 `status: published→needs_review`、**`updated_at=14:08:19.795976+00` 与派发时刻 22:08:19（本地）毫秒级吻合** → 审计 `knowledge.doc.review_due`（**actor=`system:worker`**，`occurred_at=14:08:19.80369+00`）；后续周期 `candidates=0`（幂等）。✅ **检索谓词守卫真实 HTTP 三场景**（真实 adapter + `scoped_search` + 假 WeKnora 请求计数）：① 关闭 ⇒ 3 条、计数 0→1；② **开启+白名单空 ⇒ 0 条、计数 1→1（fail-closed 真未请求）**；③ 开启+有 published ⇒ 仅 `chunk-1@doc-pub`、未登记/未发布被剔除、计数 1→2。✅ 进程与文件清理核对：无残留 `worker_boot.py` / `weknora_mock.py` / `celery beat` 进程；临时目录已删。 |
+| **未验证（不得读成已验）** | ① **不是 staging / 不是生产**：最小拓扑是 Windows + `--pool=solo` + 隔离 Redis db + 同一台机；Linux/容器拓扑下的 beat、多 worker 并发、真实网络时延**均未验**。② **Windows 限制**：`celery worker -B`（内嵌 beat）在 Windows **不可用**（Celery 明确报错，要求 beat 独立服务）——**这是本机限制**，非产品缺陷。**已核对本仓库**：grep 全仓（`*.yml/yaml/sh/md/py/txt/example`）**没有任何 `celery beat` / `-B` 启动命令** ⇒ 本仓库**尚未提供 worker/beat 的部署编排**（beat 独立进程如何起、由谁守护**未定义、未验证**；生产部署前需补该编排）。③ 检索三场景用的是**假 WeKnora**：真实 WeKnora 实例的接口面、鉴权、知识库级语义**仍未核实**。④ 本机联调**不产生 CI 证据**（CI 不跑 beat 进程，见 §0）。 |
+| **回退方式** | 纯文档变更：回退规格 §0「本机联调」段、§4 N3 行的联调措辞与 N7 行，删本条记录。**无代码回退项、无数据回退项。未经确认不得执行回滚。** |
+| **依据** | 用户 2026-09-15 指示（N1 后的「真实联调」建议）；规格 §4 N3/N2 的未验证项、§2.3 谓词守卫、§2.2 事件触发；`docs/delivery-gates.md`（「没验证的必须写未验证」） |
