@@ -55,7 +55,7 @@ class InvalidKnowledgeDoc(KnowledgeGovernanceError):
 
 
 class KnowledgeDocStateConflict(KnowledgeGovernanceError):
-    """状态机冲突（非法迁移，如 draft→archived 直跳 / published→draft）→ 409。"""
+    """状态机冲突（非法迁移，如 published→draft 回退 / archived 终态出发）→ 409。"""
 
 
 class KnowledgeDocNotFound(LookupError):
@@ -113,7 +113,7 @@ _TRANSITIONS: dict[KnowledgeDocStatus, frozenset[KnowledgeDocStatus]] = {
 def transition_allowed(current: KnowledgeDocStatus, target: KnowledgeDocStatus) -> bool:
     """状态机迁移判定（§2.2）。
 
-    允许边（以「状态机主体表格」为准，规格 §2.2）：
+    允许边（§2.2；口径裁定 2026-09-15：末行「any → 归档」为准）：
       - draft → published（发布，owner 闸门由 service 强制）/ archived（登记后直接判废）
       - published → under_review / needs_review / archived（进入复核 / 到期扫描 / 人工归档）
       - under_review → needs_review / published / archived（复核进行中 / 复核通过 / 判废）
@@ -122,10 +122,6 @@ def transition_allowed(current: KnowledgeDocStatus, target: KnowledgeDocStatus) 
 
     刻意不允许：published→draft 回退、needs_review→draft、任何 →under_review 从 draft/archived、
     archived 出发（终态）。返回布尔；`KnowledgeDocStateConflict` 的抛出由 service 层完成。
-
-    ⚠️ 规格 §3.2 验收表把「draft→archived 直跳」列为 409，与本表「any→archived」冲突；
-    本实现以**状态机主体表格**（§2.2，更核心、更好维护）为准，允许 draft→archived，
-    冲突点已在交付说明明示待裁决。
     """
     return target in _TRANSITIONS.get(current, frozenset())
 

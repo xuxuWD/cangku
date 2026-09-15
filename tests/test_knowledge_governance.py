@@ -18,6 +18,7 @@ from app.knowledge_governance.models import (
     KnowledgeDocNotFound,
     KnowledgeDocStateConflict,
     KnowledgeDocStatus,
+    transition_allowed,
 )
 from app.knowledge_governance.scoped_search import build_scoped_search
 from app.knowledge_governance.service import KnowledgeGovernanceService
@@ -166,7 +167,7 @@ def test_publish_requires_owner(service: KnowledgeGovernanceService) -> None:
 
 
 def test_state_machine_forbids_illegal_transitions(service: KnowledgeGovernanceService) -> None:
-    """published→draft 回退等非法迁移被拦；归档可走 draft→archived 判废（any→archived，§2.2）。"""
+    """归档可走 draft→archived 判废（any→archived，§2.2，2026-09-15 裁定）；archived 为终态。"""
     # 登记后未发布也可直接判废（§2.2「any → 归档 → archived」）
     service.register_document(
         _admin(), document_id="doc-e", title="e", owner_id="acct-owner", version="1", source_key="manual"
@@ -190,6 +191,24 @@ def test_state_machine_forbids_illegal_transitions(service: KnowledgeGovernanceS
 
     with pytest.raises(KnowledgeDocNotFound):
         service.store.get_document(_admin(), "doc-does-not-exist")
+
+
+def test_transition_matrix_locks_section_2_2_ruling() -> None:
+    """状态机矩阵**逐边**锁定（2026-09-15 裁定：§2.2「any → archived」为准，draft 可直接归档）。
+
+    全量 25 条边逐一断言（反假锚点）：把 `draft→archived` 判为非法、或放开 `archived` 终态，
+    本用例必须变红。口径见规格 §2.2「口径裁定」段与 §3.3 反假条款。
+    """
+    S = KnowledgeDocStatus
+    allowed = {
+        (S.DRAFT, S.PUBLISHED), (S.DRAFT, S.ARCHIVED),  # 发布 / 登记后直接判废
+        (S.PUBLISHED, S.UNDER_REVIEW), (S.PUBLISHED, S.NEEDS_REVIEW), (S.PUBLISHED, S.ARCHIVED),
+        (S.UNDER_REVIEW, S.NEEDS_REVIEW), (S.UNDER_REVIEW, S.PUBLISHED), (S.UNDER_REVIEW, S.ARCHIVED),
+        (S.NEEDS_REVIEW, S.PUBLISHED), (S.NEEDS_REVIEW, S.ARCHIVED), (S.NEEDS_REVIEW, S.UNDER_REVIEW),
+    }
+    for current in S:
+        for target in S:
+            assert transition_allowed(current, target) is ((current, target) in allowed), (current, target)
 
 
 def test_list_documents_paginated_and_filtered(service: KnowledgeGovernanceService) -> None:

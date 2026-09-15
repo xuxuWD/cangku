@@ -14,8 +14,8 @@
 > **环境**：Docker `wb-test-postgres-1`（postgres 16，端口 55433），库 `workbench_test`；沿用 030/031 既有容器口径，未新增容器。
 
 - **从零应用迁移**：32 条（`001` → `032_knowledge_governance`），含新表 `workbench_knowledge_documents`（复合主键 `(tenant_id, document_id)` + 状态 CHECK 约束 + 两个索引，`IF NOT EXISTS` 幂等）。
-- **真库用例 `tests/test_knowledge_governance_postgres.py`：5 条全绿**：① 登记 + 状态流（draft→published→needs_review→published）真库持久化 + 复核时间戳落库；② 状态 CHECK 约束拦截非法状态值；③ 谓词守卫真库语义（仅 published 且未过 `review_due_at` 进白名单；过期即下线）；④ `mark_review_due` / 到期扫描真库可用且幂等；⑤ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
-- **反假口径**：draft 不进白名单（只发布可检索）、needs_review 被谓词排除——真库与内存双端覆盖。
+- **真库用例 `tests/test_knowledge_governance_postgres.py`：6 条全绿**：① 登记 + 状态流（draft→published→needs_review→published）真库持久化 + 复核时间戳落库；② **`draft` 可直接归档**（any→archived，§2.2 裁定）真库持久化；③ 状态 CHECK 约束拦截非法状态值；④ 谓词守卫真库语义（仅 published 且未过 `review_due_at` 进白名单；过期即下线）；⑤ `mark_review_due` / 到期扫描真库可用且幂等；⑥ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
+- **反假口径**：draft 不进白名单（只发布可检索）、needs_review 被谓词排除、状态机 25 条边逐边锁定（§2.2 裁定，`test_transition_matrix_locks_section_2_2_ruling`）——真库与内存双端覆盖。
 - **未验证（如实登记）**：`scoped_search` 与真实 WeKnora 的端到端检索（N2 落点：WeKnora 检索为知识库级、无文档级过滤参数，本期实现为「检索后按白名单收敛」的接口面兜底，标注见 `app/knowledge_governance/scoped_search.py`）；CI `postgres` job 尚未在 GitHub Actions 跑 `test_knowledge_governance_postgres.py`（待 push 后观察）。
 
 ---
@@ -97,6 +97,7 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_docs_status ON workbench_knowledge_docu
 | any | 归档（人工/复核判废） | → `archived` | 终态（不自动回 published） |
 
 - **复核规则**：`needs_review`/`stale` 进入检索谓词**排除集**（§2.3）；人工复核后可回 `published`（刷新 `last_reviewed_at`/`review_due_at`）或 `archived`。
+- **口径裁定（2026-09-15，用户拍板）**：末行「any → 归档」为**准确口径**——**`draft` 可直接归档**（登记后即判废，无需先发布）；§3.2 旧表曾把「draft→archived 直跳」列为 409，属**笔误**，已更正。`archived` 为终态（不回 `published`），`published→draft` / `needs_review→draft` 回退与 `draft→under_review` 一律非法。
 - **事件触发而非日历**（§6.3）：到期入 `needs_review` 由**到期扫描 worker**（beat）批量置位 + 可配置 `WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS`；**不**由检索时顺手改状态（避免读路径写库）。
 
 ### 2.3 事项 D：检索谓词守卫（pre-filter，§6.4 硬要求）
@@ -157,7 +158,7 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 | 未登录 / 过期 Token | 401 |
 | 普通员工登记 / 发布 / 改状态 / 读指标 | 403（管理动作） |
 | 发布无 owner | 422（发布闸门强制 owner） |
-| 非法 status 迁移（draft→archived 直跳 / published→draft） | 409（状态机校验） |
+| 非法 status 迁移（published→draft 回退 / archived 终态出发 / draft→under_review） | 409（状态机校验）；**`draft`→`archived` 合法**（§2.2「any → archived」，2026-09-15 裁定） |
 | 治理开关开启但文档集为空 | 检索返回空（fail-closed，不请求 WeKnora） |
 | 治理开关关闭 | 检索行为与今天完全一致（不过滤） |
 | 过期文档 | 检索不命中 + 指标 needs_review 计数 +1 |
@@ -168,7 +169,8 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 
 - 故意把 `status != published` 的文档留在预过滤白名单 → 「只发布可检索」用例必须变红。
 - 故意删掉谓词守卫只留生成后过滤 → 「检索前不可见」用例必须变红（防安全回归）。
-- 故意跳状态（draft→archived 直迁）→ 「状态机校验」用例必须变红。
+- 故意放开 `archived` 终态（允许 archived→published）→ 「终态不可回发布 / 不可复核」用例必须变红。
+- 故意把 `draft→archived` 判为非法 → 「draft 可直接归档」用例必须变红（防口径回退，2026-09-15 裁定）。
 - 故意拿未复核的 needs_review 文档做查询 → 「谓词排除」必须变红。
 
 ### 3.4 一键回归

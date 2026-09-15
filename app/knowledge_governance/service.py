@@ -141,9 +141,10 @@ class KnowledgeGovernanceService:
         return saved
 
     def archive_document(self, context: UserContext, document_id: str) -> KnowledgeDoc:
-        """归档（published / under_review / needs_review → archived，§3.2）。
+        """归档（draft / published / under_review / needs_review → archived，§2.2「any → 归档」）。
 
-        `draft→archived` 直跳与 `archived` 终态出发一律被状态机拦截 → 409。
+        **`draft` 可直接归档**（登记后即判废，无需先发布；2026-09-15 口径裁定，§3.2 旧表笔误已更正）；
+        仅 `archived` 终态出发被状态机拦截 → 409。
         """
         ensure_can_manage(context)
         doc = self.store.get_document(context, document_id)

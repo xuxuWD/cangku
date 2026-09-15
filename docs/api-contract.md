@@ -303,7 +303,7 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 口径：`docs/superpowers/specs/2026-09-15-knowledge-governance-design.md`。治理表 `workbench_knowledge_documents`（迁移 032）是**文档级元数据守卫**：登记 Who 拥有 / 同步到什么状态 / 何时复核；**不复制正文、不重建索引**（WeKnora 仍是检索唯一事实源，D1）。
 
-状态机：`draft → published → needs_review → published/archived`（`published → under_review → needs_review → published/archived` 为可选中间态）；`archived` 终态。归档 = `status='archived'` 物理保留（软删口径延续，不物理删除）。
+状态机：`draft → published → needs_review → published/archived`（`published → under_review → needs_review → published/archived` 为可选中间态）；`archived` 终态。**归档为「any → archived」：`draft` 可直接归档**（登记后即判废，无需先发布，2026-09-15 口径裁定）。归档 = `status='archived'` 物理保留（软删口径延续，不物理删除）。
 
 发布闸门：`owner_id` 必填（调用方传入或回退既有行，两者皆空 `422`）；仅 `draft` 可发布，其他状态 `409`（状态机校验）。
 
@@ -316,7 +316,7 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 - `POST /api/v1/knowledge/documents`：登记知识文档（`draft`；仅 `super_admin`）。请求体 `{"document_id": string, "title"?, string, "owner_id"?, string, "version"? = "1", "source_key"? = "manual"}`，未知字段 `422`。**幂等**：同 `(tenant, document_id)` 重复登记返回既有记录（`201`）。成功 `201`，返回文档视图（不含正文）。
 - `GET /api/v1/knowledge/documents?status=&limit=&offset=`：文档列表（仅 `super_admin`），必须分页（`limit` 1–200 默认 50，`offset` ≥0）。`status` 可选 `draft|published|under_review|needs_review|archived`（非法 `422`）。返回 `{"items": [...], "total", "limit", "offset"}`。
 - `POST /api/v1/knowledge/documents/{document_id}/publish?owner_id=`：发布（发布闸门：owner 必填；仅 `draft` → `published`）。无 owner `422`，状态冲突 `409`。返回更新后的文档视图。
-- `POST /api/v1/knowledge/documents/{document_id}/archive`：归档（`published` / `under_review` / `needs_review` → `archived`；`draft` 直跳与终态出发 `409`）。返回更新后的文档视图。
+- `POST /api/v1/knowledge/documents/{document_id}/archive`：归档（`draft` / `published` / `under_review` / `needs_review` → `archived`，§2.2「any → archived」**允许 draft 直接判废**；仅 `archived` 终态出发 `409`）。返回更新后的文档视图。
 - `POST /api/v1/knowledge/documents/{document_id}/review?approved=true|false`：人工复核（`under_review` / `needs_review` → 通过 `published`（刷新 `last_reviewed_at` + `review_due_at` 顺延宽限）或判废 `archived`；状态非法 `409`）。返回更新后的文档视图。
 - `POST /api/v1/knowledge/review-scan`：手动触发到期扫描（published 且已过 `review_due_at` → `needs_review`；幂等，重复触发不重复计数）。返回 `{"reviewed_due": int}`。
 - `GET /api/v1/knowledge/metrics`：Freshness Index（仅 `super_admin`）。返回 `{"published", "needs_review", "archived", "total", "freshness_ratio"}`，其中 `freshness_ratio = published/total`（`total=0` 时取 1.0）。

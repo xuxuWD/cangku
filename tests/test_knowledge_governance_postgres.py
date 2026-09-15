@@ -93,6 +93,23 @@ def test_register_and_status_flow_persists_in_postgres(service) -> None:
     assert row[1] is not None
 
 
+def test_draft_can_be_archived_directly(service) -> None:
+    """§2.2 口径裁定（2026-09-15）：**draft 可直接归档**（any→archived），真库持久化。"""
+    svc, connection = service
+    svc.register_document(
+        _admin(), document_id="pg-draft-archive", title="未发布即判废", owner_id="",
+        version="1", source_key="manual",
+    )
+    archived = svc.archive_document(_admin(), "pg-draft-archive")
+    assert archived.status is KnowledgeDocStatus.ARCHIVED
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT status FROM workbench_knowledge_documents WHERE tenant_id = %s AND document_id = %s",
+            (TENANT, "pg-draft-archive"),
+        )
+        assert cursor.fetchone()[0] == "archived"
+
+
 def test_check_constraint_forbids_illegal_status(service) -> None:
     """CHECK 约束：非法状态值直接落库失败（status IN 白名单）。"""
     svc, connection = service
