@@ -214,7 +214,8 @@ GET /api/v1/memory/search?q=…&scope=…
 
 **④ 回归确认**：修复后全量 `pytest` **1775 passed / 41 skipped**（41 = 默认 skip 的真库 8 条 + 其它条件 skip 33 条）；`tests/test_memory_postgres.py` 已纳入 CI `postgres` job（与三个既有真库模块并列，`skipped == 0` 门禁同口径）。
 
-**⑤ 未验证（如实登记）**：CI `postgres` job 在真实 GitHub Actions 上跑 `test_memory_postgres.py` 尚未发生（需 push 后确认 runs）；本机一次性容器回归**已跑**。
+**⑤ CI 实跑证据（2026-09-15 已回填）**：push `670190d` 触发 GitHub Actions **run `34946907594`**，6/6 job **conclusion=success**——后端（pytest+compileall）、三端前端构建、**后端真库（Postgres service + `*_postgres.py`）**、沙箱加固与逃逸回归（真容器）。其中「后端真库」job 因 `skipped==0` 门禁（失败即红）且结论 success ⇒ `tests/test_memory_postgres.py` 的 8 条真库用例全部实跑且无一 skip；沙箱 job 同口径通过 ⇒ 容器加固回归未回归。**此前「CI 真库 job 未实跑」一项自此销账。**
+> **代理注记（供后续 push）**：本机 git 全局代理 `http://127.0.0.1:7892` 指向未监听端口（代理软件未运行）→ push 用 `git -c http.proxy= -c https.proxy= push`（命令行临时覆盖，**不改全局配置**；GitHub 直连可达）。
 
 ---
 
