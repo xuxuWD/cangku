@@ -2,13 +2,26 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
 #
+# 服务构成（三个进程，**同一镜像、不同 command**）：
+# - `app`    ：HTTP 入口（uvicorn）；**唯一跑迁移的进程**。
+# - `worker` ：Celery Worker，执行 outbox 发布 / 商业化生命周期作业 / 知识治理到期扫描。
+# - `beat`   ：Celery Beat，**独立进程**只负责按排程发任务（禁止 `celery worker -B` 内嵌：
+#              Windows 上 Celery 直接拒绝，生产也不推荐单点耦合）。
+#
 # 约定：
 # - 所有密钥只从环境注入；用 `:?` 强制要求，缺失任一项即启动失败（fail-closed）。
 # - 容器内一律使用服务名寻址，不使用宿主回环地址。
 # - 应用以生产模式启动，会自动应用 migrations/ 下的迁移。
+# - **先构建、再起（`--no-build`）**：三个服务共用 `${WORKBENCH_APP_IMAGE:-workbench-app}`：
+#     docker build -t workbench-app .
+#     docker compose -f docker-compose.yml -f docker-compose.app.yml up -d --no-build
+#   这样构建产物有固定名（可回查代码版本），也不会让 `up` 重新触发一次构建。
+# - **beat 与 worker 的 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS` 必须一致**：
+#   排程间隔由 beat 侧读取（`create_celery_app` 建排程表），不一致会导致「配的间隔只在一边生效」。
 
 services:
   app:
+    image: ${WORKBENCH_APP_IMAGE:-workbench-app}
     build:
       context: .
       dockerfile: Dockerfile
@@ -23,6 +36,8 @@ services:
       WORKBENCH_DATABASE_URL: postgresql+psycopg://workbench:${WORKBENCH_DB_PASSWORD:?required}@postgres:5432/workbench
       WORKBENCH_REDIS_URL: redis://redis:6379/0
       WORKBENCH_OBJECT_STORAGE_URL: http://seaweedfs:9000
+      # P3 记忆层：生产**必须**配置本地 embedding 服务（bootstrap 里 fail-closed）；空值会让 app 启动即失败。
+      WORKBENCH_EMBEDDING_BASE_URL: ${WORKBENCH_EMBEDDING_BASE_URL:?required}
       WORKBENCH_AUTH_SECRET: ${WORKBENCH_AUTH_SECRET:?required}
       WORKBENCH_BACKUP_ENCRYPTION_KEY: ${WORKBENCH_BACKUP_ENCRYPTION_KEY:?required}
       WORKBENCH_BOOTSTRAP_TOKEN: ${WORKBENCH_BOOTSTRAP_TOKEN:?required}
@@ -32,4 +47,91 @@ services:
       WORKBENCH_LOGIN_MAX_FAILURES: ${WORKBENCH_LOGIN_MAX_FAILURES:-5}
       WORKBENCH_LOGIN_WINDOW_SECONDS: ${WORKBENCH_LOGIN_WINDOW_SECONDS:-300}
       WORKBENCH_LOGIN_LOCK_SECONDS: ${WORKBENCH_LOGIN_LOCK_SECONDS:-900}
+    volumes:
+      # 内容库（SQLite）持久化：镜像内已预建并授权 /srv/workbench/data，卷首次挂载继承属主。
+      - workbench-app-data:/srv/workbench/data
     restart: unless-stopped
+
+  # 异步执行进程：与 app 同镜像、不同 command；**不跑迁移**（迁移由 app 进程负责）。
+  # 非 development 环境启动时会自动装配（`configure_runtime`）：outbox 发布器、商业化生命周期、
+  # **知识治理到期扫描器（含审计——审计缺失会 fail-closed，见规格 §4 N7）**。
+  worker:
+    image: ${WORKBENCH_APP_IMAGE:-workbench-app}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - celery
+      - -A
+      - app.worker
+      - worker
+      - --loglevel=INFO
+      - --concurrency=${WORKBENCH_WORKER_CONCURRENCY:-2}
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      WORKBENCH_ENV: production
+      WORKBENCH_STORAGE_BACKEND: postgres
+      WORKBENCH_DATABASE_URL: postgresql+psycopg://workbench:${WORKBENCH_DB_PASSWORD:?required}@postgres:5432/workbench
+      WORKBENCH_REDIS_URL: redis://redis:6379/0
+      WORKBENCH_OBJECT_STORAGE_URL: http://seaweedfs:9000
+      WORKBENCH_AUTH_SECRET: ${WORKBENCH_AUTH_SECRET:?required}
+      WORKBENCH_BACKUP_ENCRYPTION_KEY: ${WORKBENCH_BACKUP_ENCRYPTION_KEY:?required}
+      WORKBENCH_LOG_LEVEL: ${WORKBENCH_LOG_LEVEL:-INFO}
+      WORKBENCH_OUTBOX_MAX_ATTEMPTS: ${WORKBENCH_OUTBOX_MAX_ATTEMPTS:-3}
+      # 与 beat 保持一致（排程间隔由 beat 侧读取；不一致则配的间隔只在一边生效）。
+      WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS: ${WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS:-30}
+      WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS: ${WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS:-3600}
+    # slim 镜像没有 curl：用 celery 自身经 broker 探活（节点名默认 celery@<hostname>）。
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.worker inspect ping -d celery@$$HOSTNAME --timeout 10 || exit 1
+      interval: 30s
+      timeout: 15s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+  # 调度进程：**只发任务、不执行**；必须独立于 worker 运行（不要在 worker 上挂 `-B`）。
+  # 排程状态落命名卷：容器重建不丢调度状态（否则重启窗口可能重复派发或漏发）。
+  beat:
+    image: ${WORKBENCH_APP_IMAGE:-workbench-app}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - celery
+      - -A
+      - app.worker
+      - beat
+      - --loglevel=INFO
+      - --schedule=/var/lib/celery/beat-schedule
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      WORKBENCH_ENV: production
+      WORKBENCH_STORAGE_BACKEND: postgres
+      WORKBENCH_DATABASE_URL: postgresql+psycopg://workbench:${WORKBENCH_DB_PASSWORD:?required}@postgres:5432/workbench
+      WORKBENCH_REDIS_URL: redis://redis:6379/0
+      WORKBENCH_OBJECT_STORAGE_URL: http://seaweedfs:9000
+      WORKBENCH_AUTH_SECRET: ${WORKBENCH_AUTH_SECRET:?required}
+      WORKBENCH_BACKUP_ENCRYPTION_KEY: ${WORKBENCH_BACKUP_ENCRYPTION_KEY:?required}
+      WORKBENCH_LOG_LEVEL: ${WORKBENCH_LOG_LEVEL:-INFO}
+      # 排程间隔由此进程读取（`create_celery_app` 建排程表）⇒ 必须与 worker 一致。
+      WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS: ${WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS:-30}
+      WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS: ${WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS:-3600}
+    volumes:
+      - workbench-celerybeat:/var/lib/celery
+    healthcheck:
+      # 镜像级 HEALTHCHECK 探的是 HTTP 8000（uvicorn），对 beat **不适用**（beat 不开端口）
+      # ⇒ 显式关闭，否则容器永远显示 unhealthy（假警报，且会拖累按健康状态的编排判断）。
+      # beat 的存活性看「是否在派发任务」：`docker compose logs beat | grep "Sending due task"`。
+      disable: true
+    restart: unless-stopped
+
+volumes:
+  workbench-celerybeat:
+  workbench-app-data:

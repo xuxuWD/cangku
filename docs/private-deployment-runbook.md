@@ -21,9 +21,12 @@ Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-ch
 
 1. 构建应用镜像：`docker build -t workbench-app .`。
 2. 与基础设施编排一起启动：`docker compose -f docker-compose.yml -f docker-compose.app.yml up -d`。应用容器以生产模式启动时会自动应用 `migrations/` 下的迁移。
-3. 密钥只允许通过环境变量注入。编排文件用 `:?` 强制要求 `WORKBENCH_AUTH_SECRET`、`WORKBENCH_BACKUP_ENCRYPTION_KEY`、`WORKBENCH_BOOTSTRAP_TOKEN` 和数据库口令，缺失任一项即启动失败；`.dockerignore` 排除全部环境文件，镜像内不得存在任何密钥。
-4. 容器以非 root 用户运行，健康检查走 `/api/v1/health`。
-5. 本仓库的容器化资产只完成**静态校验**；真实镜像构建、容器启动与健康检查**尚未在具备 Docker 的环境中验收**，不得据此宣称已容器化交付。
+   - 该编排起**三个服务**（同镜像、不同 command）：`app`（HTTP 入口，**唯一跑迁移**）、`worker`（Celery 执行：Outbox 发布 / 商业化生命周期作业 / **知识治理到期扫描**）、`beat`（Celery 调度，**独立进程**，见「异步链路」章）。
+   - **不得把 beat 合回 worker**（`celery worker -B` 内嵌）：Windows 上 Celery 直接拒绝，生产也不推荐单点耦合；本仓库 `tests/test_compose_worker_assets.py` 会守护这一点。
+   - `beat` 的排程文件落命名卷 `workbench-celerybeat`（容器重建不丢调度状态）；镜像内已预建并授权 `/var/lib/celery`，非 root 用户才写得进。
+3. 密钥只允许通过环境变量注入。编排文件用 `:?` 强制要求 `WORKBENCH_AUTH_SECRET`、`WORKBENCH_BACKUP_ENCRYPTION_KEY`、`WORKBENCH_BOOTSTRAP_TOKEN`、**`WORKBENCH_EMBEDDING_BASE_URL`（P3 记忆层的本地 embedding 服务地址，生产必填——缺失即启动失败）** 和数据库口令，缺失任一项即在 compose 阶段显式报错（fail-closed，不会以「容器反复重启」的形式出现）；`.dockerignore` 排除全部环境文件，镜像内不得存在任何密钥。
+4. 容器以非 root 用户运行，健康检查：`app` 走 `/api/v1/health`；`worker` 用 `celery -A app.worker inspect ping`（经 Redis broker 探活）。
+5. **验收状态**：容器化资产已完成**静态校验**（`tests/test_compose_worker_assets.py`）与**一次本机容器演练**（2026-09-15）：`app` / `worker` / `beat` 三服务与基础设施（Postgres / Valkey / SeaweedFS）正常启动，`app` 健康检查 `{"status":"ok"}`、`worker` 经 broker `inspect ping` 报告 healthy、`beat` 按排程持续派发（`Sending due task knowledge-review-scan`）、到期文档被置 `needs_review` 且审计落 `system:worker`。**客户侧 / 生产拓扑（Linux 宿主、客户网络与凭据、容量与告警）仍未验收**，不得据此宣称已容器化交付。
 
 ## 迁移与备份
 
@@ -37,12 +40,22 @@ Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-ch
 
 ## 异步链路：Worker、Outbox 与死信
 
-1. **启动 Worker**：`celery -A app.worker:celery_app worker --loglevel=INFO`。非 `development` 环境启动时会自动装配 Outbox 发布器（`configure_runtime`），并按 beat 计划（`app.worker` 中的 `outbox-publisher`，默认 15 秒）周期调用 `publish_pending` 发布 `workbench_event_outbox` 中未发布的记录。
+1. **启动 Worker + Beat（两个进程）**：
+   - **Worker**：`celery -A app.worker worker --loglevel=INFO`（容器编排即 `worker` 服务）。非 `development` 环境启动时会自动装配（`configure_runtime`）：Outbox 发布器、商业化生命周期执行层、**知识治理到期扫描器**。
+     - **连接池在任务进程内装配**（fork 安全，2026-09-15 修复）：worker 主进程**不建** psycopg 连接池，池由真正执行任务的进程首次调用时建立 ⇒ Celery 默认 prefork、`threads`、`solo` 三种池都可用；旧问题（prefork 下所有周期任务抛 `PoolTimeout`，文档静默卡住）已不复现。因此**不要**为了绕过池问题而强行改 `--pool`。
+     - 首次任务调用时才建池 ⇒ 启动后**第一个周期任务会稍慢**（建池），属正常。
+   - **Beat**：`celery -A app.worker beat --loglevel=INFO --schedule=/var/lib/celery/beat-schedule`（容器编排即 `beat` 服务）。**必须独立进程**，不得用 `celery worker -B`（Windows 上 Celery 直接拒绝；生产也不推荐把调度与执行耦在一个进程）。排程文件必须落在**可写且持久**的路径（容器里是命名卷），否则容器重建后可能重复派发或漏发。
+   - **起 beat 才会跑周期任务**：只起 worker 时，`outbox-publisher` / `lifecycle-jobs` / `knowledge-review-scan` 都**不会**被派发——这是「任务没跑」类问题首先要看的一处。
 2. **Outbox 重试**：单条记录发布失败时 `attempts` 加一并写入 `last_error`，成功后才置 `published_at`；达到 `WORKBENCH_OUTBOX_MAX_ATTEMPTS`（1 至 20 的正整数）后转入死信，不再自动重试。
 3. **死信登记与人工重放**：死信写入 `workbench_dead_letters`。CEO 或超级管理员可用 `GET /api/v1/dead-letters` 查看本租户死信（含 `notified_at`，用于判断是否已发出通知），用 `POST /api/v1/dead-letters/{event_id}/replay` 人工重放；重放会再次发布事件并把 `replayed_at` / `replayed_by` 落库，重复重放返回 `already_replayed`。
 4. **死信通知渠道配置**：设置 `WORKBENCH_DEAD_LETTER_WEBHOOK_URL` 后，死信登记会对该事件**去重通知一次**（`notified_at` 由空变为非空时才发送），超时由 `WORKBENCH_DEAD_LETTER_WEBHOOK_TIMEOUT_SECONDS`（1 至 30 秒，默认 5）控制；以 JSON POST 发送。**未配置该地址时不发送任何通知**，行为与未接入通知渠道时一致。
 5. **通知失败的处理**：Webhook 请求失败（含非 2xx）**不会向上抛出、不会重试、不会打断 Outbox 发布循环**，只在审计中记录 `dead_letter.notification_failed`；成功发送记录 `dead_letter.notified`。因此通知失败时死信本身仍完整保留，可人工排查渠道后处理。
 6. **通知载荷约定**：载荷固定字段为 `kind`、`event_id`、`tenant_id`、`action`、`aggregate_type`、`aggregate_id`、`attempts`、`error`、`occurred_at`。**绝不包含事件的 `payload`**；`error` 会截断到 200 字符，并把 `scheme://user:pass@host` 形式的凭证替换为 `scheme://***@host`。Webhook 地址与超时从环境变量注入，不得写入镜像或代码。
+7. **知识治理到期扫描（`knowledge-review-scan`）**：beat 按 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`（默认 3600 秒，范围 30–604800）派发 `app.worker.scan_knowledge_review_due`，把 `published` 且已过 `review_due_at` 的文档置 `needs_review`（发布即置首轮到期 = 发布时刻 + `WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS`，默认 30 天）；审计按租户逐条记 `knowledge.doc.review_due`，actor 为 `system:worker`。
+   - **验证（无需等真实到期）**：把某篇文档的 `review_due_at` 拨到过去（`UPDATE workbench_knowledge_documents SET review_due_at = now() - interval '1 hour' WHERE tenant_id = '<租户>' AND document_id = '<文档>'`），下一个 beat 周期后应见 `status` 变 `needs_review`、`workbench_audit_log` 出现 `system:worker` 的 `knowledge.doc.review_due` 行；再次周期 `candidates=0`（幂等）。
+   - **排查顺序**：① `docker compose logs beat | grep knowledge-review-scan`（有没有派发）→ ② `docker compose logs worker | grep scan_knowledge_review_due`（有没有执行、返回的 `candidates/flipped`）→ ③ 查库看 `status` 与审计。**只起 worker 不起 beat 时不会派发**（见第 1 条）。
+   - **interval 一致性**：该间隔由 **beat** 侧读取（`create_celery_app` 建排程表），worker 与 beat 两个服务必须配同一个值（编排里已对齐，`tests/test_compose_worker_assets.py` 守护）。
+   - **审计缺失即失败**：装配未注入审计通道时，扫描会 fail-closed 抛错（任务显式失败、日志可见），不会静默置位而留不下审计（规格 §4 N7）——看到这类失败先检查 worker 的审计装配，不要「修」成静默跳过。
 
 ## 恢复与回滚
 

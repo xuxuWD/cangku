@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Lock
 from typing import Protocol
 
 from celery import Celery
@@ -112,16 +113,51 @@ def create_celery_app() -> Celery:
 
 celery_app = create_celery_app()
 
-_worker_settings = get_settings()
-if _worker_settings.env != "development":
+# ------------------------------------------------------------ 运行时装配（fork 安全）
+#
+# **为什么不在模块导入期装配**（2026-09-15 容器演练发现的既有缺陷）：
+# 导入期装配会在 **worker 主进程**里创建 psycopg 连接池，而 Celery 默认使用 prefork 池
+# （Linux 默认；Windows 上 Celery 拒绝 `-B` 但 worker 仍可用 solo/threads）。fork 出的子进程
+# 继承的是父进程的池对象，**psycopg_pool 明确不支持跨 fork 共享**，表现为周期任务全部抛
+# `PoolTimeout("couldn't get a connection after 30.00 sec")`——文档被静默卡住、只有日志可见。
+#
+# 因此改为：**在真正执行任务的进程里**惰性装配（首次任务调用时装配一次）：
+#   - prefork：每个子进程各自建池（父进程不建）⇒ 无跨 fork 共享；
+#   - threads / solo：进程内首次调用时建一次（`_runtime_lock` 防并发重复）；
+#   - development：**不自动装配**，保持「未接线 ⇒ 任务返回零值」，不偷偷连库。
+_runtime_lock = Lock()
+# 测试注入点：替换装配动作（默认 `_build_production_runtime`），用于断言「什么时候装配」。
+_runtime_builder = None
+
+
+def _build_production_runtime() -> None:
+    """按当前进程的 settings 装配运行时（仅由 `_ensure_runtime` 调用；`migrate=False`——迁移归 API 进程）。"""
+    settings = get_settings()
     from .bootstrap import build_audit_service
 
+    # E2/E3：删除执行必须写审计（真源 commercial-g0-design.md:114/:174）⇒ worker 恒建审计连接。
     configure_runtime(
-        settings=_worker_settings,
-        # E2/E3：删除执行必须写审计（真源 commercial-g0-design.md:114/:174）⇒ worker 恒建审计连接；
-        # migrate=False：迁移由 API 进程负责，避免在导入期触发迁移。
-        audit=build_audit_service(_worker_settings, migrate=False),
+        settings=settings,
+        audit=build_audit_service(settings, migrate=False),
     )
+
+
+def _ensure_runtime() -> None:
+    """任务进程内惰性装配（见上方「fork 安全」段）；**完全未接线时**才自动装配。
+
+    刻意不覆盖「显式只配了一部分」的场景：只要任一运行时已注入（测试 / 运维脚本 / 显式
+    `configure_*`），就视为已接线、不再自动装配（避免把显式注入悄悄替换掉）。
+    装配失败**不吞**：直接向上抛（任务 FAILURE、日志可见），不做「静默零值」。
+    """
+    if _outbox_publisher is not None or _lifecycle_runner is not None or _knowledge_review_scanner is not None:
+        return
+    if get_settings().env == "development":
+        return
+    with _runtime_lock:
+        if _outbox_publisher is not None or _lifecycle_runner is not None or _knowledge_review_scanner is not None:
+            return
+        builder = _runtime_builder or _build_production_runtime
+        builder()
 
 
 @celery_app.task(bind=True, autoretry_for=(TimeoutError,), retry_backoff=True, max_retries=3)
@@ -134,6 +170,7 @@ def dispatch_event(self, event_json: str) -> str:
 @celery_app.task
 def publish_outbox() -> int:
     """Publish pending rows when the worker has been wired to a publisher."""
+    _ensure_runtime()
     publisher = _outbox_publisher
     if publisher is None:
         return 0
@@ -143,6 +180,7 @@ def publish_outbox() -> int:
 @celery_app.task
 def run_lifecycle_jobs() -> dict[str, int]:
     """Process queued exports and due tenant deletions when the worker has been wired."""
+    _ensure_runtime()
     runner = _lifecycle_runner
     if runner is None:
         return {"exports": 0, "deletions": 0}
@@ -157,6 +195,7 @@ def scan_knowledge_review_due() -> dict[str, int]:
     ⚠️ **已接线但未注入 audit** 时**不返回零值**：服务层按 N7 裁决 B（2026-09-15）fail-closed 抛错
     （无人值守路径不得静默不留痕）⇒ 任务显式失败、日志可见——这是刻意行为，不要「修」成静默跳过。
     """
+    _ensure_runtime()
     scanner = _knowledge_review_scanner
     if scanner is None:
         return {"candidates": 0, "flipped": 0}
