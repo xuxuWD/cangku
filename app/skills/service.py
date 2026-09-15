@@ -47,12 +47,15 @@ class SkillService:
         allowed_sources: frozenset[str],
         catalog_tool_keys: frozenset[str],
         audit=None,
+        max_content_bytes: int = 64 * 1024,
     ) -> None:
         self.store = store
         self.validator = validator
         self.allowed_sources = allowed_sources
         self.catalog_tool_keys = catalog_tool_keys
         self.audit = audit
+        # M5 裁决（2026-09-15）：技能包正文体积上限（库内落库，服务端校验；配置注入）。
+        self.max_content_bytes = max_content_bytes
 
     # ------------------------------------------------------------ 技能包
 
@@ -69,11 +72,15 @@ class SkillService:
         source_key: str,
         package_bytes: bytes | None = None,
         content_sha256: str | None = None,
+        content_body: str = "",
     ) -> Skill:
         """申报技能包：来源/字段/工具键校验 → 内容指纹派生 → 登记 → 审计。
 
-        指纹二选一：提供了 `package_bytes` 用其计算；否则用调用方给的 `content_sha256`；
-        两者都缺 → 422（fail-closed，登记必须可溯源）。
+        指纹三选一（M5 裁决：库内落库 content_body）：
+        - 提供了 `content_body` ⇒ 以其 UTF-8 字节计算指纹，且与调用方 `content_sha256`（若给）必须一致；
+        - 否则提供 `package_bytes` ⇒ 用其计算指纹；
+        - 否则用调用方给的 `content_sha256`；
+        三者都缺 → 422（fail-closed，登记必须可溯源）。
         """
         ensure_can_submit(context)
         spec = self.validator.validate_package(
@@ -86,15 +93,24 @@ class SkillService:
             source_key=source_key,
             allowed_sources=self.allowed_sources,
             catalog_tool_keys=self.catalog_tool_keys,
+            content_body=content_body,
+            max_content_bytes=self.max_content_bytes,
         )
-        if package_bytes is not None:
+        # 指纹派生（优先正文文本 → 其次 package_bytes → 其次调用方声明）。
+        if spec.content_body:
+            sha256 = self.validator.compute_sha256_from_text(spec.content_body)
+            if content_sha256 and content_sha256.strip() != sha256:
+                from .models import InvalidSkillPackage
+
+                raise InvalidSkillPackage("content_sha256 与技能包正文指纹不一致")
+        elif package_bytes is not None:
             sha256 = self.validator.compute_sha256(package_bytes)
         elif content_sha256:
             sha256 = content_sha256.strip()
         else:
             from .models import InvalidSkillPackage
 
-            raise InvalidSkillPackage("必须提供 package_bytes 或 content_sha256")
+            raise InvalidSkillPackage("必须提供 content_body / package_bytes / content_sha256 之一")
         skill = Skill(
             tenant_id=context.tenant_id,
             skill_key=spec.skill_key,
@@ -107,6 +123,7 @@ class SkillService:
             source_key=spec.source_key,
             content_sha256=sha256,
             owner_id=context.user_id,
+            content_body=spec.content_body,
         )
         saved = self.store.submit(context, skill=skill, package_sha256=sha256)
         self._record(

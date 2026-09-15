@@ -4,7 +4,7 @@
 > **上位真源**：[`2026-09-12-conversational-agent-platform-design.md`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md) §14.1 P4（`SKILL.md` + 注册表 + MCP 客户端 + 白名单审计 + 沙箱加固）、§2.2（SKILL.md 事实标准 / MCP 不含量）、§15 #3（技能包投毒攻击面）、§6（dsh 用法边界）；[`capability-ownership-map.md`](file:///d:/徐徐AI学习/公司工作台/docs/capability-ownership-map.md) #17（技能层 = A 自研，`SKILL.md` 为开放标准、可遵循不搬实现）；[`moat-boundaries.md`](file:///d:/徐徐AI学习/公司工作台/docs/moat-boundaries.md) §2（M2 沉淀层 = 「越用越强」唯一载体）。
 > **依据**：[`iteration-research-2026-09-15.md`](file:///d:/徐徐AI学习/公司工作台/docs/iteration-research-2026-09-15.md) §4.1（DeerFlow SKILL.md 包格式 / eino 工具白名单两端 / OpenViking 只借模型）、§6.5（知识×工作流闭环）；P3 记忆层已交付（本层消费记忆的「技能引用」能力，非前置依赖）。
 > **日期**：2026-09-15
-> **状态**：**已实现（2026-09-15）**——迁移 030、`app/skills/`（models/validator/store/service）、路由、审计扩 5 动作码、env 模板、api-contract 均已落地；全量回归 **1835 passed / 41 skipped**（新增 17 个技能层用例 + 4 个真库用例）。实现与本期规格口径一致；既有已交付组件未改动（除 `audit/models.py` 扩 5 动作码、`admin-web` 审计标签同步、`settings/env` 加配置外）。
+> **状态**：**已实现（2026-09-15）**——迁移 030/031、`app/skills/`（models/validator/store/service）、路由、审计扩 5 动作码、env 模板、api-contract 均已落地；**M5 裁决已落地（技能包正文库内落库，`031_skills_content` + 体积上限 + 指纹一致性）**；全量回归 **1842 passed / 45 skipped**（新增 20 个技能层用例 + 4 个真库用例含 M5 正文用例）。实现与本期规格口径一致；既有已交付组件未改动（除 `audit/models.py` 扩 5 动作码、`admin-web` 审计标签同步、`settings/env` 加配置外）。
 > **前置**：P3 记忆层已交付（`029` + `app/memory/`，CI 全绿）；P2a 段二（dsh 接入 + 隔离容器 + `ToolSpecCatalog` 闸门）已交付——**本层挂在既有执行闸门之后**，不为技能另建执行通道。
 
 ---
@@ -13,8 +13,8 @@
 
 > **环境**：Docker `pgvector/pgvector:pg16`，端口 55435，容器 `workbench-pg-030`，**跑完即删**（同 023 §16 / 029 §3.5 口径）。
 
-- **从零应用迁移**：30 条（`001` → `030_skills`），含两条新表与 JSONB `allowed_tools` 列。
-- **真库用例 `tests/test_skills_postgres.py`：4 条全绿**：① `workbench_skills` 持久化 + JSONB 读回 + `content_sha256`；② 状态机 submitted→approved→enabled→disabled 真库写回（`reviewed_by` 落库）；③ 同 key 多版本并存 + 只 `enabled` 版本参与 `expanded_tools_for_agent` 交集；④ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
+- **从零应用迁移**：31 条（`001` → `031_skills_content`），含两条新表与 JSONB `allowed_tools` 列 + `content_body` 正文列（M5 裁决，追加迁移）。
+- **真库用例 `tests/test_skills_postgres.py`：4 条全绿**：① `workbench_skills` 持久化 + JSONB 读回 + `content_body` 落库读回一致 + `content_sha256` 由正文派生；② 状态机 submitted→approved→enabled→disabled 真库写回（`reviewed_by` 落库）；③ 同 key 多版本并存 + 只 `enabled` 版本参与 `expanded_tools_for_agent` 交集；④ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
 - **未发现需修复的 PG 缺陷**（吸取 P3 教训：任务 prompt 内置 psycopg 参数顺序纪律 + `RETURNING` 下标对照）。
 - **未验证（如实登记）**：~~CI `postgres` job 在真实 GitHub Actions 跑 `test_skills_postgres.py` 尚未发生~~ ——**已销账（2026-09-15）**：push `168840a` 触发 **run `34951486037`，6/6 job conclusion=success**（后端 pytest+compileall / 三端构建 / 后端真库 5 模块 skipped=0 / 沙箱真容器回归）；技能脚本在隔离容器内的真实执行（沙箱只读挂载 `/mnt/skills/`）属 P2a 段二联动，未在本层跑真容器（仍待验证）。
 
@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS workbench_skill_bindings (
 | M2 | 技能**市场 / 公开源下载** | 不做（来源白名单为部署注入受控 key） |
 | M3 | 技能 ↔ 记忆打通（技能引用入事实类记忆） | 登记为后续 P6 联动点，不本规格实现 |
 | M4 | 技能**灰度 / 回滚**（版本切换自动回滚） | 属 P6（自进化）范围；本层只做「enabled ⇄ disabled」人工回退 |
-| M5 | 技能包**内容托管**（对象存储 vs 库内） | 未定：脚本体积较小时倾向入库（`scripts` 内容列），大文件走对象存储——**实现前裁决** |
+| M5 | 技能包**内容托管**（对象存储 vs 库内） | **已裁决（2026-09-15）：库内落库**——新增迁移 `031_skills_content.sql` 为 `workbench_skills` 加 `content_body` 列（技能包正文，TEXT），服务端校验体积上限（`WORKBENCH_SKILL_CONTENT_MAX_BYTES`，默认 64 KiB）+ 复用 `content_sha256` 指纹验证正文一致；对象存储路径留作后续（大文件技能再评审），本期**不接**对象存储 |
 
 ---
 

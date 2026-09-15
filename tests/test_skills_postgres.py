@@ -74,15 +74,16 @@ def _admin() -> UserContext:
 
 def test_skill_persists_with_jsonb_allowed_tools(service) -> None:
     svc, connection = service
+    body = "# 摘要\n\n步骤一、二、三。"
     skill = svc.submit_skill(
         _alice(), skill_key="summarize", version="1.0.0", name="摘要",
         description="生成结构化摘要", license="Apache-2.0",
         allowed_tools=["fs.read", "fs.stat"], source_key="first-party",
-        content_sha256=SHA256_OK,
+        content_body=body,
     )
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT status, allowed_tools, content_sha256 FROM workbench_skills "
+            "SELECT status, allowed_tools, content_sha256, content_body FROM workbench_skills "
             "WHERE tenant_id = %s AND skill_key = %s AND version = %s",
             (TENANT, skill.skill_key, skill.version),
         )
@@ -90,7 +91,9 @@ def test_skill_persists_with_jsonb_allowed_tools(service) -> None:
     assert row is not None
     assert row[0] == "submitted"
     assert set(row[1]) == {"fs.read", "fs.stat"}  # JSONB 读回
-    assert row[2] == SHA256_OK
+    # M5（031 迁移）：content_body 落库读回一致；指纹由正文派生（一致性）。
+    assert row[3] == body
+    assert row[2] == svc.validator.compute_sha256_from_text(body)
 
 
 def test_state_machine_persists_in_postgres(service) -> None:
@@ -99,7 +102,8 @@ def test_state_machine_persists_in_postgres(service) -> None:
     svc.submit_skill(
         _alice(), skill_key="flow", version="1.0.0", name="流转",
         description="状态机验证", license="MIT",
-        allowed_tools=["fs.list"], source_key="first-party", content_sha256=SHA256_OK,
+        allowed_tools=["fs.list"], source_key="first-party",
+        content_body="# 流转正文",
     )
     svc.review_skill(_admin(), "flow", "1.0.0", approved=True)
     svc.enable_skill(_admin(), "flow", "1.0.0")
@@ -121,12 +125,14 @@ def test_multi_version_coexists_and_enabled_only_expands(service) -> None:
     svc.submit_skill(
         _alice(), skill_key="v", version="1.0.0", name="v1",
         description="版本一", license="BSD-3",
-        allowed_tools=["fs.list"], source_key="first-party", content_sha256=SHA256_OK,
+        allowed_tools=["fs.list"], source_key="first-party",
+        content_body="# 版本一正文",
     )
     svc.submit_skill(
         _alice(), skill_key="v", version="2.0.0", name="v2",
         description="版本二", license="BSD-3",
-        allowed_tools=["fs.read"], source_key="first-party", content_sha256=SHA256_OK,
+        allowed_tools=["fs.read"], source_key="first-party",
+        content_body="# 版本二正文",
     )
     svc.review_skill(_admin(), "v", "2.0.0", approved=True)
     svc.enable_skill(_admin(), "v", "2.0.0")
@@ -151,7 +157,8 @@ def test_lifecycle_list_and_delete_for_tenant(service) -> None:
     svc.submit_skill(
         _alice(), skill_key="lc-1", version="1.0.0", name="生命周期一",
         description="生命周期验证", license="Apache-2.0",
-        allowed_tools=["fs.list"], source_key="first-party", content_sha256=SHA256_OK,
+        allowed_tools=["fs.list"], source_key="first-party",
+        content_body="# 生命周期正文",
     )
     listed = svc.store.list_all_for_tenant(TENANT)
     assert len(listed) >= 1

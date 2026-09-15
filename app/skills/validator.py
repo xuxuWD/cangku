@@ -21,6 +21,7 @@ from .models import (
     MAX_DESCRIPTION_LENGTH,
     InvalidSkillPackage,
     SkillSourceDenied,
+    normalize_content_body,
     normalize_license,
     normalize_skill_key,
     normalize_version,
@@ -64,6 +65,7 @@ class SkillPackageSpec:
     license: str
     allowed_tools: tuple[str, ...]
     source_key: str
+    content_body: str = ""
 
 
 def _normalize_scan_target(text: str) -> str:
@@ -87,14 +89,17 @@ class SkillPackageValidator:
         source_key: str,
         allowed_sources: frozenset[str],
         catalog_tool_keys: frozenset[str],
+        content_body: str = "",
+        max_content_bytes: int = 64 * 1024,
     ) -> SkillPackageSpec:
         """全校验后返回不可变 spec；任一不通过抛 422 / 403，不登记。
 
-        步骤（§2.1 / §2.3）：
+        步骤（§2.1 / §2.3 / M5 裁决）：
         1. 来源 ∈ 部署注入白名单（否则 403，fail-closed）；
         2. 逐字段归一（skill_key / version / license / description 长度）；
         3. `allowed_tools` 每个键 ∈ 既有目录键集（逐键校验，未知键即 422）；
-        4. D11 类描述灌注扫描（命中即 422）。
+        4. D11 类描述灌注扫描（命中即 422）；
+        5. `content_body` 体积上限（M5：库内落库；UTF-8 字节 ≤ max，默认 64 KiB）+ D11 扫描。
         """
         # 1. 来源白名单。
         if source_key not in allowed_sources:
@@ -135,6 +140,11 @@ class SkillPackageValidator:
         if self._scan_d11(clean_description):
             raise InvalidSkillPackage("description 包含自授权 / 绕过权限类指令，拒绝登记")
 
+        # 5. 正文（M5 裁决：库内落库，体积上限 + D11 扫描）。
+        clean_body = normalize_content_body(content_body, max_bytes=max_content_bytes) if content_body else ""
+        if clean_body and self._scan_d11(clean_body):
+            raise InvalidSkillPackage("content_body 包含自授权 / 绕过权限类指令，拒绝登记")
+
         return SkillPackageSpec(
             skill_key=clean_key,
             version=clean_version,
@@ -143,6 +153,7 @@ class SkillPackageValidator:
             license=clean_license,
             allowed_tools=tuple(tools),
             source_key=source_key,
+            content_body=clean_body,
         )
 
     def _scan_d11(self, description: str) -> bool:
@@ -162,3 +173,8 @@ class SkillPackageValidator:
     def compute_sha256(content_bytes: bytes) -> str:
         """`content_sha256`：包内容指纹（登记时计算，沙箱挂载前复核防篡改，§2.6）。"""
         return hashlib.sha256(content_bytes).hexdigest()
+
+    @staticmethod
+    def compute_sha256_from_text(text: str) -> str:
+        """由技能包正文文本计算指纹（M5：content_body 的 UTF-8 字节指纹，须与 content_sha256 一致）。"""
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()

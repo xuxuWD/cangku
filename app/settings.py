@@ -443,6 +443,11 @@ class Settings(BaseSettings):
     skill_source_allowlist: str = Field(
         default="", validation_alias=AliasChoices("SKILL_SOURCE_ALLOWLIST", "WORKBENCH_SKILL_SOURCE_ALLOWLIST"),
     )
+    # 技能包正文体积上限（字节；M5 裁决 2026-09-15 库内落库，服务端校验）。默认 64 KiB。
+    skill_content_max_bytes: int = Field(
+        default=64 * 1024, ge=256, le=1024 * 1024,
+        validation_alias=AliasChoices("SKILL_CONTENT_MAX_BYTES", "WORKBENCH_SKILL_CONTENT_MAX_BYTES"),
+    )
     # 跨源部署（桌面端远程模式 / PWA 伴侣端）：非 development 环境只在显式配置来源后
     # 才注册 CORS；留空即视为「不允许任何跨源」（fail-closed）。
     cors_allowed_origins: str = Field(

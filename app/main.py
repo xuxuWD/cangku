@@ -1785,6 +1785,17 @@ class SkillSubmitRequest(BaseModel):
     allowed_tools: list[str]
     source_key: str = Field(min_length=1, max_length=64)
     content_sha256: str = Field(min_length=64, max_length=64)
+    # M5 裁决（2026-09-15）：技能包正文（库内落库，体积上限服务端校验，字段内部分校验见服务层）。
+    content_body: str = Field(default="")
+
+
+class SkillContentResponse(BaseModel):
+    """技能包正文视图（详情接口专用，避免列表响应拖大）。"""
+
+    skill_key: str
+    version: str
+    content_body: str
+    content_sha256: str
 
 
 class SkillListResponse(BaseModel):
@@ -1854,6 +1865,7 @@ def submit_skill(payload: SkillSubmitRequest, context: UserContext = Depends(cur
             allowed_tools=list(payload.allowed_tools),
             source_key=payload.source_key,
             content_sha256=payload.content_sha256,
+            content_body=payload.content_body,
         )
     except (
         InvalidSkillPackage,
@@ -1950,6 +1962,23 @@ def agent_skill_tools(agent_key: str, context: UserContext = Depends(current_use
     except (SkillNotFound, PolicyError) as exc:
         _raise_skill_http(exc)
     return SkillExpandResponse(agent_key=agent_key, tools=list(tools))
+
+
+@app.get("/api/v1/skills/{skill_key}/versions/{version}/content", response_model=SkillContentResponse)
+def get_skill_content(
+    skill_key: str, version: str, context: UserContext = Depends(current_user)
+) -> SkillContentResponse:
+    """返回技能包正文（M5 库内落库后的读取面；仅本人/管理员可见，他人未审包按 404）。"""
+    try:
+        skill = skills_service.get_skill(context, skill_key, version)
+    except (SkillNotFound, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return SkillContentResponse(
+        skill_key=skill.skill_key,
+        version=skill.version,
+        content_body=skill.content_body,
+        content_sha256=skill.content_sha256,
+    )
 
 
 @app.get("/api/v1/workforce/agents/{agent_key}/config", response_model=AgentConfigView)

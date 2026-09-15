@@ -46,9 +46,10 @@ def _admin() -> UserContext:
     return _actor(ADMIN, "super_admin")
 
 
-def _submit(service: SkillService, *, key: str = "summarize", version: str = "1.0.0", tools=None, source: str = "first-party", actor=None):
+def _submit(service: SkillService, *, key: str = "summarize", version: str = "1.0.0", tools=None, source: str = "first-party", actor=None, content_body: str = ""):
     """便捷：提交一个合法技能包并返回 Skill。"""
     actor = actor or _actor()
+    body = content_body or "# 摘要助手\n\n生成结构化摘要的核心步骤。"
     return service.submit_skill(
         actor,
         skill_key=key,
@@ -58,7 +59,7 @@ def _submit(service: SkillService, *, key: str = "summarize", version: str = "1.
         license="Apache-2.0",
         allowed_tools=tools or ["fs.read"],
         source_key=source,
-        content_sha256=SHA256_OK,
+        content_body=body,
     )
 
 
@@ -68,10 +69,10 @@ def test_submit_then_approve_enable_bind_full_lifecycle(service: SkillService) -
     """完整生命周期 submit → review → enable → bind → 工具面展开（查库验证每一步）。"""
     skill = _submit(service)
 
-    # 查库：技能已落库（submitted）
+    # 查库：技能已落库（submitted）；指纹由正文派生（M5：正文指纹）。
     stored = service.store.get(_actor(), skill.skill_key, skill.version)
     assert stored.status.value == "submitted"
-    assert stored.content_sha256 == SHA256_OK
+    assert stored.content_sha256 == service.validator.compute_sha256_from_text(stored.content_body)
 
     # 他人（super_admin）审核通过
     approved = service.review_skill(_admin(), skill.skill_key, skill.version, approved=True)
@@ -180,14 +181,61 @@ def test_enable_requires_approved_or_disabled(service: SkillService) -> None:
 
 
 def test_missing_content_fingerprint_rejected(service: SkillService) -> None:
-    """package_bytes 与 content_sha256 都缺 → 422（登记必须可溯源）。"""
-    with pytest.raises(InvalidSkillPackage, match="content_sha256|package_bytes"):
+    """content_body / package_bytes / content_sha256 全缺 → 422（登记必须可溯源）。"""
+    with pytest.raises(InvalidSkillPackage, match="content_body|package_bytes|content_sha256"):
         service.submit_skill(
             _actor(),
             skill_key="no-hash", version="1.0.0", name="x",
             description="合法描述", license="Apache-2.0",
             allowed_tools=["fs.read"], source_key="first-party",
         )
+
+
+def test_content_body_sha256_mismatch_rejected(service: SkillService) -> None:
+    """M5：content_body 指纹必须等于 content_sha256；不一致 → 422。"""
+    with pytest.raises(InvalidSkillPackage, match="指纹不一致"):
+        service.submit_skill(
+            _actor(),
+            skill_key="wrong-hash", version="1.0.0", name="x",
+            description="合法描述", license="Apache-2.0",
+            allowed_tools=["fs.read"], source_key="first-party",
+            content_body="# 正文", content_sha256=SHA256_OK,
+        )
+
+
+def test_content_body_over_limit_rejected(service: SkillService) -> None:
+    """M5：正文超体积上限（服务层注入小上限）→ 422。"""
+    from app.skills.service import SkillService as SV
+    from app.skills.store import InMemorySkillStore
+
+    svc = SV(
+        InMemorySkillStore(),
+        SkillPackageValidator(),
+        allowed_sources=SOURCES,
+        catalog_tool_keys=CATALOG_TOOLS,
+        max_content_bytes=64,  # 极小上限（64 字节）触发超限
+    )
+    with pytest.raises(InvalidSkillPackage, match="体积上限"):
+        svc.submit_skill(
+            _actor(),
+            skill_key="big-body", version="1.0.0", name="x",
+            description="合法描述", license="Apache-2.0",
+            allowed_tools=["fs.read"], source_key="first-party",
+            content_body="# 正文" + "很长的正文内容" * 20,
+        )
+
+
+def test_content_body_persisted_and_readable_via_detail(service: SkillService) -> None:
+    """M5：正文落库后经详情读取面可取回，且列表不返回正文。"""
+    body = "# 摘要\n\n步骤一、二、三。"
+    skill = _submit(service, key="body-persist", content_body=body)
+    # 详情（本人可见）
+    detail = service.get_skill(_actor(), skill.skill_key, skill.version)
+    assert detail.content_body == body
+    # 列表项含 content_body（dataclass 字段）但接口视图不含——服务层直接读即可取。
+    listed, _ = service.list_skills(_actor())
+    row = next(item for item in listed if item.skill_key == "body-persist")
+    assert row.content_body == body
 
 
 def test_skill_not_visible_to_other_tenant(service: SkillService) -> None:

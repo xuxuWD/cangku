@@ -254,7 +254,8 @@ class PostgresSkillStore:
 
     _SKILL_COLUMNS = (
         "tenant_id, skill_key, version, name, description, license, allowed_tools, "
-        "status, source_key, content_sha256, owner_id, reviewed_by, created_at, updated_at"
+        "status, source_key, content_sha256, owner_id, reviewed_by, created_at, updated_at, "
+        "content_body"
     )
     _BINDING_COLUMNS = "tenant_id, agent_key, skill_key, status, created_by, created_at"
 
@@ -274,7 +275,7 @@ class PostgresSkillStore:
     def _hydrate_skill(cls, row: tuple) -> Skill:
         # `_SKILL_COLUMNS`：0 tenant_id,1 skill_key,2 version,3 name,4 description,5 license,
         # 6 allowed_tools,7 status,8 source_key,9 content_sha256,10 owner_id,11 reviewed_by,
-        # 12 created_at,13 updated_at。
+        # 12 created_at,13 updated_at,14 content_body（M5，031 迁移）。
         return Skill(
             tenant_id=str(row[0]),
             skill_key=str(row[1]),
@@ -290,6 +291,7 @@ class PostgresSkillStore:
             reviewed_by=None if row[11] is None else str(row[11]),
             created_at=row[12],
             updated_at=row[13],
+            content_body="" if row[14] is None else str(row[14]),
         )
 
     @classmethod
@@ -339,8 +341,8 @@ class PostgresSkillStore:
                         f"""
                         INSERT INTO workbench_skills
                             (tenant_id, skill_key, version, name, description, license,
-                             allowed_tools, status, source_key, content_sha256, owner_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                             allowed_tools, status, source_key, content_sha256, owner_id, content_body)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
                         RETURNING {self._SKILL_COLUMNS}
                         """,
                         (
@@ -355,6 +357,7 @@ class PostgresSkillStore:
                             skill.source_key,
                             package_sha256,
                             skill.owner_id,
+                            skill.content_body,
                         ),
                     )
                     row = cursor.fetchone()

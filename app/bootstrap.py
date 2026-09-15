@@ -1158,4 +1158,6 @@ def build_skills_service(settings: Settings, *, store=None, audit=None):
         allowed_sources=allowed_sources,
         catalog_tool_keys=catalog_tool_keys,
         audit=audit,
+        # M5 裁决（2026-09-15）：技能包正文体积上限（库内落库，服务端校验）。
+        max_content_bytes=settings.skill_content_max_bytes,
     )

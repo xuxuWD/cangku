@@ -25,6 +25,8 @@ from ..domain import PolicyError, UserContext
 MAX_DESCRIPTION_LENGTH = 800
 MAX_SKILL_KEY_LENGTH = 64
 MAX_VERSION_LENGTH = 32
+# 技能包正文体积上限（M5 裁决 2026-09-15：库内落库；默认 64 KiB，服务端校验）。
+DEFAULT_CONTENT_MAX_BYTES = 64 * 1024
 # 许可白名单（fail-closed，§2.1）：除此之外一律拒。
 LICENSE_ALLOWLIST = ("Apache-2.0", "MIT", "BSD-3")
 # 语义版本 major.minor.patch（§2.1：正则 + 递增校验）。
@@ -104,6 +106,8 @@ class Skill:
     reviewed_by: str | None = None
     created_at: datetime | None = field(default_factory=now)
     updated_at: datetime | None = field(default_factory=now)
+    # M5 裁决（2026-09-15）：技能包正文（库内落库，031 迁移 content_body 列）。
+    content_body: str = ""
 
 
 @dataclass(frozen=True)
@@ -206,3 +210,18 @@ def normalize_status(value: str | SkillStatus) -> SkillStatus:
         return SkillStatus(value)
     except ValueError as exc:
         raise InvalidSkillPackage(f"status 只能是 {' / '.join(s.value for s in SkillStatus)}") from exc
+
+
+def normalize_content_body(value: str, *, max_bytes: int = DEFAULT_CONTENT_MAX_BYTES) -> str:
+    """归一技能包正文（M5 裁决：库内落库，体积上限服务端校验）。
+
+    - 必须是非空字符串（技能包正文不得为空）；
+    - UTF-8 字节数 ≤ `max_bytes`（默认 64 KiB），超限抛 422。
+    """
+    if not isinstance(value, str):
+        raise InvalidSkillPackage("content_body 必须是字符串")
+    if not value.strip():
+        raise InvalidSkillPackage("content_body 不能为空")
+    if len(value.encode("utf-8")) > max_bytes:
+        raise InvalidSkillPackage(f"技能包正文超过体积上限（{max_bytes} 字节）")
+    return value
