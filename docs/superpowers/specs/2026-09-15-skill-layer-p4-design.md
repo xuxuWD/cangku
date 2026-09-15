@@ -16,7 +16,7 @@
 - **从零应用迁移**：31 条（`001` → `031_skills_content`），含两条新表与 JSONB `allowed_tools` 列 + `content_body` 正文列（M5 裁决，追加迁移）。
 - **真库用例 `tests/test_skills_postgres.py`：4 条全绿**：① `workbench_skills` 持久化 + JSONB 读回 + `content_body` 落库读回一致 + `content_sha256` 由正文派生；② 状态机 submitted→approved→enabled→disabled 真库写回（`reviewed_by` 落库）；③ 同 key 多版本并存 + 只 `enabled` 版本参与 `expanded_tools_for_agent` 交集；④ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
 - **未发现需修复的 PG 缺陷**（吸取 P3 教训：任务 prompt 内置 psycopg 参数顺序纪律 + `RETURNING` 下标对照）。
-- **未验证（如实登记）**：~~CI `postgres` job 在真实 GitHub Actions 跑 `test_skills_postgres.py` 尚未发生~~ ——**已销账（2026-09-15）**：push `168840a`（P4 初交付）触发 run `34951486037`、push `88ffd44`（M5 落库）触发 run `34952989393`，**两轮均 6/6 job conclusion=success**（后端 pytest+compileall / 三端构建 / 后端真库 5 模块 skipped=0 / 沙箱真容器回归，含 M5 后的 content_body 用例）；技能脚本在隔离容器内的真实执行（沙箱只读挂载 `/mnt/skills/`）属 P2a 段二联动，未在本层跑真容器（仍待验证）。
+- **未验证（如实登记）**：~~CI `postgres` job 在真实 GitHub Actions 跑 `test_skills_postgres.py` 尚未发生~~ ——**已销账（2026-09-15）**：push `168840a`（P4 初交付）触发 run `34951486037`、push `88ffd44`（M5 落库）触发 run `34952989393`、push `0071cb7`（M3 打通）触发 run `34953960268`，**三轮均 6/6 job conclusion=success**（后端 pytest+compileall / 三端构建 / 后端真库 5 模块 skipped=0 / 沙箱真容器回归，含 M5 content_body 与 M3 经验沉淀链路用例）；技能脚本在隔离容器内的真实执行（沙箱只读挂载 `/mnt/skills/`）属 P2a 段二联动，未在本层跑真容器（仍待验证）。
 
 ---
 
