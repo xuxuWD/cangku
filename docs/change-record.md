@@ -8,6 +8,19 @@
 
 ## 记录
 
+### 2026-09-15 · D1 知识归口裁决：WeKnora 唯一主源（RAGFlow 降为对照/实验）—— 文档落定可回退
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-15 |
+| **变更** | **裁决 D1**（原 `capability-ownership-map.md` §4 待裁决项）：**企业知识检索唯一主源 = WeKnora**；RAGFlow 降为对照/实验（默认关闭，不参与生产工具面）。**本期仅文档落定+登记**（不改代码：当前生产未接真实知识服务，`WeKnoraKnowledgeAdapter` / `RAGFlowAdapter` 只经适配器边界注册、不参与默认工具面，实现无需变更）。同步五处真源：`capability-ownership-map.md`（§2 #12 行从「待裁决」→「已裁决」；§4 D1 行从「建议」→「已裁决」）、`multi-adapter-coexistence-spec.md`（§4 归口表「企业知识检索」行、§5 资源重叠落点、§7 #6、§8 D1 行全部落定）、`architecture.md`（企业知识服务段补归口注记、RAGFlow 段标注对照/实验）。 |
+| **原因** | D1 系 `capability-ownership-map.md` §4 与 `multi-adapter-coexistence-spec.md` §5 双登记待裁决项，且 `architecture.md` 早已把「企业知识服务」定义为 WeKnora。用户 2026-09-15 拍板采纳建议（选项「WeKnora 唯一主源」+「文档落定+登记」）。理由：WeKnora 已被架构定义为企业知识服务，RAGFlow 定位「租户内只读检索」，两者并存会产生两个答案。 |
+| **影响面** | 改 `capability-ownership-map.md`、`multi-adapter-coexistence-spec.md`、`architecture.md`、`change-record.md`（本条）。**未改**任何代码 / `migrations/*` / 配置。 |
+| **验证（已做）** | 五处真源逐项核对一致，无互相矛盾口径残留；D1 状态在 capability-map §4、coexistence §8 均标注「已裁决（2026-09-15，用户拍板）」。 |
+| **未验证（不得读成已验）** | ① 真实 WeKnora staging 联调未做（适配器边界可测、真实服务未接）；② RAGFlow 对照/实验用途的落地运行未做（默认关闭态，无真实调用）。 |
+| **回退方式** | 把五处真源的 D1 行改回「待裁决」并删本条记录。**未经确认不得执行回滚。** |
+| **依据** | 用户 2026-09-15 裁决（选项确认）；`capability-ownership-map.md` §4 D1 原建议；`multi-adapter-coexistence-spec.md` §5/§8；`architecture.md` 企业知识服务段 |
+
 ### 2026-09-15 · 沙箱裁决残留三项收口（G2 env 白名单 / G8 `noexec` 作用边界 / G5 逃逸回归 13 条 + CI job）—— 可回退
 
 | 项 | 内容 |

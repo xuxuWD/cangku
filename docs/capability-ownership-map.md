@@ -37,7 +37,7 @@
 | 9 | 对话层 / 消息模型 | **A** | `app/conversation/`、`migrations/023` | ✅ 已交付 | |
 | 10 | 模型网关（薄层：路由 / 超时 / 降级 / 计量） | **A**（薄层）+ **B**（SDK） | `app/planner/gateway.py` 等；SDK 用轮子 | 🟡 部分 | §8 U7（重试上限与单次降级）**未定** |
 | 11 | **Agent 主循环 / 工具执行引擎** | **C** | 主：`dsh`（未接入）；备：`hermes` / `codex_worker` / `deerflow` | 🟡 POC 适配器已注册；**staging 未验收** | **绝不搬代码**（三种许可里两种不允许，一种是 Rust 内核） |
-| 12 | 企业知识检索 | **C** | 主：WeKnora；RAGFlow 待裁决 | 🟡 适配器边界可测；真实联调未做 | ⚠️ **归口待裁决 D1**（见 §4） |
+| 12 | 企业知识检索 | **C** | 主：**WeKnora（唯一主源，D1 已裁决）**；RAGFlow 降为对照/实验（默认关闭） | 🟡 适配器边界可测；真实联调未做 | **D1 已裁决（2026-09-15）：WeKnora 唯一主源**；RAGFlow 不参与生产工具面 |
 | 13 | 受控执行（外部） | **C** | AgentScope | 🟡 POC 登记 | ⚠️ **归口待裁决 D2**（与 dsh 重叠） |
 | 14 | 成长 / 记忆 / 技能**提案** | **C** | `hermes`（`NousResearch/hermes-agent`，MIT） | 🟡 适配器已注册 | 只出**待审提案**，不得写生产配置 |
 | 15 | **三端前端界面（管理台 / PWA / 桌面壳）** | **A** | `admin-web/`、`companion-pwa/`、`desktop/`；Electron/Tauri/React 为轮子 | 🟡 已交付基础版；**P2c 待做** | 借信息架构，**不抄视觉** |
@@ -69,9 +69,9 @@
 
 ## 4. 待裁决项（本表不擅自决定）
 
-| # | 待裁决 | 建议 |
+| # | 待裁决 | 状态 |
 | --- | --- | --- |
-| **D1** | 企业知识检索归口：WeKnora vs RAGFlow（第 12 行） | **WeKnora 为唯一主源**，RAGFlow 降为对照/实验（默认关闭） |
+| **D1** | 企业知识检索归口：WeKnora vs RAGFlow（第 12 行） | ✅ **已裁决（2026-09-15，用户拍板）：WeKnora 为唯一主源**；RAGFlow 降为对照/实验（默认关闭，不参与生产工具面）。依据：`architecture.md` 已把企业知识服务定义为 WeKnora；`multi-adapter-coexistence-spec.md` §5 同建议（两者并存会产生两个答案）；capability-map 原建议。本期**文档落定+登记**（当前生产未接真实知识服务，适配器边界只注册不参与默认面，代码无需改）。登记见 `docs/change-record.md` |
 | **D2** | 受控执行归口：AgentScope vs Codex Worker vs dsh（第 11/13 行） | **dsh 为唯一真实工具执行路径**；Codex Worker 仅承接 FDE 交付；AgentScope 降为实验 |
 | **D3** | C1/C2（电脑控制 / 浏览器操作）是否立项 | 若要上，**只能用 A（自研窄工具 + 挂我们的闸门）**，且需先过**出网与凭据边界**评审 |
 | **D4** | `WORKBENCH_EXEC_TIMEOUT_SECONDS` 默认值 | 建议段二-1 容器实测后再定值 |
