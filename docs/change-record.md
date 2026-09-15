@@ -21,6 +21,19 @@
 | **回退方式** | 把五处真源的 D1 行改回「待裁决」并删本条记录。**未经确认不得执行回滚。** |
 | **依据** | 用户 2026-09-15 裁决（选项确认）；`capability-ownership-map.md` §4 D1 原建议；`multi-adapter-coexistence-spec.md` §5/§8；`architecture.md` 企业知识服务段 |
 
+### 2026-09-15 · D2 执行归口裁决：dsh 唯一真实执行路径（Codex Worker 限 FDE、AgentScope 降为实验）—— 文档落定可回退
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-15 |
+| **变更** | **裁决 D2**（原 `capability-ownership-map.md` §4 待裁决项）：**真实工具/命令执行唯一路径 = dsh**（挂九步闸门 + 隔离容器 + 授权位 027）；Codex Worker 仅承接 FDE 交付（受限文件范围，非升权执行）；AgentScope 降为实验（不入生产工具面）。**本期仅文档落定+登记**（`WORKBENCH_AGENT_RUNTIME_BACKEND=mock` 默认，无真实执行启用，代码无需改）。同步四处真源：`capability-ownership-map.md`（§2 #13 行从「待裁决」→「已裁决」，#11 行主源标注 dsh；§4 D2 行从「建议」→「已裁决」）、`multi-adapter-coexistence-spec.md`（§4 归口表「受控执行」行、§5 资源重叠落点、§7 #6、§8 D2 行）、`architecture.md`（AgentScope 段补执行归口注记）、`change-record.md`（本条）。 |
+| **原因** | D2 系 `capability-ownership-map.md` §4 与 `multi-adapter-coexistence-spec.md` §4 双登记待裁决项；段二规格已为 dsh 建成「九步闸门 + 隔离容器 + 授权位 027」执行路径（D8 路线 A「文件与命令由我们自己实现成受控工具」）。用户 2026-09-15 拍板采纳建议。理由：段二已建立九步闸门 + 容器隔离，多一条执行路径就多一套绕过风险。 |
+| **影响面** | 改 `capability-ownership-map.md`、`multi-adapter-coexistence-spec.md`、`architecture.md`、`change-record.md`（本条）。**未改**任何代码 / `migrations/*` / 配置。 |
+| **验证（已做）** | 四处真源逐项核对一致，无互相矛盾口径残留；D2 状态在 capability-map §4、coexistence §8 均标注「已裁决（2026-09-15，用户拍板）」。 |
+| **未验证（不得读成已验）** | ① 真实 dsh 执行联调未做（backend=mock 默认，段二真实执行未启用）；② AgentScope 实验用途的落地运行未做（POC 登记态）。 |
+| **回退方式** | 把四处真源的 D2 行改回「待裁决」并删本条记录。**未经确认不得执行回滚。** |
+| **依据** | 用户 2026-09-15 裁决（选项确认）；`capability-ownership-map.md` §4 D2 原建议；`multi-adapter-coexistence-spec.md` §4/§8；段二规格（九步闸门 / D8 路线 A）；`architecture.md` 受控执行段 |
+
 ### 2026-09-15 · 沙箱裁决残留三项收口（G2 env 白名单 / G8 `noexec` 作用边界 / G5 逃逸回归 13 条 + CI job）—— 可回退
 
 | 项 | 内容 |
