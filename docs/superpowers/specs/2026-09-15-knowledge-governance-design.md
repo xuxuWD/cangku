@@ -20,6 +20,7 @@
 - **CI 侧（2026-09-15）**：run `34960179880`（知识治理层初交付 push）与 run `34960954584`（口径裁定 push）**6/6 job 全绿**（含 backend 全量 pytest 在本仓库 Linux 环境通过）。⚠️ 上述两轮的 **postgres job 清单尚未包含本模块**（`ci.yml` 当时硬编码五个模块）⇒ 那时**不得读成「真库回归已被 CI 守护」**；本轮已补齐（`ci.yml` 加入 `test_knowledge_governance_postgres.py`，并在 `tests/test_ci_assets.py` 把 job 清单六条逐字钉死）。
 - ✅ **CI 销账（2026-09-15）**：run **`34974145326`**（CI 纳入补齐 push）**6/6 job conclusion=success**；postgres job 原始日志取证：`newly applied` 列表含 **`032_knowledge_governance`**、`tests/test_knowledge_governance_postgres.py ...... [100%]`、**`真库用例：tests=51 skipped=0 failed=0`** ⇒ 知识治理真库回归**已由 CI 真实守护**（不再是 DSN 门控下的 skip）。
 - ✅ **CI 销账（N3，2026-09-15）**：run **`34975994837`**（N3 落地 push）**6/6 job conclusion=success**；postgres job 原始日志：`tests/test_knowledge_governance_postgres.py ....... [100%]`（**7 条**，含 N3 跨租户扫描用例）、**`真库用例：tests=52 skipped=0 failed=0`**。⚠️ **CI 不覆盖 Celery beat 进程本身**（排程键与任务函数由单测断言，接线后真跑用内存仓储验证）；**真实 beat 周期触发在 staging 仍未联调**（见 §4 N3 未验证项）。
+- ✅ **CI 销账（N6，2026-09-15）**：run **`34976875982`**（N6 裁决落地 push）**6/6 job conclusion=success**；postgres job 原始日志 **`真库用例：tests=52 skipped=0 failed=0`**（含「发布即置 `review_due_at`」的真库读回断言）。仍不覆盖 Celery beat 进程（同 N3 未验证项）。
 
 ---
 
