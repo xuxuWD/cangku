@@ -20,6 +20,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.audit.service import AuditService
+from app.audit.store import InMemoryAuditStore
 from app.domain import UserContext
 from app.knowledge_governance.models import KnowledgeDocStatus
 from app.knowledge_governance.service import KnowledgeGovernanceService
@@ -42,7 +44,10 @@ def service():
     connection = psycopg.connect(DSN, autocommit=True)
     _purge(connection)
     store = PostgresKnowledgeGovStore(connection)
-    svc = KnowledgeGovernanceService(store, review_grace_days=30)
+    # N7 裁决 B：系统扫描在未注入 audit 时 fail-closed ⇒ 真库 fixture 注入内存审计（审计落库由其它用例覆盖）。
+    svc = KnowledgeGovernanceService(
+        store, audit=AuditService(InMemoryAuditStore()), review_grace_days=30
+    )
     yield svc, connection
     _purge(connection)
     connection.close()

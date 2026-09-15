@@ -154,6 +154,8 @@ def scan_knowledge_review_due() -> dict[str, int]:
     """知识治理到期扫描（§4 N3）：跨租户把 published 且过 `review_due_at` 的文档置 needs_review。
 
     与 `publish_outbox` / `run_lifecycle_jobs` 同口径：**未接线即返回零值**，绝不伪造扫描结果。
+    ⚠️ **已接线但未注入 audit** 时**不返回零值**：服务层按 N7 裁决 B（2026-09-15）fail-closed 抛错
+    （无人值守路径不得静默不留痕）⇒ 任务显式失败、日志可见——这是刻意行为，不要「修」成静默跳过。
     """
     scanner = _knowledge_review_scanner
     if scanner is None:

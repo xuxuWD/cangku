@@ -455,6 +455,22 @@ def test_worker_scan_respects_limit(service: KnowledgeGovernanceService) -> None
     assert service.store.get_document(_tenant_ctx("t-a"), "doc-new").status is KnowledgeDocStatus.PUBLISHED
 
 
+def test_worker_scan_fails_closed_without_audit() -> None:
+    """N7 裁决 B（2026-09-15）：未配置审计通道 ⇒ 系统扫描**抛错且不写库**（无人值守路径不得静默不留痕）。
+
+    反假锚点：删掉 `scan_review_due_across_tenants` 开头的 audit 检查，本用例必须变红。
+    """
+    no_audit = KnowledgeGovernanceService(InMemoryKnowledgeGovStore(), review_grace_days=30)
+    now = datetime.now(UTC)
+    _seed_due(no_audit, "t-a", "doc-n7", due=now - timedelta(days=1))
+
+    with pytest.raises(PolicyError):
+        no_audit.scan_review_due_across_tenants(now=now)
+
+    # **未写库**：检查在扫描之前 ⇒ 文档仍是 published（不存在「先置位再抛错」的半成品）
+    assert no_audit.store.get_document(_tenant_ctx("t-a"), "doc-n7").status is KnowledgeDocStatus.PUBLISHED
+
+
 def test_worker_beat_registers_and_runs_the_scan_task(monkeypatch) -> None:
     """接线：beat 排程存在且间隔取配置；未接线返回零值（不伪造）；接线后真跑服务。"""
     from app import worker

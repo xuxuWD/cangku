@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from ..audit.models import AuditAction
-from ..domain import UserContext
+from ..domain import PolicyError, UserContext
 from .models import (
     InvalidKnowledgeDoc,
     KnowledgeDoc,
@@ -273,9 +273,16 @@ class KnowledgeGovernanceService:
         3. **审计 actor 固定** `system:worker`，**按租户逐条**写 `knowledge.doc.review_due`
            （不合并、不跨租户串写；每个租户各得一条自己的审计）。
 
+        **审计缺失即拒绝（N7 裁决 B，2026-09-15）**：周期任务是**无人值守**路径，静默不落痕等于
+        「治理动作不可追溯」（§2.7）⇒ 未配置审计通道时**直接抛错、且不做任何写库**
+        （与 `commercial.set_retention`「没有审计通道就拒绝变更」同口径）；worker 任务会因此显式
+        失败（日志可见），而不是安静地把文档置位却没留痕。
+
         幂等：候选只含 published 且已到期；已置 needs_review 的不再进候选，重复执行不重复计数。
         返回 `{"candidates": n, "flipped": n}`（供 beat 观测；`flipped` 是实际置位数）。
         """
+        if self.audit is None:
+            raise PolicyError("到期扫描必须写入审计（未配置审计通道）——请为 worker 装配注入 audit")
         ts = now or _utcnow()
         candidates = self.store.list_due_across_tenants(now=ts, limit=limit)
         flipped = 0

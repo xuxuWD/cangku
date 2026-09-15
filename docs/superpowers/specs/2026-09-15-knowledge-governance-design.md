@@ -20,7 +20,7 @@
 - **本机联调（2026-09-15，非 staging、非 CI）**：以「本机 Redis（隔离 db）+ 测试库 + 真 Celery 进程 + 假 WeKnora」搭最小拓扑，实证两项此前未验的链路（**脚手架放系统临时目录，跑完已删；未进仓库**）：
   - **N3 beat 周期触发闭环**：独立 `celery beat`（间隔配 30s）+ 独立 `celery worker`（Windows 必须 solo 池；`-B` 内嵌 beat 在 Windows 不可用，Celery 明确报错）⇒ beat 日志 `Sending due task knowledge-review-scan` → worker 端 `succeeded ... {'candidates': 1, 'flipped': 1}` → 查库 `status: published→needs_review`、`updated_at` 与派发时刻**毫秒级吻合**（22:08:19 本地 ↔ `14:08:19.795976+00`）→ 审计落 `knowledge.doc.review_due`（**actor=`system:worker`**）；后续周期 `candidates=0`（幂等）。
   - **检索谓词守卫真实 HTTP 三场景**（真实 `WeKnoraKnowledgeAdapter` + `scoped_search` + 假 WeKnora 计请求数）：① 治理**关闭** ⇒ 返回 3 条、请求 +1（与今天一致）；② 治理**开启+白名单空** ⇒ **返回 0 条且请求计数不变**（fail-closed 真「未请求 WeKnora」）；③ 治理**开启+有 published** ⇒ 只返回白名单内 `chunk-1@doc-pub`，未登记 / 未发布引用被收敛剔除、请求 +1。
-  - ⚠️ 本次联调暴露一条**装配级注意项**：`configure_runtime(audit=None)` 时服务层「审计缺省跳过」⇒ 到期扫描**静默不写审计**（首轮演练即因此无审计行，注入 audit 后复跑才落痕）。生产路径（`env != development`）由模块级代码恒注入 audit，**不受影响**；已登记为 **N7 待裁决**（是否 fail-closed）。
+  - 本次联调暴露一条**装配级注意项**（**已按 N7 裁决 B 收口**）：`configure_runtime(audit=None)` 时服务层「审计缺省跳过」⇒ 到期扫描**静默不写审计**（首轮演练即因此无审计行，注入 audit 后复跑才落痕）。现已 fail-closed（未注入 audit 即抛错，见 §4 N7）；生产路径（`env != development`）由模块级代码恒注入 audit，**本就无此问题**。
 - **CI 侧（2026-09-15）**：run `34960179880`（知识治理层初交付 push）与 run `34960954584`（口径裁定 push）**6/6 job 全绿**（含 backend 全量 pytest 在本仓库 Linux 环境通过）。⚠️ 上述两轮的 **postgres job 清单尚未包含本模块**（`ci.yml` 当时硬编码五个模块）⇒ 那时**不得读成「真库回归已被 CI 守护」**；本轮已补齐（`ci.yml` 加入 `test_knowledge_governance_postgres.py`，并在 `tests/test_ci_assets.py` 把 job 清单六条逐字钉死）。
 - ✅ **CI 销账（2026-09-15）**：run **`34974145326`**（CI 纳入补齐 push）**6/6 job conclusion=success**；postgres job 原始日志取证：`newly applied` 列表含 **`032_knowledge_governance`**、`tests/test_knowledge_governance_postgres.py ...... [100%]`、**`真库用例：tests=51 skipped=0 failed=0`** ⇒ 知识治理真库回归**已由 CI 真实守护**（不再是 DSN 门控下的 skip）。
 - ✅ **CI 销账（N3，2026-09-15）**：run **`34975994837`**（N3 落地 push）**6/6 job conclusion=success**；postgres job 原始日志：`tests/test_knowledge_governance_postgres.py ....... [100%]`（**7 条**，含 N3 跨租户扫描用例）、**`真库用例：tests=52 skipped=0 failed=0`**。⚠️ **CI 不覆盖 Celery beat 进程本身**（排程键与任务函数由单测断言，接线后真跑用内存仓储验证）；**真实 beat 周期触发在 staging 仍未联调**（见 §4 N3 未验证项）。
@@ -202,7 +202,7 @@ Freshness = `published / total`（按期复核率）。`GET /api/v1/knowledge/me
 | N6 | **首轮复核对齐** | ✅ **已裁决并落地（2026-09-15，用户拍板 A）**：**发布即置** `review_due_at = 发布时刻 + grace_days`（§2.2 / §2.6）⇒ 未被人工复核过的已发布文档**也进入到期周期**，首轮到期由扫描触发；回归锚点 `test_first_review_cycle_closes_from_publish`（内存）+ 真库发布读回断言。 |
 | N4 | 文档级权限（某些文档仅部分岗位可见） | **不做**：文档级可见性收敛到知识库绑定粒度（`004`）；文档级 RBAC 属重造授权，明示排除 |
 | N5 | 语义缓存 | 本期不建缓存；预留「key 含租户+角色+治理版本」口径，实现缓存时遵守 |
-| N7 | **worker 装配未注入 audit 时，到期扫描静默不写审计**（2026-09-15 本机联调发现） | **待裁决**（不改已交付行为）：服务层设计为「审计缺省跳过」（`_record` 在 `audit is None` 时 return），worker 生产路径由模块级代码恒注入 audit ⇒ **生产不受影响**；但 `configure_runtime(audit=None)`（development / 手工装配）会让周期扫描**不留痕**。选项：A) 维持现状（装配责任 + 已在 §0 登记注意项）；B) 让系统扫描方法在 `audit is None` 时 fail-closed 抛错（与 `commercial.set_retention`「没有审计通道就拒绝变更」同口径，但会收紧既有宽容度）。 |
+| N7 | **worker 装配未注入 audit 时，到期扫描静默不写审计**（2026-09-15 本机联调发现） | ✅ **已裁决并落地（2026-09-15，用户拍板 B：fail-closed）**：`scan_review_due_across_tenants` 在 `audit is None` 时**抛 `PolicyError` 且不做任何写库**（检查置于扫描之前，不存在「先置位后抛错」的半成品）——与 `commercial.set_retention`「没有审计通道就拒绝变更」同口径；worker 任务因此**显式失败**（日志可见），不静默丢审计。回归锚点 `test_worker_scan_fails_closed_without_audit`（含「未写库」断言）。生产路径（模块级恒注入 audit）不受影响；development / 手工装配若复用扫描器**必须注入 audit**。 |
 
 ---
 

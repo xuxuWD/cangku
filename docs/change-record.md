@@ -518,3 +518,16 @@
 | **未验证（不得读成已验）** | ① **不是 staging / 不是生产**：最小拓扑是 Windows + `--pool=solo` + 隔离 Redis db + 同一台机；Linux/容器拓扑下的 beat、多 worker 并发、真实网络时延**均未验**。② **Windows 限制**：`celery worker -B`（内嵌 beat）在 Windows **不可用**（Celery 明确报错，要求 beat 独立服务）——**这是本机限制**，非产品缺陷。**已核对本仓库**：grep 全仓（`*.yml/yaml/sh/md/py/txt/example`）**没有任何 `celery beat` / `-B` 启动命令** ⇒ 本仓库**尚未提供 worker/beat 的部署编排**（beat 独立进程如何起、由谁守护**未定义、未验证**；生产部署前需补该编排）。③ 检索三场景用的是**假 WeKnora**：真实 WeKnora 实例的接口面、鉴权、知识库级语义**仍未核实**。④ 本机联调**不产生 CI 证据**（CI 不跑 beat 进程，见 §0）。 |
 | **回退方式** | 纯文档变更：回退规格 §0「本机联调」段、§4 N3 行的联调措辞与 N7 行，删本条记录。**无代码回退项、无数据回退项。未经确认不得执行回滚。** |
 | **依据** | 用户 2026-09-15 指示（N1 后的「真实联调」建议）；规格 §4 N3/N2 的未验证项、§2.3 谓词守卫、§2.2 事件触发；`docs/delivery-gates.md`（「没验证的必须写未验证」） |
+
+### 2026-09-15 · N7 裁决 B 落地：到期扫描在未注入 audit 时 fail-closed（无人值守路径不得静默不留痕）—— 行为变更（可回退）
+
+| 项 | 内容 |
+| --- | --- |
+| **时间** | 2026-09-15 |
+| **变更** | **行为变更**：`KnowledgeGovernanceService.scan_review_due_across_tenants` 在 `audit is None` 时**抛 `PolicyError`**（文案「到期扫描必须写入审计（未配置审计通道）——请为 worker 装配注入 audit」），**且检查置于扫描之前**（不存在「先置位后抛错」的半成品）；`app/worker.py::scan_knowledge_review_due` docstring 补 fail-closed 说明（明确「这是刻意行为，不要修成静默跳过」）；真库 fixture 注入内存审计（N7 生效后必需）；新增回归锚点 `test_worker_scan_fails_closed_without_audit`（含「未写库」断言）。真源：规格 §4 N7 行 → 已裁决落地（B）、§0 联调注意项 → 已收口。 |
+| **原因** | 上一轮本机联调发现：`configure_runtime(audit=None)`（development / 手工装配）时，服务层「审计缺省跳过」（`_record` 在 `audit is None` 时 return）会让**周期扫描静默不留痕**——与规格 §2.7「治理动作码」要求冲突，且周期任务是无人值守路径（没人会去看它有没有写审计）。用户 2026-09-15 拍板选 **B：fail-closed 抛错**，与 `commercial.set_retention`「没有审计通道就拒绝变更」同口径。 |
+| **影响面** | 改 `app/knowledge_governance/service.py`（+1 检查 + docstring + `PolicyError` import）、`app/worker.py`（docstring）、`tests/test_knowledge_governance.py`（+1 用例）、`tests/test_knowledge_governance_postgres.py`（fixture 注入 audit）、规格 §0/§4、`change-record.md`（本条）。**未改** HTTP 路径（手动端点 `scan_review_due` / `mark_due` / `register_document` 等不受影响——它们的调用方是 API 进程，恒定注入 audit）、`migrations/*`、`configure_runtime` 的调用契约（仍允许 `audit=None`，只是**扫描会 fail-closed**）、其它服务的审计宽容度。 |
+| **验证（已做）** | ✅ 治理层内存 + 真库 ⇒ **33 passed**；✅ 全量回归（含真库）⇒ **1892 passed**（上轮 1891 ＋ 本轮 1 条新用例，无既有用例被跳过或删除）；✅ **反假 1 组真变红**：把检查短路（`if self.audit is None and False:`）⇒ `test_worker_scan_fails_closed_without_audit` **1 failed**（`DID NOT RAISE PolicyError`，即扫描静默执行了）；还原后复绿。✅ 「未写库」断言：抛错后查库文档仍为 `published`（证明检查在写库之前）。 |
+| **未验证（不得读成已验）** | ① **fail-closed 在真实 worker 上的表现未复跑**：本机联调时用的是「已注入 audit」的装配；**未复跑**「worker 装配漏 audit ⇒ Celery 任务显式失败 + 日志可见」这一路径（断言层面已覆盖服务层抛错，**任务层失败表现未取证**）。② 该行为对**未来复用扫描器的其它装配方**是新的硬约束（必须注入 audit）——若有未盘点的调用方会从「静默丢审计」变成「任务报错」，**未盘点**（当前仓库内调用方只有 worker 与测试，均已适配）。 |
+| **回退方式** | 删 `scan_review_due_across_tenants` 开头的 audit 检查与该方法 docstring 的 N7 段、还原 `PolicyError` import（若无其它用处）；还原 `app/worker.py` 任务 docstring；删 `test_worker_scan_fails_closed_without_audit`，回退真库 fixture 的 audit 注入；回退规格 §0/§4 N7 行（还原为「待裁决」）与删本条记录。**未改 migration ⇒ 无数据回退项。未经确认不得执行回滚。** |
+| **依据** | 用户 2026-09-15 裁决（选项 B：fail-closed）；规格 §4 N7 行、§2.7（审计动作码）、§2.2 落地段；`app/commercial/lifecycle.py::set_retention` 的「没有审计通道就拒绝变更」先例 |
