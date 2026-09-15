@@ -438,6 +438,11 @@ class Settings(BaseSettings):
         default=0, ge=0,
         validation_alias=AliasChoices("MEMORY_DAILY_BUDGET_CENTS", "WORKBENCH_MEMORY_DAILY_BUDGET_CENTS"),
     )
+    # P4 技能层（口径见 docs/superpowers/specs/2026-09-15-skill-layer-p4-design.md §2.7）：
+    # 技能来源白名单（逗号分隔）。**空 = 技能层关闭**（可登记、不可启用，fail-closed）。
+    skill_source_allowlist: str = Field(
+        default="", validation_alias=AliasChoices("SKILL_SOURCE_ALLOWLIST", "WORKBENCH_SKILL_SOURCE_ALLOWLIST"),
+    )
     # 跨源部署（桌面端远程模式 / PWA 伴侣端）：非 development 环境只在显式配置来源后
     # 才注册 CORS；留空即视为「不允许任何跨源」（fail-closed）。
     cors_allowed_origins: str = Field(

@@ -67,6 +67,13 @@ class AuditAction(StrEnum):
     MEMORY_FACT_SUPERSEDED = "memory.fact.superseded"
     MEMORY_RULE_CREATED = "memory.rule.created"
     MEMORY_PROFILE_UPDATED = "memory.profile.updated"
+    # P4 技能层（真源 specs/2026-09-15-skill-layer-p4-design.md §2.4）：
+    # 只记技能键/版本/来源/员工标识，**不记包正文与 description**。
+    SKILL_SUBMITTED = "skill.submitted"
+    SKILL_APPROVED = "skill.approved"
+    SKILL_REJECTED = "skill.rejected"
+    SKILL_ENABLED = "skill.enabled"
+    SKILL_DISABLED = "skill.disabled"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -118,6 +125,13 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "owner_kind",
         "rule_key",
         "version",
+        # P4 技能层（只记技能键/版本/来源/员工标识/内容指纹/审核结论，不记包正文；口径见 skill-layer-p4-design §2.4）
+        "skill_key",
+        "agent_key",
+        "source_key",
+        "license",
+        "content_sha256",
+        "approved",
     }
 )
 

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -101,6 +101,14 @@ from .memory.models import (
 )
 from .memory.embedding import EmbeddingUnavailable
 from .memory.service import MemoryService
+from .skills.models import (
+    InvalidSkillPackage,
+    Skill,
+    SkillNotFound,
+    SkillSourceDenied,
+    SkillStateConflict,
+)
+from .skills.service import SkillService
 from .conversation import (
     Conversation,
     ConversationMessage,
@@ -144,6 +152,9 @@ conversation_service = build_conversation_service(
 # P3 记忆层（规格 docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md §2.5/§2.8）：
 # 嵌入式服务开发环境缺 default 时由装配层回退到 FakeEmbeddingAdapter（仅验证链路）。
 memory_service = build_memory_service(settings, audit=audit_service)
+# P4 技能层（规格 docs/superpowers/specs/2026-09-15-skill-layer-p4-design.md §2.3/§2.4）：
+# 来源白名单为空 = 技能层关闭（可登记、不可启用，fail-closed）；allowed-tools 与执行目录取交集。
+skills_service = build_skills_service(settings, audit=audit_service)
 agent_config_service = build_agent_config_service(
     settings, store=workforce_directory_store, audit=audit_service
 )
@@ -1742,6 +1753,203 @@ def read_memory_profile(
     except (InvalidMemory, MemoryNotFound, PolicyError) as exc:
         _raise_memory_http(exc)
     return MemoryProfileResponse(items=profile)
+
+
+# ------------------------------------------------------------ P4 技能层（规格 2026-09-15-skill-layer-p4-design.md §2）
+
+
+class SkillView(BaseModel):
+    """技能视图：不含包正文与内容指纹之外可逆推原文的字段。"""
+
+    skill_key: str
+    version: str
+    name: str
+    description: str
+    license: str
+    allowed_tools: list[str]
+    status: str
+    source_key: str
+    owner_id: str
+    reviewed_by: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SkillSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    skill_key: str = Field(min_length=1, max_length=64)
+    version: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=64)
+    description: str = Field(min_length=1, max_length=800)
+    license: str = Field(min_length=1, max_length=32)
+    allowed_tools: list[str]
+    source_key: str = Field(min_length=1, max_length=64)
+    content_sha256: str = Field(min_length=64, max_length=64)
+
+
+class SkillListResponse(BaseModel):
+    items: list[SkillView]
+    total: int
+    limit: int
+    offset: int
+
+
+class SkillBindRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    skill_key: str = Field(min_length=1, max_length=64)
+    agent_key: str = Field(min_length=1, max_length=64)
+
+
+class SkillExpandResponse(BaseModel):
+    agent_key: str
+    tools: list[str]
+
+
+def _skill_view(skill: Skill) -> SkillView:
+    return SkillView(
+        skill_key=skill.skill_key,
+        version=skill.version,
+        name=skill.name,
+        description=skill.description,
+        license=skill.license,
+        allowed_tools=list(skill.allowed_tools),
+        status=skill.status.value if hasattr(skill.status, "value") else str(skill.status),
+        source_key=skill.source_key,
+        owner_id=skill.owner_id,
+        reviewed_by=skill.reviewed_by,
+        created_at=skill.created_at,
+        updated_at=skill.updated_at,
+    )
+
+
+def _raise_skill_http(exc: Exception) -> NoReturn:
+    """把技能领域异常映射成 HTTP 语义（规格 §3.2）。"""
+    if isinstance(exc, SkillStateConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, InvalidSkillPackage):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, SkillSourceDenied):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if isinstance(exc, SkillNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, PolicyError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    raise exc
+
+
+@app.post("/api/v1/skills", response_model=SkillView, status_code=status.HTTP_201_CREATED)
+def submit_skill(payload: SkillSubmitRequest, context: UserContext = Depends(current_user)) -> SkillView:
+    """提交技能包（申报，不生效）：来源白名单 + 许可白名单 + allowed-tools 逐键校验 + D11 类描述扫描。
+
+    幂等：同 (tenant, skill_key, version) 重复提交返回既有记录。
+    """
+    try:
+        skill = skills_service.submit_skill(
+            context,
+            skill_key=payload.skill_key,
+            version=payload.version,
+            name=payload.name,
+            description=payload.description,
+            license=payload.license,
+            allowed_tools=list(payload.allowed_tools),
+            source_key=payload.source_key,
+            content_sha256=payload.content_sha256,
+        )
+    except (
+        InvalidSkillPackage,
+        SkillNotFound,
+        SkillStateConflict,
+        SkillSourceDenied,
+        PolicyError,
+    ) as exc:
+        _raise_skill_http(exc)
+    return _skill_view(skill)
+
+
+@app.get("/api/v1/skills", response_model=SkillListResponse)
+def list_skills(
+    skill_status: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> SkillListResponse:
+    """技能列表：管理员全看；普通员工只看自己提交的；必须分页。"""
+    try:
+        items, total = skills_service.list_skills(
+            context, status=skill_status, limit=limit, offset=offset
+        )
+    except (InvalidSkillPackage, SkillNotFound, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return SkillListResponse(items=[_skill_view(item) for item in items], total=total, limit=limit, offset=offset)
+
+
+@app.post("/api/v1/skills/{skill_key}/versions/{version}/review")
+def review_skill(
+    skill_key: str,
+    version: str,
+    approved: bool = Query(...),
+    context: UserContext = Depends(current_user),
+) -> SkillView:
+    """审核技能包：仅 super_admin；提交人不能审自己的提交（生成者 ≠ 评审者）。"""
+    try:
+        skill = skills_service.review_skill(context, skill_key, version, approved=approved)
+    except (InvalidSkillPackage, SkillNotFound, SkillStateConflict, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return _skill_view(skill)
+
+
+@app.post("/api/v1/skills/{skill_key}/versions/{version}/enable", response_model=SkillView)
+def enable_skill(skill_key: str, version: str, context: UserContext = Depends(current_user)) -> SkillView:
+    """启用技能（独立管理动作）：approved/disabled → enabled；已启用幂等。"""
+    try:
+        skill = skills_service.enable_skill(context, skill_key, version)
+    except (SkillNotFound, SkillStateConflict, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return _skill_view(skill)
+
+
+@app.post("/api/v1/skills/{skill_key}/versions/{version}/disable", response_model=SkillView)
+def disable_skill(skill_key: str, version: str, context: UserContext = Depends(current_user)) -> SkillView:
+    """停用技能：enabled → disabled；已停用幂等。"""
+    try:
+        skill = skills_service.disable_skill(context, skill_key, version)
+    except (SkillNotFound, SkillStateConflict, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return _skill_view(skill)
+
+
+@app.post("/api/v1/skills/bindings", response_model=SkillView)
+def bind_skill(payload: SkillBindRequest, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    """绑定技能到数字员工（管理动作）。"""
+    try:
+        skills_service.bind_skill(context, payload.agent_key, payload.skill_key)
+    except (InvalidSkillPackage, SkillNotFound, SkillStateConflict, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return {"skill_key": payload.skill_key, "agent_key": payload.agent_key, "status": "active"}
+
+
+@app.delete("/api/v1/skills/bindings")
+def unbind_skill(
+    skill_key: str = Query(...),
+    agent_key: str = Query(...),
+    context: UserContext = Depends(current_user),
+) -> dict[str, str]:
+    """解绑技能（管理动作）：active → disabled。"""
+    try:
+        skills_service.unbind_skill(context, agent_key, skill_key)
+    except (InvalidSkillPackage, SkillNotFound, SkillStateConflict, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return {"skill_key": skill_key, "agent_key": agent_key, "status": "disabled"}
+
+
+@app.get("/api/v1/skills/agents/{agent_key}/tools", response_model=SkillExpandResponse)
+def agent_skill_tools(agent_key: str, context: UserContext = Depends(current_user)) -> SkillExpandResponse:
+    """返回某数字员工已启用技能的 allowed-tools 与执行目录的**交集**（服务端解析，fail-closed）。"""
+    try:
+        tools = skills_service.expanded_tools_for_agent(context, agent_key)
+    except (SkillNotFound, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return SkillExpandResponse(agent_key=agent_key, tools=list(tools))
 
 
 @app.get("/api/v1/workforce/agents/{agent_key}/config", response_model=AgentConfigView)

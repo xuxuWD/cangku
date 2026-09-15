@@ -749,4 +749,30 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 - `PUT /api/v1/memory/profile`：覆写身份类画像键 `{"key", "value", "owner_kind", "owner_id"}`；同键覆盖。返回当前画像。
 - `GET /api/v1/memory/profile?owner_kind=&owner_id=`：读取画像（KV 字典）。
 
+## 技能（P4 技能层）
+
+> 口径：`docs/superpowers/specs/2026-09-15-skill-layer-p4-design.md`（迁移 `030_skills`）。
+> **状态 2026-09-15：已实现**（契约与实现一致；若有冲突以规格评审结论为准并回改本节）。
+> 技能层 = 「包的声明→校验→注册→审核→绑定→启用」，**不是新执行引擎**——执行永远走既有九步闸门 + `ToolSpecCatalog`；技能只提供「包声明 + 白名单 + 审计」。
+
+**核心语义**：
+- **来源白名单**（部署注入 `WORKBENCH_SKILL_SOURCE_ALLOWLIST`，逗号分隔）：空 = 技能层关闭（可登记、不可启用，fail-closed）；`source_key` 不在白名单 → `403`。
+- **许可白名单**：`license` ∈ {Apache-2.0, MIT, BSD-3}，否则 `422`。
+- **allowed-tools 逐键校验 + 交集**：登记时逐键必须 ∈ 既有 `ToolSpecCatalog`；启用后技能展开的 `allowed-tools` 与目录**取交集**（fail-closed）。
+- **人工在环**：提交 → `super_admin` 审核（提交人不能审自己的提交）→ 启用；**不允许用户自传技能包直接生效**。
+- **状态机**：`submitted → approved → enabled → disabled`（enabled⇄disabled；approved⇄submitted；rejected 终态）；同 key 多版本并存，只 `enabled` 版本参与工具面展开。
+- **零默认技能**：未启用任何技能时，工具面 = 既有默认集，行为与今天一致。
+- 全部接口：未认证 `401`；越权 `403`；跨租户/不存在 `404`；只返回本租户数据；响应不含包正文与内容指纹原文。
+
+**审计**：`skill.submitted` / `skill.approved` / `skill.rejected` / `skill.enabled` / `skill.disabled`；明细键最小集（`skill_key` / `agent_key` / `source_key` / `license`，已入白名单），**不落包正文与 description**。
+
+- `POST /api/v1/skills`：提交技能包（申报）。请求体 `{"skill_key", "version", "name", "description", "license", "allowed_tools": [...], "source_key", "content_sha256"}`（未知字段 `422`）。成功 `201`，返回技能视图。**幂等**：同 `(tenant, skill_key, version)` 重复提交返回既有记录。`source_key` 不在白名单 `403`；`license`/`allowed_tools`/`description`（D11 类扫描）不合法 `422`。
+- `GET /api/v1/skills?status=&limit=&offset=`：技能列表（管理员全看；普通员工只看自己提交的），必须分页。
+- `POST /api/v1/skills/{skill_key}/versions/{version}/review?approved=true|false`：审核（仅 `super_admin`；提交人自审 `403`）。
+- `POST /api/v1/skills/{skill_key}/versions/{version}/enable`：启用（approved/disabled→enabled；已启用幂等）。
+- `POST /api/v1/skills/{skill_key}/versions/{version}/disable`：停用（enabled→disabled；已停用幂等）。
+- `POST /api/v1/skills/bindings`：绑定技能到数字员工 `{"skill_key", "agent_key"}`（管理动作）。
+- `DELETE /api/v1/skills/bindings?skill_key=&agent_key=`：解绑（active→disabled）。
+- `GET /api/v1/skills/agents/{agent_key}/tools`：返回该数字员工已启用技能的 `allowed-tools` 与执行目录的**交集**（服务端解析，fail-closed）。
+
 

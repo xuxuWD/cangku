@@ -1117,3 +1117,45 @@ def build_memory_service(settings: Settings, *, store=None, embedding=None, audi
         audit=audit,
         daily_budget_cents=settings.memory_daily_budget_cents,
     )
+
+
+def build_skills_service(settings: Settings, *, store=None, audit=None):
+    """装配技能服务（P4 §2.3/§2.4）。
+
+    - `allowed_sources` = `WORKBENCH_SKILL_SOURCE_ALLOWLIST` 逗号分隔；**空 = 技能层关闭**
+      （可登记、不可启用，fail-closed，规格 §2.7）。
+    - `catalog_tool_keys` 取自既有 `ToolSpecCatalog`（**同一实例语义**：技能 `allowed-tools`
+      必须与执行闸门工具目录取交集，§2.4）。
+    - 未显式传入 store 时按存储模式自建。
+    """
+    validate_runtime_settings(settings)
+    from .skills.service import SkillService
+    from .skills.store import InMemorySkillStore, PostgresSkillStore
+    from .skills.validator import SkillPackageValidator
+    from .tool_execution.catalog import build_tool_spec_catalog
+
+    allowed_sources = frozenset(
+        item.strip() for item in (settings.skill_source_allowlist or "").split(",") if item.strip()
+    )
+    catalog_tool_keys = frozenset(spec.key for spec in build_tool_spec_catalog().specs)
+    if store is None:
+        if settings.storage_backend == "memory":
+            if settings.env != "development":
+                raise ValueError("生产环境禁止使用内存技能仓储")
+            store = InMemorySkillStore()
+        elif settings.storage_backend == "postgres":
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+            store = PostgresSkillStore(connection)
+        else:
+            raise ValueError("不支持的技能存储类型")
+    return SkillService(
+        store,
+        SkillPackageValidator(),
+        allowed_sources=allowed_sources,
+        catalog_tool_keys=catalog_tool_keys,
+        audit=audit,
+    )

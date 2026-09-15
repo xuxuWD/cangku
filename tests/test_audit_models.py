@@ -57,7 +57,13 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.MEMORY_FACT_SUPERSEDED.value == "memory.fact.superseded"
     assert AuditAction.MEMORY_RULE_CREATED.value == "memory.rule.created"
     assert AuditAction.MEMORY_PROFILE_UPDATED.value == "memory.profile.updated"
-    assert len(set(AuditAction)) == 53
+    # P4 技能层（2026-09-15）：新增五个动作码，值必须稳定为契约字符串。
+    assert AuditAction.SKILL_SUBMITTED.value == "skill.submitted"
+    assert AuditAction.SKILL_APPROVED.value == "skill.approved"
+    assert AuditAction.SKILL_REJECTED.value == "skill.rejected"
+    assert AuditAction.SKILL_ENABLED.value == "skill.enabled"
+    assert AuditAction.SKILL_DISABLED.value == "skill.disabled"
+    assert len(set(AuditAction)) == 58
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

@@ -97,6 +97,11 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'memory.fact.superseded': '记忆事实已作废',
   'memory.rule.created': '记忆规则已创建',
   'memory.profile.updated': '画像已更新',
+  'skill.submitted': '技能包已提交',
+  'skill.approved': '技能包已通过',
+  'skill.rejected': '技能包已驳回',
+  'skill.enabled': '技能已启用',
+  'skill.disabled': '技能已停用',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。
