@@ -17,7 +17,8 @@
 - **真库用例 `tests/test_knowledge_governance_postgres.py`：6 条全绿**：① 登记 + 状态流（draft→published→needs_review→published）真库持久化 + 复核时间戳落库；② **`draft` 可直接归档**（any→archived，§2.2 裁定）真库持久化；③ 状态 CHECK 约束拦截非法状态值；④ 谓词守卫真库语义（仅 published 且未过 `review_due_at` 进白名单；过期即下线）；⑤ `mark_review_due` / 到期扫描真库可用且幂等；⑥ 生命周期 `list_all_for_tenant`/`delete_all_for_tenant`（N2 对称）。
 - **反假口径**：draft 不进白名单（只发布可检索）、needs_review 被谓词排除、状态机 25 条边逐边锁定（§2.2 裁定，`test_transition_matrix_locks_section_2_2_ruling`）——真库与内存双端覆盖。
 - **未验证（如实登记）**：`scoped_search` 与真实 WeKnora 的端到端检索（N2 落点：WeKnora 检索为知识库级、无文档级过滤参数，本期实现为「检索后按白名单收敛」的接口面兜底，标注见 `app/knowledge_governance/scoped_search.py`）；CI 侧取证见下。
-- **CI 侧（2026-09-15）**：run `34960179880`（知识治理层初交付 push）与 run `34960954584`（口径裁定 push）**6/6 job 全绿**（含 backend 全量 pytest 在本仓库 Linux 环境通过）。⚠️ 上述两轮的 **postgres job 清单尚未包含本模块**（`ci.yml` 硬编码五个模块）⇒ **不得读成「真库回归已被 CI 守护」**；本轮已补齐（`ci.yml` 加入 `test_knowledge_governance_postgres.py`，并在 `tests/test_ci_assets.py` 把 job 清单逐条钉死），**取证待补齐后的 push 触发的 run**。
+- **CI 侧（2026-09-15）**：run `34960179880`（知识治理层初交付 push）与 run `34960954584`（口径裁定 push）**6/6 job 全绿**（含 backend 全量 pytest 在本仓库 Linux 环境通过）。⚠️ 上述两轮的 **postgres job 清单尚未包含本模块**（`ci.yml` 当时硬编码五个模块）⇒ 那时**不得读成「真库回归已被 CI 守护」**；本轮已补齐（`ci.yml` 加入 `test_knowledge_governance_postgres.py`，并在 `tests/test_ci_assets.py` 把 job 清单六条逐字钉死）。
+- ✅ **CI 销账（2026-09-15）**：run **`34974145326`**（CI 纳入补齐 push）**6/6 job conclusion=success**；postgres job 原始日志取证：`newly applied` 列表含 **`032_knowledge_governance`**、`tests/test_knowledge_governance_postgres.py ...... [100%]`、**`真库用例：tests=51 skipped=0 failed=0`** ⇒ 知识治理真库回归**已由 CI 真实守护**（不再是 DSN 门控下的 skip）。
 
 ---
 
