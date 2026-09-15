@@ -315,7 +315,7 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 - `POST /api/v1/knowledge/documents`：登记知识文档（`draft`；仅 `super_admin`）。请求体 `{"document_id": string, "title"?, string, "owner_id"?, string, "version"? = "1", "source_key"? = "manual"}`，未知字段 `422`。**幂等**：同 `(tenant, document_id)` 重复登记返回既有记录（`201`）。成功 `201`，返回文档视图（不含正文）。
 - `GET /api/v1/knowledge/documents?status=&limit=&offset=`：文档列表（仅 `super_admin`），必须分页（`limit` 1–200 默认 50，`offset` ≥0）。`status` 可选 `draft|published|under_review|needs_review|archived`（非法 `422`）。返回 `{"items": [...], "total", "limit", "offset"}`。
-- `POST /api/v1/knowledge/documents/{document_id}/publish?owner_id=`：发布（发布闸门：owner 必填；仅 `draft` → `published`）。无 owner `422`，状态冲突 `409`。返回更新后的文档视图。
+- `POST /api/v1/knowledge/documents/{document_id}/publish?owner_id=`：发布（发布闸门：owner 必填；仅 `draft` → `published`）。无 owner `422`，状态冲突 `409`。**发布即置 `review_due_at` = 发布时刻 + 复核宽限**（默认 30 天，`WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS`）——首轮复核周期自发布起算。返回更新后的文档视图。
 - `POST /api/v1/knowledge/documents/{document_id}/archive`：归档（`draft` / `published` / `under_review` / `needs_review` → `archived`，§2.2「any → archived」**允许 draft 直接判废**；仅 `archived` 终态出发 `409`）。返回更新后的文档视图。
 - `POST /api/v1/knowledge/documents/{document_id}/review?approved=true|false`：人工复核（`under_review` / `needs_review` → 通过 `published`（刷新 `last_reviewed_at` + `review_due_at` 顺延宽限）或判废 `archived`；状态非法 `409`）。返回更新后的文档视图。
 - `POST /api/v1/knowledge/review-scan`：手动触发到期扫描（published 且已过 `review_due_at` → `needs_review`；幂等，重复触发不重复计数）。返回 `{"reviewed_due": int}`。**自动调度**：worker beat 任务 `knowledge-review-scan`（`app.worker.scan_knowledge_review_due`）按 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS`（默认 3600s）周期执行同一扫描（跨租户候选、写回逐条带租户、审计 actor `system:worker`）；扫描不在 HTTP 请求线程执行。

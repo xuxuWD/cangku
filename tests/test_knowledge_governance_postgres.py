@@ -79,6 +79,18 @@ def test_register_and_status_flow_persists_in_postgres(service) -> None:
 
     # 状态机流转变更真库持久化
     svc.publish_document(_admin(), "pg-doc-1", owner_id="acct-owner")
+    # N6 裁决 A（2026-09-15）：发布即置 review_due_at（首轮复核周期开始）——真库读回验证
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT status, last_reviewed_at, review_due_at FROM workbench_knowledge_documents "
+            "WHERE tenant_id = %s AND document_id = %s",
+            (TENANT, "pg-doc-1"),
+        )
+        row = cursor.fetchone()
+    assert row[0] == "published"
+    assert row[1] is not None
+    assert row[2] is not None, "发布必须置 review_due_at（N6 裁决 A）"
+    assert row[2] > row[1], "首轮到期日必须晚于发布时刻"
     svc.store.update_status(_admin(), "pg-doc-1", new_status=KnowledgeDocStatus.NEEDS_REVIEW)
     reviewed = svc.review_document(_admin(), "pg-doc-1", approved=True)
     assert reviewed.status is KnowledgeDocStatus.PUBLISHED

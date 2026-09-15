@@ -122,6 +122,9 @@ class KnowledgeGovernanceService:
 
         owner 取调用方 `owner_id` 优先，否则回退既有行 owner；两者皆空 → 422；
         状态非法（非 draft）→ 409；成功后刷新 `last_reviewed_at`。
+        **发布即置 `review_due_at = 发布时刻 + review_grace_days`**（N6 裁决 A，2026-09-15）：
+        每篇发布文档从上线起就进入复核周期，首轮到期由到期扫描（手动端点 / worker beat）触发；
+        未设 due 的文档不计入到期（§2.6，仅存量 / 迁移数据可能为空）。
         """
         ensure_can_manage(context)
         doc = self.store.get_document(context, document_id)
@@ -130,13 +133,14 @@ class KnowledgeGovernanceService:
             raise InvalidKnowledgeDoc("发布必须指定负责人（owner）")
         if not transition_allowed(doc.status, KnowledgeDocStatus.PUBLISHED):
             raise KnowledgeDocStateConflict("当前状态不能发布（仅 draft 可发布）")
+        published_at = _utcnow()
         saved = self.store.update_status(
             context,
             document_id,
             new_status=KnowledgeDocStatus.PUBLISHED,
             owner_id=resolved_owner,
-            last_reviewed_at=_utcnow(),
-            review_due_at=None,
+            last_reviewed_at=published_at,
+            review_due_at=published_at + timedelta(days=self.review_grace_days),
         )
         self._record(
             context,

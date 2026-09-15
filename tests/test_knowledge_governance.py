@@ -101,16 +101,22 @@ def test_register_creates_draft_and_idempotent(service: KnowledgeGovernanceServi
 
 
 def test_publish_gate_and_lifecycle(service: KnowledgeGovernanceService) -> None:
-    """发布（owner 闸门）→ published；到期扫描 → needs_review；复核通过 → published + 时间刷新。"""
+    """发布（owner 闸门）→ published 且**即置首轮到期日**；到期扫描 → needs_review；复核通过 → published + 时间刷新。"""
+    before = datetime.now(UTC)
     doc = _register(service, document_id="doc-b", owner_id="acct-owner")
     published = _publish(service, "doc-b")
     assert published.status is KnowledgeDocStatus.PUBLISHED
     assert published.owner_id == "acct-owner"
     assert published.last_reviewed_at is not None
+    # N6 裁决 A（2026-09-15）：发布即置 review_due_at = 发布时刻 + grace_days ⇒ 首轮复核周期开始
+    assert published.review_due_at is not None
+    assert published.review_due_at >= before + timedelta(days=service.review_grace_days)
     # 查库验证
-    assert service.store.get_document(_admin(), "doc-b").status is KnowledgeDocStatus.PUBLISHED
+    stored = service.store.get_document(_admin(), "doc-b")
+    assert stored.status is KnowledgeDocStatus.PUBLISHED
+    assert stored.review_due_at == published.review_due_at
 
-    # 到期扫描：默认 review_due_at 为 None → 不置 needs_review
+    # 到期扫描：已置 due 但**尚未到期**（+30d）→ 不置 needs_review
     count = service.scan_review_due(_admin())
     assert count == 0
 
@@ -124,6 +130,29 @@ def test_publish_gate_and_lifecycle(service: KnowledgeGovernanceService) -> None
     assert reviewed.status is KnowledgeDocStatus.PUBLISHED
     assert reviewed.review_due_at is not None
     assert reviewed.last_reviewed_at is not None
+
+
+def test_first_review_cycle_closes_from_publish(service: KnowledgeGovernanceService) -> None:
+    """N6 裁决 A（2026-09-15）：**发布即进入复核周期**——发布 → 拨到期 → beat 扫描能捞到（首轮闭环）。
+
+    反假锚点：把 `publish_document` 的 `review_due_at` 改回 None（或去掉该参数），本用例必须变红。
+    """
+    now = datetime.now(UTC)
+    _register(service, document_id="doc-cycle", owner_id="acct-owner")
+    published = _publish(service, "doc-cycle")
+    # 首轮到期日已置（未被人工复核过的文档也能进入周期）
+    assert published.review_due_at is not None
+    assert published.review_due_at > now + timedelta(days=service.review_grace_days - 1)
+
+    # 模拟 grace 走完：把 due 拨到过去 ⇒ worker 扫描应置 needs_review
+    service.store.update_status(
+        _admin(), "doc-cycle", new_status=KnowledgeDocStatus.PUBLISHED, review_due_at=now - timedelta(hours=1)
+    )
+    result = service.scan_review_due_across_tenants(now=now)
+    assert result == {"candidates": 1, "flipped": 1}
+    assert service.store.get_document(_admin(), "doc-cycle").status is KnowledgeDocStatus.NEEDS_REVIEW
+    # 置位后从检索谓词白名单下线
+    assert all(d.document_id != "doc-cycle" for d in service.list_published_eligible(_admin()))
 
 
 def test_archive_is_terminal_and_leaves_eligible(service: KnowledgeGovernanceService) -> None:
@@ -188,7 +217,7 @@ def test_state_machine_forbids_illegal_transitions(service: KnowledgeGovernanceS
         _admin(), document_id="doc-f", title="f", owner_id="acct-owner", version="1", source_key="manual"
     )
     service.publish_document(_admin(), "doc-f", owner_id="acct-owner")
-    unchanged = service.mark_due(_admin(), "doc-f")  # 未设 review_due_at → 不到期，no-op
+    unchanged = service.mark_due(_admin(), "doc-f")  # 发布已置 due=+30d，未到期 → no-op
     assert unchanged.status is KnowledgeDocStatus.PUBLISHED
 
     with pytest.raises(KnowledgeDocNotFound):
