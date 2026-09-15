@@ -274,7 +274,9 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 工作台通过 WeKnora 适配器调用官方 `POST /api/v1/knowledge-search`。适配器固定绑定租户、受限 API Key 和知识库白名单，只返回检索片段及来源引用，不把 WeKnora 内部表结构暴露给客户端。知识库写入、Skill 安装、Shell、沙箱和提示词变更不属于该只读接口范围。
 
-适配器同时支持只读文档详情查询（对应 WeKnora `GET /api/v1/knowledge/:id`），用于获取文档标题、所属知识库、解析状态、启用状态和更新时间。工作台只保存文档 ID、知识库 ID、版本/更新时间和引用关系，不复制 WeKnora 原文；返回的租户或知识库范围不匹配时立即拒绝。
+适配器同时支持只读文档详情查询（对应 WeKnora `GET /api/v1/knowledge/:id`），用于获取文档标题、所属知识库、解析状态、启用状态和更新时间；以及**只读文档列表**（对应 `GET /api/v1/knowledge-bases/{id}/knowledge`，分页 `page`/`page_size`/`parse_status`），供存量导入脚本取上游既有文档（规格 §4 N1）。工作台只保存文档 ID、知识库 ID、版本/更新时间和引用关系，不复制 WeKnora 原文；返回的租户或知识库范围不匹配时立即拒绝。
+
+> **租户标识口径**：适配器构造参数 `tenant_id` 必须是 **WeKnora 侧的空间标识**，且调用方 `UserContext.tenant_id` 必须与之同源（适配器靠二者相等强制隔离）。工作台内部租户号与 WeKnora 空间号之间**没有映射表**——混用会被判为「租户范围不匹配」。
 
 岗位和数字员工的知识库范围由超级管理员在工作台策略中心绑定。检索入口按当前租户、岗位和数字员工自动解析允许的知识库 ID；未配置范围返回空结果，不接受客户端自行扩大范围。
 
@@ -324,7 +326,12 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 - `GET /api/v1/knowledge/metrics`：Freshness Index（仅 `super_admin`）。返回 `{"published", "needs_review", "archived", "total", "freshness_ratio"}`，其中 `freshness_ratio = published/total`（`total=0` 时取 1.0）。
 - `GET /api/v1/knowledge/governance/eligible?limit=`：检索谓词守卫白名单出口（仅 `super_admin`）。只返回 `status='published'` 且未过 `review_due_at` 的文档，供检索组合件在请求 WeKnora 前取白名单（空集 = fail-closed）。
 
-**存量文档导入（非 API，运维脚本）**：`scripts/knowledge_import_register.py`——读清单文件（JSON `{"documents":[{"document_id","title"?,"version"?}]}` / CSV 含 `document_id` 表头）→ 逐条登记为 `draft`（`source_key='migration'`、owner 留空待人工补）。**默认 dry-run**（`--apply` 才写库）、逐行拒绝不静默丢弃（有拒绝时退出码 1）、幂等（已登记跳过）、审计 actor 取 `--actor-id`。**已知缺口**：规格原文的「读 WeKnora 文档列表」未实现（上游列表接口面未核实，不臆造接口），清单由运维导出。
+**存量文档导入（非 API，运维脚本）**：`scripts/knowledge_import_register.py`——**两种数据源**：
+
+- `--source file`（缺省）：读清单文件（JSON `{"documents":[{"document_id","title"?,"version"?}]}` / CSV 含 `document_id` 表头）。
+- `--source weknora`（2026-09-16 收口 N1 缺口）：经 `WeKnoraKnowledgeAdapter.list_documents` 调上游 `GET /api/v1/knowledge-bases/{id}/knowledge`（查询参数 `page` / `page_size` / `parse_status`；响应 `{"data":[...], "page", "page_size", "total", "success"}`）**逐页拉到 `total`**；凭据取 `--weknora-base-url` / `--weknora-api-key` 或环境变量 `WORKBENCH_WEKNORA_BASE_URL` / `WORKBENCH_WEKNORA_API_KEY`（**从不回显**，只打印上游主机名）；`--tenant-id` 必须是**上游空间标识**（适配器以「租户号相等」强制隔离，工作台内部租户号与 WeKnora 空间号之间无映射表）；翻页超 `--max-pages`（默认 50）**显式失败**，绝不只导入一部分；条目缺 id 计入拒绝。
+
+两者都：逐条登记为 `draft`（`source_key='migration'`、owner 留空待人工补）、**默认 dry-run**（`--apply` 才写库）、逐行拒绝不静默丢弃（有拒绝时退出码 1）、幂等（已登记跳过）、审计 actor 取 `--actor-id`。
 
 任务视图至少包含：任务号、租户、项目、发起人、数字员工、标题、风险等级、预算、幂等键、状态和审计数量。真实运行阶段还需增加步骤、产物、证据、回滚和失败原因。
 

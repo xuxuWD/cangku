@@ -21,6 +21,7 @@ from app.knowledge_governance.store import InMemoryKnowledgeGovStore
 from scripts.knowledge_import_register import (
     IMPORT_SOURCE_KEY,
     ImportEntry,
+    fetch_entries_from_weknora,
     main,
     parse_manifest,
     run_import,
@@ -149,6 +150,92 @@ def test_invalid_rows_are_rejected_not_silently_dropped(service: KnowledgeGovern
     assert report.created == ("doc-ok",)
     assert {doc_id for doc_id, _reason in report.rejected} == {"x" * 200, "doc-bad-version"}
     assert service.store.get_document(_admin(), "doc-ok").status is KnowledgeDocStatus.DRAFT
+
+
+# ------------------------------------------------------------ WeKnora 数据源（N1 缺口收口）
+
+class _FakeDocument:
+    def __init__(self, document_id: str, title: str = "", parse_status: str = "completed"):
+        self.document_id = document_id
+        self.title = title
+        self.parse_status = parse_status
+
+
+class _FakePage:
+    def __init__(self, items, *, page: int, page_size: int, total: int):
+        self.items = tuple(items)
+        self.page = page
+        self.page_size = page_size
+        self.total = total
+
+
+class _FakeWeKnoraAdapter:
+    """按页返回的假适配器；记录每次调用的参数。"""
+
+    def __init__(self, pages: dict[int, _FakePage]):
+        self.pages = pages
+        self.calls: list[dict] = []
+
+    def list_documents(self, context, knowledge_base_id, *, page=1, page_size=20, parse_status=None):
+        self.calls.append(
+            {"tenant": context.tenant_id, "kb": knowledge_base_id, "page": page,
+             "page_size": page_size, "parse_status": parse_status}
+        )
+        return self.pages.get(page, _FakePage([], page=page, page_size=page_size, total=0))
+
+
+def test_weknora_source_paginates_and_builds_entries() -> None:
+    """翻页直到取满 total；条目字段对齐（空标题回退文件名）；**空 id 计入拒绝**而非静默丢弃。"""
+    adapter = _FakeWeKnoraAdapter(
+        {
+            1: _FakePage(
+                [_FakeDocument("doc-1", "差旅制度"), _FakeDocument("", "无 id 条目")],
+                page=1, page_size=2, total=3,
+            ),
+            2: _FakePage([_FakeDocument("doc-2", "报销制度")], page=2, page_size=2, total=3),
+        }
+    )
+
+    entries, rejected = fetch_entries_from_weknora(
+        adapter, _admin(), knowledge_base_id="kb-1", page_size=2
+    )
+
+    assert [e.document_id for e in entries] == ["doc-1", "doc-2"]
+    assert entries[0].title == "差旅制度"
+    assert len(rejected) == 1 and "id" in rejected[0][1]
+    assert [call["page"] for call in adapter.calls] == [1, 2]  # 取满即停，不多请求
+    assert all(call["kb"] == "kb-1" for call in adapter.calls)
+
+
+def test_weknora_source_fails_closed_when_list_exceeds_page_cap() -> None:
+    """列表超出翻页上限 ⇒ **显式失败**（不得静默只导入一部分存量文档）。"""
+    always_full = _FakePage([_FakeDocument(f"doc-{i}") for i in range(2)], page=1, page_size=2, total=999)
+    adapter = _FakeWeKnoraAdapter({page: always_full for page in range(1, 10)})
+
+    with pytest.raises(ValueError) as excinfo:
+        fetch_entries_from_weknora(adapter, _admin(), knowledge_base_id="kb-1", page_size=2, max_pages=3)
+
+    assert "上限" in str(excinfo.value)
+    assert len(adapter.calls) == 3  # 到上限即停，不会无限翻页
+
+
+def test_cli_weknora_source_requires_credentials(capsys) -> None:
+    """weknora 数据源缺凭据/缺知识库 id ⇒ 退出码 1（fail-closed）；且**不回显密钥**。"""
+    code = main(["--source", "weknora", "--tenant-id", TENANT, "--actor-id", ADMIN, "--knowledge-base-id", "kb-1"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "WeKnora" in err or "凭据" in err
+
+    code = main(
+        [
+            "--source", "weknora", "--tenant-id", TENANT, "--actor-id", ADMIN,
+            "--weknora-base-url", "https://weknora.internal", "--weknora-api-key", "sk-secret-value",
+        ]
+    )
+    assert code == 1
+    out = capsys.readouterr()
+    assert "knowledge-base-id" in out.err
+    assert "sk-secret-value" not in out.err and "sk-secret-value" not in out.out  # 密钥不得回显
 
 
 # ------------------------------------------------------------ CLI（失败路径 fail-closed）

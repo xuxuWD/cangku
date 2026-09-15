@@ -28,8 +28,27 @@ class KnowledgeDocument:
     updated_at: datetime | None
 
 
+@dataclass(frozen=True)
+class KnowledgeDocumentPage:
+    """文档列表的一页（上游 `GET /api/v1/knowledge-bases/{id}/knowledge` 的分页响应）。"""
+
+    items: tuple[KnowledgeDocument, ...]
+    page: int
+    page_size: int
+    total: int
+
+
+# 上游未声明 `page_size` 上限；这是我方对单页请求量的自我保护上界（不是上游契约）。
+MAX_PAGE_SIZE = 200
+
+
 class WeKnoraKnowledgeAdapter:
-    """Read-only WeKnora bridge with tenant and knowledge-base scoping."""
+    """Read-only WeKnora bridge with tenant and knowledge-base scoping.
+
+    ⚠️ 租户映射口径（写明以免误用）：`tenant_id` 必须是 **WeKnora 侧的空间标识**，且调用方
+    传入的 `UserContext.tenant_id` 必须与之同源（适配器靠二者相等来强制租户隔离）。工作台内部
+    租户号与 WeKnora 空间号之间**没有映射表**——混用两套编号会被本适配器判为「租户范围不匹配」。
+    """
 
     def __init__(
         self,
@@ -122,6 +141,58 @@ class WeKnoraKnowledgeAdapter:
         item = payload.get("data") or {}
         if payload.get("success") is False:
             raise RuntimeError("WeKnora 文档读取未完成")
+        return self._document_from_item(item, fallback_document_id=knowledge_id)
+
+    def list_documents(
+        self,
+        context: UserContext,
+        knowledge_base_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        parse_status: str | None = None,
+    ) -> KnowledgeDocumentPage:
+        """读一个知识库的**文档列表**（分页，只读）。范围校验与检索同口径。
+
+        上游契约（官方 `docs/api/knowledge.md`，2026-09-15 真实实例已实调该端点）：
+        路径 `GET /api/v1/knowledge-bases/{id}/knowledge`；查询参数 `page`（从 1 起）、
+        `page_size`、`parse_status`（`pending`/`processing`/`completed`/`failed`）等；
+        响应 `{"data": [<文档>], "page", "page_size", "total", "success"}`（`data` 为**数组**）。
+        用于规格 §4 N1 的存量文档导入：把上游既有文档喂进治理登记（不再依赖人工导出清单）。
+        """
+        if context.tenant_id != self.tenant_id:
+            raise PolicyError("知识库租户范围不匹配")
+        if not knowledge_base_id or knowledge_base_id not in self.knowledge_base_ids:
+            raise PolicyError("请求的知识库不在当前岗位授权范围内")
+        if page < 1:
+            raise ValueError("page 必须从 1 开始")
+        if not 1 <= page_size <= MAX_PAGE_SIZE:
+            raise ValueError(f"page_size 必须在 1 到 {MAX_PAGE_SIZE} 之间")
+
+        params: dict[str, object] = {"page": page, "page_size": page_size}
+        if parse_status:
+            params["parse_status"] = parse_status
+        response = self.client.get(
+            f"{self.base_url}/api/v1/knowledge-bases/{knowledge_base_id}/knowledge",
+            headers={"X-API-Key": self.api_key, "Accept": "application/json"},
+            params=params,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("success") is False:
+            # fail-closed：不得把上游失败静默读成「没有存量文档」
+            raise RuntimeError("WeKnora 文档列表读取未完成")
+        items = tuple(self._document_from_item(item) for item in body.get("data") or [])
+        return KnowledgeDocumentPage(
+            items=items,
+            page=int(body.get("page") or page),
+            page_size=int(body.get("page_size") or page_size),
+            total=int(body.get("total") or len(items)),
+        )
+
+    def _document_from_item(self, item: dict, *, fallback_document_id: str = "") -> KnowledgeDocument:
+        """把上游文档对象映射成 `KnowledgeDocument`，并**逐条**复验租户与知识库归属。"""
         if str(item.get("tenant_id")) != self.tenant_id:
             raise PolicyError("文档租户范围不匹配")
         knowledge_base_id = str(item.get("knowledge_base_id") or "")
@@ -131,7 +202,7 @@ class WeKnoraKnowledgeAdapter:
         if updated_at is not None and not isinstance(updated_at, datetime):
             updated_at = datetime.fromisoformat(str(updated_at))
         return KnowledgeDocument(
-            document_id=str(item.get("id") or knowledge_id),
+            document_id=str(item.get("id") or fallback_document_id),
             knowledge_base_id=knowledge_base_id,
             title=str(item.get("title") or item.get("file_name") or "未命名文档"),
             parse_status=str(item.get("parse_status") or "unknown"),

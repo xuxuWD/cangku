@@ -142,6 +142,95 @@ def test_weknora_adapter_omits_empty_knowledge_ids() -> None:
     assert all("knowledge_ids" not in body for body in seen)
 
 
+def test_weknora_adapter_lists_documents_with_pagination() -> None:
+    """文档列表（规格 §4 N1 缺口）：路径/分页参数/解析逐项对齐上游契约（官方 `docs/api/knowledge.md`）。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/knowledge-bases/kb-1/knowledge"
+        assert request.url.params["page"] == "2"
+        assert request.url.params["page_size"] == "50"
+        assert request.url.params["parse_status"] == "completed"
+        assert request.headers["X-API-Key"] == "scoped-key"
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": [
+                    {
+                        "id": "doc-1",
+                        "tenant_id": "t-1",
+                        "knowledge_base_id": "kb-1",
+                        "title": "",
+                        "file_name": "guide.pdf",
+                        "parse_status": "completed",
+                        "enable_status": "enabled",
+                        "updated_at": "2026-09-05T10:00:00+08:00",
+                    }
+                ],
+                "page": 2,
+                "page_size": 50,
+                "total": 51,
+            },
+        )
+
+    adapter = WeKnoraKnowledgeAdapter(
+        tenant_id="t-1",
+        api_key="scoped-key",
+        knowledge_base_ids={"kb-1"},
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        base_url="https://weknora.internal",
+    )
+
+    page = adapter.list_documents(
+        UserContext("t-1", "u-1", "employee"), "kb-1", page=2, page_size=50, parse_status="completed"
+    )
+
+    assert page.total == 51 and page.page == 2 and page.page_size == 50
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.document_id == "doc-1"
+    # 标题为空时回退文件名（导入登记需要可读标题；与 read_document 同口径）
+    assert item.title == "guide.pdf"
+    assert item.parse_status == "completed"
+
+
+def test_weknora_adapter_list_rejects_out_of_scope_requests() -> None:
+    """列表同样受租户与知识库范围约束（不因是「读列表」就放松）。"""
+    adapter = WeKnoraKnowledgeAdapter(
+        tenant_id="t-1",
+        api_key="scoped-key",
+        knowledge_base_ids={"kb-1"},
+        client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"data": []}))),
+        base_url="https://weknora.internal",
+    )
+
+    with pytest.raises(PolicyError):
+        adapter.list_documents(UserContext("t-2", "u-1", "employee"), "kb-1")
+    with pytest.raises(PolicyError):
+        adapter.list_documents(UserContext("t-1", "u-1", "employee"), "kb-other")
+
+
+def test_weknora_adapter_list_fails_closed_on_upstream_error() -> None:
+    """上游 `success: false` 与非法分页参数都不得静默返回空列表（否则会被读成「没有存量文档」）。"""
+
+    def failing(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"success": False, "error": {"message": "boom"}})
+
+    adapter = WeKnoraKnowledgeAdapter(
+        tenant_id="t-1",
+        api_key="scoped-key",
+        knowledge_base_ids={"kb-1"},
+        client=httpx.Client(transport=httpx.MockTransport(failing)),
+        base_url="https://weknora.internal",
+    )
+
+    with pytest.raises(RuntimeError):
+        adapter.list_documents(UserContext("t-1", "u-1", "employee"), "kb-1")
+    with pytest.raises(ValueError):
+        adapter.list_documents(UserContext("t-1", "u-1", "employee"), "kb-1", page=0)
+    with pytest.raises(ValueError):
+        adapter.list_documents(UserContext("t-1", "u-1", "employee"), "kb-1", page_size=1000)
+
+
 def test_weknora_adapter_resolves_scope_from_role_registry() -> None:
     calls = 0
 
