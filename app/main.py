@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 from .domain import (
@@ -110,6 +110,14 @@ from .skills.models import (
     SkillStateConflict,
 )
 from .skills.service import SkillService
+from .knowledge_governance.models import (
+    InvalidKnowledgeDoc,
+    KnowledgeDoc,
+    KnowledgeDocNotFound,
+    KnowledgeDocStateConflict,
+    ensure_can_read_metrics as ensure_knowledge_metrics_read,
+)
+from .knowledge_governance.service import KnowledgeGovernanceService
 from .conversation import (
     Conversation,
     ConversationMessage,
@@ -139,6 +147,9 @@ store = build_task_repository(settings)
 event_bus = build_event_bus(settings)
 dead_letter_store = build_dead_letter_store(settings, event_bus=event_bus, audit=audit_service)
 knowledge_access_registry = build_knowledge_access_registry(settings)
+# 知识治理层（规格 docs/superpowers/specs/2026-09-15-knowledge-governance-design.md §2）：
+# 总开关默认 false（fail-closed）——关闭时不作文档级过滤，保持既有检索行为。
+knowledge_governance_service = build_knowledge_governance_service(settings, audit=audit_service)
 workforce_directory_store = build_workforce_directory_store(settings)
 workforce_directory_service = WorkforceDirectoryService(
     workforce_directory_store,
@@ -2127,6 +2138,195 @@ def get_agent_knowledge_access(agent_key: str, context: UserContext = Depends(cu
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return _knowledge_access_view("agent", agent_key, knowledge_access_registry.resolve(context, agent_key, agent_key))
+
+
+# ------------------------------------------------------------ 知识治理层（规格 2026-09-15-knowledge-governance-design.md §2）
+
+
+class KnowledgeDocView(BaseModel):
+    """知识文档视图：不含正文（正文仍在 WeKnora 侧）。"""
+
+    document_id: str
+    title: str
+    owner_id: str
+    status: str
+    version: str
+    source_key: str
+    last_reviewed_at: datetime | None = None
+    review_due_at: datetime | None = None
+    registered_by: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class KnowledgeDocRegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document_id: str = Field(min_length=1, max_length=128)
+    title: str = Field(default="", max_length=300)
+    owner_id: str = Field(default="", max_length=128)
+    version: str = Field(default="1", max_length=32)
+    source_key: str = Field(default="manual", max_length=32)
+
+
+class KnowledgeDocListResponse(BaseModel):
+    items: list[KnowledgeDocView]
+    total: int
+    limit: int
+    offset: int
+
+
+class KnowledgeMetricsResponse(BaseModel):
+    published: int
+    needs_review: int
+    archived: int
+    total: int
+    freshness_ratio: float
+
+
+def _knowledge_doc_view(doc: KnowledgeDoc) -> KnowledgeDocView:
+    return KnowledgeDocView(
+        document_id=doc.document_id,
+        title=doc.title,
+        owner_id=doc.owner_id,
+        status=doc.status.value if hasattr(doc.status, "value") else str(doc.status),
+        version=doc.version,
+        source_key=doc.source_key,
+        last_reviewed_at=doc.last_reviewed_at,
+        review_due_at=doc.review_due_at,
+        registered_by=doc.registered_by,
+        created_at=doc.created_at,
+        updated_at=doc.updated_at,
+    )
+
+
+def _raise_knowledge_gov_http(exc: Exception) -> NoReturn:
+    """把知识治理领域异常映射成 HTTP 语义（规格 §3.2）。"""
+    if isinstance(exc, KnowledgeDocStateConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, InvalidKnowledgeDoc):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, KnowledgeDocNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, PolicyError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    raise exc
+
+
+@app.post("/api/v1/knowledge/documents", response_model=KnowledgeDocView, status_code=status.HTTP_201_CREATED)
+def register_knowledge_doc(
+    payload: KnowledgeDocRegisterRequest, context: UserContext = Depends(current_user)
+) -> KnowledgeDocView:
+    """登记知识文档（draft；仅 super_admin）。幂等：同 (tenant, document_id) 重复返回既有。"""
+    try:
+        doc = knowledge_governance_service.register_document(
+            context,
+            document_id=payload.document_id,
+            title=payload.title,
+            owner_id=payload.owner_id,
+            version=payload.version,
+            source_key=payload.source_key,
+        )
+    except (InvalidKnowledgeDoc, KnowledgeDocNotFound, KnowledgeDocStateConflict, PolicyError) as exc:
+        _raise_knowledge_gov_http(exc)
+    return _knowledge_doc_view(doc)
+
+
+@app.get("/api/v1/knowledge/documents", response_model=KnowledgeDocListResponse)
+def list_knowledge_docs(
+    knowledge_status: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> KnowledgeDocListResponse:
+    """知识文档列表（仅 super_admin）；必须分页。"""
+    try:
+        items, total = knowledge_governance_service.list_documents(
+            context, status=knowledge_status, limit=limit, offset=offset
+        )
+    except (InvalidKnowledgeDoc, KnowledgeDocNotFound, PolicyError) as exc:
+        _raise_knowledge_gov_http(exc)
+    return KnowledgeDocListResponse(
+        items=[_knowledge_doc_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
+
+
+@app.post("/api/v1/knowledge/documents/{document_id}/publish", response_model=KnowledgeDocView)
+def publish_knowledge_doc(
+    document_id: str,
+    owner_id: str | None = Query(default=None, max_length=128),
+    context: UserContext = Depends(current_user),
+) -> KnowledgeDocView:
+    """发布知识文档（发布闸门：owner 必填；draft → published）。"""
+    try:
+        doc = knowledge_governance_service.publish_document(
+            context, document_id, owner_id=owner_id
+        )
+    except (InvalidKnowledgeDoc, KnowledgeDocNotFound, KnowledgeDocStateConflict, PolicyError) as exc:
+        _raise_knowledge_gov_http(exc)
+    return _knowledge_doc_view(doc)
+
+
+@app.post("/api/v1/knowledge/documents/{document_id}/archive", response_model=KnowledgeDocView)
+def archive_knowledge_doc(document_id: str, context: UserContext = Depends(current_user)) -> KnowledgeDocView:
+    """归档知识文档（终态，不物理删）。"""
+    try:
+        doc = knowledge_governance_service.archive_document(context, document_id)
+    except (InvalidKnowledgeDoc, KnowledgeDocNotFound, KnowledgeDocStateConflict, PolicyError) as exc:
+        _raise_knowledge_gov_http(exc)
+    return _knowledge_doc_view(doc)
+
+
+@app.post("/api/v1/knowledge/documents/{document_id}/review")
+def review_knowledge_doc(
+    document_id: str,
+    approved: bool = Query(...),
+    context: UserContext = Depends(current_user),
+) -> KnowledgeDocView:
+    """复核知识文档（人工事件）：approved → published + 刷新复核时间；否则 → archived。"""
+    try:
+        doc = knowledge_governance_service.review_document(context, document_id, approved=approved)
+    except (InvalidKnowledgeDoc, KnowledgeDocNotFound, KnowledgeDocStateConflict, PolicyError) as exc:
+        _raise_knowledge_gov_http(exc)
+    return _knowledge_doc_view(doc)
+
+
+@app.post("/api/v1/knowledge/review-scan")
+def scan_knowledge_review_due(context: UserContext = Depends(current_user)) -> dict[str, int]:
+    """手动触发到期扫描：published 且过 review_due_at → needs_review；返回置位数（幂等）。"""
+    try:
+        count = knowledge_governance_service.scan_review_due(context)
+    except (InvalidKnowledgeDoc, KnowledgeDocNotFound, KnowledgeDocStateConflict, PolicyError) as exc:
+        _raise_knowledge_gov_http(exc)
+    return {"reviewed_due": count}
+
+
+@app.get("/api/v1/knowledge/metrics", response_model=KnowledgeMetricsResponse)
+def knowledge_governance_metrics(context: UserContext = Depends(current_user)) -> KnowledgeMetricsResponse:
+    """Freshness Index（运营指标，仅 super_admin）。"""
+    try:
+        metrics = knowledge_governance_service.metrics(context)
+    except (InvalidKnowledgeDoc, KnowledgeDocNotFound, PolicyError) as exc:
+        _raise_knowledge_gov_http(exc)
+    return KnowledgeMetricsResponse(**metrics)
+
+
+@app.get("/api/v1/knowledge/governance/eligible", response_model=KnowledgeDocListResponse)
+def knowledge_governance_eligible(
+    limit: int = Query(default=200, ge=1, le=1000),
+    context: UserContext = Depends(current_user),
+) -> KnowledgeDocListResponse:
+    """检索谓词守卫白名单出口（§2.3）：只返回 status='published' 且未过 review_due_at 的文档。
+
+    供未来检索组合件在请求 WeKnora 前取白名单（空则 fail-closed）；仅 super_admin 可读。
+    """
+    try:
+        ensure_knowledge_metrics_read(context)
+        docs = knowledge_governance_service.list_published_eligible(context)
+    except (InvalidKnowledgeDoc, KnowledgeDocNotFound, PolicyError) as exc:
+        _raise_knowledge_gov_http(exc)
+    return KnowledgeDocListResponse(
+        items=[_knowledge_doc_view(item) for item in docs], total=len(docs), limit=limit, offset=0
+    )
 
 
 @app.get("/api/v1/knowledge-access/audits")

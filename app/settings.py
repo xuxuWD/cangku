@@ -448,6 +448,16 @@ class Settings(BaseSettings):
         default=64 * 1024, ge=256, le=1024 * 1024,
         validation_alias=AliasChoices("SKILL_CONTENT_MAX_BYTES", "WORKBENCH_SKILL_CONTENT_MAX_BYTES"),
     )
+    # 知识治理层（口径见 docs/superpowers/specs/2026-09-15-knowledge-governance-design.md §2.6）：
+    # 总开关（fail-closed：关闭时不作文档级过滤，保持既有检索行为）；复核到期宽限（天）。
+    knowledge_governance_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("KNOWLEDGE_GOVERNANCE_ENABLED", "WORKBENCH_KNOWLEDGE_GOVERNANCE_ENABLED"),
+    )
+    knowledge_review_grace_days: int = Field(
+        default=30, ge=1, le=3650,
+        validation_alias=AliasChoices("KNOWLEDGE_REVIEW_GRACE_DAYS", "WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS"),
+    )
     # 跨源部署（桌面端远程模式 / PWA 伴侣端）：非 development 环境只在显式配置来源后
     # 才注册 CORS；留空即视为「不允许任何跨源」（fail-closed）。
     cors_allowed_origins: str = Field(

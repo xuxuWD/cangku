@@ -102,6 +102,11 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'skill.rejected': '技能包已驳回',
   'skill.enabled': '技能已启用',
   'skill.disabled': '技能已停用',
+  'knowledge.doc.registered': '知识文档已登记',
+  'knowledge.doc.published': '知识文档已发布',
+  'knowledge.doc.archived': '知识文档已归档',
+  'knowledge.doc.reviewed': '知识文档已复核',
+  'knowledge.doc.review_due': '知识文档已到期待复核',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

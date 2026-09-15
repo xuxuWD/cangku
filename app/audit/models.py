@@ -74,6 +74,13 @@ class AuditAction(StrEnum):
     SKILL_REJECTED = "skill.rejected"
     SKILL_ENABLED = "skill.enabled"
     SKILL_DISABLED = "skill.disabled"
+    # 知识治理层（真源 specs/2026-09-15-knowledge-governance-design.md §2.7）：
+    # 只记文档标识/标题/状态/负责人/版本/来源（**不落正文**）。
+    KNOWLEDGE_DOC_REGISTERED = "knowledge.doc.registered"
+    KNOWLEDGE_DOC_PUBLISHED = "knowledge.doc.published"
+    KNOWLEDGE_DOC_ARCHIVED = "knowledge.doc.archived"
+    KNOWLEDGE_DOC_REVIEWED = "knowledge.doc.reviewed"
+    KNOWLEDGE_DOC_REVIEW_DUE = "knowledge.doc.review_due"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -132,6 +139,13 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "license",
         "content_sha256",
         "approved",
+        # 知识治理层（只记文档标识/标题/状态/负责人/版本/来源，不落正文；口径见 knowledge-governance §2.7）
+        "document_id",
+        "title",
+        "status",
+        "owner_id",
+        "version",
+        "source_key",
     }
 )
 

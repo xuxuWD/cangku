@@ -63,7 +63,13 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.SKILL_REJECTED.value == "skill.rejected"
     assert AuditAction.SKILL_ENABLED.value == "skill.enabled"
     assert AuditAction.SKILL_DISABLED.value == "skill.disabled"
-    assert len(set(AuditAction)) == 58
+    # 知识治理层（2026-09-15）：新增五个动作码，值必须稳定为契约字符串（knowledge-governance §2.7）。
+    assert AuditAction.KNOWLEDGE_DOC_REGISTERED.value == "knowledge.doc.registered"
+    assert AuditAction.KNOWLEDGE_DOC_PUBLISHED.value == "knowledge.doc.published"
+    assert AuditAction.KNOWLEDGE_DOC_ARCHIVED.value == "knowledge.doc.archived"
+    assert AuditAction.KNOWLEDGE_DOC_REVIEWED.value == "knowledge.doc.reviewed"
+    assert AuditAction.KNOWLEDGE_DOC_REVIEW_DUE.value == "knowledge.doc.review_due"
+    assert len(set(AuditAction)) == 63
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

@@ -1165,3 +1165,35 @@ def build_skills_service(settings: Settings, *, store=None, audit=None, memory=N
         # M3 打通（2026-09-15）：技能经验沉淀依赖的 P3 记忆服务实例（可为 None → 503）。
         memory=memory,
     )
+
+
+def build_knowledge_governance_service(settings: Settings, *, store=None, audit=None):
+    """装配知识治理服务（规格 2026-09-15-knowledge-governance-design.md §2）。
+
+    - 总开关 `WORKBENCH_KNOWLEDGE_GOVERNANCE_ENABLED`（默认 false，fail-closed）：关闭时不作文档级过滤；
+    - `review_grace_days` = 复核到期宽限（默认 30 天）。
+    - 未显式传入 store 时按存储模式自建（同 P3/P4 模式：内存仅 development）。
+    """
+    validate_runtime_settings(settings)
+    from .knowledge_governance.service import KnowledgeGovernanceService
+    from .knowledge_governance.store import InMemoryKnowledgeGovStore, PostgresKnowledgeGovStore
+
+    if store is None:
+        if settings.storage_backend == "memory":
+            if settings.env != "development":
+                raise ValueError("生产环境禁止使用内存知识治理仓储")
+            store = InMemoryKnowledgeGovStore()
+        elif settings.storage_backend == "postgres":
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+            store = PostgresKnowledgeGovStore(connection)
+        else:
+            raise ValueError("不支持的知识治理存储类型")
+    return KnowledgeGovernanceService(
+        store,
+        audit=audit,
+        review_grace_days=settings.knowledge_review_grace_days,
+    )
