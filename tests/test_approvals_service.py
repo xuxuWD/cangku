@@ -181,6 +181,18 @@ def test_plan_proposal_self_review_is_excluded() -> None:
     assert [item.requested_by for item in items if item.kind == "plan_proposal"] == ["u-2"]
 
 
+def test_task_self_review_is_excluded() -> None:
+    """任务类与计划提案同口径：发起人 == 当前用户的条目被剔除（避免展示点不动的待办）。"""
+    service, task_store, _, _ = build_service()
+    add_task(task_store, task_id="task-own", created_by="ceo-1")
+    add_task(task_store, task_id="task-other", created_by="u-2")
+
+    items, counts = service.pending(context("ceo", user_id="ceo-1"), limit=50)
+
+    assert counts["task_approval"] == 1
+    assert [item.target_id for item in items if item.kind == "task_approval"] == ["task-other"]
+
+
 def test_limit_caps_each_kind() -> None:
     service, task_store, proposal_store, accounts = build_service()
     for index in range(3):

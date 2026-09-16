@@ -62,7 +62,12 @@ class ApprovalsService:
         items: list[PendingApproval] = []
 
         if actor.role in _APPROVER_ROLES:
-            tasks = self.task_store.list_pending_approval(actor.tenant_id, limit=limit)
+            tasks = [
+                task
+                for task in self.task_store.list_pending_approval(actor.tenant_id, limit=limit)
+                # 审批动作禁止发起人自审，列表同样剔除，避免展示无法操作的事项（与计划提案同一逻辑）。
+                if task.created_by != actor.user_id
+            ]
             items.extend(self._task_item(task) for task in tasks)
             proposals = [
                 proposal

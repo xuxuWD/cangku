@@ -2990,6 +2990,10 @@ def get_task(task_id: str, context: UserContext = Depends(current_user)) -> Task
 def approve_task(task_id: str, context: UserContext = Depends(current_user)) -> TaskView:
     try:
         ensure_can_approve(context)
+        # 发起人不得自审（与计划提案 / 运行内审批同一口径）：先取任务做归属校验，
+        # 再走状态机（403 先于 409，与既有审批入口的检查顺序一致）。
+        if store.get(context, task_id).created_by == context.user_id:
+            raise PolicyError("发起人不能审批自己创建的任务")
         task = store.approve(context, task_id)
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

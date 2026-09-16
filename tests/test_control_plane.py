@@ -70,6 +70,41 @@ def test_high_risk_task_requires_approval_and_ceo_can_approve() -> None:
     assert approve.json()["audit_count"] == 2
 
 
+def test_task_creator_cannot_approve_own_task() -> None:
+    """发起人不得自审：CEO 自建的需审批任务，本人审批 403，另一审批人可正常审批。"""
+    create = client.post(
+        "/api/v1/tasks",
+        headers=headers(role="ceo", user_id="ceo-self"),
+        json={
+            "title": "CEO 自建高风险任务",
+            "employee_key": "content-operator",
+            "risk_level": "high",
+            "budget": 10,
+            "idempotency_key": "self-review-001",
+        },
+    )
+
+    assert create.status_code == 201
+    task = create.json()
+    assert task["status"] == "pending_approval"
+
+    approve_self = client.post(
+        f"/api/v1/tasks/{task['id']}/approve",
+        headers=headers(role="ceo", user_id="ceo-self"),
+    )
+
+    assert approve_self.status_code == 403
+    assert "发起人" in approve_self.json()["detail"]
+
+    approve_other = client.post(
+        f"/api/v1/tasks/{task['id']}/approve",
+        headers=headers(role="ceo", user_id="ceo-other"),
+    )
+
+    assert approve_other.status_code == 200
+    assert approve_other.json()["status"] == "queued"
+
+
 def test_task_lifecycle_publishes_events_once() -> None:
     from app import main
 
