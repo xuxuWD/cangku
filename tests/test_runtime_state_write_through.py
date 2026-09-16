@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.bootstrap import build_runtime_state_store
+from app.bootstrap import build_runtime_service, build_runtime_state_store
 from app.runtime.contracts import AgentPlan, RuntimeContext, RuntimeEventType
 from app.runtime.mock import MockRuntime
 from app.runtime.serialization import decode_state, encode_state
@@ -243,3 +243,18 @@ def test_build_runtime_state_store_selects_postgres_with_injected_connection() -
     )
 
     assert isinstance(store, PostgresRuntimeStateStore)
+
+
+def test_build_runtime_service_rejects_default_state_store_outside_development() -> None:
+    """10.6：非 development 未显式注入 state_store ⇒ 装配期抛错，不得静默回退内存。"""
+    settings = Settings(
+        env="production",
+        storage_backend="postgres",
+        database_url="postgresql://workbench:pw@pg.internal:5432/workbench",
+        auth_secret="a" * 32,
+        backup_encryption_key="b" * 32,
+        content_store_backend="sqlite",
+    )
+
+    with pytest.raises(ValueError, match="生产环境必须显式注入"):
+        build_runtime_service(settings, store=object())

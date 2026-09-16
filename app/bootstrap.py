@@ -619,12 +619,17 @@ def build_runtime_service(
 
     `usage_ledger` 为商业化追加式用量账本（`app/main.py` 传入装配期单例，与
     `GET /api/v1/commercial/usage` 读取的**同一实例**）；未传入时为 `None`（不记账）。
+
+    `state_store` 缺省仅 development 允许（回退内存实现）；非 development 必须显式注入持久化
+    实例，缺省即抛错（fail-closed，组 10.6——不得静默回退内存）。
     """
     validate_runtime_settings(settings)
     from .runtime.registry import build_runtime_registry
     from .runtime.service import RuntimeService
     from .runtime.state import RuntimeStateStore
 
+    if state_store is None and settings.env != "development":
+        raise ValueError("生产环境必须显式注入运行时状态仓储（禁止内存回退）")
     shared_state_store = state_store or RuntimeStateStore()
     registry = build_runtime_registry(
         _runtime_registry_config(settings),
