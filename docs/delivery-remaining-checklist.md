@@ -46,7 +46,7 @@
       判据（2026-09-12 本机实测三场景全部跑通）：`login_throttle` 第二次 `{429:8}`；`task_idempotency` `{200:7,201:1}`（同一幂等键只产生 1 条记录）；`plan_approval` `{200:1,409:7}`（并发审批保持原子）
 - [ ] 1.9 **审计落 PG 的实跑验证 + 日志采集告警**
       判据：库里能查到审计行；采集侧有告警规则（此前只有假连接静态断言）
-      - **2026-09-16 本机级进展（不勾选）**：容器演练中审计真实落 PostgreSQL——知识治理扫描 4 轮共写 **1600 行** `workbench_audit_log`（actor=`system:worker`）⇒ 「库里能查到审计行」已在**本机**满足；**告警规则已成文**（runbook「监控与告警」9 条，含「审计是否在落」信号）。**仍缺**：告警**渠道未接入任何环境**、无真实触发证据、未在 staging / 客户侧复跑 ⇒ 维持不勾选。
+      - **2026-09-16 第二批进展（仍不勾选）**：9 条规则从「成文」推进到「可执行」——只读探针 `scripts/monitoring_probe.py` 按 runbook 逐条同口径判定（信号不可用显式 `skipped`，不会静默算作通过），并在本机对真库实跑取证（Outbox 0 条 / 死信 0 条 / 磁盘 67.3% / PG 连接 10-100 等实测值；未接渠道时 `--notify` 不生效）；客户侧「渠道接入 + 触发一次真实告警」的核对清单与配套只读探针见 `docs/customer-side-acceptance-runbook.md` + `scripts/customer_acceptance_probe.py`。**仍缺**：渠道未接入、无真实触发证据。
 - [ ] 1.10 **Outbox / Celery Worker 实跑**：Redis + Worker 进程 + 死信通知渠道地址
       判据：事件经 Outbox 投递成功；失败进死信并能通知
 - [ ] 1.11 **商业化迁移与备份/恢复演练**：真跑一次恢复（不是只看脚本）
@@ -154,14 +154,14 @@
 
 ## 组 10 · 我方实现自查（**无需外部输入** · 2026-09-13 新增）
 
-> **来源**：[OpenMausBot 源码研读报告](file:///d:/徐徐AI学习/公司工作台/docs/openmausbot-source-study-and-adaptation-plan.md) §5.2——从**对方暴露的缺口**反查「我们是否同类风险」。以下各条**此前均未逐条自查**，**不构成对我们现状的定性结论**（沿用"没验证的必须写未验证"）；**2026-09-16 已查的条目在各项下附「结论 + 证据（`文件:行`）」**（10.2 通过 / 10.3 部分通过并登记缺口），**未附结论的仍未查**。
+> **来源**：[OpenMausBot 源码研读报告](file:///d:/徐徐AI学习/公司工作台/docs/openmausbot-source-study-and-adaptation-plan.md) §5.2——从**对方暴露的缺口**反查「我们是否同类风险」。以下各条**此前均未逐条自查**，**不构成对我们现状的定性结论**（沿用"没验证的必须写未验证"）；**2026-09-16 已查的条目在各项下附「结论 + 证据（`文件:行`）」**（10.2 通过；10.3 的「运行事件有界」「日志有界」两条已于 2026-09-16 闭合，但因「磁盘容量告警渠道未接入」仍不勾选），**未附结论的仍未查**。
 > **与本文件口径的偏差说明**：本文件其余各组均为「代码无法代替、需外部输入」；本组是**纯内部核查**，放在此处仅为集中可勾选，**不代表需要外部资源**。
 
 - [ ] 10.1 审计是否有 **DELETE / 清理路径**（`app/audit/store.py` 与数据库层是否 REVOKE）——判据：**可删即不合规**
 - [x] 10.2 审计与运行日志的**轮转策略**是否避免「只留一份 `.1`、覆盖历史」；是否有**日期分段或外部归档**
       - **结论（2026-09-16 自查）：无「只留 `.1`」风险，且日志有界。** 证据：① 应用侧审计日志只有 `StreamHandler(sys.stdout)`、**无 `FileHandler`**（`app/audit/logging.py:22`）⇒ 不存在应用内「覆盖式保留 `.1`」的机制（由 `tests/test_audit_logging.py` 守护）；② 落盘与轮转交给容器运行时：三服务已设 `json-file` / `max-size=10m` / `max-file=5`（`docker-compose.app.yml`，2026-09-16 本机演练 `docker inspect` 实查生效；`tests/test_compose_worker_assets.py::test_app_services_bound_container_log_growth` 守护）；③ 数据库里的审计行**不轮转、不删除**（不可篡改口径，见 10.1）。**未做**：外部归档与日期分段——长期留存需由客户侧日志采集承担（runbook「监控与告警」接入方式）。
 - [ ] 10.3 运行事件 / 日志是否**有界**（容量与保留），并配**磁盘容量告警**
-      - **结论（2026-09-16 自查）：部分通过，仍有缺口 ⇒ 不勾选。** ① **日志有界 ✓**（同 10.2 证据②）；② **运行事件无界 ✗**——`app/runtime/state.py:17` 的 `events` 是**无界 list**（整段经 `app/runtime/serialization.py:217` 序列化进运行时状态的单行 JSONB）⇒ 长运行 / 多事件会把状态行越写越大，**没有容量与保留上限**（已按「未验证项/缺口」登记进 `docs/change-record.md` 2026-09-16 条，待专项决策：截断 / 分表 / 归档）；③ **磁盘容量告警**：规则已写入 runbook「监控与告警」第 7 条（≥80% 预警 / ≥90% 严重），但**渠道未接入** ⇒ 尚未生效。
+      - **结论（2026-09-16 自查，两批）：前两条已闭合，仅剩「磁盘容量告警」的渠道接入 ⇒ 仍不勾选。** ① **日志有界 ✓**（同 10.2 证据②）；② **运行事件有界 ✓（2026-09-16 第二批闭合）**——事件已从状态行的行内 JSONB（改造前 `app/runtime/state.py` 的无界 list，经 `app/runtime/serialization.py` 整段序列化）迁到 **append-only 表 `workbench_runtime_events`**（迁移 `034`：主键 `(run_id, sequence)`，一次追加只写一行，状态行只留计数 `event_count` ⇒ 行大小有界、且消除写放大），并由 worker 周期任务 `runtime-events-purge` 按 **保留期**（`WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS`，默认 30 天）清理 `occurred_at` 超期的行 ⇒ **容量与保留都有上限**；清理**不触碰审计**（`tests/test_runtime_events_postgres.py::test_purge_never_touches_the_audit_log` 守护），`GET /api/v1/runs/{run_id}/events` 的 cursor 断点读取语义不变（同一文件另有游标与序号单调断言）；③ **磁盘容量告警**：规则已写入 runbook「监控与告警」第 7 条（≥80% 预警 / ≥90% 严重），并已落成只读探针 `scripts/monitoring_probe.py`（本机实跑取证），但**渠道仍未接入任何环境** ⇒ 尚未生效，故本条不勾选（与 1.9 同因）。
 - [ ] 10.4 `redact_payload` 是否覆盖**值的形态**（不只看键名：工具标题 / 命令摘要 / 回复正文里可能带 key），且掩码**幂等**（重复脱敏不改变 payload hash）
 - [ ] 10.5 金额 / 费用是否**全部整数分**（`usage_ledger` 与展示层；`daily_budget_cents` 已合规，其余待核）
 - [ ] 10.6 生产是否**强制 `state_postgres`**（内存态仅限 development）

@@ -58,6 +58,12 @@ Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-ch
    - **排查顺序**：① `docker compose logs beat | grep knowledge-review-scan`（有没有派发）→ ② `docker compose logs worker | grep scan_knowledge_review_due`（有没有执行、返回的 `candidates/flipped`）→ ③ 查库看 `status` 与审计。**只起 worker 不起 beat 时不会派发**（见第 1 条）。
    - **interval 一致性**：该间隔由 **beat** 侧读取（`create_celery_app` 建排程表），worker 与 beat 两个服务必须配同一个值（编排里已对齐，`tests/test_compose_worker_assets.py` 守护）。
    - **审计缺失即失败**：装配未注入审计通道时，扫描会 fail-closed 抛错（任务显式失败、日志可见），不会静默置位而留不下审计（规格 §4 N7）——看到这类失败先检查 worker 的审计装配，不要「修」成静默跳过。
+8. **运行事件保留期（`runtime-events-purge`，2026-09-16 新增）**：运行事件独立存 **append-only 表 `workbench_runtime_events`**（迁移 `034`：主键 `(run_id, sequence)`，一次追加只写一行；状态行 `workbench_runtime_states` 不再承载事件，只留事件计数 `event_count`）。beat 按 `WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS`（默认 3600 秒，范围 30–604800）派发 `app.worker.purge_runtime_events`，按 `occurred_at` 删除超出 `WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS`（默认 30 天，范围 1–3650）的事件 ⇒ **运行事件有界**。
+   - **只清理运行事件**：审计（`workbench_audit_log`）**不可删除**，清理器不触碰任何审计表（`tests/test_runtime_events_postgres.py` 有专门断言）。
+   - **清理的可见影响**：`GET /api/v1/runs/{run_id}/events` 只返回保留期内的事件；**已删序号不会被复用**（`event_count` 不回退，序号继续单调递增）。
+   - **interval 一致性**：同第 7 条——间隔由 **beat** 侧读取，worker 与 beat 两个服务必须配同一个值（编排里已对齐，`tests/test_compose_worker_assets.py` 守护）。
+   - **排查顺序**：① `docker compose logs beat | grep runtime-events-purge`（有没有派发）→ ② `docker compose logs worker | grep purge_runtime_events`（返回删除条数；未接线时为 0）→ ③ `SELECT count(*), min(occurred_at), max(occurred_at) FROM workbench_runtime_events;`（体量与时间窗）。
+   - **存量注意**：迁移 `034` 回填的老事件**没有原始时间戳**，`occurred_at` 用状态行创建时间近似填充（只影响这些老事件的计龄）；存量老运行的 `knowledge_hits` 为 0（不回溯统计），新运行从改造后开始累积。
 
 ## 监控与告警
 
@@ -76,6 +82,15 @@ Staging 验收按 [`docs/staging-acceptance-checklist.md`](staging-acceptance-ch
 | 9 | **worker 资源** | 单容器 RSS 持续 >512MiB ⇒ 告警 | 实测峰值 206.3MiB（并发 4）；阈值取最高实测的 ≈2.5 倍——先告警、人工判断，**不自动重启** |
 
 **接入方式（三选一，按客户环境定）**：① 客户既有监控平台（Prometheus / Zabbix / 云监控）按其承载方式落地上表规则；② 宿主侧轻量采集脚本 + 邮件或 webhook（可复用死信 webhook 的通知形态，注意载荷脱敏）；③ 云厂商容器 / 数据库自带的健康与容量告警。**无论选哪种，都要把「实际接入 + 一次真实触发验证」写入客户交付记录**——规则写在手册里不等于告警已生效。
+
+**可执行探针（2026-09-16 新增）**：上表 9 条规则已落成**只读**探针 `scripts/monitoring_probe.py`（`py scripts/monitoring_probe.py --help`），由人在客户侧执行、输出可脱敏回传：
+
+- 覆盖 9 条规则的判定与默认阈值（口径与上表逐条一致；可用 `--threshold name=value` 覆盖）；**信号不可用**（无 docker / 无 DSN / 未配地址）时显式 `skipped` 并写明原因，**不会静默算作通过**。
+- 退出码：`0` 全 `ok` 或 `skipped`、`1` 存在 `alert`、`2` 参数或配置错误；默认拒绝 `http://` 与 localhost 目标（需显式 `--allow-insecure` / `--allow-local`）。
+- 通知**可选**：`--notify` 且已配置 `WORKBENCH_ALERT_WEBHOOK_URL` 时，复用既有脱敏 webhook 形态发送摘要（未配置则不发、不报错）。**渠道未接入时 `--notify` 无效**——渠道落地仍须走上面的「接入方式」。
+- **探针 ≠ 渠道接入**：探针只把「判定」做成可执行；「有人真的收到告警」仍需在客户环境接入渠道并触发一次验证。
+
+**客户侧交付验收**：容器起栈与版本核对、日志上限、连接账目复测、告警接入核对、运行事件与审计留存等核对项与只读探针，见同目录 [`customer-side-acceptance-runbook.md`](customer-side-acceptance-runbook.md)（配套 `scripts/customer_acceptance_probe.py`）。
 
 ## 容量与并发
 
