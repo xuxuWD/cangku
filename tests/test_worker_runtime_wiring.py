@@ -124,3 +124,64 @@ def test_wiring_failure_fails_the_task(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError):
         worker.scan_knowledge_review_due()
+
+
+# ------------------------------------------------------------ 导出包过期清理任务（组 10.7 加固）
+#
+# 口径：docs/api-contract.md「GET /api/v1/commercial/exports/{package_id}」——
+# 过期包（`expires_at <= now`）不提供取回，由 beat 排程的任务按 `expires_at` 物理清理。
+# 该任务**复用既有 `_lifecycle_runner` 注入点**（导出包仓储归生命周期服务持有，
+# 不为清理另开注入点），与 `run_lifecycle_jobs` 同口径：未接线即返回 0。
+
+
+def test_export_package_purge_task_is_scheduled_alongside_existing_periodic_tasks() -> None:
+    from app.settings import Settings
+    from app.worker import celery_app
+
+    entry = celery_app.conf.beat_schedule["export-packages-purge"]
+    settings = Settings()
+
+    assert entry["task"] == "app.worker.purge_export_packages"
+    assert entry["schedule"] == settings.export_package_purge_interval_seconds
+    assert entry["schedule"] > 0
+
+
+def test_export_package_purge_interval_defaults_and_bounds() -> None:
+    from app.settings import Settings
+
+    field = Settings.model_fields["export_package_purge_interval_seconds"]
+
+    # 判定依据（本批拍板口径）：默认 1h 扫一次，范围 30s–7 天（与运行事件清理间隔同口径）。
+    assert field.default == 3600
+    assert Settings(export_package_purge_interval_seconds=30).export_package_purge_interval_seconds == 30
+    assert (
+        Settings(export_package_purge_interval_seconds=7 * 24 * 3600).export_package_purge_interval_seconds
+        == 7 * 24 * 3600
+    )
+    for invalid in (29, 7 * 24 * 3600 + 1):
+        with pytest.raises(Exception):
+            Settings(export_package_purge_interval_seconds=invalid)
+
+
+def test_export_package_purge_returns_zero_when_worker_is_not_wired(monkeypatch) -> None:
+    monkeypatch.setattr(worker, "_ensure_runtime", lambda: None)
+
+    assert worker.purge_export_packages() == 0
+
+
+def test_export_package_purge_delegates_to_the_wired_lifecycle_runner(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _Runner:
+        def run_pending_jobs(self, *, limit: int = 100) -> dict[str, int]:
+            return {"exports": 0, "deletions": 0}
+
+        def purge_expired_export_packages(self, *, now=None) -> int:
+            calls.append("purged")
+            return 5
+
+    monkeypatch.setattr(worker, "_ensure_runtime", lambda: None)
+    worker.configure_lifecycle(_Runner())
+
+    assert worker.purge_export_packages() == 5
+    assert calls == ["purged"]

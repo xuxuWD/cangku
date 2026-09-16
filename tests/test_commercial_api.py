@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -83,3 +85,66 @@ def test_cancel_without_pending_request_returns_409_and_employee_403():
         headers=headers(role="employee", user="owner-1", tenant="tenant-commercial-cancel-none"),
     )
     assert denied.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# 组 10.7 加固：导出包取回端点（admin-only + 租户归属 + 过期 404）
+# ---------------------------------------------------------------------------
+
+
+def test_customer_admin_can_fetch_own_export_package_only():
+    from app import main
+
+    tenant = "tenant-commercial-package"
+    other = "tenant-commercial-package-other"
+    main.commercial_repository.ensure_test_tenant(tenant, owner_id="owner-1", admins={"admin-1"})
+    # 他租户也**登记在册**（否则会先因"租户不存在"404，测不到导出包的归属比对）。
+    main.commercial_repository.ensure_test_tenant(other, owner_id="owner-2", admins={"admin-9"})
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    package = main.commercial_lifecycle.store_export_package(
+        tenant, "job-api-1", created_at=now, expires_at=now + timedelta(days=7)
+    )
+    admin = headers(user="admin-1", tenant=tenant)
+
+    response = client.get(f"/api/v1/commercial/exports/{package.id}", headers=admin)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["package_id"] == package.id
+    assert body["tenant_id"] == tenant
+    assert body["created_at"] and body["expires_at"]
+    assert body["payload"]["tenant_id"] == tenant
+    assert "password" not in body["payload"]
+    # 普通员工：403（不因"是管理员创建"而放行）。
+    denied = client.get(
+        f"/api/v1/commercial/exports/{package.id}",
+        headers=headers(role="employee", user="admin-1", tenant=tenant),
+    )
+    assert denied.status_code == 403
+    # 他租户管理员取同一个包：404「导出包不存在」（不泄露他租户资源存在性）。
+    foreign = client.get(
+        f"/api/v1/commercial/exports/{package.id}", headers=headers(user="admin-9", tenant=other)
+    )
+    assert foreign.status_code == 404
+    # 不存在的包号：同样是 404。
+    missing = client.get("/api/v1/commercial/exports/export-not-exist", headers=admin)
+    assert missing.status_code == 404
+
+
+def test_expired_export_package_is_rejected_with_explicit_detail():
+    from app import main
+
+    tenant = "tenant-commercial-package-expired"
+    main.commercial_repository.ensure_test_tenant(tenant, owner_id="owner-1", admins={"admin-1"})
+    past = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
+    package = main.commercial_lifecycle.store_export_package(
+        tenant, "job-api-expired", created_at=past, expires_at=past + timedelta(days=7)
+    )
+
+    response = client.get(
+        f"/api/v1/commercial/exports/{package.id}", headers=headers(user="admin-1", tenant=tenant)
+    )
+
+    assert response.status_code == 404
+    # 过期与不存在同为 404，但文案可区分（全仓无 410 先例 ⇒ 不新引入状态码）。
+    assert "已过期" in response.json()["detail"]

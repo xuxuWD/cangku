@@ -13,6 +13,8 @@ from app.commercial.lifecycle import (
     UNIMPLEMENTED_EXPORT_CATEGORIES,
     CommercialLifecycleService,
     DeletionNotPending,
+    ExportPackage,
+    ExportPackageExpired,
     InMemoryExportPackageStore,
     InMemoryLifecycleJobStore,
     LifecycleJob,
@@ -534,3 +536,112 @@ def test_execute_delete_purges_memories_when_store_injected():
     assert memory_store.list_all_for_tenant(tenant.id) == []
     # 其它租户不受牵连。
     assert len(memory_store.list_all_for_tenant(other_tenant.id)) == 1
+
+
+# ---------------------------------------------------------------------------
+# 组 10.7 加固（2026-09-16 用户拍板，两项都做）：
+#   ① 导出包**取回**（admin-only + 租户归属 + 过期拒绝）；② 过期包**物理清理**。
+# 口径：docs/api-contract.md「GET /api/v1/commercial/exports/{package_id}」。
+# 背景：改造前 `POST /commercial/exports` 只落库、**无取回端点**（设计验收要求「申请并下载」，
+# docs/superpowers/specs/2026-09-06-commercial-g0-design.md:173），且过期包无清理路径
+# ⇒ 表 `workbench_export_packages` 只增不减（含租户数据副本，宪法九章）。
+# ---------------------------------------------------------------------------
+
+
+def _completed_package(service, exports, actor, tenant_id: str, *, now: datetime) -> object:
+    """请求导出 → worker 完成 → 返回落库的导出包（过期时刻 = now + 7 天）。"""
+    service.request_export(actor, tenant_id)
+    service.run_pending_jobs(now=now)
+    return exports.saved[-1]
+
+
+def test_get_export_package_returns_redacted_payload_for_admin():
+    repository, tenant, service, exports = worker_service()
+    actor = Actor("admin-1", "customer_admin")
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    package = _completed_package(service, exports, actor, tenant.id, now=now)
+
+    fetched = service.get_export_package(actor, tenant.id, package.id, now=now + timedelta(days=6))
+
+    assert fetched.id == package.id
+    assert fetched.tenant_id == tenant.id
+    assert fetched.payload["tenant_id"] == tenant.id
+    assert has_sensitive_key(fetched.payload) is False
+
+
+def test_get_export_package_rejects_employee_and_cross_tenant():
+    """普通员工 403（服务层 PolicyError）；他租户管理员对同包取回 ⇒ 404（不泄露存在性）。"""
+    repository, tenant, service, exports = worker_service()
+    other = repository.create_tenant("客户 B", owner_id="owner-2")
+    repository.add_customer_admin(other.id, "admin-2")
+    actor = Actor("admin-1", "customer_admin")
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    package = _completed_package(service, exports, actor, tenant.id, now=now)
+
+    with pytest.raises(CommercialPolicyError):
+        service.get_export_package(Actor("emp-1", "employee"), tenant.id, package.id, now=now)
+    with pytest.raises(ResourceNotFound):
+        service.get_export_package(Actor("admin-2", "customer_admin"), other.id, package.id, now=now)
+
+
+def test_get_export_package_expiry_boundary_is_inclusive():
+    """过期判定 `expires_at <= now`：早 1 秒可取，正点即过期（边界钉住，不靠"大约过了期"）。"""
+    repository, tenant, service, exports = worker_service()
+    actor = Actor("admin-1", "customer_admin")
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    package = _completed_package(service, exports, actor, tenant.id, now=now)
+    assert package.expires_at == now + timedelta(days=7)
+
+    with pytest.raises(ExportPackageExpired):
+        service.get_export_package(actor, tenant.id, package.id, now=package.expires_at)
+    available = service.get_export_package(
+        actor, tenant.id, package.id, now=package.expires_at - timedelta(seconds=1)
+    )
+    assert available.id == package.id
+
+
+def test_get_export_package_is_not_found_for_unknown_id():
+    repository, tenant, service, _ = worker_service()
+
+    with pytest.raises(ResourceNotFound):
+        service.get_export_package(
+            Actor("admin-1", "customer_admin"), tenant.id, "export-missing",
+            now=datetime(2026, 9, 14, 8, 0, tzinfo=UTC),
+        )
+
+
+def test_purge_expired_export_packages_removes_only_expired():
+    """清理只删 `expires_at <= now` 的行（正点即过期）；未过期包与生命周期作业不受影响。"""
+    repository, tenant, service, exports = worker_service()
+    actor = Actor("admin-1", "customer_admin")
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    package = _completed_package(service, exports, actor, tenant.id, now=now)
+
+    # 未到期：一条也不删（`now` 早于 expires_at）。
+    assert service.purge_expired_export_packages(now=package.expires_at - timedelta(seconds=1)) == 0
+    assert service.export_store.get(package.id, tenant_id=tenant.id).id == package.id
+
+    # 正点：过期即清（物理删除 ⇒ 取回 404 同「不存在」）。
+    assert service.purge_expired_export_packages(now=package.expires_at) == 1
+    with pytest.raises(ResourceNotFound):
+        service.export_store.get(package.id)
+    # 作业记录不随之删除（导出作业本身是生命周期事实，非数据副本）。
+    assert service.get_job(package.job_id).status == "completed"
+
+
+def test_in_memory_export_store_purge_is_scoped_to_expiry_and_keeps_others():
+    """存储层直测：只删过期行、返回删除条数（内存实现与 PG 实现同语义）。"""
+    store = InMemoryExportPackageStore()
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    expired = ExportPackage(tenant_id="t-1", payload={"tenant_id": "t-1"}, expires_at=now, id="export-old")
+    fresh = ExportPackage(
+        tenant_id="t-1", payload={"tenant_id": "t-1"},
+        expires_at=now + timedelta(seconds=1), id="export-fresh",
+    )
+    store.save(expired)
+    store.save(fresh)
+
+    assert store.purge_expired(now=now) == 1
+    assert store.get(fresh.id).id == fresh.id
+    with pytest.raises(ResourceNotFound):
+        store.get(expired.id)

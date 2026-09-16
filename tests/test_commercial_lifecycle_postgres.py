@@ -21,11 +21,12 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.commercial.lifecycle import LifecycleJob, PostgresLifecycleJobStore
+from app.commercial.lifecycle import ExportPackage, LifecycleJob, PostgresExportPackageStore, PostgresLifecycleJobStore
+from app.commercial.repository import ResourceNotFound
 
 DSN = os.environ.get("WORKBENCH_TEST_DATABASE_URL", "")
 
@@ -106,3 +107,55 @@ def test_list_for_tenant_breaks_same_timestamp_ties_by_id(store) -> None:
     listed = store.list_for_tenant(TENANT, kind="delete")
 
     assert [job.id for job in listed] == ["job-a", "job-b"]
+
+
+# ---------------------------------------------------------------------------
+# 组 10.7 加固（2026-09-16）：导出包过期清理的真库语义
+# 口径：docs/api-contract.md「GET /api/v1/commercial/exports/{package_id}」——
+# 过期包由 worker 周期任务按 `expires_at` 物理清理（`DELETE ... WHERE expires_at <= now`）。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def export_store():
+    psycopg = pytest.importorskip("psycopg")
+    connection = psycopg.connect(DSN, autocommit=True)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO workbench_tenants (id, name, owner_id, status)
+            VALUES (%s, '客户PG', 'owner-pg', 'deleting')
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (TENANT,),
+        )
+        cursor.execute("DELETE FROM workbench_export_packages WHERE tenant_id = %s", (TENANT,))
+    yield PostgresExportPackageStore(connection)
+    with connection.cursor() as cursor:
+        cursor.execute("DELETE FROM workbench_export_packages WHERE tenant_id = %s", (TENANT,))
+        cursor.execute("DELETE FROM workbench_tenants WHERE id = %s", (TENANT,))
+    connection.close()
+
+
+def test_purge_expired_removes_only_rows_past_expiry(export_store) -> None:
+    """真库：`expires_at <= now` 的行被物理删除（正点即过期），未过期行留存。"""
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    expired = ExportPackage(
+        tenant_id=TENANT, payload={"tenant_id": TENANT},
+        created_at=now - timedelta(days=7), expires_at=now, id="export-pg-expired",
+    )
+    fresh = ExportPackage(
+        tenant_id=TENANT, payload={"tenant_id": TENANT},
+        created_at=now, expires_at=now + timedelta(seconds=1), id="export-pg-fresh",
+    )
+    export_store.save(expired)
+    export_store.save(fresh)
+
+    removed = export_store.purge_expired(now=now)
+
+    # 清理是**全局**的（跨租户，同 `run_pending_jobs` 口径）⇒ 只对「本租户两行」的下场做断言，
+    # 计数按 `>= 1` 判（真库中若残留他处过期行，不应让本用例假红）。
+    assert removed >= 1
+    assert export_store.get(fresh.id, tenant_id=TENANT).id == fresh.id
+    with pytest.raises(ResourceNotFound):
+        export_store.get(expired.id, tenant_id=TENANT)

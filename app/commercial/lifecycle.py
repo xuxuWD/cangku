@@ -54,6 +54,16 @@ class DeletionNotPending(CommercialPolicyError):
     """撤销删除申请时找不到处于冷静期内、可撤销的删除作业。"""
 
 
+class ExportPackageExpired(CommercialPolicyError):
+    """取回时导出包已过期（`expires_at <= 当前时刻`）。
+
+    **归属与 HTTP 语义**：继承 `CommercialPolicyError` 只为复用异常族，
+    其对外语义**不是 403**——路由必须**先于** `CommercialPolicyError` 捕获本异常并映射 `404`
+    （先例：`DeletionNotPending` → `409` 同为「先捕获再落到通用 403」）。全仓未使用 `410`
+    （改造前核查：`app/` 无命中）⇒ 过期与不存在对客户端同为 `404`，仅文案区分。
+    """
+
+
 @dataclass
 class LifecycleJob:
     tenant_id: str
@@ -98,6 +108,7 @@ class RetentionPolicyStore(Protocol):
 class ExportPackageStore(Protocol):
     def save(self, package: ExportPackage) -> ExportPackage: ...
     def get(self, package_id: str, *, tenant_id: str | None = None) -> ExportPackage: ...
+    def purge_expired(self, *, now: datetime | None = None) -> int: ...
 
 
 class MemoryExportStore(Protocol):
@@ -187,6 +198,15 @@ class InMemoryExportPackageStore:
             if package is None or (tenant_id is not None and package.tenant_id != tenant_id):
                 raise ResourceNotFound(package_id)
             return package
+
+    def purge_expired(self, *, now: datetime | None = None) -> int:
+        """物理删除 `expires_at <= now` 的导出包，返回删除条数（与 PG 实现同语义）。"""
+        cutoff = now or datetime.now(UTC)
+        with self._lock:
+            expired = [pid for pid, package in self._packages.items() if package.expires_at <= cutoff]
+            for pid in expired:
+                del self._packages[pid]
+        return len(expired)
 
 
 class CommercialLifecycleService:
@@ -279,6 +299,30 @@ class CommercialLifecycleService:
             **({} if created_at is None else {"created_at": created_at}),
         )
         return self.export_store.save(package)
+
+    def get_export_package(
+        self, actor: Actor, tenant_id: str, package_id: str, *, now: datetime | None = None
+    ) -> ExportPackage:
+        """取回本租户的导出包（**admin-only**，契约「GET /api/v1/commercial/exports/{package_id}」）。
+
+        权限与归属都在**服务端**判定：先 `_ensure_admin`，再以 `tenant_id` 限定取包
+        （跨租户与不存在统一 `ResourceNotFound`，不泄露他租户资源是否存在）；
+        `expires_at <= now` 视为过期 ⇒ `ExportPackageExpired`（路由映射 `404`）。
+        取回端点与过期清理（`purge_expired_export_packages`）**同一时刻口径**：正点即过期。
+        """
+        self._ensure_admin(actor, tenant_id)
+        package = self.export_store.get(package_id, tenant_id=tenant_id)
+        if package.expires_at <= (now or datetime.now(UTC)):
+            raise ExportPackageExpired("导出包已过期")
+        return package
+
+    def purge_expired_export_packages(self, *, now: datetime | None = None) -> int:
+        """清理过期导出包（物理删除），返回删除条数；供 worker 周期任务调用。
+
+        与 `run_pending_jobs` 同口径：**跨租户**、**不在请求线程执行**。只按包自身
+        `expires_at` 判定；**不触碰**生命周期作业记录（作业是生命周期事实，导出包才是数据副本）。
+        """
+        return self.export_store.purge_expired(now=now)
 
     def request_delete(self, actor: Actor, tenant_id: str) -> LifecycleJob:
         self._ensure_admin(actor, tenant_id)
@@ -552,3 +596,16 @@ class PostgresExportPackageStore:
                 cur.execute(sql, tuple(params)); row=cur.fetchone()
         if row is None: raise ResourceNotFound(package_id)
         return ExportPackage(tenant_id=str(row[1]), job_id=row[2], payload=dict(json.loads(row[3]) if isinstance(row[3], str) else row[3]), expires_at=row[5], id=str(row[0]), created_at=row[4] if isinstance(row[4], datetime) else datetime.now(UTC))
+    def purge_expired(self, *, now: datetime | None = None) -> int:
+        """物理删除过期导出包（`expires_at <= cutoff`，正点即过期），返回删除条数。
+
+        清理**跨租户**、不经 HTTP（worker 周期任务）；迁移 028 已有
+        `idx_workbench_export_packages_expires (expires_at)` 支撑本 DELETE。
+        """
+        cutoff = now or datetime.now(UTC)
+        with self._connection() as c:
+            with c.transaction():
+                with c.cursor() as cur:
+                    cur.execute("DELETE FROM workbench_export_packages WHERE expires_at <= %s", (cutoff,))
+                    removed = cur.rowcount
+        return removed

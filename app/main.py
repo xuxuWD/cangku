@@ -65,7 +65,12 @@ from .content.scraper import ScrapeDenied, ScrapeFailed
 from .content.publication_service import PublicationNotAllowed
 from .content.publication_store import PublicationNotFound
 from .content.publisher import PublicationFailed, PublicationNotConfigured
-from .commercial.lifecycle import CommercialLifecycleService, DeletionNotPending, LifecycleJob
+from .commercial.lifecycle import (
+    CommercialLifecycleService,
+    DeletionNotPending,
+    ExportPackageExpired,
+    LifecycleJob,
+)
 from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
 from .agent_services import ModelNotAllowed
@@ -506,6 +511,17 @@ class LifecycleJobView(BaseModel):
     final_exported: bool = False
 
 
+class ExportPackageView(BaseModel):
+    """导出包取回视图（组 10.7）：脱敏载荷 + 过期时刻（管理台按 `expires_at` 提示有效期）。"""
+
+    package_id: str
+    tenant_id: str
+    job_id: str | None = None
+    created_at: datetime
+    expires_at: datetime
+    payload: dict[str, object]
+
+
 TOTP_ENROLLMENT_ALLOWED: frozenset[tuple[str, str]] = frozenset(
     {
         ("POST", "/api/v1/auth/me/totp"),
@@ -924,6 +940,37 @@ def request_commercial_export(context: UserContext = Depends(current_user)) -> L
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail="租户不存在") from exc
     return _lifecycle_view(job)
+
+
+@app.get("/api/v1/commercial/exports/{package_id}", response_model=ExportPackageView)
+def get_commercial_export_package(
+    package_id: str, context: UserContext = Depends(current_user)
+) -> ExportPackageView:
+    """取回本租户导出包（admin-only，契约「GET /api/v1/commercial/exports/{package_id}」）。
+
+    租户由登录上下文解析（客户端不能指定）；跨租户 / 不存在统一 `404`「导出包不存在」。
+    ⚠️ 捕获顺序：`ExportPackageExpired` **必须先于** `CommercialPolicyError` 捕获
+    （过期继承策略错误族但语义是 `404` 而非 `403`；先例：`DeletionNotPending` → `409`）。
+    过期包由 worker 周期任务 `export-packages-purge` 物理清理（本端点不触发清理）。
+    """
+    try:
+        package = commercial_lifecycle.get_export_package(
+            Actor(context.user_id, context.role), context.tenant_id, package_id
+        )
+    except ExportPackageExpired as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="导出包不存在") from exc
+    return ExportPackageView(
+        package_id=package.id,
+        tenant_id=package.tenant_id,
+        job_id=package.job_id,
+        created_at=package.created_at,
+        expires_at=package.expires_at,
+        payload=package.payload,
+    )
 
 
 @app.post("/api/v1/commercial/deletion-requests", response_model=LifecycleJobView, status_code=status.HTTP_202_ACCEPTED)

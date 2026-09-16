@@ -130,12 +130,18 @@ def test_app_service_declares_required_embedding_endpoint() -> None:
 
 
 def test_worker_and_beat_agree_on_scan_interval() -> None:
-    worker_interval = service("worker")["environment"][SCAN_INTERVAL_KEY]
-    beat_interval = service("beat")["environment"][SCAN_INTERVAL_KEY]
-
     # 判定依据：排程间隔由 beat 侧读取（create_celery_app 建排程表）；两边不一致时
     # 「改配置只在一边生效」，表现为「配了 30s 却 1h 才扫」这类难查的现象。
-    assert worker_interval == beat_interval, (worker_interval, beat_interval)
+    # 组 10.7：把「同值」守护从知识扫描一项**扩到三项**（三者的间隔都由 beat 读取）。
+    keys = (
+        SCAN_INTERVAL_KEY,
+        "WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS",
+        "WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS",
+    )
+    for key in keys:
+        worker_interval = service("worker")["environment"][key]
+        beat_interval = service("beat")["environment"][key]
+        assert worker_interval == beat_interval, (key, worker_interval, beat_interval)
 
 
 def test_worker_and_beat_restart_unless_stopped() -> None:

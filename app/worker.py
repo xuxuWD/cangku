@@ -131,6 +131,13 @@ def create_celery_app() -> Celery:
                 "task": "app.worker.purge_runtime_events",
                 "schedule": settings.runtime_events_purge_interval_seconds,
             },
+            # 组 10.7：过期导出包（`expires_at = 完成时刻 + 7 天`）物理清理——导出包是租户数据副本，
+            # 过期后不再可取回（GET /api/v1/commercial/exports/{package_id} ⇒ 404），此处只保留「到点即清」。
+            # 间隔由 **beat** 侧读取 ⇒ 与 worker 侧必须同值。
+            "export-packages-purge": {
+                "task": "app.worker.purge_export_packages",
+                "schedule": settings.export_package_purge_interval_seconds,
+            },
         },
     )
     return celery
@@ -242,3 +249,20 @@ def purge_runtime_events() -> int:
         return 0
     cutoff = datetime.now(UTC) - timedelta(days=get_settings().runtime_events_retention_days)
     return purger.purge_events_before(cutoff)
+
+
+@celery_app.task
+def purge_export_packages() -> int:
+    """导出包过期清理（组 10.7）：物理删除 `expires_at <= 任务执行时刻` 的导出包，返回删除条数。
+
+    - 过期时刻由包自身 `expires_at`（= 导出完成时刻 + 7 天）决定 ⇒ **无独立保留期配置**，
+      只由 beat 间隔 `WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS` 控制扫描频率；
+    - 与 `run_lifecycle_jobs` 共用既有 `_lifecycle_runner` 注入点（导出包仓储归生命周期服务持有）：
+      **未接线即返回 0**，绝不伪造清理结果；development 下不自动装配（同 `_ensure_runtime` 口径）；
+    - 只清理导出包；**生命周期作业记录与审计不随之删除**。
+    """
+    _ensure_runtime()
+    runner = _lifecycle_runner
+    if runner is None:
+        return 0
+    return runner.purge_expired_export_packages()

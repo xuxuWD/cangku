@@ -143,6 +143,10 @@
 
 客户管理员或超级管理员申请租户数据导出，接口只创建异步作业并返回 `202`。导出内容经过脱敏，不包含密码、Cookie、验证码、令牌、原始 API 密钥或客户原文。导出由 worker 周期任务异步生成（不在请求线程完成），导出包过期时间为 **7 天**（`expires_at = created_at + 7 天`，2026-09-14 裁决）。
 
+`GET /api/v1/commercial/exports/{package_id}`
+
+取回本租户已生成的导出包：返回 `package_id`、`tenant_id`、`job_id`、`created_at`、`expires_at` 与脱敏载荷 `payload`。租户由服务端从登录上下文解析（客户端不能指定租户），仅 `customer_admin` / `super_admin` 可取回，普通员工 `403`。**跨租户的导出包与不存在的导出包统一返回 `404`「导出包不存在」**（不泄露他租户资源是否存在）；`expires_at <= 当前时刻` 的过期包返回 `404`「导出包已过期」。**过期包由 worker 周期任务 `export-packages-purge` 按 `expires_at` 物理清理**（`DELETE FROM workbench_export_packages WHERE expires_at <= now`，beat 间隔 `WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS`，默认 3600 秒），清理后与「从未存在」不可区分。
+
 `POST /api/v1/commercial/deletion-requests`
 
 客户管理员或超级管理员申请删除当前租户，接口返回带冷静期（默认 7 天）的异步生命周期作业。删除前必须完成**最终导出**：**删除申请之后首次完成的导出即「最终导出」**（据此置 `final_exported` 并与该删除作业关联）。冷静期结束且已完成最终导出后，由 worker 周期任务执行删除并推进租户到 `deleted`，**删除执行不在请求线程完成**；删除执行写入审计 `commercial.deletion.executed`。

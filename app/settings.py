@@ -531,6 +531,19 @@ class Settings(BaseSettings):
             "WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS",
         ),
     )
+    # 导出包（`workbench_export_packages`，迁移 028）过期清理任务的 beat 间隔（秒）。
+    # 过期口径由包自身 `expires_at`（= 导出完成时刻 + 7 天，2026-09-14 裁决）决定 ⇒
+    # **本项只控「多久扫一次」，不设独立保留期**；命名与区间口径同 `runtime_events_purge_interval_seconds`。
+    # 组 10.7：导出包是租户数据副本，过期后既不可取回（404）也不再留存（物理删除）。
+    export_package_purge_interval_seconds: int = Field(
+        default=3600,
+        ge=30,
+        le=7 * 24 * 3600,
+        validation_alias=AliasChoices(
+            "EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS",
+            "WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS",
+        ),
+    )
 
     # ---- 段二（dsh 接入段）新增配置：共 25 项（= 规格 §4 清单 24 项 + 网关侧 `mint_secret`）----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
