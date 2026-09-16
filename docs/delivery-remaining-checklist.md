@@ -154,7 +154,7 @@
 
 ## 组 10 · 我方实现自查（**无需外部输入** · 2026-09-13 新增）
 
-> **来源**：[OpenMausBot 源码研读报告](file:///d:/徐徐AI学习/公司工作台/docs/openmausbot-source-study-and-adaptation-plan.md) §5.2——从**对方暴露的缺口**反查「我们是否同类风险」。以下各条**此前均未逐条自查**，**不构成对我们现状的定性结论**（沿用"没验证的必须写未验证"）；**2026-09-16 已查的条目在各项下附「结论 + 证据（`文件:行`）」**（10.2 通过；10.3 的「运行事件有界」「日志有界」两条已于 2026-09-16 闭合，但因「磁盘容量告警渠道未接入」仍不勾选），**未附结论的仍未查**。
+> **来源**：[OpenMausBot 源码研读报告](file:///d:/徐徐AI学习/公司工作台/docs/openmausbot-source-study-and-adaptation-plan.md) §5.2——从**对方暴露的缺口**反查「我们是否同类风险」。以下各条**此前均未逐条自查**，**不构成对我们现状的定性结论**（沿用"没验证的必须写未验证"）；**2026-09-16 已查的条目在各项下附「结论 + 证据（`文件:行`）」**（10.2 通过；10.4 通过（键名归一 + 值形态扫描 + 掩码幂等）；10.3 的「运行事件有界」「日志有界」两条已于 2026-09-16 闭合，但因「磁盘容量告警渠道未接入」仍不勾选），**未附结论的仍未查**。
 > **与本文件口径的偏差说明**：本文件其余各组均为「代码无法代替、需外部输入」；本组是**纯内部核查**，放在此处仅为集中可勾选，**不代表需要外部资源**。
 
 - [ ] 10.1 审计是否有 **DELETE / 清理路径**（`app/audit/store.py` 与数据库层是否 REVOKE）——判据：**可删即不合规**
@@ -162,7 +162,15 @@
       - **结论（2026-09-16 自查）：无「只留 `.1`」风险，且日志有界。** 证据：① 应用侧审计日志只有 `StreamHandler(sys.stdout)`、**无 `FileHandler`**（`app/audit/logging.py:22`）⇒ 不存在应用内「覆盖式保留 `.1`」的机制（由 `tests/test_audit_logging.py` 守护）；② 落盘与轮转交给容器运行时：三服务已设 `json-file` / `max-size=10m` / `max-file=5`（`docker-compose.app.yml`，2026-09-16 本机演练 `docker inspect` 实查生效；`tests/test_compose_worker_assets.py::test_app_services_bound_container_log_growth` 守护）；③ 数据库里的审计行**不轮转、不删除**（不可篡改口径，见 10.1）。**未做**：外部归档与日期分段——长期留存需由客户侧日志采集承担（runbook「监控与告警」接入方式）。
 - [ ] 10.3 运行事件 / 日志是否**有界**（容量与保留），并配**磁盘容量告警**
       - **结论（2026-09-16 自查，两批）：前两条已闭合，仅剩「磁盘容量告警」的渠道接入 ⇒ 仍不勾选。** ① **日志有界 ✓**（同 10.2 证据②）；② **运行事件有界 ✓（2026-09-16 第二批闭合）**——事件已从状态行的行内 JSONB（改造前 `app/runtime/state.py` 的无界 list，经 `app/runtime/serialization.py` 整段序列化）迁到 **append-only 表 `workbench_runtime_events`**（迁移 `034`：主键 `(run_id, sequence)`，一次追加只写一行，状态行只留计数 `event_count` ⇒ 行大小有界、且消除写放大），并由 worker 周期任务 `runtime-events-purge` 按 **保留期**（`WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS`，默认 30 天）清理 `occurred_at` 超期的行 ⇒ **容量与保留都有上限**；清理**不触碰审计**（`tests/test_runtime_events_postgres.py::test_purge_never_touches_the_audit_log` 守护），`GET /api/v1/runs/{run_id}/events` 的 cursor 断点读取语义不变（同一文件另有游标与序号单调断言）；③ **磁盘容量告警**：规则已写入 runbook「监控与告警」第 7 条（≥80% 预警 / ≥90% 严重），并已落成只读探针 `scripts/monitoring_probe.py`（本机实跑取证），但**渠道仍未接入任何环境** ⇒ 尚未生效，故本条不勾选（与 1.9 同因）。
-- [ ] 10.4 `redact_payload` 是否覆盖**值的形态**（不只看键名：工具标题 / 命令摘要 / 回复正文里可能带 key），且掩码**幂等**（重复脱敏不改变 payload hash）
+- [x] 10.4 `redact_payload` 是否覆盖**值的形态**（不只看键名：工具标题 / 命令摘要 / 回复正文里可能带 key），且掩码**幂等**（重复脱敏不改变 payload hash）
+      - **结论（2026-09-16 自查 + 修补）：两条判据均已覆盖。** 改造前只按**键名精确匹配**（`key.lower() in 白名单`）：判据①**未覆盖**（只读取证：值形态 **6/6 全漏**、键名另漏 5 个变体 `apiKey` / `X-Api-Key` / `authToken` / `api-key` / `clientSecret`）；判据②当时成立但无守护。现按「**键名归一 + 值扫描**」收口（用户拍板）；**读取输出（`to_public_dict`）与持久化写入（`serialization.encode_event`）共用同一入口**这一点未变（`app/runtime/contracts.py:180`）。
+      - **① 键名归一**：`app/runtime/contracts.py:105-130` 复用审计侧 `key_tokens`（`app/audit/redaction.py:23-26`，先例已跨模块复用）做词元归一 ⇒ `apiKey` / `X-Api-Key` / `api-key` / `authToken` / `clientSecret` 与下划线小写同口径；**裸 `key` 单列不纳入**（`{"key": "plan-42"}` 是正常业务字段），`api` + `key` 组合另行命中。原 `SENSITIVE_PAYLOAD_KEYS`（精确匹配用）随之删除（全仓仅本文件两处引用，已核实）。
+      - **② 值形态扫描**：`app/runtime/contracts.py:136-152` 三段**有限模式集**，字符串值统一替换为 `[已隐藏]`——`Bearer <token>` / 敏感词 `k[:=]v`（含引号包裹的 JSON 形态，负向断言避免与前者重复替换）/ 已知凭据前缀（`sk-` / `ghp_` / `glpat-` / `xox?-` / `AKIA`）；未命中的文本原样返回。
+      - **③ 幂等取证**：掩码取值字符类排除 `[` `]`（`:122`）⇒ 已掩码片段不再被任一模式命中（不依赖「替换结果恰好相同」）；混合样本实测 `raw 5e724d83…` → `once = twice = thrice = 8e592fb1…`（逐字节一致），5 个凭据形态 `leaks` 为空。
+      - **测试与反假**：`tests/test_runtime_contracts.py:115-237` 共 8 条（值形态 / 键名形态 / 反误伤 ×2 / 幂等 ×2 / 端到端 / 边界登记），**先红**（3 红 5 绿）后绿；**反假三轮**均按要求变红并还原——绕过值扫描 ⇒ 2 红、裸 `key` 纳入判定 ⇒ 反误伤红、去掉 `api`+`key` 组合 ⇒ 2 红（含既有 `api_key` 守护用例）。写库路径由真库用例 `tests/test_runtime_state_postgres.py:144-148`、`tests/test_runtime_events_postgres.py:158-184` 守护。
+      - **全量回归**：`2147 passed / 0 failed / 0 skipped`（junit `tests="2147" errors="0" failures="0" skipped="0"`；基线 2139 ⇒ ＋8，无既有用例被跳过或删除）；`compileall` 退出码 0。
+      - **未覆盖边界（登记，属有意保留）**：① `-p<password>` 短选项形态不覆盖（覆盖它必然误伤 `-production` 之类，`tests/test_runtime_contracts.py:214-222` 钉住该边界）；② `Bearer` 后不足 4 字符的 token 不替换（阈值取舍：过松会把普通词当凭据）；③ 值扫描是**有限模式集**（不认识的形态不替换），**不构成**「任意值内凭据都能识别」的承诺。
+      - **未做（不得读成已验）**：历史已落库事件仍是**旧规则**产物（值内凭据可能仍在库内）⇒ 读取路径会按新规则再次收敛，但**库内存量数据未清洗**（无回溯重扫）；本批**未推送 ⇒ CI 未取证**。
 - [ ] 10.5 金额 / 费用是否**全部整数分**（`usage_ledger` 与展示层；`daily_budget_cents` 已合规，其余待核）
 - [ ] 10.6 生产是否**强制 `state_postgres`**（内存态仅限 development）
 - [ ] 10.7 是否存在**用户数据导出 / 删除**路径（宪法九章）；若无，明确归档与保留策略的补位口径
