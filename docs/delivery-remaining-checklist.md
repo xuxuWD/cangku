@@ -12,6 +12,8 @@
 
 **需要谁提供**：基础设施方 / 运维 —— 一台独立主机（Linux）+ **PostgreSQL（必须预装 pgvector）** + Redis + 对象存储实例 + 全部凭据；一个可登录的租户与超管账号。
 
+**输入索取表（2026-09-16，可直接转发给基础设施方 / 运维）**：[`docs/infra-input-request.md`](infra-input-request.md) —— 14 项逐项要求与验证方式（I1 主机 / I2 PG 客户端 / I3 PG 实例 / I4 pgvector / I5 只读账号 / I6 迁移清单 / I7 Redis / I8 对象存储 / I9 双密钥注入 / I10 超管账号 / I11 备份介质与窗口 / I12 探针账号 / I13 死信渠道 / I14 变量对照单）+ 回执模板 + 安全红线。**未回执前组 1 的判据不做（只读命令待值到位后执行）**；预检 pass 路径与 runbook 漂移核对已于 2026-09-16 完成（见下方 1.3 / 1.4 / 1.4.1 / 1.5 子项）。
+
 > **两个已验证的实操前置（2026-09-12 本机实测，避免到 staging 白跑）**
 > ① **部署机必须安装 PostgreSQL 客户端**（`pg_dump` / `pg_restore`）：缺客户端时 `scripts/migration_backup_drill.py --phase backup` 会在「pg_dump 可用性」这一步直接 `fail`（本机即如此）。
 > ② `migration_backup_drill.py` 的**任何阶段（含 `--phase list`）都要求先设 `WORKBENCH_DATABASE_URL`**——安全护栏先于动作执行，缺它会以 `exit=2`「必须配置 WORKBENCH_DATABASE_URL」拒绝；本地演练另需显式 `--allow-local`（实测：本地地址不加该开关会被拒，`exit=2`）。另外 `WORKBENCH_APPLIED_MIGRATIONS` **必须从目标库读取**，否则 `--phase list` 会报「迁移清单不一致（缺少 22 项）」。
