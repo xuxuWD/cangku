@@ -151,12 +151,14 @@ def test_mock_fail_tool_fails_immediately_and_stops() -> None:
 
     run_id = runtime.start_run(runtime_context(), AgentPlan.from_steps(steps))
     state = store.get(run_id)
+    events = store.list_events(run_id)
 
     assert state.status == "failed"
     assert state.usage == {"tool_calls": 1, "successful_tools": 0}
     assert state.completed_steps == []
-    assert [event.event_type.value for event in state.events][-1] == "run.failed"
-    assert all(event.payload.get("step_id") != "s2" for event in state.events)
+    # 事件已迁到 append-only 表（2026-09-16 改造）：从存储读取，而非状态行内的数组。
+    assert [event.event_type.value for event in events][-1] == "run.failed"
+    assert all(event.payload.get("step_id") != "s2" for event in events)
     assert store.get(run_id).checkpoint["status"] == "failed"
 
 

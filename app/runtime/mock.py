@@ -26,7 +26,10 @@ class MockRuntime(AgentRuntimeAdapter):
         self.store = store
 
     def _emit(self, state: RuntimeState, event_type: RuntimeEventType, payload: dict[str, Any] | None = None) -> RuntimeEvent:
-        event = RuntimeEvent(state.run_id, len(state.events) + 1, event_type, payload or {})
+        # 序号从 1 开始、同一 run 内单调递增：用状态上的**事件计数**生成
+        # （事件已迁到 append-only 表，不再有 `state.events` 可以取长度；计数随状态行落库，
+        # 因此重新加载后仍能接续，清理旧事件后也不会回退）。
+        event = RuntimeEvent(state.run_id, state.event_count + 1, event_type, payload or {})
         self.store.append(state, event)
         return event
 
@@ -67,14 +70,15 @@ class MockRuntime(AgentRuntimeAdapter):
         return state.run_id
 
     def stream_events(self, run_id: str, cursor: str | None = None) -> list[RuntimeEvent]:
-        state = self.store.get(run_id)
+        # 运行不存在时与改造前一致：`get` 抛 KeyError（调用方的 404 语义依赖它）。
+        self.store.get(run_id)
         if not cursor:
-            return list(state.events)
+            return self.store.list_events(run_id)
         try:
             sequence = int(cursor.rsplit(":", 1)[1])
         except (ValueError, IndexError):
             sequence = 0
-        return [event for event in state.events if event.sequence > sequence]
+        return self.store.list_events(run_id, sequence)
 
     def pause_run(self, run_id: str, reason: str) -> None:
         state = self.store.get(run_id)

@@ -509,6 +509,28 @@ class Settings(BaseSettings):
         le=3650,
         validation_alias=AliasChoices("INBOX_RETENTION_DAYS", "WORKBENCH_INBOX_RETENTION_DAYS"),
     )
+    # 运行事件保留期（天）：事件存 append-only 的 `workbench_runtime_events`（migrations/034），
+    # 超出保留期的行由 worker 周期任务 `runtime-events-purge` 按 `occurred_at` 清理（运行事件有界）。
+    # 只清理运行事件；审计表不可删除。
+    runtime_events_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        validation_alias=AliasChoices(
+            "RUNTIME_EVENTS_RETENTION_DAYS", "WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS"
+        ),
+    )
+    # 运行事件清理任务的 beat 间隔（秒；命名口径同 `knowledge_review_scan_interval_seconds`）。
+    # 下限 30s 防止把 beat 打成忙轮询；上限 7 天（更长等于事实停用，应显式关任务而非拉长间隔）。
+    runtime_events_purge_interval_seconds: int = Field(
+        default=3600,
+        ge=30,
+        le=7 * 24 * 3600,
+        validation_alias=AliasChoices(
+            "RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS",
+            "WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS",
+        ),
+    )
 
     # ---- 段二（dsh 接入段）新增配置：共 25 项（= 规格 §4 清单 24 项 + 网关侧 `mint_secret`）----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；

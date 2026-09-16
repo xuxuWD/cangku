@@ -17,7 +17,7 @@ from app.bootstrap import build_runtime_state_store
 from app.runtime.contracts import AgentPlan, RuntimeContext, RuntimeEventType
 from app.runtime.mock import MockRuntime
 from app.runtime.serialization import decode_state, encode_state
-from app.runtime.state import RuntimeState, RuntimeStateStore
+from app.runtime.state import RuntimeState, RuntimeStateStore, track_appended_event
 from app.runtime.state_postgres import PostgresRuntimeStateStore
 from app.settings import Settings
 
@@ -40,10 +40,13 @@ class RoundTripStore:
     """把每次写入编码成快照、每次读取解码成新对象，模拟真实的「落库 + 重新加载」。
 
     接口与 RuntimeStateStore 完全一致，因此可以直接替换给 MockRuntime 使用。
+    事件按 2026-09-16 改造后的真源口径单独存放（append-only），状态快照里只有事件计数
+    ⇒ 「重启后序号必须接续」正是靠状态行的 `event_count` 保证的。
     """
 
     def __init__(self) -> None:
         self.rows: dict[str, dict] = {}
+        self.events: dict[str, list] = {}
 
     def create(self, context: RuntimeContext, plan: AgentPlan, *, run_id: str | None = None) -> RuntimeState:
         state = RuntimeState(run_id=run_id or f"run-{uuid4().hex[:12]}", context=context, plan=plan)
@@ -62,8 +65,15 @@ class RoundTripStore:
         return states
 
     def append(self, state: RuntimeState, event) -> None:
-        state.events.append(event)
+        self.events.setdefault(state.run_id, []).append(event)
+        track_appended_event(state, event)
         self.rows[state.run_id] = encode_state(state)
+
+    def list_events(self, run_id: str, after_sequence: int | None = None) -> list:
+        events = sorted(self.events.get(run_id, []), key=lambda event: event.sequence)
+        if after_sequence is None:
+            return events
+        return [event for event in events if event.sequence > after_sequence]
 
     def save_checkpoint(self, state: RuntimeState) -> dict:
         state.checkpoint = {
@@ -80,6 +90,11 @@ def reloaded(store: RoundTripStore, run_id: str) -> RuntimeState:
     return store.get(run_id)
 
 
+def events_of(store: RoundTripStore, run_id: str) -> list:
+    """读取某个 run 的事件（改造后事件不在状态对象上）。"""
+    return store.list_events(run_id)
+
+
 def test_start_run_is_fully_persisted() -> None:
     store = RoundTripStore()
     runtime = MockRuntime(store)
@@ -90,7 +105,7 @@ def test_start_run_is_fully_persisted() -> None:
     assert state.status == "completed"
     assert state.usage == {"tool_calls": 1, "successful_tools": 1}
     assert state.completed_steps == ["s1"]
-    assert [event.event_type for event in state.events][0] is RuntimeEventType.PLAN_CREATED
+    assert [event.event_type for event in events_of(store, run_id)][0] is RuntimeEventType.PLAN_CREATED
     assert reloaded(store, run_id).checkpoint["status"] == "completed"
 
 
@@ -110,7 +125,7 @@ def test_control_actions_survive_reload() -> None:
     cancelled = reloaded(store, run_id)
     assert cancelled.status == "cancelled"
     assert cancelled.checkpoint["status"] == "cancelled"
-    assert any(event.event_type is RuntimeEventType.RUN_FAILED for event in cancelled.events)
+    assert any(event.event_type is RuntimeEventType.RUN_FAILED for event in events_of(store, run_id))
 
 
 def test_request_approval_is_persisted_without_explicit_checkpoint() -> None:
@@ -125,7 +140,7 @@ def test_request_approval_is_persisted_without_explicit_checkpoint() -> None:
     assert state.approvals[approval_id] == "pending"
     assert any(
         event.event_type is RuntimeEventType.APPROVAL_REQUESTED and event.payload.get("approval_id") == approval_id
-        for event in state.events
+        for event in events_of(store, run_id)
     )
 
 
@@ -151,7 +166,7 @@ def test_replay_run_is_persisted() -> None:
 
     runtime.replay_run(run_id, from_step="s1")
 
-    events = reloaded(store, run_id).events
+    events = events_of(store, run_id)
     assert events[-1].event_type is RuntimeEventType.CHECKPOINT_SAVED
     assert events[-1].payload.get("replay") is True
 
@@ -179,7 +194,30 @@ def test_memory_store_and_round_trip_store_behave_alike() -> None:
     assert (left.status, left.usage, left.approvals, left.completed_steps) == (
         right.status, right.usage, right.approvals, right.completed_steps
     )
-    assert [event.event_type for event in left.events] == [event.event_type for event in right.events]
+    assert left.event_count == right.event_count
+    assert [event.event_type for event in memory.list_events(memory_run)] == [
+        event.event_type for event in persisted.list_events(persisted_run)
+    ]
+
+
+def test_sequences_keep_increasing_across_reloads() -> None:
+    """事件计数必须随状态行落库：否则重新加载后序号会从 1 重来（重复/回退）。
+
+    这是「事件独立成表、状态行只留计数」这一改造的关键回归——`pause_run` / `cancel_run`
+    都会先 `get`（解码出新对象）再 `_emit`（用计数 +1 生成序号）。
+    """
+    store = RoundTripStore()
+    runtime = MockRuntime(store)
+    run_id = runtime.start_run(context(), AgentPlan.from_steps(TWO_WRITES))
+    before = [event.sequence for event in events_of(store, run_id)]
+
+    runtime.pause_run(run_id, "等待确认")
+    runtime.cancel_run(run_id, "用户取消")
+
+    sequences = [event.sequence for event in events_of(store, run_id)]
+    assert sequences[: len(before)] == before
+    assert sequences == list(range(1, len(sequences) + 1))
+    assert reloaded(store, run_id).event_count == len(sequences)
 
 
 def test_build_runtime_state_store_memory_in_development() -> None:

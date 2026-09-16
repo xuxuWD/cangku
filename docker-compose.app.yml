@@ -21,6 +21,7 @@
 #   可查回对应提交，宪法 §6.3），也不会让 `up` 重新触发一次构建。
 # - **beat 与 worker 的 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS` 必须一致**：
 #   排程间隔由 beat 侧读取（`create_celery_app` 建排程表），不一致会导致「配的间隔只在一边生效」。
+#   同款口径适用于 `WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS`（运行事件保留期清理任务）。
 
 services:
   app:
@@ -97,6 +98,9 @@ services:
       # 与 beat 保持一致（排程间隔由 beat 侧读取；不一致则配的间隔只在一边生效）。
       WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS: ${WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS:-30}
       WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS: ${WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS:-3600}
+      # 运行事件保留期清理（迁移 034）：任务在 worker 执行、间隔由 beat 排程 ⇒ 两边同值。
+      WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS: ${WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS:-30}
+      WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS: ${WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS:-3600}
     # slim 镜像没有 curl：用 celery 自身经 broker 探活（节点名默认 celery@<hostname>）。
     healthcheck:
       test:
@@ -143,6 +147,9 @@ services:
       # 排程间隔由此进程读取（`create_celery_app` 建排程表）⇒ 必须与 worker 一致。
       WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS: ${WORKBENCH_KNOWLEDGE_REVIEW_GRACE_DAYS:-30}
       WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS: ${WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS:-3600}
+      # 运行事件保留期清理的排程间隔（同 `knowledge-review-scan` 口径：由 beat 读取 ⇒ 与 worker 同值）。
+      WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS: ${WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS:-30}
+      WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS: ${WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS:-3600}
     volumes:
       - workbench-celerybeat:/var/lib/celery
     healthcheck:

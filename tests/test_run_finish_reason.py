@@ -5,7 +5,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-from app.runtime.contracts import AgentPlan, RuntimeContext, RuntimeEvent, RuntimeEventType
+from app.runtime.contracts import AgentPlan, RuntimeContext
 from app.runtime.records import FinishReason, InMemoryRunRecordStore, PostgresRunRecordStore, RunRecord
 from app.runtime.run_metrics import RunMetricsService
 from app.runtime.state import RuntimeState
@@ -39,9 +39,8 @@ def state_with(status: str) -> RuntimeState:
     state.status = status
     state.completed_steps = ["s0"] if status == "completed" else []
     state.usage = {"tool_calls": 1, "successful_tools": 1 if status == "completed" else 0}
-    state.events = [
-        RuntimeEvent("run-1", 1, RuntimeEventType.TOOL_RESULT, {"status": "success"})
-    ]
+    # 事件已独立成 append-only 表（2026-09-16 改造）：状态行只保留事件计数。
+    state.event_count = 1
     return state
 
 

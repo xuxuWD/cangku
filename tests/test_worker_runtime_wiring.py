@@ -21,10 +21,16 @@ from app import worker
 
 @pytest.fixture(autouse=True)
 def _clean_wiring(monkeypatch):
-    """每个用例前后清空接线状态与注入点，避免相互污染。"""
+    """每个用例前后清空接线状态与注入点，避免相互污染。
+
+    ⚠️ 注入点**必须逐个列全**：`_ensure_runtime` 的「已接线即不再自动装配」判定读的是这几个
+    模块级全局。2026-09-16 新增第 4 个注入点（运行事件保留期清理器）时此处漏列，导致某个用例
+    直接赋值后残留到后续用例 ⇒ `_ensure_runtime` 提前返回、本文件两条用例失败（已修复）。
+    """
     monkeypatch.setattr(worker, "_outbox_publisher", None)
     monkeypatch.setattr(worker, "_lifecycle_runner", None)
     monkeypatch.setattr(worker, "_knowledge_review_scanner", None)
+    monkeypatch.setattr(worker, "_runtime_event_purger", None)
     monkeypatch.setattr(worker, "_runtime_builder", None)
     yield
 

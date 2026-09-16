@@ -66,6 +66,8 @@ ADMIN = "admin-1"
 _TABLES_IN_DELETE_ORDER = (
     "workbench_execution_idempotency",
     "workbench_tool_actions",
+    # 运行事件（迁移 034）已独立成 append-only 表；无外键，随状态行一起自清。
+    "workbench_runtime_events",
     "workbench_runtime_states",
     "workbench_conversation_messages",
     "workbench_conversations",

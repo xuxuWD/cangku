@@ -106,11 +106,12 @@ jobs:
         run: node --test
 
   postgres:
-    # 覆盖「真连库」的七个模块：tests/test_tool_action_store_postgres.py、
+    # 覆盖「真连库」的八个模块：tests/test_tool_action_store_postgres.py、
     # tests/test_dsh_execution_postgres.py、tests/test_commercial_lifecycle_postgres.py、
     # tests/test_memory_postgres.py（P3 记忆层真库回归）、tests/test_skills_postgres.py（P4 技能层真库回归）、
-    # tests/test_knowledge_governance_postgres.py（知识治理层真库回归，迁移 032）
-    # 与 tests/test_evolution_postgres.py（P6a 评测集真库回归，迁移 033）。
+    # tests/test_knowledge_governance_postgres.py（知识治理层真库回归，迁移 032）、
+    # tests/test_evolution_postgres.py（P6a 评测集真库回归，迁移 033）
+    # 与 tests/test_runtime_events_postgres.py（运行事件 append-only 表 + 保留期清理，迁移 034）。
     # 它们由 WORKBENCH_TEST_DATABASE_URL 门控，
     # 无该变量即**整体 skip**（默认 backend job 不提供 ⇒ 那时它们是 skip、不受守护）。
     # 本 job 提供一次性真库、按仓库自身 apply_migrations 建表，并要求 `skipped == 0`，
@@ -166,6 +167,7 @@ jobs:
             tests/test_skills_postgres.py \
             tests/test_knowledge_governance_postgres.py \
             tests/test_evolution_postgres.py \
+            tests/test_runtime_events_postgres.py \
             --junitxml=postgres-junit.xml
           python - <<'PY'
           import sys

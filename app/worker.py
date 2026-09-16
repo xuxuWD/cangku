@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from threading import Lock
 from typing import Protocol
 
@@ -23,9 +24,15 @@ class KnowledgeReviewScannerProtocol(Protocol):
         ...
 
 
+class RuntimeEventPurgerProtocol(Protocol):
+    def purge_events_before(self, cutoff: datetime) -> int:
+        ...
+
+
 _outbox_publisher: OutboxPublisherProtocol | None = None
 _lifecycle_runner: LifecycleRunnerProtocol | None = None
 _knowledge_review_scanner: KnowledgeReviewScannerProtocol | None = None
+_runtime_event_purger: RuntimeEventPurgerProtocol | None = None
 
 
 def configure_outbox_publisher(publisher: OutboxPublisherProtocol | None) -> None:
@@ -44,6 +51,12 @@ def configure_knowledge_review(scanner: KnowledgeReviewScannerProtocol | None) -
     """注入知识治理到期扫描器（`KnowledgeGovernanceService` 满足该协议）；测试可置 None。"""
     global _knowledge_review_scanner
     _knowledge_review_scanner = scanner
+
+
+def configure_runtime_event_purger(purger: RuntimeEventPurgerProtocol | None) -> None:
+    """注入运行事件保留期清理器（`PostgresRuntimeStateStore` 满足该协议）；测试可置 None。"""
+    global _runtime_event_purger
+    _runtime_event_purger = purger
 
 
 def configure_runtime(*, settings=None, connection=None, redis_client=None, audit=None) -> OutboxPublisherProtocol:
@@ -73,9 +86,14 @@ def configure_runtime(*, settings=None, connection=None, redis_client=None, audi
     governance = build_knowledge_governance_service(
         settings, store=PostgresKnowledgeGovStore(connection), audit=audit
     )
+    # 「运行事件有界」：复用同一连接的运行时状态仓储按保留期清理 append-only 的运行事件
+    # （`purge_events_before` 只删 `workbench_runtime_events`，不碰审计）。
+    from .runtime.state_postgres import PostgresRuntimeStateStore
+
     configure_outbox_publisher(publisher)
     configure_lifecycle(lifecycle)
     configure_knowledge_review(governance)
+    configure_runtime_event_purger(PostgresRuntimeStateStore(connection))
     return publisher
 
 
@@ -105,6 +123,13 @@ def create_celery_app() -> Celery:
             "knowledge-review-scan": {
                 "task": "app.worker.scan_knowledge_review_due",
                 "schedule": settings.knowledge_review_scan_interval_seconds,
+            },
+            # 「运行事件有界」：按保留期清理 append-only 的运行事件
+            # （默认 1h 一次；保留期 WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS，默认 30 天）。
+            # 间隔由 **beat** 侧读取 ⇒ 与 worker 侧必须同值，否则配置只在一边生效（见 docker-compose.app.yml）。
+            "runtime-events-purge": {
+                "task": "app.worker.purge_runtime_events",
+                "schedule": settings.runtime_events_purge_interval_seconds,
             },
         },
     )
@@ -149,12 +174,12 @@ def _ensure_runtime() -> None:
     `configure_*`），就视为已接线、不再自动装配（避免把显式注入悄悄替换掉）。
     装配失败**不吞**：直接向上抛（任务 FAILURE、日志可见），不做「静默零值」。
     """
-    if _outbox_publisher is not None or _lifecycle_runner is not None or _knowledge_review_scanner is not None:
+    if _outbox_publisher is not None or _lifecycle_runner is not None or _knowledge_review_scanner is not None or _runtime_event_purger is not None:
         return
     if get_settings().env == "development":
         return
     with _runtime_lock:
-        if _outbox_publisher is not None or _lifecycle_runner is not None or _knowledge_review_scanner is not None:
+        if _outbox_publisher is not None or _lifecycle_runner is not None or _knowledge_review_scanner is not None or _runtime_event_purger is not None:
             return
         builder = _runtime_builder or _build_production_runtime
         builder()
@@ -200,3 +225,20 @@ def scan_knowledge_review_due() -> dict[str, int]:
     if scanner is None:
         return {"candidates": 0, "flipped": 0}
     return scanner.scan_review_due_across_tenants(limit=500)
+
+
+@celery_app.task
+def purge_runtime_events() -> int:
+    """运行事件保留期清理（「运行事件有界」）：删除早于保留期的运行事件，返回删除条数。
+
+    - 保留期 = `WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS`（默认 30 天），截止时刻取**任务执行时刻**；
+    - 只清理 append-only 的 `workbench_runtime_events`：**审计不可删除**，
+      清理器（`purge_events_before`）不触碰任何审计数据；
+    - 与 `publish_outbox` / `run_lifecycle_jobs` 同口径：**未接线即返回 0**，绝不伪造清理结果。
+    """
+    _ensure_runtime()
+    purger = _runtime_event_purger
+    if purger is None:
+        return 0
+    cutoff = datetime.now(UTC) - timedelta(days=get_settings().runtime_events_retention_days)
+    return purger.purge_events_before(cutoff)

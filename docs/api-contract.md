@@ -616,12 +616,13 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 运行时只是任务执行器，不是权限或任务最终状态事实源。所有动作仍由工作台策略中心检查，计划阶段不执行写入、发布、删除、权限或生产工作流动作。
 
-**运行时状态持久化**（迁移 `021`）：运行上下文、步骤计划、事件、审批项、用量与检查点都会落库（`postgres` 模式写入 `workbench_runtime_states`；`memory` 模式仅限 development），因此**暂停 / 恢复 / 取消 / 决议 / 事件与指标查询在服务重启与多进程部署下仍然可用**；事件 payload 在**写入前**就按同一套敏感键规则脱敏（凭据类键不落库）。
+**运行时状态持久化**（迁移 `021` + `034`）：运行上下文、步骤计划、审批项、用量、检查点与**事件计数**落 `workbench_runtime_states`，**运行事件独立落 append-only 表 `workbench_runtime_events`**（迁移 `034`：主键 `(run_id, sequence)`，一次写入只追加一行，不再重写历史事件）（`postgres` 模式；`memory` 模式仅限 development），因此**暂停 / 恢复 / 取消 / 决议 / 事件与指标查询在服务重启与多进程部署下仍然可用**；事件 payload 在**写入前**就按同一套敏感键规则脱敏（凭据类键不落库）。
 
-- **已知限制**：事件与状态同存一行、写入为整行 upsert（长运行有写放大，超出当前量级应拆事件表）；同一次运行的并发修改以**最后写入获胜**；重启不会补回此前只在内存里的历史运行；敏感键规则是「键名精确匹配（忽略大小写）」，`cookies` 这类变体不匹配。
+- **事件保留期（运行事件有界）**：事件默认保留 **30 天**（`WORKBENCH_RUNTIME_EVENTS_RETENTION_DAYS`，范围 1–3650），由 worker 周期任务 `runtime-events-purge`（beat 间隔 `WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS`，默认 3600 秒）按事件写入时刻清理 ⇒ **超出保留期的事件不再可查**（`GET /api/v1/runs/{run_id}/events` 只返回保留期内的事件；清理不回退序号，已删序号不会被复用）。**只清理运行事件**：审计数据不可删除。
+- **已知限制**：事件行与状态行是同一事务内的两次写入（跨进程读只保证各自完整）；同一次运行的并发修改以**最后写入获胜**（同一 run 内并发写同一序号会因主键冲突直接失败，不会写出重复序号）；重启不会补回此前只在内存里的历史运行；敏感键规则是「键名精确匹配（忽略大小写）」，`cookies` 这类变体不匹配；**迁移 `034` 回填的存量事件没有原始时间戳**，其 `occurred_at` 用状态行创建时间近似填充（仅影响这些老事件的保留期计龄）；存量老运行的知识命中计数为 `0`（不回溯统计），新运行的计数从改造后开始累积。
 
 - POST /api/v1/tasks/{task_id}/runs：在指定任务下创建运行。请求可指定 runtime_key、mode 和步骤计划；服务端从任务快照重建租户、用户、岗位、项目、预算、知识/文件范围和策略版本，客户端不能覆盖这些字段。创建成功即写入运行记录（响应中的 `status` 反映启动后的真实状态）。
-- GET /api/v1/runs/{run_id}/events?cursor=...：返回脱敏事件摘要，支持断点读取；内部 Harness session、凭据和原始敏感载荷不返回。
+- GET /api/v1/runs/{run_id}/events?cursor=...：返回脱敏事件摘要（数据来自 append-only 表 `workbench_runtime_events`），支持断点读取——`cursor` 语义不变，返回**序号严格大于该游标**的事件；超出保留期的事件已不再可查；内部 Harness session、凭据和原始敏感载荷不返回。
 - POST /api/v1/runs/{run_id}/pause、POST /api/v1/runs/{run_id}/resume、POST /api/v1/runs/{run_id}/cancel：任务创建人、CEO 或超级管理员可操作；跨租户运行统一返回 404。三个动作都会**回写运行记录**（取消后 `status=cancelled`、`finish_reason=cancelled_by_user`、`finished_at` 非空；暂停与恢复为非终态，`finish_reason` 与 `finished_at` 均为 `null`）。取消成功后会向任务创建人发出一条 `run.cancelled` 站内通知。
 - POST /api/v1/runs/{run_id}/approvals：登记高风险动作审批请求，返回审批号和 pending 状态，不代表已执行。
 - GET /api/v1/runs/{run_id}/approvals：列出该运行的审批项（含已决议），返回 `{"items":[{"approval_id","step_id","tool","status"}]}`；`status ∈ pending/approved/rejected`，`step_id`/`tool` 仅在审批项对应计划步骤时非空。跨租户或运行不存在返回 `404`。

@@ -94,7 +94,7 @@ def row() -> tuple:
         encoded["status"],
         encoded["context"],
         encoded["plan"],
-        encoded["events"],
+        encoded["event_count"],
         encoded["completed_steps"],
         encoded["approvals"],
         encoded["usage"],
@@ -119,29 +119,103 @@ def test_create_upserts_all_columns() -> None:
     assert created.run_id == "run-1"
 
 
-def test_append_and_save_checkpoint_rewrite_the_row() -> None:
+def test_append_inserts_one_event_row_and_updates_the_state_row() -> None:
+    """改造后的写路径（2026-09-16）：事件单行追加到独立表，状态行不含任何事件列。"""
     import json
 
     from app.runtime.contracts import RuntimeEvent, RuntimeEventType
 
-    connection = RecordingConnection([row(), row()])
+    connection = RecordingConnection([])
     store = PostgresRuntimeStateStore(connection)
     target = state()
 
-    store.append(target, RuntimeEvent("run-1", 1, RuntimeEventType.PLAN_CREATED, {"step_count": 1}))
-    saved = store.save_checkpoint(target)
+    store.append(
+        target,
+        RuntimeEvent(
+            "run-1", 2, RuntimeEventType.TOOL_RESULT, {"status": "success", "ACCESS_TOKEN": "secret"}
+        ),
+    )
 
     statements = connection.cursor_instance.statements
-    assert "INSERT INTO workbench_runtime_states" in statements[0][0]
+    # ① 事件：单行写 append-only 表（不再把事件数组塞进状态行 ⇒ 无 O(n²) 重写）。
+    assert "INSERT INTO workbench_runtime_events" in statements[0][0]
+    event_params = statements[0][1]
+    assert event_params[0] == "run-1"
+    assert event_params[1] == "t-1"
+    assert event_params[2] == 2
+    assert event_params[3] == "tool.result"
+    # 写入前即脱敏：凭据类键不落库。
+    assert json.loads(event_params[4]) == {"status": "success", "ACCESS_TOKEN": "[已隐藏]"}
+    # ② 状态行仍写一次（审批项等字段依赖 append 落库），但不含事件列。
     assert "INSERT INTO workbench_runtime_states" in statements[1][0]
-    assert statements[1][1][0] == "run-1"
+    assert "events" not in statements[1][0]
+    # ③ 计数随状态行落库，且内存态在写入成功后同步（重新加载后序号可接续）。
+    assert statements[1][1][6] == 1
+    assert target.event_count == 1
+
+
+def test_save_checkpoint_rewrites_the_state_row() -> None:
+    import json
+
+    connection = RecordingConnection([row()])
+    store = PostgresRuntimeStateStore(connection)
+    target = state()
+
+    saved = store.save_checkpoint(target)
+
+    statement, params = connection.cursor_instance.statements[0]
+    assert "INSERT INTO workbench_runtime_states" in statement
+    assert "ON CONFLICT (run_id) DO UPDATE" in statement
+    assert "updated_at = now()" in statement
+    assert params[0] == "run-1"
     # checkpoint 列（第 11 个参数）写入的是标准三键结构。
-    assert json.loads(statements[1][1][10]) == {
+    assert json.loads(params[10]) == {
         "status": "running",
         "completed_steps": ["s1"],
         "next_step": 1,
     }
     assert saved == {"status": "running", "completed_steps": ["s1"], "next_step": 1}
+
+
+def test_list_events_is_scoped_by_run_id_and_reads_ascending() -> None:
+    connection = RecordingConnection([[]])
+    store = PostgresRuntimeStateStore(connection)
+
+    assert store.list_events("run-1") == []
+
+    statement, params = connection.cursor_instance.statements[0]
+    # 判定依据：事件查询恒以 run_id（主键的一部分）为界，不新增跨租户读取路径。
+    assert "FROM workbench_runtime_events" in statement
+    assert "WHERE run_id = %s" in statement
+    assert "ORDER BY sequence ASC" in statement
+    assert params == ("run-1",)
+
+
+def test_list_events_after_sequence_filters_strictly_greater() -> None:
+    connection = RecordingConnection([[]])
+    store = PostgresRuntimeStateStore(connection)
+
+    store.list_events("run-1", 5)
+
+    statement, params = connection.cursor_instance.statements[0]
+    # 断点续读语义：只返回序号**严格大于**游标的事件（游标本身不重复返回）。
+    assert "AND sequence > %s" in statement
+    assert "ORDER BY sequence ASC" in statement
+    assert params == ("run-1", 5)
+
+
+def test_remove_deletes_the_runs_events_and_state_row() -> None:
+    connection = RecordingConnection([])
+    store = PostgresRuntimeStateStore(connection)
+
+    store.remove("run-1")
+
+    statements = connection.cursor_instance.statements
+    # 零残留：状态行与其事件同一事务内一起删（不留孤儿事件）。
+    assert "DELETE FROM workbench_runtime_events WHERE run_id = %s" in statements[0][0]
+    assert statements[0][1] == ("run-1",)
+    assert "DELETE FROM workbench_runtime_states WHERE run_id = %s" in statements[1][0]
+    assert statements[1][1] == ("run-1",)
 
 
 def test_get_scopes_by_run_id_and_missing_raises_key_error() -> None:
@@ -189,7 +263,7 @@ def test_corrupt_row_raises_invalid_state() -> None:
     encoded = encode_state(state())
     encoded["plan"] = "not-a-plan"
     broken = tuple(encoded[key] for key in (
-        "run_id", "tenant_id", "task_id", "status", "context", "plan", "events",
+        "run_id", "tenant_id", "task_id", "status", "context", "plan", "event_count",
         "completed_steps", "approvals", "usage", "checkpoint", "created_at",
     ))
 
@@ -234,7 +308,7 @@ def test_expired_context_still_round_trips() -> None:
     encoded = encode_state(value)
     payload = (
         encoded["run_id"], encoded["tenant_id"], encoded["task_id"], encoded["status"],
-        encoded["context"], encoded["plan"], encoded["events"], encoded["completed_steps"],
+        encoded["context"], encoded["plan"], encoded["event_count"], encoded["completed_steps"],
         encoded["approvals"], encoded["usage"], encoded["checkpoint"], encoded["created_at"],
     )
 

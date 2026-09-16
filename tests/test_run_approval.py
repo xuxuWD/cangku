@@ -92,7 +92,7 @@ def test_approving_step_executes_it_and_completes_the_run() -> None:
     assert state.approvals["s2"] == "approved"
     assert state.completed_steps == ["s1", "s2"]
     assert state.usage == {"tool_calls": 2, "successful_tools": 2}
-    assert [event.event_type.value for event in state.events][-1] == "run.completed"
+    assert [event.event_type.value for event in store.list_events(run_id)][-1] == "run.completed"
     assert store.get(run_id).checkpoint["status"] == "completed"
 
 
@@ -104,11 +104,12 @@ def test_rejecting_approval_fails_the_run_without_executing_the_step() -> None:
     runtime.decide_approval(run_id, "s2", False)
 
     state = store.get(run_id)
+    events = store.list_events(run_id)
     assert state.status == "failed"
     assert state.approvals["s2"] == "rejected"
     assert "s2" not in state.completed_steps
-    assert not any(event.event_type.value == "run.completed" for event in state.events)
-    failed = [event for event in state.events if event.event_type.value == "run.failed"]
+    assert not any(event.event_type.value == "run.completed" for event in events)
+    failed = [event for event in events if event.event_type.value == "run.failed"]
     assert failed[-1].payload["approval_id"] == "s2"
     assert failed[-1].payload["reason"] == "approval_rejected"
 

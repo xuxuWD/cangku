@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.runtime.contracts import AgentPlan, RuntimeContext, RuntimeEvent, RuntimeEventType
+from app.runtime.contracts import AgentPlan, RuntimeContext
 from app.runtime.records import InMemoryRunRecordStore, RunRecord
 from app.runtime.run_metrics import RunMetricsService
 from app.runtime.state import RuntimeState
@@ -32,12 +32,10 @@ def state_with_usage() -> RuntimeState:
     )
     state = RuntimeState(run_id="run-1", context=context(), plan=plan)
     state.completed_steps = ["s0", "s1"]
-    state.usage = {"tool_calls": 5, "successful_tools": 4}
-    state.events = [
-        RuntimeEvent("run-1", 1, RuntimeEventType.TOOL_RESULT, {"knowledge_hit": True}),
-        RuntimeEvent("run-1", 2, RuntimeEventType.TOOL_RESULT, {"status": "success"}),
-        RuntimeEvent("run-1", 3, RuntimeEventType.STEP_STARTED, {"knowledge_hit": True}),
-    ]
+    # 知识命中数由事件写入时增量累加到 usage（2026-09-16 改造：事件独立成 append-only 表，
+    # 运行状态对象上不再有全量事件可统计；口径不变 = `tool.result` 且 payload knowledge_hit is True）。
+    state.usage = {"tool_calls": 5, "successful_tools": 4, "knowledge_hits": 1}
+    state.event_count = 3
     return state
 
 
@@ -71,6 +69,55 @@ def test_record_state_captures_counts_and_finishes_terminal_status() -> None:
     assert record.started_at == now
     assert record.finished_at == now
     assert store.get("t-1", "run-1").status == "completed"
+
+
+def test_knowledge_hits_come_from_the_incremental_usage_counter() -> None:
+    """知识命中读 `usage["knowledge_hits"]`（事件写入时增量累加）。
+
+    缺该键 ⇒ 0：**存量老运行无回填**，其命中数就是 0（改造后的新运行从 0 开始累积）。
+    """
+    service = RunMetricsService(InMemoryRunRecordStore())
+    state = state_with_usage()
+    state.usage.pop("knowledge_hits")
+
+    record = service.record_state(
+        tenant_id="t-1",
+        proposal_id=None,
+        runtime_key="mock",
+        state=state,
+        latency_ms=0,
+        now=datetime(2026, 9, 11, 12, 0, tzinfo=UTC),
+    )
+
+    assert record.knowledge_hits == 0
+
+
+def test_appended_events_are_counted_towards_knowledge_hits() -> None:
+    """写入链路：append 命中事件 → 增量写进 `usage` → 运行记录读到该计数。"""
+    from app.runtime.contracts import RuntimeEvent, RuntimeEventType
+    from app.runtime.state import RuntimeStateStore
+
+    state_store = RuntimeStateStore()
+    state = state_store.create(context(), AgentPlan.from_steps([]))
+    for sequence, payload in (
+        (1, {"knowledge_hit": True}),
+        (2, {"knowledge_hit": False}),
+    ):
+        state_store.append(
+            state, RuntimeEvent("run-1", sequence, RuntimeEventType.TOOL_RESULT, payload)
+        )
+
+    record = RunMetricsService(InMemoryRunRecordStore()).record_state(
+        tenant_id="t-1",
+        proposal_id=None,
+        runtime_key="mock",
+        state=state,
+        latency_ms=0,
+        now=datetime(2026, 9, 11, 12, 0, tzinfo=UTC),
+    )
+
+    assert state.usage["knowledge_hits"] == 1
+    assert record.knowledge_hits == 1
 
 
 def test_record_state_leaves_finished_at_empty_while_running() -> None:

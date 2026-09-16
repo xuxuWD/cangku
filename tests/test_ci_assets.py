@@ -166,6 +166,11 @@ def test_postgres_job_runs_only_the_real_db_modules() -> None:
     assert "tests/test_memory_postgres.py" in command
     assert "tests/test_skills_postgres.py" in command
     assert "tests/test_knowledge_governance_postgres.py" in command
+    # 2026-09-16 补钉：下面两个模块此前已在 ci.yml 的 job 里，但**未被断言钉住**
+    # （P6a 加 `test_evolution_postgres.py`、运行事件改造加 `test_runtime_events_postgres.py`
+    # 时都漏了这一处）——正是上面教训所指的「job 里写了、断言没钉」。缺口已由本断言补上。
+    assert "tests/test_evolution_postgres.py" in command
+    assert "tests/test_runtime_events_postgres.py" in command
 
 
 def test_postgres_job_requires_zero_skipped() -> None:

@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 from math import ceil
 from typing import Any
 
-from .contracts import RuntimeEventType
 from .records import FinishReason, RunRecord, RunRecordNotFound, RunRecordStore
+from .state import KNOWLEDGE_HITS_KEY
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -53,12 +53,11 @@ class RunMetricsService:
         """
         current = now or datetime.now(UTC)
         existing = self._existing(tenant_id, state.run_id)
-        knowledge_hits = sum(
-            1
-            for event in state.events
-            if event.event_type == RuntimeEventType.TOOL_RESULT
-            and event.payload.get("knowledge_hit") is True
-        )
+        # 知识命中数（口径不变）：`tool.result` 事件且 payload `knowledge_hit is True`。
+        # 计数改由事件写入时增量累加到 `state.usage`（2026-09-16「运行事件有界」改造：
+        # 事件已独立成 append-only 表，运行状态对象上不再有全量事件可统计）。
+        # ⚠️ **存量老运行该项为 0**（无回填），新运行的计数从改造后开始累积。
+        knowledge_hits = int(state.usage.get(KNOWLEDGE_HITS_KEY, 0))
         terminal = state.status in _TERMINAL_STATUSES
         record = RunRecord(
             run_id=state.run_id,

@@ -104,9 +104,8 @@ def state() -> RuntimeState:
     value.completed_steps = ["s1"]
     value.approvals = {"s2": "pending"}
     value.usage = {"tool_calls": 2, "successful_tools": 1}
-    value.events = [
-        RuntimeEvent("run-1", 1, RuntimeEventType.PLAN_CREATED, {"step_count": 2}),
-    ]
+    # 事件不在状态行里（2026-09-16 改造）：状态行只保留事件计数。
+    value.event_count = 1
     value.checkpoint = {"status": "running", "completed_steps": ["s1"], "next_step": 1}
     return value
 
@@ -125,7 +124,9 @@ def test_state_round_trip() -> None:
     assert restored.usage == {"tool_calls": 2, "successful_tools": 1}
     assert restored.checkpoint == {"status": "running", "completed_steps": ["s1"], "next_step": 1}
     assert restored.created_at == datetime(2026, 9, 11, 8, 0, tzinfo=UTC)
-    assert [event.sequence for event in restored.events] == [1]
+    assert restored.event_count == 1
+    # 事件不参与状态行编解码（它们是 append-only 表里的行）。
+    assert "events" not in encode_state(original)
 
 
 def test_state_round_trip_without_checkpoint() -> None:
@@ -140,7 +141,7 @@ def test_state_round_trip_without_checkpoint() -> None:
 def test_decode_rejects_missing_and_malformed_fields() -> None:
     good = encode_state(state())
 
-    for key in ("run_id", "status", "context", "plan", "events", "created_at"):
+    for key in ("run_id", "status", "context", "plan", "event_count", "created_at"):
         broken = {name: value for name, value in good.items() if name != key}
         with pytest.raises(InvalidRuntimeState):
             decode_state(broken)

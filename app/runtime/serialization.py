@@ -16,6 +16,8 @@ from .contracts import AgentPlan, RuntimeContext, RuntimeEvent, RuntimeEventType
 from .state import RuntimeState
 
 # 列顺序：与 PostgresRuntimeStateStore 的 SELECT/INSERT 完全一致。
+# 注意（2026-09-16「运行事件有界」改造）：事件**不在状态行里**——它们存在 append-only 的
+# `workbench_runtime_events`（见 migrations/034）。状态行只保留事件计数 `event_count`。
 STATE_COLUMNS = (
     "run_id",
     "tenant_id",
@@ -23,7 +25,7 @@ STATE_COLUMNS = (
     "status",
     "context",
     "plan",
-    "events",
+    "event_count",
     "completed_steps",
     "approvals",
     "usage",
@@ -214,7 +216,7 @@ def encode_state(state: RuntimeState) -> dict[str, Any]:
         "status": state.status,
         "context": encode_context(state.context),
         "plan": encode_plan(state.plan),
-        "events": [encode_event(event) for event in state.events],
+        "event_count": state.event_count,
         "completed_steps": list(state.completed_steps),
         "approvals": dict(state.approvals),
         "usage": dict(state.usage),
@@ -228,9 +230,6 @@ def decode_state(row: Mapping[str, Any]) -> RuntimeState:
     for column in STATE_COLUMNS:
         if column not in payload:
             raise InvalidRuntimeState(f"runtime_state 缺少列：{column}")
-    raw_events = payload["events"]
-    if not isinstance(raw_events, list):
-        raise InvalidRuntimeState("runtime_state 的 events 必须是数组")
     raw_checkpoint = payload["checkpoint"]
     if raw_checkpoint is not None and not isinstance(raw_checkpoint, Mapping):
         raise InvalidRuntimeState("runtime_state 的 checkpoint 必须是对象或空")
@@ -238,7 +237,7 @@ def decode_state(row: Mapping[str, Any]) -> RuntimeState:
         run_id=_require_str(payload, "run_id", what="runtime_state"),
         context=decode_context(payload["context"]),
         plan=decode_plan(payload["plan"]),
-        events=[decode_event(item) for item in raw_events],
+        event_count=_require_int(payload, "event_count", what="runtime_state"),
         completed_steps=_str_list(payload["completed_steps"], what="runtime_state 的 completed_steps"),
         status=_require_str(payload, "status", what="runtime_state"),
         checkpoint=dict(raw_checkpoint) if raw_checkpoint is not None else None,
