@@ -233,6 +233,8 @@ single_scrypt_ms => 53.3
 | 桌面端/浏览器端 XSS 渲染 | 项目仅返回 JSON，无前端渲染层 | 前端应用集成测试 |
 | TOTP 与主流验证器 App 的兼容性 | 未用真实验证器扫描 | 真实设备验收 |
 
+> **复测指针（2026-09-16）**：上表各项的真实环境复测**尚未执行**；其中与本表第 1 行（真实 PostgreSQL 租户隔离面）、第 2 行（限流并发面）直接相关的「八类攻击面」重放方法已成文（1.12）：**决策层** = [`docs/superpowers/specs/2026-09-16-attack-surface-retest-design.md`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-16-attack-surface-retest-design.md)（范围 / 判据 / 分期 / A1–A5 裁决）；**执行层** = [`docs/attack-surface-retest-runbook.md`](file:///d:/徐徐AI学习/公司工作台/docs/attack-surface-retest-runbook.md)（八类逐项请求清单）。其余行不在 1.12 复测范围（规格 §5）。**执行待基础设施输入 I1–I14 与单独写授权；本报告全部结论不变。**
+
 ## 6. 结论
 
 本报告基于**本机 `TestClient` + 内存仓储**的真实执行：八类攻击面（水平越权、垂直越权、身份伪造、字段提权、注入、绕过前端、信息泄露、资源滥用）**均按设计返回预期防御结果，未发现新的可利用问题**；同时如实记录了 8 项已知限制与 8 项需真实环境验证的范围。
