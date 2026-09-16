@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
+
+from ..audit.redaction import key_tokens
 
 
 READ_KIND = "read"
@@ -89,36 +92,81 @@ class AgentPlan:
         return cls(tuple(steps))
 
 
-SENSITIVE_PAYLOAD_KEYS = frozenset(
+# 运行时事件 payload 脱敏（10.4 自查扩展，2026-09-16）。
+#
+# 判据①「值的形态」：不只看键名 —— 工具标题 / 命令摘要 / 回复正文里同样可能夹带凭据，
+# 字符串值另做**有限模式集**扫描；键名侧按**词元归一**比对（复用审计侧 `key_tokens` 口径），
+# 覆盖 `apiKey` / `X-Api-Key` / `authToken` 等形态。
+# 判据②「掩码幂等」：掩码产物为 `[已隐藏]`，值模式字符类**排除 `[` `]`** ⇒ 重复脱敏时
+# 已掩码片段不再被任一模式命中，payload 逐字节不变（hash 自然不变）。
+#
+# 键名侧**裸 `key` 不纳入**判定（`{"key": "plan-42"}` 是正常业务字段，误伤代价高于收益），
+# `api` + `key` 组合（`apiKey` / `X-Api-Key` / `api-key`）另行命中。
+_RUNTIME_SENSITIVE_KEY_TOKENS = frozenset(
     {
         "password",
-        "cookie",
-        "api_key",
-        "secret",
+        "passwd",
+        "pwd",
         "token",
+        "secret",
+        "cookie",
         "authorization",
-        "access_token",
-        "refresh_token",
+        "credential",
         "session",
+        "bearer",
         "验证码",
     }
 )
 _REDACTED = "[已隐藏]"
+# 值正文的取值字符类：取到分隔符为止；**排除 `[` `]`** ⇒ 掩码产物不再被匹配（幂等的实现手法）。
+_VALUE_CHARS = r"[^\s,;\"'&\[\]]{4,}"
+
+
+def _is_sensitive_payload_key(key: object) -> bool:
+    """键名是否敏感：词元归一后比对强词元集；`api` + `key` 组合另行命中。"""
+    tokens = key_tokens(key)
+    if tokens & _RUNTIME_SENSITIVE_KEY_TOKENS:
+        return True
+    return "api" in tokens and "key" in tokens
+
+
+# 值正文模式集（三类，全部替换为统一占位符）：
+# ① `Bearer <token>`；② 敏感词 `k[:=]v`（含引号包裹的 JSON 形态；负向断言 `(?!Bearer\b)`
+# 避免与①重复替换）；③ 已知凭据前缀。
+_BEARER_IN_TEXT = re.compile(rf"(?i)\bBearer\s+{_VALUE_CHARS}")
+_CREDENTIAL_IN_TEXT = re.compile(
+    rf"(?i)\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token"
+    rf"|authorization|password|passwd|pwd|token|secret|cookie|credential|session)"
+    rf"[\"']?(\s*[:=]\s*)[\"']?)(?!Bearer\b){_VALUE_CHARS}"
+)
+_CREDENTIAL_PREFIX = re.compile(
+    r"(?i)\b(?:sk-[A-Za-z0-9_-]{6,}|ghp_[A-Za-z0-9]{10,}|glpat-[A-Za-z0-9_-]{6,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{6,}|AKIA[0-9A-Z]{12})"
+)
+
+
+def _redact_text(value: str) -> str:
+    """有限模式集的值正文脱敏；不匹配的文本原样返回（掩码产物不再被匹配 ⇒ 幂等）。"""
+    text = _BEARER_IN_TEXT.sub(f"Bearer {_REDACTED}", value)
+    text = _CREDENTIAL_IN_TEXT.sub(rf"\g<1>{_REDACTED}", text)
+    return _CREDENTIAL_PREFIX.sub(_REDACTED, text)
 
 
 def redact_payload(value: Any) -> Any:
-    """递归把敏感键的值替换为占位符。
+    """递归把敏感键的值替换为占位符，并对字符串值做有限模式集扫描。
 
     读取输出（`RuntimeEvent.to_public_dict`）与**持久化写入**共用这一套规则：
-    事件一旦落库就是长期留存，凭据类键不应写进数据库。
+    事件一旦落库就是长期留存，凭据类内容不应写进数据库。
     """
     if isinstance(value, dict):
         return {
-            key: _REDACTED if key.lower() in SENSITIVE_PAYLOAD_KEYS else redact_payload(item)
+            key: _REDACTED if _is_sensitive_payload_key(key) else redact_payload(item)
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [redact_payload(item) for item in value]
+    if isinstance(value, str):
+        return _redact_text(value)
     return value
 
 

@@ -87,7 +87,7 @@ def test_event_round_trip_redacts_sensitive_keys_on_write() -> None:
 
     assert encoded["payload"]["nested"]["ACCESS_TOKEN"] == "[已隐藏]"
     assert encoded["payload"]["nested"]["safe"] == "ok"
-    # 敏感键规则是「键名精确匹配（忽略大小写）」，不是子串匹配。
+    # 敏感键规则是「键名词元归一后比对」，不是子串匹配（`cookies` 不因含 `cookie` 被误伤）。
     assert encoded["payload"]["cookie"] == "[已隐藏]"
     assert encoded["payload"]["plain"] == 7
     assert "secret-value" not in str(encoded)
