@@ -100,6 +100,7 @@ curl -sS -X POST "$BASE/api/v1/auth/me/totp/confirmation" -H "Authorization: Bea
 
 - 受限会话**只允许**这 3 个接口（两个 TOTP 接口 + 登出/健康检查），其它接口一律 403（本机实测：受限令牌访问 `/api/v1/workforce/roster` → `403`「账号需要先完成动态口令绑定」）。
 - **⚠️ 实操坑（本机实测踩到）**：第 ③ 步确认绑定用的那个动态码**已被消费**。若紧接着用**同一个码**登录，会得到 `401`「手机号或密码不正确」——**这不是账号或口令错了**，而是该步长的码已用过。等验证器翻到**下一个**码（≤30 秒）再登录即可（实测：用下一个步长的码 → `200`、`scope=full`）。服务端对「用了旧码」与「口令错」返回**同一个提示语**，这是刻意不泄露失败因素的安全设计。
+- **⚠️ 计数副作用（2026-09-16 本机 Docker 全链路实跑新增）**：上面这个 `401` 与真口令错一样**计入登录失败计数**（默认 `LOGIN_MAX_FAILURES=5` / `LOGIN_WINDOW_SECONDS=300` ⇒ 达阈值**锁定 `900` 秒**，见 `app/settings.py:166-183`）。所以**不要在同一步长内反复重试**——重试本身会把账号推向锁定（本批实测到计数增长；未跑满 5 次、**未实测锁定发生**）。正确做法：等**步长号真正推进**（验证器翻到下一个码，`floor(unix_time/30)` 变化，`≤30` 秒）再登录，而不是固定 `sleep N` 秒。
 - 非 `development` 环境**忽略** `X-Tenant-Id` / `X-User-Id` / `X-User-Role` 请求头，必须用真实令牌。
 - 令牌有时效（`WORKBENCH_SESSION_TTL_SECONDS` 默认 900 秒），§3 请在拿到后尽快执行。
 
@@ -120,8 +121,8 @@ SELECT version();
 SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';
 ```
 
-- **预期**：第二行返回一行（本机样例 `vector | 0.8.6`）。
-- **判读**：**无返回行 = 迁移 001 的 `CREATE EXTENSION vector` 没成功**，必须先在目标库装 pgvector（官方 `postgres` 镜像不带；用 `pgvector/pgvector:pg16` 或等价发行版）。
+- **预期**：第二行返回**一行**（`vector` + 版本号）。版本号**随目标库安装的 pgvector 而变**：本文档样例为 `0.8.6`；2026-09-16 本机 Docker 全链路实跑在 `pgvector/pgvector:pg16`（PG `16.10`）上为 `0.8.0`。
+- **判读**：**只判「有没有行」，不判版本号相等**——同一标签镜像（如 `pgvector/pgvector:pg16`）会随时间前移自带版本，拿样例版本号做相等比对会误判。**无返回行 = 迁移 001 的 `CREATE EXTENSION vector` 没成功**，必须先在目标库装 pgvector（官方 `postgres` 镜像不带；用 `pgvector/pgvector:pg16` 或等价发行版）。
 
 ### B. 迁移 022 是否落地（表 + 复合外键）
 
