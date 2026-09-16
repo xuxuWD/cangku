@@ -13,9 +13,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| **做什么** | ① 台式机基础软件就绪（WSL2 / Docker Desktop / Git / Python 3.12 / PostgreSQL 客户端）；② 四件基础设施 + 三进程应用**全容器化**起栈（postgres / redis / seaweedfs / app / worker / beat）；③ 账号就绪（超管 + 只读账号 + 探针账号）；④ 预检四连与只读核验（1.3–1.5）；⑤ 备份/恢复演练前置（1.6，需另授权） |
-| **不做什么** | ① **不动**开发机现有环境（并行不冲突）；② **不接**公网（不开 80/443、不做 DNS、不做 TLS 反代）；③ **不外扩** SeaweedFS 控制台 9001（维持仅本机）；④ **不伪造**外部 Runtime（RAGFlow / AgentScope / DeerFlow / Codex Worker / Hermes）的就绪声明——没接入就如实 fail（见 §12 D4）；⑤ 不改基础编排与 `docker-compose.app.yml`（本方案只新增 `docker-compose.staging.yml`，见 §2.3）；⑥ 不做压测（1.8）与真实执行（dsh）——各自需**单独授权** |
-| **影响什么** | 仓库新增 1 个文件（`docker-compose.staging.yml`，只覆盖端口绑定）；台式机新装软件与 Docker 卷（`workbench-*` 三卷 + 应用数据卷）；**仓库代码零改动** |
+| **做什么** | ① 台式机基础软件就绪（WSL2 / Docker Desktop / Git / Python 3.12 / PostgreSQL 客户端）；② 四件基础设施 + embedding 服务 + 三进程应用**全容器化**起栈（postgres / redis / seaweedfs / embedding / app / worker / beat）；③ 账号就绪（超管 + 只读账号 + 探针账号）；④ 预检四连与只读核验（1.3–1.5）；⑤ 备份/恢复演练前置（1.6，需另授权） |
+| **不做什么** | ① **不动**开发机现有环境（并行不冲突）；② **不接**公网（不开 80/443、不做 DNS、不做 TLS 反代）；③ **不外扩** SeaweedFS 控制台 9001（维持仅本机）；④ **不伪造**外部 Runtime（RAGFlow / AgentScope / DeerFlow / Codex Worker / Hermes）的就绪声明——没接入就如实 fail（见 §12 D4）；⑤ 不改基础编排与 `docker-compose.app.yml`（本方案只新增 `docker-compose.staging.yml` 与 `docker-compose.embedding.yml`，见 §2.3）；⑥ 不做压测（1.8）与真实执行（dsh）——各自需**单独授权** |
+| **影响什么** | 仓库新增 2 个文件（`docker-compose.staging.yml` 只覆盖端口绑定；`docker-compose.embedding.yml` 定义 embedding 服务：镜像钉 digest、模型只读挂载、仅宿主回环）；台式机新装软件、预下载 embedding 模型（≈1.2 GB）与 Docker 卷（`workbench-*` 三卷 + 应用数据卷）；**仓库代码零改动** |
 
 ### 1.2 执行方式与红线
 
@@ -33,17 +33,18 @@
 | `$APP` | 仓库克隆目录 | `$ROOT\app` |
 | `$SECRETS` | 密钥目录（受 ACL 保护） | `D:\workbench-secrets` |
 | `$PINNED_SHA` | 本方案钉住的提交 | **本批推送取证后由我方给出**；在它给定前不要执行 Step 2 |
+| `$MODEL_DIR` | embedding 模型目录（Step 2 预下载） | `$ROOT\models\Qwen3-Embedding-0.6B` |
 | 命令行 | 除注明「开发机」外，全部在**台式机**的 **PowerShell（管理员）**中执行 | |
 
 ### 1.4 步骤总览
 
 | 步 | 内容 | 写操作 | 预计回传 |
 | --- | --- | --- | --- |
-| Step 0 | 机器自查（版本/虚拟化/端口/磁盘/IP） | 否 | 6 段输出 |
+| Step 0 | 机器自查（版本/虚拟化/端口/磁盘/IP） | 否 | 7 段输出 |
 | Step 1 | 基础软件（WSL2/Docker/Git/Python/PG 客户端） | 是（安装） | 版本号清单 |
-| Step 2 | 取材料（clone + 钉 SHA + venv + httpx） | 否 | SHA 与版本 |
+| Step 2 | 取材料（clone + 钉 SHA + venv + httpx + **embedding 模型预下载**） | 否 | SHA、版本与模型目录 |
 | Step 3 | 密钥与 `staging.env`（7 把密钥 + 载入器） | 否 | 长度/唯一性核对 |
-| Step 4 | 起基础设施（pg/redis/objects）+ 防火墙 | 是（起容器） | `ps` + 三项探活 |
+| Step 4 | 起基础设施（pg/redis/objects/**embedding**）+ 防火墙 | 是（起容器） | `ps` + 五项探活 |
 | Step 5 | **【授权点】**构建镜像 + 起应用栈 + 回填两变量 | 是（迁移） | health/迁移 34 项/worker/beat |
 | Step 6 | **【授权点】**账号（超管/只读/探针） | 是（写库） | 登录与属性读数 |
 | Step 7 | 预检四连 + 只读核验（1.3–1.5） | 否 | 四份报告 + SQL 输出 |
@@ -63,6 +64,7 @@
 ────────────────────────┘   :9000/:8000      │      ├ postgres（pgvector）:5432  │
                                               │      ├ redis（valkey）    :6379  │
                                               │      ├ seaweedfs（S3）    :9000  │
+                                              │      ├ embedding（TEI）   :8080  │
                                               │      ├ app（uvicorn）     :8000  │
                                               │      ├ worker（celery）           │
                                               │      └ beat（celery beat）        │
@@ -70,8 +72,9 @@
 ```
 
 - **验收机 = 开发机**：探针脚本（`cross_tenant_probe` / `staging_concurrency_probe`）与 `psql` 在**开发机**上跑也可；也可全部在台式机上跑（命令里的 `$IP` 换成 `127.0.0.1` 仅限本机自查，**判据命令必须用 `$IP`**——预检脚本对 `localhost/127.0.0.1` 是 fail-closed 的，见 §2.3）。
+- **embedding 不走局域网**：`embedding` 仅在 compose 容器网络内被 app 以服务名寻址（`http://embedding:8080`），宿主侧只绑 `127.0.0.1:8080` 供调试——`$IP:8080` 不可达，防火墙放行清单与 `netstat` 判据均不含 8080（§7.4/7.5）。
 
-### 2.2 服务与端口账（全部来自 `docker-compose.yml` + `docker-compose.app.yml`，本方案不改）
+### 2.2 服务与端口账（基础两文件不改；`embedding` 来自本方案新增的 `docker-compose.embedding.yml`）
 
 | 服务 | 镜像（钉 digest） | 容器内端口 | 宿主绑定（基础文件） | 本方案追加绑定 | 用途 |
 | --- | --- | --- | --- | --- | --- |
@@ -81,6 +84,7 @@
 | app | `workbench-app:<版本>`（本地构建） | 8000 | `127.0.0.1:8000` | `$IP:8000` | HTTP 入口；**唯一跑迁移的进程** |
 | worker | 同 app 镜像 | — | — | — | Celery worker（`--concurrency=2`） |
 | beat | 同 app 镜像 | — | — | — | Celery beat（独立进程） |
+| embedding | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.9@sha256:2538ea1c…`（新增文件 `docker-compose.embedding.yml`） | 8080 | `127.0.0.1:8080`（新文件自带） | **不追加**（不暴露局域网） | P3 记忆层 embedding（Qwen3-Embedding-0.6B，CPU；模型只读挂载） |
 
 ### 2.3 地址约定：为什么全用局域网 IP、为什么新增端口覆盖文件
 
@@ -88,10 +92,12 @@
 - **基础编排只绑 `127.0.0.1`**（单机开发姿态），跨机访问不到 ⇒ 新增 [`docker-compose.staging.yml`](../docker-compose.staging.yml)：`ports` 属多值选项，override 中为**追加**，把 5432/6379/9000/8000 **再绑一份到 `$IP`**；基础文件的 `127.0.0.1` 绑定保持不变，**9001 不追加**（维持仅本机）。
 - **绑定地址无默认值**：`${WORKBENCH_STAGING_BIND_IP:?…}` 缺值即在 compose 阶段显式报错（fail-closed），杜绝「漏配时悄悄绑到通配地址」。
 - **收窄暴露面**：入站再套一层 Windows 防火墙，仅放行「本地子网 / 专用网络」（§7.4）。
+- **embedding 只在容器网络内**：app 容器以服务名 `http://embedding:8080` 访问 embedding；宿主侧只绑 `127.0.0.1:8080`（调试用），`docker-compose.staging.yml` **不为它追加 `$IP` 绑定**——局域网不可达是有意为之（P3 记忆层数据不出内网，也不扩大暴露面）。
 - ⚠️ **同一变量的两种口径**（本方案的唯一「反直觉点」，先理解再动手）：
   - **容器内**：`docker-compose.app.yml` 里 app/worker/beat 的连接串是**硬编码服务名**（`@postgres:5432`、`@redis:6379`、`http://seaweedfs:9000`），**不读** `staging.env` 的 `WORKBENCH_DATABASE_URL`；
   - **宿主侧脚本**（预检 / `psql` / drill）：读环境变量，**必须**用 `$IP` 版本。
   - 二者指向同一批容器，不冲突；`staging.env` 里的 `WORKBENCH_*_URL` 只服务宿主侧。
+  - **embedding 是例外**：`WORKBENCH_EMBEDDING_BASE_URL` 写在 `staging.env` 里但值是**服务名** `http://embedding:8080`——它由 compose 经 `--env-file` 读入后注入 app 容器；宿主侧验收脚本（`scripts/`）不访问 embedding，所以**不写** `$IP` 版本。
 
 ---
 
@@ -111,7 +117,7 @@ Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores
 (Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled
 
 # ④ 目标端口占用：期望**无输出**（有输出＝被占，先记下进程再回报）
-Get-NetTCPConnection -LocalPort 5432,6379,9000,8000,9001 -State Listen -ErrorAction SilentlyContinue |
+Get-NetTCPConnection -LocalPort 5432,6379,9000,8000,9001,8080 -State Listen -ErrorAction SilentlyContinue |
   Select-Object LocalAddress, LocalPort, OwningProcess
 
 # ⑤ 系统盘可用空间：期望 ≥100 GB
@@ -218,7 +224,7 @@ git rev-parse HEAD            # 期望：与 $PINNED_SHA 逐字符一致
 
 > 仓库为 **public**，clone 无需凭据。`$PINNED_SHA` 未给出前**不要**开始本步。
 
-宿主脚本用的最小环境（只装 `httpx`，脚本本身纯标准库 + httpx）：
+宿主脚本用的最小环境（`httpx`〔验收脚本〕+ `huggingface_hub`〔embedding 模型预下载〕）：
 
 ```powershell
 cd D:\workbench\app
@@ -228,13 +234,26 @@ py -3.12 -m venv .venv-accept
 .\.venv-accept\Scripts\python.exe -c "import httpx, sys; print(sys.version); print(httpx.__version__)"
 ```
 
-**回传**：`git rev-parse HEAD` 输出、python 版本与 httpx 版本。
+embedding 模型预下载（≈1.2 GB；**宿主下载、容器只读挂载**——容器内不做联网下载，避免启动期外部不确定性）：
+
+```powershell
+$env:HF_ENDPOINT = 'https://hf-mirror.com'   # 国内镜像，避免直连低速/超时
+.\.venv-accept\Scripts\python.exe -m pip install "huggingface_hub>=0.30,<1"
+$modelDir = 'D:\workbench\models\Qwen3-Embedding-0.6B'
+New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
+.\.venv-accept\Scripts\python.exe -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-Embedding-0.6B', local_dir='D:/workbench/models/Qwen3-Embedding-0.6B')"
+# 自查：文件清单与合计大小（应含 config.json / model 权重 / tokenizer 及 1_Pooling/ 等）
+Get-ChildItem $modelDir | Select-Object Name
+[math]::Round((Get-ChildItem $modelDir -Recurse -File | Measure-Object Length -Sum).Sum / 1GB, 2)
+```
+
+**回传**：`git rev-parse HEAD` 输出、python 版本与 httpx 版本、**模型目录文件清单与合计 GB**。
 
 ---
 
 ## 6. Step 3 · 密钥与 `staging.env`（不打印、不进仓库）
 
-> **前置**：§14 的 **E1（embedding 服务地址）** 必须先定案——它是 compose 的必填变量（缺值/留空时 Step 4 会直接 fail-closed 报错，这是设计而非故障）。
+> **前置（E1 已定案 2026-09-16）**：embedding 采用**台式机自包含**（方案 A）——由 `docker-compose.embedding.yml` 随**固定四 `-f` 组合**在 Step 4 启动（TEI CPU 镜像 + Qwen3-Embedding-0.6B 模型只读挂载）。compose 对 `WORKBENCH_EMBEDDING_BASE_URL`（值为容器内服务名）与 `WORKBENCH_EMBEDDING_MODEL_DIR`（Step 2 预下载目录）双双 `:?` 必填——缺值即在 compose 阶段 fail-closed 报错（这是设计而非故障）。
 
 ### 6.1 建密钥目录并锁权限（管理员 PowerShell）
 
@@ -295,8 +314,10 @@ WORKBENCH_BOOTSTRAP_TOKEN=$BOOTSTRAP
 WORKBENCH_RO_PASSWORD=$RO_PW
 WORKBENCH_ARCHIVE_KEY=$ARCHIVE_KEY
 
-# embedding 服务（E1 定案后填真实内网地址；留空/缺值 = compose 阶段 fail-closed）
-WORKBENCH_EMBEDDING_BASE_URL=
+# embedding 服务（E1 已定案：台式机自包含——容器内以服务名寻址；compose 缺值即 fail-closed）
+WORKBENCH_EMBEDDING_BASE_URL=http://embedding:8080
+# embedding 模型目录（Step 2 预下载后只读挂载进容器；$ROOT 若非 D:\workbench 则同步改）
+WORKBENCH_EMBEDDING_MODEL_DIR=D:/workbench/models/Qwen3-Embedding-0.6B
 WORKBENCH_EMBEDDING_TIMEOUT_SECONDS=10
 WORKBENCH_EMBEDDING_MAX_TOKENS=8192
 WORKBENCH_MEMORY_DAILY_BUDGET_CENTS=0
@@ -312,13 +333,7 @@ WORKBENCH_APP_IMAGE=workbench-app:unset
 [System.IO.File]::WriteAllText($envFile, $body, (New-Object System.Text.UTF8Encoding $false))
 ```
 
-E1 定案后，把 `WORKBENCH_EMBEDDING_BASE_URL=` 一行补上真实内网地址（例：`http://192.168.1.20:8080`），例如：
-
-```powershell
-$content = Get-Content $envFile -Raw -Encoding UTF8
-$content = $content -replace '(?m)^WORKBENCH_EMBEDDING_BASE_URL=.*$', 'WORKBENCH_EMBEDDING_BASE_URL=http://192.168.1.20:8080'
-[System.IO.File]::WriteAllText($envFile, $content, (New-Object System.Text.UTF8Encoding $false))
-```
+> `WORKBENCH_EMBEDDING_BASE_URL` 已按定案**直接写在模板里**（`http://embedding:8080`——容器内服务名寻址，非 `$IP`），无需再补值；`WORKBENCH_EMBEDDING_MODEL_DIR` 指向 Step 2 的预下载目录。
 
 ### 6.4 写「载入器」（每个新窗口都要先 dot-source 它）
 
@@ -344,38 +359,38 @@ Get-Content -LiteralPath $Path -Encoding UTF8 | ForEach-Object {
 ```powershell
 . D:\workbench-secrets\load-env.ps1
 $env:WORKBENCH_ENV; $env:WORKBENCH_STAGING_BIND_IP; $env:WORKBENCH_OBJECT_NAMESPACE
-@('WORKBENCH_DB_PASSWORD','WORKBENCH_MINIO_PASSWORD','WORKBENCH_AUTH_SECRET','WORKBENCH_BACKUP_ENCRYPTION_KEY','WORKBENCH_BOOTSTRAP_TOKEN','WORKBENCH_EMBEDDING_BASE_URL') |
+@('WORKBENCH_DB_PASSWORD','WORKBENCH_MINIO_PASSWORD','WORKBENCH_AUTH_SECRET','WORKBENCH_BACKUP_ENCRYPTION_KEY','WORKBENCH_BOOTSTRAP_TOKEN','WORKBENCH_EMBEDDING_BASE_URL','WORKBENCH_EMBEDDING_MODEL_DIR') |
   ForEach-Object { "$_=" + [Environment]::GetEnvironmentVariable($_).Length }
-# 期望：前三个回显值；密钥行显示长度（40/40/48/48/48 与 embedding 地址长度），不含值
+# 期望：前三个回显值；密钥行显示长度（40/40/48/48/48），embedding 地址 21、模型目录 41，不含值
 ```
 
-> **自查要点**：密钥行只显示**长度**；若 embedding 行为 `0`，说明 E1 未填——回到 §14 定案后再继续。
+> **自查要点**：密钥行只显示**长度**；若 embedding 地址行或模型目录行为 `0`，Step 4 会在 compose 阶段 fail-closed（`:?` 必填）——回 6.3 补齐后再继续。
 
 ---
 
-## 7. Step 4 · 起基础设施（postgres / redis / seaweedfs）+ 防火墙
+## 7. Step 4 · 起基础设施（postgres / redis / seaweedfs / embedding）+ 防火墙
 
-### 7.1 起三件基础设施
+### 7.1 起四件基础设施（含 embedding）
 
 ```powershell
 . D:\workbench-secrets\load-env.ps1
 cd D:\workbench\app
 docker compose --env-file D:\workbench-secrets\staging.env `
-  -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml `
-  up -d postgres redis seaweedfs
+  -f docker-compose.yml -f docker-compose.embedding.yml -f docker-compose.app.yml -f docker-compose.staging.yml `
+  up -d postgres redis seaweedfs embedding
 ```
 
-> 为什么明明只起三件基础设施，也要带上 `docker-compose.app.yml`：`docker-compose.staging.yml` 里包含 `app` 服务的端口覆盖，**缺 app 文件时该服务定义不完整、compose 直接报错**。三件全带是这个组合的固定姿势（后续所有 compose 命令同）。
+> **固定四 `-f` 组合**（后续所有 compose 命令同）：① 明明只起基础设施也要带 `docker-compose.app.yml`——`docker-compose.staging.yml` 里包含 `app` 服务的端口覆盖，**缺 app 文件时该服务定义不完整、compose 直接报错**；② `docker-compose.embedding.yml` 必须与 app 在**同一次调用**里（同一 compose 项目 ⇒ 同一网络），app 容器才能按服务名 `embedding` 解析到它。
 
 ### 7.2 自查 A：容器状态
 
 ```powershell
 docker compose --env-file D:\workbench-secrets\staging.env `
-  -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml ps
-# 期望：postgres / redis / seaweedfs 三个 Up
+  -f docker-compose.yml -f docker-compose.embedding.yml -f docker-compose.app.yml -f docker-compose.staging.yml ps
+# 期望：postgres / redis / seaweedfs / embedding 四个 Up
 ```
 
-### 7.3 自查 B：三项探活（**用 $IP**，证明跨机可达）
+### 7.3 自查 B：五项探活（①②④ 带 `$IP` 跨机读数；③⑤ 为服务级活性）
 
 ```powershell
 # ① PostgreSQL：能连上并报告版本
@@ -387,12 +402,18 @@ psql "postgresql://workbench@$($env:WORKBENCH_STAGING_BIND_IP):5432/workbench" `
 # 期望：一行（name=vector）
 # ③ Redis（valkey）
 docker compose --env-file D:\workbench-secrets\staging.env `
-  -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml `
+  -f docker-compose.yml -f docker-compose.embedding.yml -f docker-compose.app.yml -f docker-compose.staging.yml `
   exec redis valkey-cli ping
 # 期望：PONG
 # ④ 对象存储（S3 端点活着即可：返回任意 HTTP 状态码都算通，000/超时=不通）
 curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:9000/
 curl.exe -s -o NUL -w "%{http_code}`n" "http://$($env:WORKBENCH_STAGING_BIND_IP):9000/"
+# ⑤ embedding（TEI）：/health=200；/v1/embeddings 返回 1024 维（首次启动加载模型需 30–60 秒，未就绪先等再试）
+curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8080/health
+$embBody = '{"model":"","input":["staging embedding 探活"]}'
+$emb = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/v1/embeddings -ContentType "application/json" -Body $embBody
+$emb.data[0].embedding.Count
+# 期望：200 与 1024；维度 ≠1024 或报错就**停手**，把原始输出贴回判读
 ```
 
 ### 7.4 防火墙：入站只放行「本地子网 / 专用网络」（管理员 PowerShell）
@@ -402,6 +423,8 @@ curl.exe -s -o NUL -w "%{http_code}`n" "http://$($env:WORKBENCH_STAGING_BIND_IP)
 Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq 'Public' } |
   Set-NetConnectionProfile -NetworkCategory Private
 
+# 入站端口 5432/6379/9000/8000 四个——**不放行 8080**（embedding 只在容器网络内被 app
+# 以服务名寻址；宿主侧仅 127.0.0.1 调试，不向局域网暴露）
 New-NetFirewallRule -DisplayName "workbench-staging-inbound" -Direction Inbound -Action Allow `
   -Protocol TCP -LocalPort 5432,6379,9000,8000 -Profile Private -RemoteAddress LocalSubnet
 Get-NetFirewallRule -DisplayName "workbench-staging-inbound" | Select-Object DisplayName, Enabled, Profile
@@ -410,13 +433,13 @@ Get-NetFirewallRule -DisplayName "workbench-staging-inbound" | Select-Object Dis
 ### 7.5 自查 C：绑定面（确认没有裸奔到所有网卡）
 
 ```powershell
-netstat -ano | Select-String ":5432|:6379|:9000|:8000"
-# 期望：能看到 127.0.0.1:5432 与 $IP:5432 两类绑定
+netstat -ano | Select-String ":5432|:6379|:9000|:8000|:8080"
+# 期望：能看到 127.0.0.1:5432 与 $IP:5432 两类绑定；:8080 只应出现 127.0.0.1（不出现 $IP:8080）
 # 若只见 0.0.0.0:5432（Docker Desktop 端口代理粒度问题）：
 #   → 不改配置，以 7.4 防火墙规则收窄为准，并在执行记录里登记（见 §12 D3）
 ```
 
-**回传**：`ps` 输出、四项探活原始输出、防火墙规则行、`netstat` 过滤结果。
+**回传**：`ps` 输出、五项探活原始输出、防火墙规则行、`netstat` 过滤结果。
 
 ---
 
@@ -454,11 +477,11 @@ Select-String -Path $envFile -Pattern '^WORKBENCH_APP_IMAGE='
 . D:\workbench-secrets\load-env.ps1
 cd D:\workbench\app
 docker compose --env-file D:\workbench-secrets\staging.env `
-  -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml `
+  -f docker-compose.yml -f docker-compose.embedding.yml -f docker-compose.app.yml -f docker-compose.staging.yml `
   up -d --no-build
 docker compose --env-file D:\workbench-secrets\staging.env `
-  -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml ps
-# 期望：app / worker 显示 healthy（beat 无 healthcheck，Up 即可）
+  -f docker-compose.yml -f docker-compose.embedding.yml -f docker-compose.app.yml -f docker-compose.staging.yml ps
+# 期望：app / worker 显示 healthy（beat 无 healthcheck，Up 即可；embedding 已在 Step 4 起好，本次不动它）
 ```
 
 ### 8.4 自查（**逐条回传**）
@@ -490,15 +513,15 @@ Select-String -Path $envFile -Pattern '^WORKBENCH_APPLIED_MIGRATIONS=' | ForEach
 
 # ⑤ worker 就绪：期望日志含 "ready."
 docker compose --env-file D:\workbench-secrets\staging.env `
-  -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml logs worker --tail 40
+  -f docker-compose.yml -f docker-compose.embedding.yml -f docker-compose.app.yml -f docker-compose.staging.yml logs worker --tail 40
 
 # ⑥ beat 在派发：期望日志含 "Sending due task"（首次启动会立即派发一轮）
 docker compose --env-file D:\workbench-secrets\staging.env `
-  -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml logs beat --tail 40
+  -f docker-compose.yml -f docker-compose.embedding.yml -f docker-compose.app.yml -f docker-compose.staging.yml logs beat --tail 40
 
 # ⑦ 若 ① 失败，看 app 日志定位（把原始报错贴回来）：
 docker compose --env-file D:\workbench-secrets\staging.env `
-  -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml logs app --tail 80
+  -f docker-compose.yml -f docker-compose.embedding.yml -f docker-compose.app.yml -f docker-compose.staging.yml logs app --tail 80
 ```
 
 **回传**：①②③ 原始输出、④ 的前 60 字符、⑤⑥ 关键行（或 ⑦ 的报错原文）。
@@ -701,7 +724,7 @@ psql "postgresql://workbench@$($env:WORKBENCH_STAGING_BIND_IP):5432/workbench" `
 | D3 | **端口暴露**：基础编排 `127.0.0.1` + 本方案**追加** `$IP` 绑定 | 跨机访问必须真实可达；Docker Desktop 的端口代理粒度在个别版本会把绑定落到 `0.0.0.0` | 以 Windows 防火墙（Private + LocalSubnet）收窄；`netstat` 实测若见 `0.0.0.0` 则在此登记 |
 | D4 | **外部 Runtime 未接入**：RAGFlow / AgentScope / DeerFlow / Codex Worker / Hermes 的就绪声明**如实留空** | 未部署就是不部署——**不得为凑预检全绿而填 `true`**（红线：不虚报） | 1.3/1.4 的 Runtime 段进「受限项」，待真实接入后补跑；本地三进程若在开发机已有，可评估登记其真实地址（§14） |
 | D5 | **进程守护**：Docker Desktop 随登录自启 + 容器 `restart: unless-stopped`，无 systemd 级守护 | Windows 单机形态固有 | 重启后自查 `docker compose ps`；如长期无人值守，另配计划任务（本期不做） |
-| D6 | **embedding（E1）落点未定** | 生产模式下 app 缺 `WORKBENCH_EMBEDDING_BASE_URL` 会**启动即失败**（fail-closed，`app/bootstrap.py`），compose 亦以 `:?required` 预拦 | 见 §14 E1；未定案前 Step 4 无法开始 |
+| D6 | **embedding（E1）落点：已定案（A：台式机自包含，2026-09-16）** | 新增 `docker-compose.embedding.yml`（TEI CPU 镜像钉 digest + 模型只读挂载 + 仅宿主回环；模型预下载 ≈1.2 GB）；生产模式下 app 缺 `WORKBENCH_EMBEDDING_BASE_URL` 会**启动即失败**（fail-closed，`app/bootstrap.py`），compose 亦以 `:?required` 预拦 | 摘要与契约兼容性已核（开发机只读解析取证）；**真机起栈未验证**——随 Step 4 取证 |
 | D7 | **备份介质（I11）未定** | 演练前必须定「写哪里 + 第三把密钥怎么存」 | 见 §14；建议外接盘或开发机共享目录，不与库同盘 |
 | D8 | **Docker Desktop 许可** | 商业规模（>250 人或 >$10M 年收入）需付费订阅 | 待核自评（§14） |
 
@@ -732,7 +755,7 @@ psql "postgresql://workbench@$($env:WORKBENCH_STAGING_BIND_IP):5432/workbench" `
 
 | # | 事项 | 说明 | 阻塞 |
 | --- | --- | --- | --- |
-| E1 | **embedding 服务落点** | 三选一：**A** 在台式机另起一个容器（CPU 跑 Qwen3-Embedding-0.6B，需另立部署任务）；**B** 指向开发机/内网**已有**的 OpenAI 兼容服务（`GET /health` 非 2xx 视为不可用；契约：`POST {base}/v1/embeddings`，返回 1024 维）；**C** 其他已有服务。**禁止**指向公网 API（数据不出内网红线） | Step 3 起全部 compose 步骤 |
+| E1 | **embedding 服务落点** | **已定案（2026-09-16）**：**方案 A——台式机自包含**。TEI CPU 镜像（钉 digest）加载 Qwen3-Embedding-0.6B，模型 Step 2 预下载后只读挂载；契约 `POST {base}/v1/embeddings`（1024 维）+ `GET {base}/health`；app 以服务名 `http://embedding:8080` 寻址（仅容器网络 + 宿主回环，**禁公网**） | **已解除**（编排与步骤已补：§5 模型预下载、§6 变量、§7 Step 4） |
 | U6 | **手机号分配** | 手机号① 超管（租户 A）；手机号② 探针 + 租户 B（一机两用）。若你希望「探针」与「租户 B 账号」分开，需要第三个号 | Step 6 |
 | I11 | **备份介质 + 第三把密钥保管 + 维护窗口** | 介质建议外接盘/开发机共享目录（不与库同盘）；`WORKBENCH_ARCHIVE_KEY` 已生成在 `staging.env`，**需另行抄存**（丢了备份就解不开） | Step 8 |
 | U5/I13 | **死信通知渠道** | 默认本轮不接（如实登记） | 1.10 通知项 |
@@ -751,8 +774,11 @@ psql "postgresql://workbench@$($env:WORKBENCH_STAGING_BIND_IP):5432/workbench" `
 | 端口 5432 被占 | PostgreSQL Windows 服务没停 | 回 Step 1.5 的 `Stop-Service` + `Set-Service -StartupType Disabled` |
 | `pg_dump: 无法识别的命令` | PG 客户端 bin 不在 PATH | Step 1.5 的 `$env:Path += …` |
 | compose 报 `set WORKBENCH_STAGING_BIND_IP to …` | env 文件没载入 / 缺该变量 | 先 `. D:\workbench-secrets\load-env.ps1`，再确认 6.5 自查 |
-| compose 报 `WORKBENCH_EMBEDDING_BASE_URL … required` | E1 未填 | 回 §14 E1（这是 fail-closed 的设计行为） |
-| compose 报 `service app has neither an image nor a build context` | 只给了 base + override，漏了 `-f docker-compose.app.yml` | 用本文固定三 `-f` 组合 |
+| compose 报 `WORKBENCH_EMBEDDING_BASE_URL … required` 或 `WORKBENCH_EMBEDDING_MODEL_DIR … required` | `staging.env` 缺值 / 没载入 env 文件 | 先 `. D:\workbench-secrets\load-env.ps1`，再按 6.5 自查两个变量（这是 fail-closed 的设计行为） |
+| `ghcr.io` 拉取 embedding 镜像失败 | 网络 / 镜像源不可达 | 贴原始报错，**不要**自行改镜像源；确需其他源则按 §12 登记偏差 |
+| `logs embedding --tail 80` 报启动或模型加载失败 | 模型目录未预下载 / 挂载路径不符 / pooling 解析异常 | 把原始日志一个字不改贴回；先核对 Step 2 模型目录与 §1.3 `$MODEL_DIR` |
+| embedding `/health` 非 200 或向量维度 ≠1024 | 模型仍在加载（等 30–60 秒）/ 加载异常 | 先等待重试；仍不对就**停手**贴回原始输出判读，不要改 compose 参数 |
+| compose 报 `service app has neither an image nor a build context` | 只给了 base + override，漏了 `-f docker-compose.app.yml` | 用本文固定四 `-f` 组合 |
 | app 容器反复重启 | 迁移失败 / 密钥缺失 / embedding 地址不可达 | `logs app --tail 80` 把原始报错贴回 |
 | 本机 health 200、跨机不通 | 防火墙 / `$IP` | 7.4 + 7.5 |
 | TOTP 确认后立刻登录 `401` | 用了**已被消费**的同一步长码（不是口令错；且计失败次数） | 等验证器翻到下一个码（≤30 秒）再登录；不要连试 |

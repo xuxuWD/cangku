@@ -1,0 +1,46 @@
+# P3 记忆层 · 本地 embedding 服务编排（E1 定案 A：单机 staging 台式机自包含，2026-09-16）
+#
+#   docker compose -f docker-compose.yml -f docker-compose.embedding.yml \
+#     -f docker-compose.app.yml -f docker-compose.staging.yml up -d   # 固定四 `-f` 组合
+#
+# 服务构成（一件）：
+# - `embedding`：text-embeddings-inference（TEI，CPU 镜像）加载 Qwen3-Embedding-0.6B，
+#   提供 `POST /v1/embeddings`（OpenAI 兼容；app/memory/embedding.py 的契约：
+#   请求体 `{"model":"","input":[text]}`——TEI 忽略该字段，空串兼容；响应取 `data[0].embedding`，
+#   维度强制 1024）与 `GET /health`。
+#
+# 约定（与既有编排同口径）：
+# - 镜像按 digest 钉死（tag 可变、digest 不可变；与 docker-compose.yml / Dockerfile 同口径）。
+# - 模型**预下载后只读挂载**（`${WORKBENCH_EMBEDDING_MODEL_DIR:?…}` 缺值即 fail-closed）：
+#   容器内不做联网下载，避免启动期外部不确定性；`:ro` 防容器写宿主模型目录。
+# - **只绑宿主回环**（`127.0.0.1:8080`）：app 走 compose 内网服务名 `http://embedding:8080`；
+#   宿主绑定仅供本机调试；**不向局域网暴露**（staging 防火墙放行清单亦不含 8080）。
+# - 必须与 app **同一次 `-f` 组合调用**启动：同一 compose 项目 ⇒ 同一网络，
+#   app 容器内才能按服务名 `embedding` 解析到它。
+# - 截断上限 `--max-input-length=8192` 与 app 侧 `WORKBENCH_EMBEDDING_MAX_TOKENS=8192`
+#   同口径（显式钉死、不依赖上游默认值）；`--auto-truncate` = 超限走截断不报错（P3 契约口径）。
+# - pooling 由模型自带 `1_Pooling/config.json`（Qwen3-Embedding 为 last-token）解析，
+#   不额外钉参数；若真机启动报解析失败，按建置方案 §15 贴回日志判读。
+# - 截面口径与 app 服务一致：`restart: unless-stopped` + 日志上限（组 10.3「日志有界」）。
+
+services:
+  embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d
+    command:
+      - --model-id=/models/Qwen3-Embedding-0.6B
+      - --port=8080
+      - --max-input-length=8192
+      - --auto-truncate
+    volumes:
+      # 模型目录由宿主预下载（建置方案 Step 2）后只读挂载；容器内路径与 --model-id 一致。
+      - "${WORKBENCH_EMBEDDING_MODEL_DIR:?set WORKBENCH_EMBEDDING_MODEL_DIR in staging.env}:/models/Qwen3-Embedding-0.6B:ro"
+    ports:
+      # 仅宿主回环（本机调试）；app 走容器网络服务名，不经宿主端口。
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    # 容器日志上限（组 10.3「日志有界」）：模型加载失败与请求异常的唯一现场在 stdout。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
