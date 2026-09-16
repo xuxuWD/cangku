@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Sequence
 
 from app.commercial.usage import UsageEntry
@@ -23,6 +24,16 @@ from .policy import RuntimePolicy
 from .records import RunRecord, RunRecordNotFound
 from .registry import RuntimeRegistry
 from .state import RuntimeState, RuntimeStateStore
+
+
+def _yuan_to_cents(amount: float) -> int:
+    """元 → 分：十进制精确换算，避免二进制浮点尾差（宪法 §三「金额不用浮点（整数分或 Decimal）」）。
+
+    修复前为 `int(amount * 100)`：`0.29 * 100 = 28.999…` 截断成 `28`，少 1 分。
+    先 `Decimal(str(amount))` 走十进制字符串（直接 `Decimal(0.29)` 会把浮点误差原样带入），
+    乘 100 后 `ROUND_HALF_UP` 取整。存储 / 契约 / 前端其余环节不在本次加固范围（另立专项）。
+    """
+    return int((Decimal(str(amount)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 class RunAccessDenied(ValueError):
@@ -83,7 +94,7 @@ class RuntimeService:
         return RuntimeContext(
             tenant_id=task.tenant_id, user_id=task.created_by, role_key=task.employee_key,
             mode=mode, project_id=task.project_id, task_id=task.id, device_id=f'device:{actor.user_id}',
-            knowledge_scope=(), file_scope=(), budget_cents=max(0, int(task.budget * 100)),
+            knowledge_scope=(), file_scope=(), budget_cents=max(0, _yuan_to_cents(task.budget)),
             risk_level=task.risk_level.value, policy_version=self.policy.policy_version,
             expires_at=datetime.now(UTC) + timedelta(minutes=15),
         )

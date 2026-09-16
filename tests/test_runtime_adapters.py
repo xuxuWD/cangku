@@ -216,6 +216,33 @@ def test_external_health_passes_through_upstream_declared_status():
     }
 
 
+@pytest.mark.parametrize(("budget", "expected_cents"), [(0.29, 29), (19.99, 1999)])
+def test_task_budget_to_cents_is_exact_not_float_truncated(budget: float, expected_cents: int) -> None:
+    """任务预算（元）→ 运行上下文 `budget_cents`（分）必须十进制精确换算（宪法 §3「金额不用浮点」）。
+
+    判据：`0.29` 元 → `29` 分、`19.99` 元 → `1999` 分。
+    反例（修复前 `int(task.budget * 100)`）：`0.29 * 100 = 28.999…` → `28`，少 1 分。
+    """
+    transport = FakeTransport()
+    task = Task(
+        tenant_id="t1", project_id="p1", created_by="u1", employee_key="role",
+        title="budget", risk_level=RiskLevel.LOW, budget=budget,
+        idempotency_key=f"budget-{budget}", request_fingerprint="fp-1", status=TaskStatus.QUEUED,
+    )
+    actor = UserContext(tenant_id="t1", user_id="u1", role="employee")
+    adapter = AgentScopeAdapter(transport, "https://agentscope")
+    registry = RuntimeRegistry()
+    registry.register("agentscope", adapter)
+    service = RuntimeService(
+        type("TaskStore", (), {"get": lambda _self, _ctx, _id: task})(),
+        registry=registry,
+    )
+
+    service.start(actor, task.id, "agentscope", [], "product_manager")
+
+    assert transport.requests[-1]["context"]["budget_cents"] == expected_cents
+
+
 def test_runtime_registry_health_filters_untrusted_adapter_summary():
     class UntrustedAdapter:
         def health(self):
