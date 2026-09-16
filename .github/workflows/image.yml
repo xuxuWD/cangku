@@ -1,0 +1,175 @@
+# 镜像构建与校验工作流：为「镜像仓库推送准备」提供**独立**出口（不改动 ci.yml）。
+#
+# 与 ci.yml 的分工：
+#   - ci.yml 只跑测试与编译（后端 pytest/compileall、网页管理台/手机伴侣端/桌面端构建、
+#     真库与真容器回归），零密钥、权限只读；
+#   - 本工作流只做「构建应用镜像 → 校验 OCI 标签 → 可选推送」：不跑任何测试，也不进 PR 门禁
+#     （触发只有手工 workflow_dispatch 与 v* 标签推送），因此不会拖慢每次提交。
+#
+# 推送默认关闭：
+#   「登录镜像仓库」与「推送镜像」两步共用同一个门控条件 `vars.WORKBENCH_IMAGE_PUSH == 'true'`；
+#   该仓库变量未配置（或不为 'true'）时两步整步跳过——不登录、不推送、不触碰任何凭据，
+#   工作流仍会正常构建镜像并校验 OCI 标签（构建与校验路径不需要任何机密）。
+#   本文件对 `secrets.` 的全部引用都只出现在这两个被门控的步骤内。
+#
+# 开启推送需要在仓库 Settings → Secrets and variables → Actions 配置：
+#   Variables: WORKBENCH_IMAGE_PUSH       = true（开关；默认不配置 = 关闭）
+#              WORKBENCH_IMAGE_REPOSITORY = <仓库地址>/<命名空间>/<镜像名>
+#                                           例：registry.example.com/team/company-workbench
+#   Secrets:   REGISTRY_USERNAME / REGISTRY_PASSWORD（登录该仓库的凭据）
+#
+# 口径（未验证）：本工作流**尚未在 GitHub 上真实触发过**，也**尚未在任何环境真实推送过镜像**；
+#   上述仓库变量与凭据均未配置 ⇒ 推送路径、以及真实镜像上 5 个 OCI 标签的实际取值属未验证，
+#   不得读成已通过。本工作流当前只保证「构建 + 标签校验」在语法与静态契约上自洽。
+name: Image
+
+on:
+  # 手工触发：可选填版本号；留空则回退到本次提交的短 SHA。
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 镜像版本号（如 v1.2.3；留空则回退到提交短 SHA）
+        required: false
+        type: string
+  # 打标签即构建：v* 标签名直接作为版本号。
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# 同一 ref 上只保留最后一次构建，避免重复构建与重复推送（与 ci.yml 同风格）。
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: 镜像构建与 OCI 标签校验（推送默认关闭）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 计算版本号与构建编号
+        id: meta
+        env:
+          # tag 触发取标签名；手工触发取输入值；缺省回退到提交短值。
+          REF_TYPE: ${{ github.ref_type }}
+          TAG_VERSION: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${REF_TYPE}" = "tag" ]; then
+            version="${TAG_VERSION}"
+          else
+            version="${INPUT_VERSION}"
+          fi
+          # 缺省回退：手工触发未填版本号时用本次提交的短 SHA。
+          if [ -z "${version}" ]; then
+            version="${COMMIT_SHA:0:12}"
+          fi
+          # 判定依据：latest 可被随时覆写，等同未钉死（宪法 §6.3 产物可追溯）。
+          if [ "${version}" = "latest" ]; then
+            echo "::error::版本号不得为 latest"
+            exit 1
+          fi
+          revision="${COMMIT_SHA}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "revision=${revision}" >> "${GITHUB_OUTPUT}"
+          echo "本次构建标识 version=${version} revision=${revision}"
+
+      - name: 构建镜像（注入版本号与构建编号）
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          REVISION: ${{ steps.meta.outputs.revision }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg "WORKBENCH_IMAGE_VERSION=${VERSION}" \
+            --build-arg "WORKBENCH_IMAGE_REVISION=${REVISION}" \
+            -t "workbench-app:${VERSION}" \
+            .
+
+      - name: 校验 OCI 标签（版本与构建编号不得停在默认值）
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          REVISION: ${{ steps.meta.outputs.revision }}
+        run: |
+          set -euo pipefail
+          image="workbench-app:${VERSION}"
+          # Dockerfile:28-32 声明 5 个 OCI 标签；任一缺失即产物不可追溯 ⇒ 直接失败。
+          for label in \
+            org.opencontainers.image.title \
+            org.opencontainers.image.description \
+            org.opencontainers.image.version \
+            org.opencontainers.image.revision \
+            org.opencontainers.image.source ; do
+            value="$(docker image inspect --format "{{ index .Config.Labels \"${label}\" }}" "${image}")"
+            if [ -z "${value}" ] || [ "${value}" = "<no value>" ]; then
+              echo "::error::镜像缺少 OCI 标签 ${label}"
+              exit 1
+            fi
+            echo "  ${label}=${value}"
+          done
+
+          got_version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${image}")"
+          got_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${image}")"
+          # 判定依据：只断言「标签存在」挡不住 --build-arg 未生效——Dockerfile:26-27 的默认值
+          # 恰好让标签非空。故显式拒绝默认值 dev / unknown：命中即「假可追溯」，必须红。
+          if [ "${got_version}" = "dev" ]; then
+            echo "::error::镜像版本仍为默认值 dev，WORKBENCH_IMAGE_VERSION 未生效"
+            exit 1
+          fi
+          if [ "${got_revision}" = "unknown" ]; then
+            echo "::error::镜像构建编号仍为默认值 unknown，WORKBENCH_IMAGE_REVISION 未生效"
+            exit 1
+          fi
+          # 且必须与本次构建标识逐字一致，防止校验的是另一个镜像或另一版标签。
+          if [ "${got_version}" != "${VERSION}" ] || [ "${got_revision}" != "${REVISION}" ]; then
+            echo "::error::镜像标签与本次构建标识不一致"
+            exit 1
+          fi
+          echo "OCI 标签校验通过：version=${got_version} revision=${got_revision}"
+
+      # 以下两步默认被跳过（vars.WORKBENCH_IMAGE_PUSH 未设为 'true' 时整步不执行）：
+      # 未开启开关时工作流不登录、不推送，凭据只在被门控的步骤内引用。
+      - name: 登录镜像仓库（仅推送开关开启时执行）
+        if: vars.WORKBENCH_IMAGE_PUSH == 'true'
+        env:
+          REPOSITORY: ${{ vars.WORKBENCH_IMAGE_REPOSITORY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REPOSITORY}" ]; then
+            echo "::error::已开启推送但未配置仓库变量 WORKBENCH_IMAGE_REPOSITORY"
+            exit 1
+          fi
+          if [ -z "${REGISTRY_USERNAME}" ] || [ -z "${REGISTRY_PASSWORD}" ]; then
+            echo "::error::已开启推送但未配置镜像仓库凭据（见本文件头注释）"
+            exit 1
+          fi
+          host="${REPOSITORY%%/*}"
+          if [ "${host}" = "${REPOSITORY}" ]; then
+            host="docker.io"
+          fi
+          # 凭据不回显：密码经 stdin 传入，日志里只留登录结果。
+          printf '%s' "${REGISTRY_PASSWORD}" | docker login "${host}" --username "${REGISTRY_USERNAME}" --password-stdin
+
+      - name: 推送镜像（仅推送开关开启时执行）
+        if: vars.WORKBENCH_IMAGE_PUSH == 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          REPOSITORY: ${{ vars.WORKBENCH_IMAGE_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REPOSITORY}" ]; then
+            echo "::error::已开启推送但未配置仓库变量 WORKBENCH_IMAGE_REPOSITORY"
+            exit 1
+          fi
+          # 只推显式版本标签（version 已在上游拒绝 latest），不使用可被覆写的浮动标签。
+          target="${REPOSITORY}:${VERSION}"
+          docker tag "workbench-app:${VERSION}" "${target}"
+          docker push "${target}"
+          echo "已推送 ${target}"
