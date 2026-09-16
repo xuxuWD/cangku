@@ -13,9 +13,12 @@
 # - 容器内一律使用服务名寻址，不使用宿主回环地址。
 # - 应用以生产模式启动，会自动应用 migrations/ 下的迁移。
 # - **先构建、再起（`--no-build`）**：三个服务共用 `${WORKBENCH_APP_IMAGE:-workbench-app}`：
-#     docker build -t workbench-app .
-#     docker compose -f docker-compose.yml -f docker-compose.app.yml up -d --no-build
-#   这样构建产物有固定名（可回查代码版本），也不会让 `up` 重新触发一次构建。
+#     docker build --build-arg WORKBENCH_IMAGE_VERSION=$(git describe --tags --always) \
+#       --build-arg WORKBENCH_IMAGE_REVISION=$(git rev-parse HEAD) \
+#       -t workbench-app:$(git describe --tags --always) .
+#     WORKBENCH_APP_IMAGE=workbench-app:<版本> docker compose -f docker-compose.yml -f docker-compose.app.yml up -d --no-build
+#   这样构建产物**带版本号与构建编号**（镜像标签 `org.opencontainers.image.version` / `revision`
+#   可查回对应提交，宪法 §6.3），也不会让 `up` 重新触发一次构建。
 # - **beat 与 worker 的 `WORKBENCH_KNOWLEDGE_REVIEW_SCAN_INTERVAL_SECONDS` 必须一致**：
 #   排程间隔由 beat 侧读取（`create_celery_app` 建排程表），不一致会导致「配的间隔只在一边生效」。
 
@@ -51,6 +54,13 @@ services:
       # 内容库（SQLite）持久化：镜像内已预建并授权 /srv/workbench/data，卷首次挂载继承属主。
       - workbench-app-data:/srv/workbench/data
     restart: unless-stopped
+    # 容器日志上限（组 10.3「日志有界」）：审计与运行日志只写 stdout，
+    # 不设上限时容器日志无界增长，宿主盘会先于「磁盘容量告警」被写爆。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   # 异步执行进程：与 app 同镜像、不同 command；**不跑迁移**（迁移由 app 进程负责）。
   # 非 development 环境启动时会自动装配（`configure_runtime`）：outbox 发布器、商业化生命周期、
@@ -67,6 +77,10 @@ services:
       - worker
       - --loglevel=INFO
       - --concurrency=${WORKBENCH_WORKER_CONCURRENCY:-2}
+      # 子进程任务预算（2026-09-16 容量测算决定）：默认 1000 —— 实测重装配成本 ≈0.27s、
+      # 任务速率约 8.6k/天，回收开销 <1.5s/天；收益是无人值守长跑下内存增长有上界。
+      # 依据与实测数据见 docs/private-deployment-runbook.md「容量与并发」。
+      - --max-tasks-per-child=${WORKBENCH_WORKER_MAX_TASKS_PER_CHILD:-1000}
     depends_on:
       - postgres
       - redis
@@ -93,6 +107,12 @@ services:
       start_period: 60s
       retries: 3
     restart: unless-stopped
+    # 容器日志上限（组 10.3「日志有界」）：同 app 服务口径（周期任务与装配失败都在日志里）。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   # 调度进程：**只发任务、不执行**；必须独立于 worker 运行（不要在 worker 上挂 `-B`）。
   # 排程状态落命名卷：容器重建不丢调度状态（否则重启窗口可能重复派发或漏发）。
@@ -131,6 +151,12 @@ services:
       # beat 的存活性看「是否在派发任务」：`docker compose logs beat | grep "Sending due task"`。
       disable: true
     restart: unless-stopped
+    # 容器日志上限（组 10.3「日志有界」）：beat 的派发记录是「调度是否停滞」的唯一现场。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   workbench-celerybeat:

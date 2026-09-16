@@ -166,6 +166,31 @@ def test_beat_disables_inherited_http_healthcheck() -> None:
     assert healthcheck.get("disable") is True, healthcheck
 
 
+def test_app_services_bound_container_log_growth() -> None:
+    # 判定依据（组 10.3「运行事件 / 日志有界」/ change-record 2026-09-15 未验证项 ②）：
+    # 三服务日志只写 stdout（审计为单行 JSON），此前未设上限 ⇒ 容器日志无界增长，
+    # 会先于「磁盘容量告警」把人写爆盘。这里按服务显式限制轮转份数与单份大小。
+    for name in ("app", "worker", "beat"):
+        logging = service(name).get("logging") or {}
+        options = logging.get("options") or {}
+
+        assert logging.get("driver") == "json-file", (name, logging)
+        assert str(options.get("max-size") or "").strip(), (name, options)
+        assert str(options.get("max-file") or "").strip(), (name, options)
+
+
+def test_worker_bounds_child_lifetime_with_configurable_budget() -> None:
+    tokens = [t for t in command_text("worker").split() if t.startswith("--max-tasks-per-child")]
+
+    # 判定依据（2026-09-16 容量测算演练，见 change-record 同日条目）：
+    # 不设上限时子进程寿命无限，第三方客户端若按任务泄漏内存，会在无人值守长跑中持续累积；
+    # 实测单次重装配成本仅 ≈0.27s、任务速率约 8.6k/天 ⇒ 每天回收 2–4 次、开销 <1.5s/天，
+    # 因此默认给出**有界且可调**的上限（`WORKBENCH_WORKER_MAX_TASKS_PER_CHILD`，默认 1000）。
+    assert len(tokens) == 1, tokens
+    assert "WORKBENCH_WORKER_MAX_TASKS_PER_CHILD" in tokens[0], tokens[0]
+    assert tokens[0].endswith(":-1000}"), tokens[0]
+
+
 def test_worker_healthcheck_uses_broker_ping() -> None:
     healthcheck = service("worker").get("healthcheck") or {}
     text = " ".join(str(item) for item in healthcheck.get("test") or [])

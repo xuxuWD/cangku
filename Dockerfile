@@ -1,7 +1,11 @@
 # 公司数字员工工作台：应用镜像
 #
-# 构建：
-#   docker build -t workbench-app .
+# 构建（带版本号与构建编号，产出可追溯；宪法 §6.3）：
+#   docker build \
+#     --build-arg WORKBENCH_IMAGE_VERSION=$(git describe --tags --always) \
+#     --build-arg WORKBENCH_IMAGE_REVISION=$(git rev-parse HEAD) \
+#     -t workbench-app:$(git describe --tags --always) .
+#   # 起栈时用同一标签：WORKBENCH_APP_IMAGE=workbench-app:<版本>（见 docker-compose.app.yml 头注释）
 # 运行（与基础设施一起，见 docker-compose.app.yml；该编排起三个服务，均用本镜像、不同 command）：
 #   app    = HTTP 入口（下方 CMD 的 uvicorn，唯一跑迁移的进程）
 #   worker = Celery 执行进程（celery -A app.worker worker）
@@ -15,6 +19,17 @@
 
 # 基础镜像按 digest 钉死（非 tag）：tag 可变、digest 不可变；与段二规格 §4 的 WORKBENCH_EXEC_IMAGE_DIGEST 口径一致
 FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+
+# 产物可追溯（宪法 §6.3）：镜像标签带版本号与构建编号，运行中的镜像可查回对应提交
+# （`docker image inspect` 的 org.opencontainers.image.version / revision）。
+# 默认值只保证「有标识」不算正式版本；正式交付必须按头注释显式注入。
+ARG WORKBENCH_IMAGE_VERSION=dev
+ARG WORKBENCH_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.title="company-workbench" \
+      org.opencontainers.image.description="公司数字员工工作台应用镜像（app / worker / beat 共用）" \
+      org.opencontainers.image.version=$WORKBENCH_IMAGE_VERSION \
+      org.opencontainers.image.revision=$WORKBENCH_IMAGE_REVISION \
+      org.opencontainers.image.source="https://github.com/xuxuWD/cangku"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

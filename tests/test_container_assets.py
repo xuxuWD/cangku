@@ -73,6 +73,21 @@ def test_dockerfile_does_not_copy_tests_or_frontend() -> None:
     assert "COPY admin-web" not in content
 
 
+def test_dockerfile_declares_version_labels_for_traceability() -> None:
+    content = read("Dockerfile")
+
+    # 判定依据（宪法 §6.3「产物可追溯」/ change-record 2026-09-15 未验证项 ⑤）：
+    # 此前镜像只按固定名构建（`workbench-app:latest`），**不带版本号与构建编号** ⇒
+    # 出事时无法从运行中的镜像查回对应提交。构建时用 `--build-arg` 注入，
+    # 标签值必须来自 ARG（不得写死），否则「可追溯」名不副实。
+    assert "ARG WORKBENCH_IMAGE_VERSION" in content
+    assert "ARG WORKBENCH_IMAGE_REVISION" in content
+    assert "org.opencontainers.image.version=$WORKBENCH_IMAGE_VERSION" in content
+    assert "org.opencontainers.image.revision=$WORKBENCH_IMAGE_REVISION" in content
+    assert "org.opencontainers.image.source=" in content
+    assert "org.opencontainers.image.title=" in content
+
+
 def test_dockerignore_excludes_local_state_and_secrets() -> None:
     entries = dockerignore_entries()
 
