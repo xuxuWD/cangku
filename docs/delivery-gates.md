@@ -25,11 +25,11 @@
 - [x] 开发期 RAGFlow/AgentScope 适配器契约与受控注册表
 - [x] 外部 Runtime staging 前置预检脚本（五类 Runtime：RAGFlow/AgentScope + DeerFlow/Codex Worker/Hermes）与验收证据要求（不替代真实联调）
 - [x] staging 独立主机部署模板与统一前置预检（基础设施隔离 + 商业化 G0 + 外部 Runtime）
-- [x] 应用容器化（Dockerfile 非 root、健康检查走标准库、密钥仅从环境注入）—— 静态资产校验通过；真实镜像构建与容器运行需在具备 Docker 的环境验收
+- [x] 应用容器化（Dockerfile 非 root、健康检查走标准库、密钥仅从环境注入）—— 静态资产校验通过；真实镜像构建与容器运行需在具备 Docker 的环境验收。**2026-09-16 追加**：镜像带 OCI 版本标签（`org.opencontainers.image.version` / `revision`）、三服务容器日志上限（`json-file` / `max-size=10m` / `max-file=5`）已在本机 Docker 演练取证（`docker image inspect` / `docker inspect`；见 `docs/private-deployment-runbook.md`「容器化部署」第 1、5 条），并由 `tests/test_container_assets.py`、`tests/test_compose_worker_assets.py` 守护；**客户侧 / 生产拓扑仍未验收**（告警渠道亦未接入）
 - [x] 攻击面八类检查正式报告（docs/security-attack-surface-report.md）—— 基于本机 TestClient 实测；真实 staging、真实 PostgreSQL 与真实外部平台验收仍未完成
 - [x] Celery Worker/Outbox 的可注入运行骨架、死信登记与人工重放接口（开发期）
 - [x] Worker 启动命令与生产模式自动绑定 Outbox 发布器
-- [ ] Celery Worker 实跑、Outbox 生产连接池、死信通知渠道和 staging 验收 —— **代码缺口已补齐**：死信通知渠道已实现（迁移 015 + `app/notifications.py` 的脱敏 webhook、原子去重、通知失败只写审计不打断发布循环），并已补 `docs/private-deployment-runbook.md` 的异步链路章节；仍缺真实 Redis、Worker 运行环境与通知渠道地址
+- [ ] Celery Worker 实跑、Outbox 生产连接池、死信通知渠道和 staging 验收 —— **代码缺口已补齐**：死信通知渠道已实现（迁移 015 + `app/notifications.py` 的脱敏 webhook、原子去重、通知失败只写审计不打断发布循环），并已补 `docs/private-deployment-runbook.md` 的异步链路章节；仍缺真实 Redis、Worker 运行环境与通知渠道地址。**2026-09-16 本机级取证**：容器编排三服务（app / worker / beat）同镜像起栈、`beat` 三类排程（outbox-publisher / lifecycle-jobs / knowledge-review-scan）均派发并被执行、Outbox 600 条经真实 Redis 发布、审计真实落 PG（4 轮共 1600 行 / actor=`system:worker`）、容量测算与 `--max-tasks-per-child` 参数决定（runbook「容量与并发」）；**仍缺**：staging / 客户侧环境与死信通知渠道地址（**告警规则已成文、渠道未接**，见 runbook「监控与告警」）
 - [x] 自建账号注册审批、登录会话与管理员重置密码（开发期接口验证）
 - [x] 计划生成与审核闸门：目标到 AgentPlan 提案、服务端风险推导、审批后复用既有 Runtime（开发期接口验证）
 - [x] 计划执行的反馈与指标采集（子项目②）—— 运行记录表（迁移 013）+ 结束原因（迁移 020）+ `RunRecord` 双仓储 + `RunMetricsService` 聚合 + `GET /api/v1/runs/{run_id}/metrics` 与 `GET /api/v1/metrics/summary`；提案回写 `run_id`。**运行终态已落盘**：记录的写入者收敛到 `RuntimeService`（直启运行、计划驱动运行、内容生成运行与暂停/恢复/取消都回写同一记录，保留原始启动时间）；`finish_reason` 为受控枚举（`run_completed`/`cancelled_by_user`/`step_failed`/`approval_rejected`），Mock 提供 `fail.` 前缀的确定性失败路径。**运行内审批已闭环**：`GET /api/v1/runs/{run_id}/approvals` 列出审批项、`POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval` 决议（仅 CEO/超管且发起人不能自审），通过后执行被批准步骤并落到终态、驳回立即 `failed`，写审计 `run.approval_decided` 并通知提交人 `run.approval_rejected`。开发期接口验证，`knowledge_hits` 依赖运行时上报，Mock 下恒为 0（已知限制）；审批人仍**没有租户级待办入口**（缺口见就绪清单 E 节）
@@ -62,7 +62,7 @@
 - [x] Staging 验收清单、证据要求与阻塞条件
 - [x] 租户导出/删除冷静期、保留策略与脱敏预检脚本
 - [ ] 真实 PostgreSQL 商业化迁移、备份/恢复演练与客户管理员验收
-- [ ] 私有部署生产预检、容量压测、独立密钥轮换与试点客户交付
+- [ ] 私有部署生产预检、容量压测、独立密钥轮换与试点客户交付 —— **2026-09-16 注记**：容量测算已完成**本机级**（`docs/private-deployment-runbook.md`「容量与并发」：实测表、连接账目与参数决定），**不替代** staging / 客户侧真实容量压测与试点交付
 - [ ] GEO 版本化适配器 —— **外部依赖阻塞**：GEO 属独立仓库的外部系统，本仓库内无其 API 契约、版本规则与认证方式（`app/`、`tests/` 中 GEO 零命中）；需 GEO 侧先提供契约文档后才能实现并做契约测试
 - [ ] 真实 staging 与真实平台账号验收
 - [ ] RAGFlow/AgentScope 密钥注入、跨租户实测、并发压测、沙箱验证和真实外部服务验收
