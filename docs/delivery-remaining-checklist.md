@@ -16,6 +16,8 @@
 
 **转交与催办材料（2026-09-16 备）**：`docs/infra-input-request.md` §7 新增「转交说明与催办附言（发送人自用）」——含可复制的催办附言模板（回传渠道 / 期望回执时间留空待填）、发出人自查三条红线，以及「先回 I1–I6 + I10 即可先解锁只读核验面」的分批口径；**转交状态＝已发出（2026-09-16 · 飞书）：首发 19:39 存档至本人私聊〔消息 ID `om_x100b6593b329aca0b2a22aba839549c`，客户端不可见、用户反馈未收到〕→ 21:58 经应用机器人通道补发至用户可见会话「公司工作台」〔说明条 `om_x100b659e47fc58a4b039acd50b34684` 21:58:43、材料条+附件 `om_x100b659e478f88a8b48044c3688a5c3` 21:58:44，均已回读校验〕→ 用户确认已转发运维（**转交渠道＝微信（文件转发）**〔2026-09-16 登记〕；转发在体系外、无收件 / 回执证据）→ **催办附言定稿版已发**（回传渠道＝徐君〔飞书〕；2026-09-16 用户确认）；运维回执未返回、I1–I14 待提供**（回执到达后按索取表 §6 流程登记）。
 
+**单机 staging 建置方案（2026-09-16 备 · 待执行 · 用户拍板方案 A）**：[`docs/staging-singlebox-build-plan.md`](staging-singlebox-build-plan.md) —— 用**闲置台式机**（Win10 22H2 · i5-14400 / 16 GB / 512 GB · Docker Desktop/WSL2）自建单机 staging 的 step-by-step（Step 0 机器自查 → Step 8 备份演练，每步带自查命令与期望输出；写操作三授权点已标注），配套新增端口覆盖编排 [`docker-compose.staging.yml`](../docker-compose.staging.yml)（只把 5432/6379/9000/8000 **追加**绑到该机局域网 IP，9001 控制台不外扩；基础编排零改动）与守护测试 `tests/test_staging_singlebox_assets.py`（6 条，全绿）。**状态＝未执行**：台式机未动、命令一行未跑；覆盖文件与方案命令**均未经真机验证**（方案 §12 D3 已登记待实测项）。**阻塞项**：E1（embedding 服务落点）未定 ⇒ Step 3–8 均不能开始；I11（备份介质与第三把密钥）/ U6（手机号分配）/ 外部 Runtime 就绪实况待拍板。**口径**：1.3/1.4 预检的 Runtime 段在外部 Runtime 接入前**不可能诚实全绿**（方案 §12 D4 如实登记，**禁止为凑 pass 填假值**）。**勾选框一律未动**。
+
 > **两个已验证的实操前置（2026-09-12 本机实测，避免到 staging 白跑）**
 > ① **部署机必须安装 PostgreSQL 客户端**（`pg_dump` / `pg_restore`）：缺客户端时 `scripts/migration_backup_drill.py --phase backup` 会在「pg_dump 可用性」这一步直接 `fail`（本机即如此）。
 > ② `migration_backup_drill.py` 的**任何阶段（含 `--phase list`）都要求先设 `WORKBENCH_DATABASE_URL`**——安全护栏先于动作执行，缺它会以 `exit=2`「必须配置 WORKBENCH_DATABASE_URL」拒绝；本地演练另需显式 `--allow-local`（实测：本地地址不加该开关会被拒，`exit=2`）。另外 `WORKBENCH_APPLIED_MIGRATIONS` **必须从目标库读取**，否则 `--phase list` 会报「迁移清单不一致（缺少 22 项）」。

@@ -1,0 +1,39 @@
+# 单机 staging 端口覆盖（方案 A：闲置台式机 + Docker Desktop/WSL2）
+#
+#   docker compose --env-file D:\workbench-secrets\staging.env \
+#     -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.staging.yml up -d
+#
+# 为什么需要本文件（如实登记，详见 docs/staging-singlebox-build-plan.md §2/§12）：
+# - 基础编排把宿主端口绑在 127.0.0.1（单机开发姿态）；单机 staging 的被测对象是**另一台物理机**
+#   （相对开发机为独立主机），验收机 / 并发探针要**跨机**访问以下端口：
+#     · 5432：psql / pg_dump / pg_restore（只读核验与备份演练）
+#     · 6379：broker 探活与 Redis 只读核对
+#     · 9000：对象存储（S3 兼容）直连核对
+#     · 8000：应用入口（API 验收与探针脚本）
+#   故按「追加绑定」把上述端口再绑到 staging 机局域网地址，使 .env.staging 登记的地址
+#   **真实可达**（预检的「独立主机」判据同时以该地址满足，见建置方案 §12 D2 手段偏差登记）。
+# - compose 合并语义：`ports` 属多值选项，override 中为**追加**——基础文件的 127.0.0.1 绑定保持不变；
+#   未列出的绑定（如 SeaweedFS 控制台 9001）**维持仅本机**，不外扩。
+# - 绑定地址**无默认值**：`${WORKBENCH_STAGING_BIND_IP:?…}` 让缺值在 compose 阶段显式报错
+#   （fail-closed），杜绝「漏配时悄悄绑到通配地址」。
+# - 本文件**只允许**覆盖 `ports`（由 tests/test_staging_singlebox_assets.py 守护）：
+#   密钥注入、服务定义、镜像引用一律沿用基础编排与 docker-compose.app.yml，不在此复制。
+#
+# 来源收窄（偏差缓解）：建置方案 §7 已含 Windows 防火墙规则，入站限「本地子网 / 专用网络」。
+
+services:
+  postgres:
+    ports:
+      - "${WORKBENCH_STAGING_BIND_IP:?set WORKBENCH_STAGING_BIND_IP to the staging host LAN IPv4 address}:${WORKBENCH_POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "${WORKBENCH_STAGING_BIND_IP:?set WORKBENCH_STAGING_BIND_IP to the staging host LAN IPv4 address}:${WORKBENCH_REDIS_PORT:-6379}:6379"
+
+  seaweedfs:
+    ports:
+      - "${WORKBENCH_STAGING_BIND_IP:?set WORKBENCH_STAGING_BIND_IP to the staging host LAN IPv4 address}:${WORKBENCH_MINIO_PORT:-9000}:9000"
+
+  app:
+    ports:
+      - "${WORKBENCH_STAGING_BIND_IP:?set WORKBENCH_STAGING_BIND_IP to the staging host LAN IPv4 address}:${WORKBENCH_APP_PORT:-8000}:8000"
