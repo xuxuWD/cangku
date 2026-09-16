@@ -23,9 +23,13 @@
 - [ ] 1.2 填好生产/预发配置（**不进仓库**）：`WORKBENCH_ENV≠development`、`WORKBENCH_STORAGE_BACKEND=postgres`、`WORKBENCH_DATABASE_URL`、`WORKBENCH_AUTH_SECRET`（≥32）、`WORKBENCH_BACKUP_ENCRYPTION_KEY`（与前者分离）、从目标库读出的 `WORKBENCH_APPLIED_MIGRATIONS`
 - [ ] 1.3 `python scripts/staging_preflight.py` → `pass`
       本期实测（未配置环境）会输出 32 条 `fail`（另有 3 条 `blocked`），可当作「你需要准备哪些配置」的清单
+      - **2026-09-16 本机只读预演「pass 路径」（仍不勾选）**：以一套**合成非本地值**（变量集与 `.env.staging.example` 同口径；该模板的迁移清单已同步为仓内 34 项）实跑 ⇒ `Staging 前置预检结果：pass`、**36 项 `[pass]`、`exit=0`**。三个预检脚本均为**纯元数据校验、零网络请求**（`staging_preflight.py:3-5` 自述；`worker_preflight.py` 的 `--offline` 分支 `:317-318`）⇒ 未配置环境的 `fail` 只是缺值、不是脚本能力问题。**判据仍未达成：staging 上一项未执行**。
 - [ ] 1.4 `python scripts/runtime_staging_preflight.py` → `pass`（未配置环境实测输出 20 条 `fail`；五类 Runtime 各 3 条 + 环境/标识/网络白名单）
+      - **2026-09-16 本机只读预演「pass 路径」（仍不勾选）**：同组合成值实跑 ⇒ `外部 Runtime staging 预检结果：pass`、**20 项 `[pass]`、`exit=0`**。**判据仍未达成：staging 上一项未执行**。
 - [ ] 1.4.1 `python scripts/worker_preflight.py --offline` → `pass`（本机实测输出 7 条，含「迁移清单不一致」；联网校验另需 `--base-url` 与 `--token`）
+      - **2026-09-16 本机只读预演「pass 路径」（仍不勾选）**：同组合成值实跑 ⇒ `Worker 运行态前置预检结果：pass`、**6 项 `[pass]` + 1 项 `[skipped]`（`联网运行态校验`按 `--offline` 跳过）、`exit=0`**；迁移清单按仓内 34 项比对一致。**判据仍未达成：staging 上一项未执行**。
 - [ ] 1.5 **只读核验清单全绿**（`docs/readonly-verification-runbook.md`）：pgvector 存在、迁移 022 已落地且复合外键存在、**归一风险 0 行**、**绑定侧未纳管为空**（`candidates.roles == []` 且 roster 绑定侧为空）
+      - **2026-09-16 只读漂移核对（仍不勾选）**：runbook 命令与当前代码**逐面无漂移**——端点（`app/main.py`：`/api/v1/auth/sessions` `:3572`、`/auth/registrations` `:3412`（`bootstrap_token` 为请求体字段 `:3327`）、`/auth/me/totp` `:3721` 与 `/confirmation` `:3733`、`/workforce/roster` `:1072`、`/workforce/candidates` `:1343`、`/dead-letters` `:1021`、`/api/v1/health` `:616`、§1.3 默认探针 `/api/v1/approvals/pending` `:3504`）；SQL 面（`workbench_tasks`＝`migrations/001_initial.sql:3`、`binding_type`/`binding_key`＝`004:3-4`、目录两表与复合外键 `(tenant_id, role_key)`＝`022:9/24/35`、`workbench_schema_migrations` 由 `app/migrations.py:30` 创建＝§1.2 口径成立、`001:1` 含 `CREATE EXTENSION vector`＝1.1 判据前提）；§4 五个只读脚本全部存在、跨租户 6 类 KIND（`cross_tenant_probe.py:64-69`，缺 `--resource` `exit=2` `:336-338`）、并发三场景（`staging_concurrency_probe.py:49`）、`migration_backup_drill.py:452-462` 与 `secret_rotation_drill.py:336-347` 参数均与文档一致 ⇒ **命令一到 staging 即可执行**。**判据仍未达成：staging 上一项未执行**。
 - [ ] 1.6 **迁移回滚演练**（写操作，需授权）：`scripts/migration_backup_drill.py`
       判据：能按备份恢复到指定版本，且 `WORKBENCH_APPLIED_MIGRATIONS` 与库内一致
 - [ ] 1.7 **跨租户只读探测**（需两个不同租户的令牌 + **每个 KIND 在两租户各一个真实资源 ID**）：
