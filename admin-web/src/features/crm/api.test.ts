@@ -1,4 +1,4 @@
-import { changeOpportunityStage, getProgressSummary, listAccounts, listContracts, listQuotes, registerPayment, registerSignature, revealContact } from './api'
+import { changeOpportunityStage, getOpportunity, getProgressSummary, listAccounts, listContracts, listQuotes, registerPayment, registerSignature, revealContact } from './api'
 
 type FetchMock = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -43,6 +43,16 @@ describe('crm api', () => {
     expect(String(url)).toContain('/crm/opportunities/opp-1/stage')
     expect(init?.method).toBe('POST')
     expect(JSON.parse(String(init?.body))).toEqual({ to_stage: 'proposal' })
+  })
+
+  it('fetches the opportunity detail with its stage timeline', async () => {
+    const detail = { opportunity: { opportunity_id: 'opp-1' }, stage_events: [] }
+    const fetchMock = vi.fn<FetchMock>(async () => ok(detail))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getOpportunity('opp-1')).resolves.toEqual(detail)
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/crm/opportunities/opp-1')
+    expect(fetchMock.mock.calls[0][1]?.method).toBeUndefined()
   })
 
   it('reveals a single sensitive field through the dedicated POST endpoint', async () => {

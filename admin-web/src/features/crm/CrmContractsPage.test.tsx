@@ -19,8 +19,15 @@ function makeFetch(handler: (url: string, init?: RequestInit) => Response) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => handler(String(input), init))
 }
 
+// 客户名映射分支：页面挂载时会取一次 /crm/accounts（见 useAccountNames）。
+function crmFetch(handler: (url: string, init?: RequestInit) => Response) {
+  return makeFetch((url, init) => url.includes('/crm/accounts?')
+    ? json({ items: [{ account_id: 'acc-1', name: '云启科技' }], total: 1, limit: 200, offset: 0 })
+    : handler(url, init))
+}
+
 function detailFetch(contract: CrmContract, onWrite?: (url: string, init?: RequestInit) => Response | null) {
-  return makeFetch((url, init) => {
+  return crmFetch((url, init) => {
     if (onWrite) {
       const written = onWrite(url, init)
       if (written) return written
@@ -35,17 +42,22 @@ describe('CrmContractsPage', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('lists contracts with integer-cent amounts and payment progress', async () => {
-    vi.stubGlobal('fetch', makeFetch(() => json({ items: [draftContract, signedContract], total: 2, limit: 50, offset: 0 })))
+    vi.stubGlobal('fetch', crmFetch(() => json({ items: [draftContract, signedContract], total: 2, limit: 50, offset: 0 })))
 
     render(<CrmContractsPage />)
 
     expect(await screen.findByText('C-202609-0001')).toBeInTheDocument()
     expect(screen.getByText('草稿', { selector: '.status-badge' })).toBeInTheDocument()
     expect(screen.getByText('已签署（人工登记）', { selector: '.status-badge' })).toBeInTheDocument()
-    expect(screen.getAllByText('¥12000.00')).toHaveLength(2)
-    expect(screen.getByText('¥3000.00')).toBeInTheDocument()
+    // 整数分换算成元并加千分位。
+    expect(screen.getAllByText('¥12,000.00')).toHaveLength(2)
+    expect(screen.getByText('¥3,000.00')).toBeInTheDocument()
     expect(screen.getByText('25.00%')).toBeInTheDocument()
     expect(screen.getByText('0.00%')).toBeInTheDocument()
+    // 客户列展示客户名（不是 account_id），ID 保留在 title。
+    expect(await screen.findAllByText('云启科技')).toHaveLength(2)
+    expect(screen.queryAllByText('acc-1')).toHaveLength(0)
+    expect(screen.getAllByTitle('acc-1')).toHaveLength(2)
   })
 
   it('states that signing is a manual ledger entry without legal effect', async () => {
@@ -56,6 +68,9 @@ describe('CrmContractsPage', () => {
 
     expect(await screen.findByText('签署为人工登记，系统不承诺法律效力')).toBeInTheDocument()
     expect(screen.getByText(/不对签署效力或存证效力作任何承诺/)).toBeInTheDocument()
+    // 详情页头展示客户名（不是 account_id）。
+    expect(await screen.findByText('云启科技')).toBeInTheDocument()
+    expect(screen.queryByText('acc-1')).not.toBeInTheDocument()
   })
 
   it('registers a payment converted from yuan into integer cents', async () => {
@@ -74,7 +89,7 @@ describe('CrmContractsPage', () => {
     expect(await screen.findByText('回款已登记（人工输入）')).toBeInTheDocument()
     const body = JSON.parse(String(fetchMock.mock.calls.find(([url]) => String(url).includes('/register-payment'))?.[1]?.body))
     expect(body).toEqual({ amount_cents: 1200000 })
-    expect(screen.getByText('¥15000.00')).toBeInTheDocument()
+    expect(screen.getByText('¥15,000.00')).toBeInTheDocument()
   })
 
   it('registers a signature with the plain (non-ISO) datetime input, converting to Z form', async () => {
@@ -111,12 +126,12 @@ describe('CrmContractsPage', () => {
   })
 
   it('shows the empty state and the failure notice', async () => {
-    vi.stubGlobal('fetch', makeFetch(() => json({ items: [], total: 0, limit: 50, offset: 0 })))
+    vi.stubGlobal('fetch', crmFetch(() => json({ items: [], total: 0, limit: 50, offset: 0 })))
     const first = render(<CrmContractsPage />)
     expect(await screen.findByText('暂无合同')).toBeInTheDocument()
     first.unmount()
 
-    vi.stubGlobal('fetch', makeFetch(() => json({}, 500)))
+    vi.stubGlobal('fetch', crmFetch(() => json({}, 500)))
     render(<CrmContractsPage />)
     expect(await screen.findByRole('alert')).toHaveTextContent('合同列表加载失败')
   })

@@ -3,7 +3,7 @@ import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
 import { formatLocalTime } from '../../utils/time'
 import { confirmQuote, convertQuoteToContract, getQuote, listQuotes, replaceQuoteLines, voidQuote, type QuoteLineInput } from './api'
-import { CrmNotice, Pagination } from './CrmShared'
+import { CrmNotice, Pagination, AccountName, useAccountNames, type AccountNames } from './CrmShared'
 import { asCrmError, centsToYuanInput, CRM_LIMIT_OPTIONS, formatCents, parseYuanToCents } from './state'
 import { crmLabel, QUOTE_STATUS_LABELS, type CrmErrorShape, type CrmPage, type CrmQuote, type CrmQuoteLine } from './types'
 
@@ -17,11 +17,13 @@ interface QuotePageState extends CrmPage<CrmQuote> {
 export function CrmQuotesPage({ onNavigate }: { onNavigate?: (view: AppView) => void } = {}) {
   void onNavigate
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  if (selectedId) return <QuoteDetail quoteId={selectedId} onBack={() => setSelectedId(null)} />
-  return <QuoteList onOpen={setSelectedId} />
+  // 客户名映射只在页面挂载时取一次：列表与详情共用，切换视图不重复请求。
+  const accountNames = useAccountNames()
+  if (selectedId) return <QuoteDetail quoteId={selectedId} accountNames={accountNames} onBack={() => setSelectedId(null)} />
+  return <QuoteList accountNames={accountNames} onOpen={setSelectedId} />
 }
 
-function QuoteList({ onOpen }: { onOpen: (quoteId: string) => void }) {
+function QuoteList({ accountNames, onOpen }: { accountNames: AccountNames; onOpen: (quoteId: string) => void }) {
   const [status, setStatus] = useState('')
   const [limit, setLimit] = useState(50)
   const [offset, setOffset] = useState(0)
@@ -86,7 +88,7 @@ function QuoteList({ onOpen }: { onOpen: (quoteId: string) => void }) {
           <thead><tr><th>单号</th><th>客户</th><th>状态</th><th>合计金额</th><th>有效期至</th><th>确认时间</th><th>操作</th></tr></thead>
           <tbody>{state.items.map((item) => <tr key={item.quote_id}>
             <td><span className="workforce__key">{item.quote_no}</span></td>
-            <td>{item.account_id}</td>
+            <td><AccountName accountId={item.account_id} names={accountNames} /></td>
             <td><span className={`status-badge ${quoteTone(item.status)}`}>{crmLabel(QUOTE_STATUS_LABELS, item.status)}</span></td>
             <td>{formatCents(item.total_cents)}</td>
             <td>{item.valid_until || '—'}</td>
@@ -124,7 +126,7 @@ function toEditable(line: CrmQuoteLine): EditableLine {
   }
 }
 
-function QuoteDetail({ quoteId, onBack }: { quoteId: string; onBack: () => void }) {
+function QuoteDetail({ quoteId, accountNames, onBack }: { quoteId: string; accountNames: AccountNames; onBack: () => void }) {
   const [quote, setQuote] = useState<CrmQuote | null>(null)
   const [lines, setLines] = useState<CrmQuoteLine[]>([])
   const [draftLines, setDraftLines] = useState<EditableLine[]>([])
@@ -204,7 +206,7 @@ function QuoteDetail({ quoteId, onBack }: { quoteId: string; onBack: () => void 
     <div className="page-head">
       <div>
         <h1 className="page-title">{quote.quote_no}</h1>
-        <p className="page-desc">客户 {quote.account_id} · 状态 {crmLabel(QUOTE_STATUS_LABELS, quote.status)} · 负责人 {quote.owner_id}</p>
+        <p className="page-desc">客户 <AccountName accountId={quote.account_id} names={accountNames} /> · 状态 {crmLabel(QUOTE_STATUS_LABELS, quote.status)} · 负责人 {quote.owner_id}</p>
       </div>
       <div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div>
     </div>

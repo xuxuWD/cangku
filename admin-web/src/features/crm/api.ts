@@ -8,6 +8,7 @@ import type {
   CrmContractFilters,
   CrmInsight,
   CrmOpportunity,
+  CrmOpportunityDetail,
   CrmOpportunityFilters,
   CrmPage,
   CrmProgressSummary,
@@ -87,6 +88,11 @@ export function listOpportunities(filters: CrmOpportunityFilters & { accountId?:
 // 阶段迁移（白名单；非法 / 并发先写 ⇒ 409）。
 export function changeOpportunityStage(opportunityId: string, toStage: string): Promise<CrmOpportunity> {
   return post<CrmOpportunity>(`/crm/opportunities/${encodeURIComponent(opportunityId)}/stage`, { to_stage: toStage })
+}
+
+// 商机详情 + 阶段事件时间线（append-only）。
+export function getOpportunity(opportunityId: string): Promise<CrmOpportunityDetail> {
+  return request<CrmOpportunityDetail>(`/crm/opportunities/${encodeURIComponent(opportunityId)}`)
 }
 
 // ---------------------------------------------------------------- 报价（金额由服务端重算）

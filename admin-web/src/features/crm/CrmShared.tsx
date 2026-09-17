@@ -1,4 +1,43 @@
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
+import { listAccounts } from './api'
+
+/** account_id → 客户名 映射。 */
+export type AccountNames = Record<string, string>
+
+/**
+ * 客户名映射：页面挂载时取一次客户列表（limit 200）构建 account_id → name。
+ * 名称只是可读性辅助：请求失败**静默降级**（回落显示 ID），不弹错、不阻塞主数据加载。
+ */
+export function useAccountNames(): AccountNames {
+  const [names, setNames] = useState<AccountNames>({})
+
+  useEffect(() => {
+    let active = true
+    void (async () => {
+      try {
+        const page = await listAccounts({ status: '', limit: 200, offset: 0 })
+        if (!active) return
+        const next: AccountNames = {}
+        for (const account of Array.isArray(page.items) ? page.items : []) {
+          if (account?.account_id && account.name) next[account.account_id] = account.name
+        }
+        setNames(next)
+      } catch {
+        // 名称读取失败不影响页面：保持空映射，界面回落显示 account_id。
+      }
+    })()
+    return () => { active = false }
+  }, [])
+
+  return names
+}
+
+/** 客户展示：优先客户名，映射缺失回落 account_id（不报错）；ID 始终保留在 title 便于核对。 */
+export function AccountName({ accountId, names }: { accountId: string | null | undefined; names: AccountNames }) {
+  if (!accountId) return <>—</>
+  return <span title={accountId}>{names[accountId] ?? accountId}</span>
+}
 
 /** 列表分页条：契约要求列表必须分页（`limit` 1–200 + `offset` + `total`）。 */
 export function Pagination({

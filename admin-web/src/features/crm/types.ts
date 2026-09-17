@@ -55,6 +55,21 @@ export interface CrmOpportunity {
   created_at: string
 }
 
+// 阶段事件（append-only，§2.3）：首个事件的 `from_stage` 为 null（＝创建）。
+export interface CrmStageEvent {
+  event_id: string
+  from_stage: string | null
+  to_stage: string
+  amount_cents: number
+  actor_id: string
+  occurred_at: string
+}
+
+export interface CrmOpportunityDetail {
+  opportunity: CrmOpportunity
+  stage_events: CrmStageEvent[]
+}
+
 export interface CrmActivity {
   activity_id: string
   kind: string

@@ -46,7 +46,7 @@ describe('CrmProgressPage', () => {
     expect(screen.getAllByText('0')).toHaveLength(2)
     expect(screen.getByText('0 份')).toBeInTheDocument()
     expect(screen.getByText('2 份')).toBeInTheDocument()
-    expect(screen.getByText(/窗口内合同金额 ¥5000.00/)).toBeInTheDocument()
+    expect(screen.getByText(/窗口内合同金额 ¥5,000.00/)).toBeInTheDocument()
     expect(screen.getByText('12.5 天')).toBeInTheDocument()
   })
 

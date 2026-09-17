@@ -3,7 +3,7 @@ import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
 import { formatLocalTime } from '../../utils/time'
 import { getContract, listContracts, registerPayment, registerSignature, submitContractForSign, voidContract } from './api'
-import { CrmNotice, Pagination } from './CrmShared'
+import { CrmNotice, Pagination, AccountName, useAccountNames, type AccountNames } from './CrmShared'
 import { asCrmError, CRM_LIMIT_OPTIONS, formatCents, formatRatio, parseYuanToCents } from './state'
 import { CONTRACT_STATUS_LABELS, crmLabel, type CrmContract, type CrmErrorShape, type CrmPage } from './types'
 
@@ -17,11 +17,13 @@ interface ContractPageState extends CrmPage<CrmContract> {
 export function CrmContractsPage({ onNavigate }: { onNavigate?: (view: AppView) => void } = {}) {
   void onNavigate
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  if (selectedId) return <ContractDetail contractId={selectedId} onBack={() => setSelectedId(null)} />
-  return <ContractList onOpen={setSelectedId} />
+  // 客户名映射只在页面挂载时取一次：列表与详情共用，切换视图不重复请求。
+  const accountNames = useAccountNames()
+  if (selectedId) return <ContractDetail contractId={selectedId} accountNames={accountNames} onBack={() => setSelectedId(null)} />
+  return <ContractList accountNames={accountNames} onOpen={setSelectedId} />
 }
 
-function ContractList({ onOpen }: { onOpen: (contractId: string) => void }) {
+function ContractList({ accountNames, onOpen }: { accountNames: AccountNames; onOpen: (contractId: string) => void }) {
   const [status, setStatus] = useState('')
   const [limit, setLimit] = useState(50)
   const [offset, setOffset] = useState(0)
@@ -87,7 +89,7 @@ function ContractList({ onOpen }: { onOpen: (contractId: string) => void }) {
           <tbody>{state.items.map((item) => <tr key={item.contract_id}>
             <td><span className="workforce__key">{item.contract_no}</span></td>
             <td>{item.title}</td>
-            <td>{item.account_id}</td>
+            <td><AccountName accountId={item.account_id} names={accountNames} /></td>
             <td><span className={`status-badge ${contractTone(item.status)}`}>{crmLabel(CONTRACT_STATUS_LABELS, item.status)}</span></td>
             <td>{formatCents(item.amount_cents)}</td>
             <td>{formatCents(item.paid_cents)}</td>
@@ -117,7 +119,7 @@ function paymentProgress(contract: CrmContract): string {
 
 // ---------------------------------------------------------------- 详情
 
-function ContractDetail({ contractId, onBack }: { contractId: string; onBack: () => void }) {
+function ContractDetail({ contractId, accountNames, onBack }: { contractId: string; accountNames: AccountNames; onBack: () => void }) {
   const [contract, setContract] = useState<CrmContract | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<CrmErrorShape | null>(null)
@@ -193,7 +195,7 @@ function ContractDetail({ contractId, onBack }: { contractId: string; onBack: ()
     <div className="page-head">
       <div>
         <h1 className="page-title">{contract.contract_no}</h1>
-        <p className="page-desc">{contract.title} · 客户 {contract.account_id} · 状态 {crmLabel(CONTRACT_STATUS_LABELS, contract.status)}</p>
+        <p className="page-desc">{contract.title} · 客户 <AccountName accountId={contract.account_id} names={accountNames} /> · 状态 {crmLabel(CONTRACT_STATUS_LABELS, contract.status)}</p>
       </div>
       <div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div>
     </div>

@@ -22,8 +22,15 @@ function makeFetch(handler: (url: string, init?: RequestInit) => Response) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => handler(String(input), init))
 }
 
+// 客户名映射分支：页面挂载时会取一次 /crm/accounts（见 useAccountNames）。
+function crmFetch(handler: (url: string, init?: RequestInit) => Response) {
+  return makeFetch((url, init) => url.includes('/crm/accounts?')
+    ? json({ items: [{ account_id: 'acc-1', name: '云启科技' }], total: 1, limit: 200, offset: 0 })
+    : handler(url, init))
+}
+
 function detailFetch(quote: CrmQuote, lines: CrmQuoteLine[], onWrite?: (url: string, init?: RequestInit) => Response | null) {
-  return makeFetch((url, init) => {
+  return crmFetch((url, init) => {
     if (onWrite) {
       const written = onWrite(url, init)
       if (written) return written
@@ -37,16 +44,22 @@ function detailFetch(quote: CrmQuote, lines: CrmQuoteLine[], onWrite?: (url: str
 describe('CrmQuotesPage', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('lists quotes with status and integer-cent totals converted to yuan', async () => {
-    vi.stubGlobal('fetch', makeFetch(() => json({ items: [draftQuote, confirmedQuote], total: 2, limit: 50, offset: 0 })))
+  it('lists quotes with status, customer name and integer-cent totals converted to yuan', async () => {
+    const bigQuote: CrmQuote = { ...draftQuote, quote_id: 'q-3', quote_no: 'Q-202609-0003', status: 'converted', total_cents: 55800000 }
+    vi.stubGlobal('fetch', crmFetch(() => json({ items: [draftQuote, confirmedQuote, bigQuote], total: 3, limit: 50, offset: 0 })))
 
     render(<CrmQuotesPage />)
 
     expect(await screen.findByText('Q-202609-0001')).toBeInTheDocument()
     expect(screen.getByText('草稿', { selector: '.status-badge' })).toBeInTheDocument()
     expect(screen.getByText('已确认（冻结）', { selector: '.status-badge' })).toBeInTheDocument()
-    // 11300 分 → ¥113.00（整数运算，不用浮点）
+    // 11300 分 → ¥113.00（整数运算，不用浮点）；大额金额加千分位。
     expect(screen.getAllByText('¥113.00')).toHaveLength(2)
+    expect(screen.getByText('¥558,000.00')).toBeInTheDocument()
+    // 客户列展示客户名（不是 account_id），ID 保留在 title。
+    expect(await screen.findAllByText('云启科技')).toHaveLength(3)
+    expect(screen.queryAllByText('acc-1')).toHaveLength(0)
+    expect(screen.getAllByTitle('acc-1')).toHaveLength(3)
   })
 
   it('edits draft lines and submits integer cents computed from the yuan input', async () => {
@@ -82,6 +95,9 @@ describe('CrmQuotesPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: '查看详情' }))
 
     expect(await screen.findByText('报价已冻结')).toBeInTheDocument()
+    // 详情页头展示客户名（不是 account_id）。
+    expect(await screen.findByText('云启科技')).toBeInTheDocument()
+    expect(screen.queryByText('acc-1')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('第 1 行单价')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '保存报价行' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '转合同' })).toBeInTheDocument()
@@ -111,7 +127,7 @@ describe('CrmQuotesPage', () => {
   })
 
   it('shows the empty state when no quote matches', async () => {
-    vi.stubGlobal('fetch', makeFetch(() => json({ items: [], total: 0, limit: 50, offset: 0 })))
+    vi.stubGlobal('fetch', crmFetch(() => json({ items: [], total: 0, limit: 50, offset: 0 })))
 
     render(<CrmQuotesPage />)
 
