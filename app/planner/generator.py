@@ -122,10 +122,13 @@ class OpenAICompatiblePlanGenerator:
         steps = parsed.get("steps") if isinstance(parsed, dict) else None
         if not isinstance(steps, list):
             raise PlanGenerationError("模型响应缺少步骤列表")
+        # 逐条丢弃非对象元素（真实模型偶尔混入说明性字符串 / 数字 / null）；
+        # 与 CRM `sanitize_output` 的既有范式一致：越界条目丢弃，而不是整份拒绝。
+        # 全部被丢弃时返回空列表，交由下游 `normalize_steps` 明确拒绝（不在此重复设防）。
         cleaned: list[dict[str, Any]] = []
         for item in steps:
             if not isinstance(item, dict):
-                raise PlanGenerationError("模型响应中的步骤必须是对象")
+                continue
             step: dict[str, Any] = {
                 "step_id": item.get("step_id"),
                 "tool": item.get("tool"),

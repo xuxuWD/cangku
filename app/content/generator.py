@@ -12,6 +12,14 @@ class ContentGenerationError(RuntimeError):
     """A safe, user-facing generation failure without raw provider payloads."""
 
 
+class ContentGenerationUpstreamError(ContentGenerationError):
+    """上游调用失败（网络 / 超时 / 鉴权 / 5xx 等）——与「输出格式不符」区分，界面文案不同。"""
+
+
+class ContentGenerationFormatError(ContentGenerationError):
+    """上游有响应，但内容不符合约定的结构要求。"""
+
+
 @dataclass(frozen=True)
 class ContentGenerationInput:
     topic: str

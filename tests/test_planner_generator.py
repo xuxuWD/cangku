@@ -3,7 +3,13 @@ import json
 import pytest
 
 from app.planner.generator import MockPlanGenerator, OpenAICompatiblePlanGenerator
-from app.planner.models import PlanGenerationError, PlannerNotConfigured, Tool, ToolCatalog
+from app.planner.models import (
+    PlanGenerationError,
+    PlannerNotConfigured,
+    Tool,
+    ToolCatalog,
+    normalize_steps,
+)
 
 
 def catalog() -> ToolCatalog:
@@ -291,3 +297,48 @@ def test_openai_generator_error_message_hides_endpoint_and_credentials() -> None
     assert "secret-key" not in message
     assert "Bearer" not in message
     assert message == "模型调用失败"
+
+
+def _generator_with_steps(steps):
+    def transport(url, headers, payload, timeout):
+        return {
+            "choices": [
+                {"message": {"content": json.dumps({"steps": steps}, ensure_ascii=False)}}
+            ]
+        }
+
+    return OpenAICompatiblePlanGenerator(
+        base_url="https://model.example/v1",
+        model_name="planner-small",
+        api_key="secret-key",
+        timeout_seconds=5,
+        transport=transport,
+    )
+
+
+def test_openai_generator_drops_non_object_step_items_instead_of_failing_whole_plan() -> None:
+    """缺陷回归（2026-09-18）：真实模型偶尔在 steps 里混入非对象元素（说明性字符串、数字等）。
+    旧实现 `if not isinstance(item, dict): raise` ⇒ **整份计划被拒**，与内容生成的缺陷同源。
+    改为**逐条丢弃**，与 CRM `sanitize_output` 的既有范式一致。"""
+    generator = _generator_with_steps([
+        {"step_id": "s1", "tool": "knowledge.search"},
+        "这是一段说明文字，不是步骤对象",
+        123,
+        None,
+        {"step_id": "s2", "tool": "content.publish"},
+    ])
+
+    steps = generator.generate("整理选题并发布", catalog=catalog(), max_steps=5)
+
+    assert [step["step_id"] for step in steps] == ["s1", "s2"]
+
+
+def test_openai_generator_drops_all_invalid_steps_and_downstream_rejects_empty_plan() -> None:
+    """逐条丢弃不得退化成"静默产出空计划"：全部非法时生成器返回空列表，
+    由下游 `normalize_steps` 明确拒绝（不重复在生成器里设防）。"""
+    generator = _generator_with_steps(["说明文字", 123, None])
+
+    assert generator.generate("目标", catalog=catalog(), max_steps=5) == []
+
+    with pytest.raises(PlanGenerationError, match="至少一个步骤"):
+        normalize_steps([], catalog(), max_steps=5)

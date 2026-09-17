@@ -411,7 +411,10 @@ def test_build_content_generator_selects_mock_or_openai():
     from app.content.openai_compatible import OpenAICompatibleContentGenerator
     from app.settings import Settings
 
-    assert isinstance(build_content_generator(Settings()), MockContentGenerator)
+    # `_env_file=None`：本用例断言的是「未显式配置时的默认值」，必须与开发者本地的 `.env`
+    # 解耦——否则一旦本地接入了真实模型（CONTENT_GENERATION_BACKEND=openai_compatible），
+    # 该用例会误报失败。
+    assert isinstance(build_content_generator(Settings(_env_file=None)), MockContentGenerator)
     settings = Settings(
         content_generation_backend="openai_compatible",
         content_model_base_url="http://localhost:9999/v1",

@@ -12,7 +12,14 @@ from app.knowledge_policy import KnowledgeAccessRegistry
 from app.runtime.service import RuntimeService
 
 from .export import MarkdownExporter
-from .generator import ContentGenerationError, ContentGenerationInput, ContentGenerator, MockContentGenerator
+from .generator import (
+    ContentGenerationError,
+    ContentGenerationFormatError,
+    ContentGenerationInput,
+    ContentGenerationUpstreamError,
+    ContentGenerator,
+    MockContentGenerator,
+)
 from .models import ContentAudit, ContentBriefInput, ContentDraft, ContentStatus, NormalizedBrief, normalize_brief
 from .scraper import ScrapeDenied, ScrapeFailed, ScrapedDocument, WebScraper
 from .store import ContentRecord, ContentStore, ContentStoreConflict
@@ -44,6 +51,19 @@ def _url_host(url: str) -> str:
 def _fingerprint(brief: NormalizedBrief) -> str:
     value = {"topic": brief.topic, "sources": [item.__dict__ for item in brief.sources], "knowledge_references": brief.knowledge_references}
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _failure_summary(exc: ContentGenerationError) -> str:
+    """按失败类型给出不同的下一步建议。
+
+    2026-09-18 缺陷：原先所有失败都提示「请检查配置后重新生成」——当真实原因是
+    「模型返回结构不符合约定」时，配置往往是正确的，该提示会把用户引向错误方向。
+    """
+    if isinstance(exc, ContentGenerationFormatError):
+        return "模型返回的内容格式不符合要求，可直接重试；若反复出现请联系管理员。"
+    if isinstance(exc, ContentGenerationUpstreamError):
+        return "模型服务暂时不可用，请稍后重试；若持续失败请联系管理员检查模型配置。"
+    return "模型生成失败，请稍后重试。"
 
 
 class ContentService:
@@ -109,7 +129,7 @@ class ContentService:
         except ContentGenerationError as exc:
             failed = ContentDraft(
                 draft_id=f"draft-{run_id}", task_id=record.task_id, run_id=run_id, tenant_id=record.tenant_id,
-                title=record.brief.topic, summary="模型生成失败，请检查配置后重新生成。", body_markdown="",
+                title=record.brief.topic, summary=_failure_summary(exc), body_markdown="",
                 image_suggestions=[], citations=list(record.brief.sources), template_version="generation-failed",
                 status=ContentStatus.FAILED,
             )

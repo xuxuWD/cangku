@@ -172,6 +172,33 @@ def test_generation_failure_is_audited_and_not_exportable():
         service.export_markdown(actor=employee("tenant-a", "u1"), task_id=created.task_id)
 
 
+def test_generation_failure_summary_depends_on_reason():
+    """缺陷回归（2026-09-18）：原先所有失败都提示「请检查配置」——
+    当真实原因是「模型返回结构不符」时配置往往正确，该提示会误导用户去反复检查 Key/地址。
+    两类失败必须给出不同的下一步建议。"""
+    from app.content.generator import ContentGenerationFormatError, ContentGenerationUpstreamError
+
+    class _Raiser:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def generate(self, value):
+            raise self.exc
+
+    format_service = make_content_service(
+        content_generator=_Raiser(ContentGenerationFormatError("模型输出格式无效")))
+    formatted = format_service.create(actor=employee("tenant-a", "u1"), payload=brief("格式失败"), idempotency_key="kf")
+    assert formatted.draft.status == ContentStatus.FAILED
+    assert "格式" in formatted.draft.summary
+    assert "检查模型配置" not in formatted.draft.summary
+
+    upstream_service = make_content_service(
+        content_generator=_Raiser(ContentGenerationUpstreamError("模型请求失败")))
+    upstream = upstream_service.create(actor=employee("tenant-a", "u1"), payload=brief("上游失败"), idempotency_key="ku")
+    assert upstream.draft.status == ContentStatus.FAILED
+    assert "检查模型配置" in upstream.draft.summary
+
+
 def test_regenerate_reuses_task_and_creates_new_run_and_draft():
     generator = SequenceGenerator(["first", "second"])
     service = make_content_service(content_generator=generator)
