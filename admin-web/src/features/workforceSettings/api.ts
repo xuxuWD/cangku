@@ -1,5 +1,5 @@
 import { directoryErrorFromStatus } from './state'
-import { PAGE_LIMIT, type AgentConfig, type AgentConfigUpdate, type DigitalEmployee, type DirectoryList, type JobRole, type WorkforceCandidates } from './types'
+import { PAGE_LIMIT, type AgentConfig, type AgentConfigUpdate, type DigitalEmployee, type DirectoryList, type JobRole, type ModelCandidates, type ToolCatalog, type WorkforceCandidates } from './types'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1').replace(/\/$/, '')
 
@@ -77,4 +77,16 @@ export function updateAgentConfig(agentKey: string, payload: AgentConfigUpdate):
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
+}
+
+// --------------------------------------------------------------- P2c-4 只读候选端点（推翻契约 Y1）
+
+/** 模型候选键（仅 super_admin；与 `model_key` 保存闸门同源，不含任何凭据 / 内部地址）。 */
+export function listModelCandidates(): Promise<ModelCandidates> {
+  return request<ModelCandidates>('/workforce/model-candidates')
+}
+
+/** 工具目录 + 保存闸门集合（仅 super_admin；`items` 与 `allowlist` **不是同一批名字**）。 */
+export function readToolCatalog(): Promise<ToolCatalog> {
+  return request<ToolCatalog>('/tools/catalog')
 }

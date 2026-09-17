@@ -301,6 +301,22 @@ class InMemoryStreamStore:
                 self._frames.pop(key, None)
             return len(keys)
 
+    def delete_for_conversation(self, tenant_id: str, conversation_id: str) -> tuple[int, int]:
+        """P2c-4 物理删除：真删该会话**全部**帧与流状态行，返回 `(帧数, 状态行数)`。
+
+        幂等（重复调用返回 `(0, 0)`）；只删本会话本租户的行，不触碰消息 / 审计 / 运行记录。
+        """
+        with self._lock:
+            frame_keys = [
+                key for key in self._frames if key[0] == tenant_id and key[1] == conversation_id
+            ]
+            state_keys = [
+                key for key in self._states if key[0] == tenant_id and key[1] == conversation_id
+            ]
+            frames = sum(len(self._frames.pop(key, [])) for key in frame_keys)
+            states = sum(1 for key in state_keys if self._states.pop(key, None) is not None)
+            return frames, states
+
 
 _FRAME_COLUMNS = "tenant_id, conversation_id, run_id, seq, kind, payload, is_terminal, created_at"
 _STATE_COLUMNS = (
@@ -642,3 +658,25 @@ class PostgresStreamStore:
                             (tenant_id, conversation_id, run_id),
                         )
                     return len(keys)
+
+    def delete_for_conversation(self, tenant_id: str, conversation_id: str) -> tuple[int, int]:
+        """P2c-4 物理删除：真删该会话**全部**帧与流状态行（同一事务），返回 `(帧数, 状态行数)`。
+
+        幂等（重复调用返回 `(0, 0)`）；只删本会话本租户的行，不触碰消息 / 审计 / 运行记录。
+        """
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_conversation_stream_frames "
+                        "WHERE tenant_id = %s AND conversation_id = %s",
+                        (tenant_id, conversation_id),
+                    )
+                    frames = int(cursor.rowcount)
+                    cursor.execute(
+                        "DELETE FROM workbench_conversation_stream_state "
+                        "WHERE tenant_id = %s AND conversation_id = %s",
+                        (tenant_id, conversation_id),
+                    )
+                    states = int(cursor.rowcount)
+        return frames, states

@@ -93,7 +93,12 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.CRM_HEALTH_RECOMPUTED.value == "crm.health.recomputed"
     # P2b 实时流（2026-09-17）：一个动作码（熔断 / 写失败 / 悬挂兜底治理事件）。
     assert AuditAction.CONVERSATION_STREAM_UNAVAILABLE.value == "conversation.stream.unavailable"
-    assert len(set(AuditAction)) == 84
+    # P2c-4（2026-09-17）：四个动作码（模式变更 / 本人导出 / 物理删除 / 模式拒绝执行）。
+    assert AuditAction.CONVERSATION_MODE_CHANGED.value == "conversation.mode.changed"
+    assert AuditAction.CONVERSATION_EXPORTED.value == "conversation.exported"
+    assert AuditAction.CONVERSATION_DELETED.value == "conversation.deleted"
+    assert AuditAction.CONVERSATION_EXECUTION_REJECTED.value == "conversation.execution.rejected"
+    assert len(set(AuditAction)) == 88
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

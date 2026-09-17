@@ -33,6 +33,28 @@ class ConversationStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class ConversationMode(StrEnum):
+    """每会话模式（P2c-4 §2.9）：只**收紧**、不放松。
+
+    * `ask` = 只问答：拒绝一切真实执行（提问与缺键桩路径不受影响）；
+    * `plan` = 先计划后执行：一律先落待批（等价 `approval_for_all`）；
+    * `goal` / `craft` = 执行照常（按自治三档，不放松）。
+
+    取值与迁移 `038` 的 CHECK 一字不差；**默认 `craft` = 改造前行为**。
+    """
+
+    ASK = "ask"
+    PLAN = "plan"
+    GOAL = "goal"
+    CRAFT = "craft"
+
+
+DEFAULT_MODE = ConversationMode.CRAFT
+# 受控拒绝码 / 原因（`ask` 模式）：拒绝「真实执行」，不拒绝问答。
+MODE_ASK_REJECTION_MESSAGE = "该会话为只问答模式，已拒绝执行"
+MODE_ASK_REJECTION_REASON = "mode_ask"
+
+
 class MessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
@@ -83,6 +105,9 @@ class Conversation:
     dsh_session_id: str | None = None
     created_at: datetime | None = field(default_factory=now)
     updated_at: datetime | None = field(default_factory=now)
+    # P2c-4：每会话模式（默认 `craft` = 改造前行为）与软删标记（置位后一律按「不存在」处理）。
+    mode: ConversationMode = DEFAULT_MODE
+    deleted_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -154,6 +179,18 @@ def normalize_title(value: str | None) -> str:
     if len(normalized) > MAX_TITLE_LENGTH:
         raise InvalidConversation(f"会话标题最长 {MAX_TITLE_LENGTH} 个字符")
     return normalized
+
+
+def normalize_mode(value: str | ConversationMode) -> ConversationMode:
+    """归一模式取值（受控枚举）；非法值 `422`（不猜测、不回落默认值）。"""
+    if isinstance(value, ConversationMode):
+        return value
+    if not isinstance(value, str):
+        raise InvalidConversation("会话模式必须是字符串")
+    try:
+        return ConversationMode(value.strip())
+    except ValueError as exc:
+        raise InvalidConversation("会话模式只能是 ask / plan / goal / craft 之一") from exc
 
 
 def normalize_content(value: str) -> str:

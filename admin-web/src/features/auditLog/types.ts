@@ -130,6 +130,11 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'crm.health.recomputed': '客户健康度已重算',
   // P2b 实时流（2026-09-17）：熔断 / 写失败 / 悬挂兜底的治理事件。
   'conversation.stream.unavailable': '实时流已熔断或不可用',
+  // P2c-4（2026-09-17）：会话模式变更 / 本人导出 / 物理删除 / 只问答模式拒绝执行。
+  'conversation.mode.changed': '会话模式已变更',
+  'conversation.exported': '个人会话数据已导出',
+  'conversation.deleted': '会话已被本人物理删除',
+  'conversation.execution.rejected': '会话模式拒绝执行',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

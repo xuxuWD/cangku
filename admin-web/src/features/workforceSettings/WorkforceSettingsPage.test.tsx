@@ -26,6 +26,21 @@ interface Options {
   writeDetail?: unknown
   configStatus?: number
   failFirstBatch?: boolean
+  /** P2c-4：候选端点（模型键 / 工具目录）返回异常状态，用于验证「回落自由文本」。 */
+  candidatesStatus?: number
+  /** P2c-4：读取到的配置里 `model_key` 覆盖值（用于验证「当前值不在候选内 ⇒ 灰显给原因」）。 */
+  modelKey?: string
+}
+
+// P2c-4：模型候选与工具目录（`items` = 执行目录；`allowlist` = 保存闸门集合）。
+export const MODEL_CANDIDATES = { items: ['mock-default', 'deepseek-chat'], total: 2 }
+export const TOOL_CATALOG = {
+  items: [
+    { tool_key: 'fs.read', risk_level: 'low', requires_approval: false, has_side_effect: false, reversible: true, params: [{ name: 'path', role: 'control' }] },
+    { tool_key: 'artifact.export', risk_level: 'critical', requires_approval: true, has_side_effect: true, reversible: false, params: [{ name: 'path', role: 'control' }] },
+  ],
+  allowlist: ['fs.read', 'knowledge.search'],
+  total: 2,
 }
 
 // 假服务端：GET 返回当前目录内容，POST/PATCH 会真的改动内存中的目录，
@@ -33,13 +48,22 @@ interface Options {
 function makeFetch(directory: Directory, options: Options = {}) {
   const calls: Array<{ url: string; method: string; body: string }> = []
   let getBatches = 0
-  const config = { agent_key: 'content-writer', system_prompt: '你是内容创作助手', model_key: 'mock-default', temperature: 0.2, tool_allowlist: [], memory_policy: { short_term_enabled: true, short_term_turns: 6 }, autonomy_level: 'approval_for_risky', risk_threshold: 'high', approval_timeout_minutes: 60, daily_budget_cents: 0, updated_at: '2026-09-12T07:28:57.796743Z' }
+  const config = { agent_key: 'content-writer', system_prompt: '你是内容创作助手', model_key: options.modelKey ?? 'mock-default', temperature: 0.2, tool_allowlist: [], memory_policy: { short_term_enabled: true, short_term_turns: 6 }, autonomy_level: 'approval_for_risky', risk_threshold: 'high', approval_timeout_minutes: 60, daily_budget_cents: 0, updated_at: '2026-09-12T07:28:57.796743Z' }
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
     calls.push({ url, method, body: typeof init?.body === 'string' ? init.body : '' })
     if (url.includes('/inbox?')) return json({ items: [], unread_count: 0 })
     if (options.getStatus && options.getStatus >= 400) return json({ detail: '只有超级管理员可以管理岗位与数字员工目录' }, options.getStatus)
+
+    if (url.includes('/workforce/model-candidates')) {
+      if (options.candidatesStatus && options.candidatesStatus >= 400) return json({ detail: '只有超级管理员可以读取模型与工具候选' }, options.candidatesStatus)
+      return json(MODEL_CANDIDATES)
+    }
+    if (url.includes('/tools/catalog')) {
+      if (options.candidatesStatus && options.candidatesStatus >= 400) return json({ detail: '只有超级管理员可以读取模型与工具候选' }, options.candidatesStatus)
+      return json(TOOL_CATALOG)
+    }
 
     if (url.includes('/workforce/agents/') && url.includes('/config')) {
       if (method === 'PATCH') {
@@ -274,5 +298,93 @@ describe('WorkforceSettingsPage', () => {
     await userEvent.selectOptions(screen.getByLabelText('自治等级'), 'full_auto')
 
     expect(await screen.findByText(/仅超级管理员可设置，且该变更会写入审计/)).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------- P2c-4 只读候选端点（选择器）
+
+describe('WorkforceSettingsPage（P2c-4 选择器）', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  async function openConfig() {
+    await userEvent.click(await screen.findByRole('tab', { name: '数字员工' }))
+    await screen.findByText('内容创作数字员工')
+    await userEvent.click(screen.getByRole('button', { name: '配置' }))
+    await screen.findByLabelText('系统提示词')
+  }
+
+  it('模型键为候选下拉（含默认项）；未注册的当前值灰显并给原因', async () => {
+    const { fetchMock } = makeFetch({ roles: [], agents: [agent()], candidates: { roles: [], agents: [] } })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<WorkforceSettingsPage />)
+    await openConfig()
+
+    const select = screen.getByLabelText('模型键') as HTMLSelectElement
+    expect(select.tagName).toBe('SELECT')
+    expect(select.value).toBe('mock-default')
+    const options = Array.from(select.options).map((option) => option.value)
+    expect(options).toEqual(expect.arrayContaining(['', 'mock-default', 'deepseek-chat']))
+    expect(screen.getByText(/候选 2 个，来自模型网关注册键/)).toBeInTheDocument()
+  })
+
+  it('当前模型键不在候选内 ⇒ 灰显选项 + 原因（保存会被后端 422 拒绝）', async () => {
+    const { fetchMock } = makeFetch(
+      { roles: [], agents: [agent()], candidates: { roles: [], agents: [] } },
+      { modelKey: 'legacy-model' },
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<WorkforceSettingsPage />)
+    await openConfig()
+
+    const select = screen.getByLabelText('模型键') as HTMLSelectElement
+    expect(select.value).toBe('legacy-model')
+    const disabled = Array.from(select.options).filter((option) => option.disabled)
+    expect(disabled).toHaveLength(1)
+    expect(disabled[0].textContent).toContain('未在模型网关注册')
+  })
+
+  it('工具白名单为目录多选：闸门内的目录项可勾选，闸门外的灰显并给原因', async () => {
+    const { fetchMock, calls } = makeFetch({ roles: [], agents: [agent()], candidates: { roles: [], agents: [] } })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<WorkforceSettingsPage />)
+    await openConfig()
+
+    // `fs.read` 在保存闸门内 ⇒ 可勾选；`artifact.export` 不在闸门内 ⇒ 灰显 + 原因。
+    const gateTool = screen.getByLabelText('工具 fs.read')
+    const blockedTool = screen.getByLabelText('工具 artifact.export')
+    expect(gateTool).not.toBeDisabled()
+    expect(blockedTool).toBeDisabled()
+    expect(screen.getByText(/未在本部署的规划器工具白名单（WORKBENCH_PLANNER_TOOLS）中登记/)).toBeInTheDocument()
+    // 保存闸门里的目录外键也要出现（否则管理员无法勾选合法键）。
+    expect(screen.getByLabelText('工具 knowledge.search')).not.toBeDisabled()
+
+    await userEvent.click(gateTool)
+    await userEvent.click(screen.getByRole('button', { name: '保存配置' }))
+
+    await waitFor(() => {
+      const patch = calls.find((call) => call.method === 'PATCH' && call.url.includes('/config'))
+      expect(patch && JSON.parse(patch.body).tool_allowlist).toEqual(['fs.read'])
+    })
+  })
+
+  it('候选端点不可用（403 / 形态不完整）⇒ 回落自由文本并**如实告知**，不摆假选项', async () => {
+    const { fetchMock } = makeFetch(
+      { roles: [], agents: [agent()], candidates: { roles: [], agents: [] } },
+      { candidatesStatus: 403 },
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<WorkforceSettingsPage />)
+    await openConfig()
+
+    const modelInput = screen.getByLabelText('模型键')
+    expect(modelInput.tagName).toBe('INPUT')
+    expect(screen.getByText(/候选端点不可用（当前账号没有管理岗位与数字员工的权限。）/)).toBeInTheDocument()
+    const toolInput = screen.getByLabelText('工具白名单')
+    expect(toolInput.tagName).toBe('INPUT')
+    expect(screen.getByText(/工具目录端点不可用/)).toBeInTheDocument()
   })
 })

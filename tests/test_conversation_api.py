@@ -85,10 +85,11 @@ def test_create_and_list_conversations_with_pagination() -> None:
     assert body["limit"] == 2
     assert body["offset"] == 0
     assert len(body["items"]) == 2
-    # 不泄露账号 PII（不含 operator_id / dsh_session_id）
+    # 不泄露账号 PII（不含 operator_id / dsh_session_id）；`mode` 为 P2c-4 只增字段。
     assert set(body["items"][0]) == {
-        "conversation_id", "agent_key", "title", "status", "created_at", "updated_at",
+        "conversation_id", "agent_key", "title", "status", "mode", "created_at", "updated_at",
     }
+    assert body["items"][0]["mode"] == "craft"  # 默认 craft = 改造前行为
 
     page = client.get("/api/v1/conversations", headers=headers(), params={"limit": 2, "offset": 2}).json()
     assert len(page["items"]) == 1

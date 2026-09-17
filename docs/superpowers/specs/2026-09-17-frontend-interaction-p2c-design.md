@@ -24,7 +24,7 @@
 | 5   | 对话页发送**恒带幂等键** ⇒ 真实执行已装配时「纯文本必 `422`」（P2a 结构化调用口径）；首页 `sendHomeMessage` **不带键**（桩路径）——两处口径不一致                                                             | execution.py L167-183 / L244-246；home/api.ts L56-61                                                  |
 | 6   | 消息视图**无 `run_id`**；`201/202` 响应带 `run_id`，P2b 另有 `X-Stream-Run-Id`                                                                                         | conversation/types.ts L23-33；契约 L690 / L920                                                          |
 | 7   | 运行侧只读数据面齐备：`GET /runs/{run_id}/events`、`GET /runs/{run_id}/approvals`、`POST .../approval`（仅 `ceo`/`super_admin`、发起人不得自审）、`GET /approvals/pending`           | 契约 L628-L637、L394-L431                                                                             |
-| 8   | **工具目录已有 16 个工具键**：`fs.list` / `fs.read` / `fs.stat`（low）、`cmd.run` / `fs.write`（medium）、`fs.overwrite` / `fs.delete`（high）、`artifact.export`（critical）、CRM 5 个 + `crm.activity.log` | [catalog.py](file:///d:/徐徐AI学习/公司工作台/app/tool_execution/catalog.py#L93-L210)                       |
+| 8   | **工具目录已有 13 个工具键**（**2026-09-17 P2c-4 实测更正：起草时记的「16」为笔误**）：`fs.list` / `fs.read` / `fs.stat`（low）、`cmd.run` / `fs.write`（medium）、`fs.overwrite` / `fs.delete`（high）、`artifact.export`（critical）、CRM 读 ×4（low）+ `crm.activity.log`（medium） | [catalog.py](file:///d:/徐徐AI学习/公司工作台/app/tool_execution/catalog.py#L93-L210)                       |
 | 9   | **🔴 `fs.*` / `artifact.export` 在容器内的执行入口尚未实现**：`_command_for` 只支持 `cmd.run`，其余**fail-closed 拒绝**（"由后续适配器段实现"）                                                | [executor.py](file:///d:/徐徐AI学习/公司工作台/app/tool_execution/executor.py#L77-L93)                      |
 | 10  | **🔴 `cmd.run` 的输出当前被丢弃**：执行只取容器 `StatusCode`，`ExecutionOutcome.summary` = `{tool_key,status,exit_code}`——**无 stdout**                                          | executor.py L386-L436                                                                              |
 | 11  | **🔴 工作卷是容器内 tmpfs，随容器销毁**（`/workspace`，`noexec,nosuid,nodev`，`uid/gid/mode` 显式钉死）；文件**不跨执行留存** ⇒ 文件变更与产物**必须在执行时产出并落库**，不能事后扫描                     | executor.py L18-L27、L56-L69                                                                         |
@@ -53,6 +53,12 @@
 > **交付记录（P2c-3，2026-09-17 本机）**：① **契约与规格先行**——契约「内容级回传」补 `file_changes` 取值域与 `file_changes_truncated`（**只增**）、三个配置项的 `0` 语义、硬边界第 7 条（`fs.*` 在「空工作卷」下的语义）；新增「产物登记与只读端点」（`GET /api/v1/runs/{run_id}/artifacts`、保留期 30 天、清理任务与两项配置）；规格 §2.7 补「实现期裁定 1–5」（落地形态 / 内容传递 / 空工作卷语义 / 端点与清理口径 / 截断告知）并收口 §6-5。② **后端**：新增 `app/tool_execution/file_ops.py`（**自建内联脚本** + 结构化 argv + base64 内容传递 + 覆盖 / 幂等删除语义 + 变更标记解析与上限折算）；`_command_for` 接入 `fs.*`（`artifact.export` 仍 fail-closed）；`ContainerExecutor` 新增变更通道（来源白名单只认 `fs.*`、标记行不进摘录、`0` = 关闭）；`service.py` 把变更折算进 `ToolExecutionResult.output` 并**best-effort 登记产物**（与帧同一集合、失败不阻断执行）；新增 `app/runtime/artifacts.py`（内存 + PG 仓储、复合外键跨租户拒写、保留期到期过滤、逐租户清理）+ 迁移 `037_run_artifacts` + worker 周期任务 `run-artifacts-purge` + 只读端点（归属判定同运行接口）。③ **前端**：`ArtifactPanel`（四态 + 白名单投影 + 保留期如实告知）、`ArtifactChips`（对话流内按虚拟路径聚合、点开 diff 摘录、截断告知）、`useRunArtifacts`、`listRunArtifacts`，并统一 `changeKindLabel`（`created` / `overwritten` / `deleted`）。
 > **验证**：后端 **2362 passed**（含真库：新增 `tests/test_fs_tools.py` 21 条、`tests/test_execution_output_capture.py` +7 条、`tests/test_tool_execution_gate.py` +3 条、`tests/test_conversation_stream_api.py` +4 条（含**真实执行服务端到端**：`fs.write` 202 → 决议 → 重跑 → 变更入推进帧 + 产物登记 + 端点读回）、`tests/test_run_artifacts_postgres.py` 5 条、`tests/test_worker_runtime_wiring.py` +3 条）；**真容器** `tests/test_container_executor_fs.py` **5 passed**（fs.write 变更记录 / 标记剥离 / 文件不跨执行留存 / 容器内路径闸门拒绝逃逸 / 空卷幂等删除）。前端 `admin-web` **248 passed（35 文件）** + `tsc -b && vite build` 通过；`companion-pwa` **37 passed** + build；`desktop` **19 passed**；`compileall` exit 0；`.env.staging.example` 迁移清单补 `037_run_artifacts`（预检守护用例）。**反假四轮已实测变红**（均已复原）：① 去掉 `fs.*` 来源白名单（内外两道）⇒ `cmd.run` 伪造标记能产出假变更记录（1 条红）；② 去掉变更上限截断 ⇒ helper / 执行器 / 服务 / 帧**四层用例同时红**（4 条）；③ 去掉容器内 realpath 落点判定 ⇒ **符号链接逃逸**用例红（读到了工作卷之外）；④ 登记失败不兜底 ⇒ 执行结果被登记失败打断（1 条红）。**浏览器走查 1 轮**（dev：前端 5173 + 后端 8010 新代码，已用 `openapi.json` 核对端点注册）：默认对话视图 / 新建会话 / 纯文本发送成功 / 舞台三空态 / **无「终端输出」「文件改动」「产物登记」假面板** / 控制台无 error。
 > **未验证（登记）**：本机 dev 未装配真实执行（结构化调用回落桩路径、无运行）⇒ **产物面板与产出 chip 的真实数据渲染**未取证（组件级用例 + 真容器用例已覆盖语义，真实端到端留 staging）；`fs.overwrite` / `fs.delete` 的「目标已存在」分支在**跨执行**场景不可达（空工作卷架构限制，已写入契约硬边界第 7 条，宿主侧脚本用例覆盖该分支）。
+>
+> **交付记录（P2c-4，2026-09-17 本机）**：① **契约与规格先行**——契约新增「P2c 对话模式 · 导出与物理删除 · 候选端点 · 结构判定（P2c-4）」整节（模式语义与两处判定 / `POST .../mode` / `GET .../exports/mine`（500 页 + 5 万条上限）/ `POST .../{id}/delete`（顺序与失败语义）/ 两个只读候选端点（**Y1 推翻留痕**）/ `GET /runs/{run_id}/acceptance`（纯读、不改状态））；P1 章节补 `mode` 只增与「受控物理删除」引用；Y1 决议行加推翻留痕。规格 §1.4 落定迁移实号（P2c-4 = **`038`**）、§2.5 / §2.9 / §2.10 / §2.11 各补「实现期裁定」（判定落服务端 / 正常终态取 `run_completed` / `ask` 拒绝码 409 与幂等行 / 推进处拦截点 = 决议入口 / 两集合如实分开 / 导出上限与前端逐页合并 / 删除顺序与原子性）、§0 事实 8 **实测更正**（工具目录 13 键，非 16）。② **后端**：迁移 `038_conversation_mode_and_soft_delete`（`mode` 带 CHECK 默认 `craft` + `deleted_at` 软删列）；`Conversation` 增 `mode` / `deleted_at` 与 `ConversationMode` / `normalize_mode`；仓储层增 `get_conversation_including_deleted` / `set_mode`（返回 `(会话, 变更前模式)`）/ `delete_conversation_content`（消息 + 软删同事务）/ `export_mine`，并把软删过滤写进**全部读路径**；流仓储与幂等仓储各增 `delete_for_conversation`；`ConversationService` 增 `set_conversation_mode` / `delete_conversation`（固定顺序：幂等行 → 帧 → 流状态 → 消息 + 软删；复删幂等不重复写审计；缺仓储 fail-closed）/ `export_mine`（条目上限如实告知 + 审计）；`ConversationExecutionService` 增 `ask` 拒执行（409 + 审计 + `rejected` 幂等行）与 `plan` 强制待批（经唯一判定入口 `needs_approval`，等价 `approval_for_all`）+ **推进处** `ensure_resume_allowed`（决议入口最前拦截、校验失败 `503` fail-closed）；新增 `app/runtime/acceptance.py`（纯函数结构判定）；4 个新端点（`/conversations/{id}/mode`、`/conversations/exports/mine`、`/conversations/{id}/delete`、`/workforce/model-candidates`、`/tools/catalog`、`/runs/{id}/acceptance`）+ 4 个新审计动作码与 9 个明细键。③ **前端**：对话页模式下拉（服务端回流、无乐观更新）、删除（二次确认 + 计数提示 + 清空选择）、导出（逐页合并 → JSON 下载，超限如实告知）、收尾检查升级（**服务端结构判定** + 会话模式 + 产物数 + 未达标一键重做 / 无原件降级提示）；数字员工配置页 `model_key` 改候选下拉、`tool_allowlist` 改目录多选（灰显给原因 + 不可用项一键移除 + 端点失败回落自由文本）。
+>
+> **验证**：后端 **2395 passed**（含真库；新增 `tests/test_conversation_mode_api.py` 9 条、`tests/test_conversation_delete_export_api.py` 6 条、`tests/test_run_acceptance_api.py` 6 条、`tests/test_tool_catalog_api.py` 6 条、`tests/test_conversation_lifecycle_postgres.py` 7 条；`compileall` exit 0）；前端 `admin-web` **261 passed（36 文件）** + `tsc -b && vite build` 通过；`companion-pwa` **37 passed** + build；`desktop` **19 passed**。**反假三轮已实测变红**（均已复原）：① `ask` 只在前端拦（后端放行）⇒ 用例 ① 红（`201` 而非 `409`）；② 删除只做软删（消息行不真删）⇒ 真库用例 ② 红（`message_count` 断言失败）；③ 结构判定改接 LLM（探针调用）⇒ 「不调模型」断言红（5 条端点用例同时红）。**浏览器走查 1 轮**（dev：前端 5173 + **新代码**后端 8010）：默认对话视图 / 6 分组 / 新建会话 / 列表条目模式徽标 / 模式切换双向（`ask` ↔ `craft`，提示与徽标同步、列表回流）/ 「导出我的数据」触发导出接口 + 计数提示 / 删除会话（确认后计数提示 + 列表消失 + 回空态）/ 数字员工配置页**模型键为下拉**（本部署候选为空 ⇒ 如实显示「（默认模型：本部署未注册模型键）」）与**工具白名单为 13 项复选框列表**（本机未配置 `WORKBENCH_PLANNER_TOOLS` ⇒ 13 项**全部灰显**并给出受控原因，与「保存会被 422 拒绝」一致）/ 全程无 `.notice-error`。
+>
+> **未验证（登记）**：① 导出**文件是否真正落盘**未取证（走查环境未观察到下载栏与 `blob:` 资源，接口调用与计数提示已确认；下载行为依赖浏览器设置，组件级用例已断言 `createObjectURL` 与锚点点击被调用）；② 二次确认对话框**本身**未在自动化下被观测（由自动化层以 accept 放行，删除效果已确认）；③ **结构判定与一键重做的真实运行数据**端到端未取证（本机 dev 未装配真实执行 ⇒ 无运行；组件级用例覆盖 `met` / `unmet` / 重做新幂等键路径，真实执行装配后的端到端留 staging）；④ `mode=ask` 的**推进处拦截**在真实执行装配下的端到端未取证（接口层用例已覆盖：待批 → 切 `ask` → 决议 `409` 且不落决议 → 切回后可决议）；⑤ ≥1281px 宽视口三列常驻仍未实测（走查窗口 913px，承接 P2c-3 同项）；⑥ 本机 dev 的 `WORKBENCH_PLANNER_TOOLS` 为空 ⇒ 选择器「灰显给原因」路径已取证，而**可选（可保存）路径**只在组件测试里取证。
 
 ***
 
@@ -113,7 +119,7 @@
 
 | 层            | 影响                                                                                                                    |
 | ------------ | --------------------------------------------------------------------------------------------------------------------- |
-| 迁移           | 实号开工取（记作 `037+`，按批切分）：① 会话 `mode` 列（含 CHECK 默认 `craft`）② 产物登记表 ③ 会话 `deleted_at` 软删列（**无墓碑列**：消息走真删）④ 会话成员表（`read` / `write`）⑤ 消息 `sender_id` 列（可空，存量 `NULL` ⇒ 归属发起人）              |
+| 迁移           | 实号开工取（按批切分；**2026-09-17 落定**）：② 产物登记表 = `037_run_artifacts`（P2c-3 已交付）；① 会话 `mode` 列（含 CHECK 默认 `craft`）+ ③ 会话 `deleted_at` 软删列（**无墓碑列**：消息走真删）= **`038_conversation_mode_and_soft_delete`**（P2c-4）；④ 会话成员表（`read` / `write`）+ ⑤ 消息 `sender_id` 列（可空，存量 `NULL` ⇒ 归属发起人）留 P2c-6 取 `039+` |
 | 后端           | `app/conversation/*`（模式判定、**真删清理（引用图级联）**、导出、**成员与可见性判定**、**验收结构判定**）、`app/tool_execution/executor.py`（输出有界读取、`fs.*` 入口、变更记录）、`app/conversation/stream_writer.py`（payload 扩展）、resume 路径接帧、产物登记存储、两个只读候选端点、导出/删除端点、**成员端点** |
 | 契约           | `api-contract.md`：**修订** P2b 章节（帧 payload 扩展 + resume 写帧 + Q9 边界修订）、P1 章节（模式 / 导出 / **物理删除语义** / **成员与协作**）、工具执行章节（Y1 推翻 + 目录端点）、新增产物端点、**新增成员端点**；`P2b 规格` §1.3/§6 回改留痕           |
 | 前端 `admin-web` | `app/*`（分组、路由默认值）、`features/conversation/*`（三区 + 流 + 路由 + 审批卡 + 收尾检查与重做 + **分享 / 成员**）、新增 `features/stage/*`、`features/workforceSettings/*`（选择器）、样式                |
@@ -205,6 +211,12 @@
 * **角色口径**：仅 `ceo`/`super_admin` 且非发起人显示决议按钮；其他显示只读说明；服务端仍 `403`（按钮隐藏 ≠ 权限）。
 * **收尾检查（自动验收 + 一键重做 · 二次裁决）**：运行终态后，折叠条与舞台展示「进度档」= 完成步骤数 / 总步骤数 + 未决审批 + `finish_reason`，并给出**结构判定结论「达标 / 未达标」**——三条件**全满足**＝达标（步骤全部完成 + 无未决审批 + `finish_reason` 为正常终态），**不调模型、只读运行已有字段**。未达标时提供**一键重做**：**仅当本页仍持有原结构化调用**时以**新幂等键**重发（＝一次新的正常调用，与原运行无状态耦合、不改写原运行）；页面已不含原件（刷新 / 跨端）时按钮降级为提示「原始参数未留存（安全口径），请重新输入」。**判定不改运行状态；不做自动重跑。**
 
+**实现期裁定（2026-09-17 · P2c-4）**：
+1. **判定落点 = 服务端只读端点** `GET /api/v1/runs/{run_id}/acceptance`（纯读：不调模型、不写库、不改运行状态）——前端**不自行复算规则**，只渲染结论与三个 `checks`；判定落服务端才能被真库用例覆盖「不调模型」与「不改运行状态」两断言。
+2. **「正常终态」的受控取值 = `run_completed`**（唯一）；`cancelled_by_user` / `step_failed` / `approval_rejected` 均判**未达标**；非终态运行（无 `finish_reason`）返回 `unmet`（如实，不谎报）。
+3. **步骤口径沿用既有前端展示口径**：`step_count = 0` 视为满足（`completed >= total` 的退化情形），避免「无步骤的空运行」被误判未达标。
+4. **一键重做是前端行为**：`ConversationPage` 在发送后保留本次结构化调用原文（**仅内存态**，刷新即失），未达标且持有原件时按钮可用；重发走同一发送路径 + **新幂等键**（新 run）；不落库、不新增留存例外。
+
 ### 2.6 内容级回传（事项 G · Q9 边界修订）
 
 **新增的受控通道**（修订 Q9，仍不落全文）：
@@ -267,6 +279,13 @@
 * **谁能改**：会话**发起人**（本人）；`ceo` / `super_admin` 对他人会话**只读**（与「修改他人会话 `404`」一致）。变更写审计 `conversation.mode.changed`（受控枚举，不落自由文本）。
 * 与 D3 的关系：回答「两轴关系」——自治三档决定「要不要人批」，模式决定「本次会话允不允许执行 / 是否先计划」；**合成取更严**。
 
+**实现期裁定（2026-09-17 · P2c-4）**：
+1. **改动端点 = `POST /api/v1/conversations/{conversation_id}/mode`**（请求体 `{"mode": ...}`，`extra=forbid`）；仅本人（他人 / 跨租户 `404`）；归档会话 `409`；**设为同一值无副作用**（不写审计）；变更写审计 `conversation.mode.changed`（`from_mode` / `to_mode` 受控枚举）。
+2. **`ask` 拒绝码 = `409`**「该会话为只问答模式，已拒绝执行」（与「归档发消息 `409`」同一「状态不允许」语义；不是 403——操作者并无权限问题）；拒绝时**不创建承载任务 / 运行 / 消息**，但按 §4.1.3 四态口径写 `rejected` 幂等行 ⇒ 重放返回同一 `409`；审计 `conversation.execution.rejected`（`conversation_id` / `mode` / `reason=mode_ask`）。
+3. **推进处拦截点 = 决议入口**（`POST /runs/{run_id}/approvals/{approval_id}/approval` 的处理器**最前**）：会话模式为 `ask` ⇒ 返回 `409` 并**不做任何决议写入**（待批动作保持 `pending`，切回模式后可再决议）——fail-closed：宁可拒绝决议，也不产生「已批准但被模式挡住」的悬挂授权位。运行经幂等行（`find_by_run`）反查会话；查不到会话（如非对话触发的运行、或会话内容已物理删除）⇒ 不拦截（已知边界，见契约同节）。
+4. **`plan` 的推进天然不放松**：强制待批在发起处已置 `requires_approval=true`；推进只能经 `find_approved`（未授权一律 `409`），故无需新增判定分支。
+5. **`ask` 不影响「缺键桩路径」**：`ask` = 只问答 ⇒ 纯文本问答（桩回复）仍可用；只有**带键的真实执行**被拒。
+
 ### 2.10 模型 / 工具选择器（事项 M）
 
 * 新增**只读**端点（仅 `super_admin`，均不返回任何凭据 / 内部地址）：
@@ -274,6 +293,11 @@
   * `GET /api/v1/tools/catalog` → 工具键 + 风险档 + 是否需审批 + 简介（来自 `ToolSpecCatalog`）。
 * 前端：数字员工配置页的 `model_key` 由自由文本改为**候选下拉**，`tool_allowlist` 改为**目录多选**；不可用 / 停用项**灰显并给原因**（借调研 F 形态：聚焦动作 + 原因）。
 * **推翻 Y1 留痕**（§1.5-3）；后端校验不变（非法键仍 `422`），前端只是提示。
+
+**实现期裁定（2026-09-17 · P2c-4 开工取证后）**：
+1. **取证结论：`tool_allowlist` 存在两个不同集合，端点必须如实分开表达**——① **执行工具目录**（`ToolSpecCatalog`，**实测 13 键**：`fs.list/read/stat`、`cmd.run`、`fs.write/overwrite/delete`、`artifact.export`、CRM 读 ×4 + `crm.activity.log`，含风险档与审批要求；§0 事实 8 起草期记的「16」为笔误，已回改实测值）；② **保存闸门集合**（`AgentConfigService.allowed_tools` = `WORKBENCH_PLANNER_TOOLS` 声明的键，与 ① **不是同一批名字**，见攻击面报告里的 `content.publish` / `knowledge.search`）。若只回 ①，界面会把「点了能存」与「存了会被 422」混为一谈（宪法禁止「把能点当能用」）。故 `GET /api/v1/tools/catalog` 返回 **`items`（执行目录，含风险档 / 审批 / 参数角色）+ `allowlist`（保存闸门键名）** 两个列表，前端据此灰显并给原因；**保存仍以服务端校验为准**（不改变后端校验强度）。
+2. **模型候选端点与配置保存闸门同源**（`registered_model_keys(settings)`），候选为空即本部署未注册模型键——界面明说「只能使用默认模型」，不摆假下拉。
+3. 两个端点都**只读 + 仅 `super_admin`**：与既有 `GET /workforce/agents/{agent_key}/config` 同权限（配置面本就是超管面）；`employee` / `ceo` 一律 `403`。
 
 ### 2.11 个人数据导出 / 删除（事项 N · 合规）
 
@@ -284,6 +308,14 @@
   * **保留**：运行记录（`workbench_run_records`，经任务关联，无会话外键）、待批动作（[027](file:///d:/徐徐AI学习/公司工作台/migrations/027_dsh_tool_execution.sql#L50-L86) 只挂运行不挂会话）、审计（不含正文）、产物登记（**运行级、仅元数据**）；
   * **无管理端代删 / 批量删**；删除为**同步**操作（单会话内容行量级小）；删除与导出均写审计（受控键，不落正文）。
 * **合规边界**：本期只做「本人会话」；租户级导出 / 删除仍走既有租户生命周期口径（不在本期）。
+
+**实现期裁定（2026-09-17 · P2c-4）**：
+1. **导出分页与上限落定**：页单位 = **会话**（`limit` 1–500 默认 500，按 `created_at` 降序）+ `offset`；**条目上限 50000**（本人在库「会话数 + 消息数」合计）——超限**不静默截断**：`truncated=true` + `limit_reason="total_items_exceeded"`（单页装配同样受该上限保护）。上限为**模块常量**（测试可注入更小值以覆盖截断路径，生产默认不变）。
+2. **导出审计**：`conversation.exported`（`conversation_count` / `message_count` / `truncated`，**不落正文**）；每次成功调用写一条。
+3. **删除端点 = `POST /api/v1/conversations/{conversation_id}/delete`**（同步；返回四个删除计数 + `deleted: true`）；**复删幂等且不重复写审计**（真正无副作用：不再删、不再记）。
+4. **删除顺序与原子性（取证结论：三张表分属不同仓储，故按序两步、各自原子）**：① **幂等行 → 帧 → 流状态**（各自仓储删除；幂等行必须最先删——它同时引用消息行与会话行）；② **消息 + 会话行软删 + `title=''`（同一事务）**。失败语义：**会话在最后一步完成前保持可见**（不出现「看不见但内容还在」）；各步可安全重试；帧清理失败不回滚删除结果（孤儿帧由保留期清理兜底，且已不可见）。
+5. **删除后的可见性**：`deleted_at IS NOT NULL` 的会话在**所有读路径与写路径**统一 `404`（列表 / 详情 / 流 / 发消息 / 改模式）；删除**不影响**运行记录、待批动作、审计、产物登记（运行级元数据）。
+6. **前端导出形态**：客户端**逐页拉取并合并**为一个 JSON 文件下载（客户端循环上限 = 服务端上限 100 页 × 500 会话），到顶或 `truncated` 即停止并在界面如实告知；不是服务端打包接口。
 
 ### 2.12 多端（事项 O / P）
 
@@ -408,7 +440,7 @@
 
 ## 6. 未验证登记（如实）
 
-1. **P2c-1 / P2c-2 / P2c-3 已交付**（见 §0 交付记录）；**其余批次（P2c-4 / P2c-5 / P2c-6）尚未实现**（未验证）。
+1. **P2c-1 / P2c-2 / P2c-3 / P2c-4 已交付**（见 §0 交付记录）；**其余批次（P2c-5 / P2c-6）尚未实现**（未验证）。
 2. **反代下 SSE 缓冲**未实测（P2b §6-2 同项）；**长连接资源画像**未压测。
 3. **Electron（桌面端）下 `fetch` 流式读与 CSP** 未核对（§0 事实 18；P2c-5 核对项）。
 4. **`container.logs()` 有界读取在超长输出下的行为**（内存 / 截断点）：**常规输出已由真容器用例覆盖**（P2c-3）；
@@ -417,8 +449,8 @@
 6. **内容级回传对帧体积与熔断触达率的影响**未量化（§5-3 参数须在 staging 校准）。
 7. **PWA 现状无对话能力**（§0 事实 17）⇒「PWA 消费流」实为新建面板，工作量按新建计（不得读作"接一下流"）。
 8. **调研来源更正**（C/E/G 实为 OpenWorkBuddy、G 数字未复现）已按 2026-09-13 回填写入 §2.14；引用不得混用。
-9. **一键重做的可用边界**：原始参数不落库（`redact_message_content` 只落摘要）⇒ **跨页 / 刷新后不可重建**（已定为产品口径，非缺陷）；「页面内持有原件」的前端判定与降级提示**未实现未实测**。
-10. **物理删除的引用图为静态核对**（[013](file:///d:/徐徐AI学习/公司工作台/migrations/013_run_records.sql#L1) / [023](file:///d:/徐徐AI学习/公司工作台/migrations/023_conversational_agent.sql#L30-L45) / [027](file:///d:/徐徐AI学习/公司工作台/migrations/027_dsh_tool_execution.sql#L107-L133) / [036](file:///d:/徐徐AI学习/公司工作台/migrations/036_conversation_stream.sql#L17-L55)）——**尚无真库级联实测**；实现前须在测试库跑通「删除 → 各表计数 → 复删幂等」。
+9. **一键重做的可用边界**：原始参数不落库（`redact_message_content` 只落摘要）⇒ **跨页 / 刷新后不可重建**（已定为产品口径，非缺陷）；「页面内持有原件」的前端判定与降级提示**已实现并组件级取证**（`unmet` + 无原件 ⇒ 降级提示；有原件 ⇒ 新幂等键重发），**真实运行数据下的端到端留 staging**。
+10. **物理删除的引用图**：静态核对（[013](file:///d:/徐徐AI学习/公司工作台/migrations/013_run_records.sql#L1) / [023](file:///d:/徐徐AI学习/公司工作台/migrations/023_conversational_agent.sql#L30-L45) / [027](file:///d:/徐徐AI学习/公司工作台/migrations/027_dsh_tool_execution.sql#L107-L133) / [036](file:///d:/徐徐AI学习/公司工作台/migrations/036_conversation_stream.sql#L17-L55)）**已在真库跑通**（P2c-4：`tests/test_conversation_lifecycle_postgres.py` ⇒ 删除 → 各表计数 → 复删幂等 → 保留项仍在）；**「幂等行引用消息行」的复合外键正是「先删幂等行」的实测依据**。
 11. **成员并发发言 / 并发执行**的资源画像未压测（P2c-6 开工前登记）。
 12. **消息 `sender_id` 存量为 `NULL` 的展示回退**未实测（P2c-6）。
 

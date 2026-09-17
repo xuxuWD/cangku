@@ -6,10 +6,12 @@ P1 使用确定性桩回复，不接真实模型、不执行任何工具（D7）
 
 from .models import (
     CONVERSING_ROLES,
+    DEFAULT_MODE,
     VIEW_ANY_ROLES,
     Conversation,
     ConversationError,
     ConversationMessage,
+    ConversationMode,
     ConversationNotFound,
     ConversationStateConflict,
     ConversationStatus,
@@ -19,9 +21,12 @@ from .models import (
     ensure_can_converse,
     ensure_can_modify,
     ensure_can_view,
+    normalize_mode,
 )
 from .service import STUB_REPLY_TEXT, ConversationService, build_stub_reply
 from .store import (
+    ConversationDeletion,
+    ConversationExportPage,
     ConversationStore,
     InMemoryConversationStore,
     PostgresConversationStore,
@@ -29,10 +34,14 @@ from .store import (
 
 __all__ = [
     "CONVERSING_ROLES",
+    "DEFAULT_MODE",
     "VIEW_ANY_ROLES",
     "Conversation",
+    "ConversationDeletion",
     "ConversationError",
+    "ConversationExportPage",
     "ConversationMessage",
+    "ConversationMode",
     "ConversationNotFound",
     "ConversationService",
     "ConversationStateConflict",
@@ -48,4 +57,5 @@ __all__ = [
     "ensure_can_converse",
     "ensure_can_modify",
     "ensure_can_view",
+    "normalize_mode",
 ]

@@ -1,10 +1,15 @@
 import { conversationErrorFromStatus } from './state'
 import type {
   Conversation,
+  ConversationDeletionResult,
   ConversationDetail,
+  ConversationExportPage,
   ConversationList,
+  ConversationMode,
   MessageCreateResponse,
+  RunAcceptance,
 } from './types'
+import { EXPORT_MAX_PAGES, EXPORT_PAGE_SIZE } from './types'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1').replace(/\/$/, '')
 
@@ -124,4 +129,62 @@ export async function sendConversationMessageStream(
   const body = await response.json() as MessageCreateResponse
   const runId = response.headers?.get?.('X-Stream-Run-Id') ?? body.run_id ?? null
   return { body, runId }
+}
+
+// ---------------------------------------------------------------- P2c-4（模式 / 导出 / 物理删除 / 结构判定）
+
+/** 改每会话模式（仅本人；他人 / 跨租户 404、归档 409、非法取值 422）。 */
+export function setConversationMode(conversationId: string, mode: ConversationMode): Promise<Conversation> {
+  return request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/mode`, {
+    method: 'POST',
+    body: JSON.stringify({ mode }),
+  })
+}
+
+/** **物理删除**本人会话的内容行（同步、幂等）：删除后列表 / 详情 / 流 / 发消息一律 404。 */
+export function deleteConversation(conversationId: string): Promise<ConversationDeletionResult> {
+  return request<ConversationDeletionResult>(`/conversations/${encodeURIComponent(conversationId)}/delete`, {
+    method: 'POST',
+  })
+}
+
+/** 取一页导出数据（页单位 = 会话；服务端 500/页、条目上限 5 万）。 */
+export function exportMyConversationsPage(offset: number): Promise<ConversationExportPage> {
+  const query = new URLSearchParams({ limit: String(EXPORT_PAGE_SIZE), offset: String(offset) })
+  return request<ConversationExportPage>(`/conversations/exports/mine?${query.toString()}`)
+}
+
+export interface ConversationExportBundle {
+  pages: ConversationExportPage[]
+  /** 客户端合并是否在服务端上限前停止（页数上限或服务端如实告知截断）。 */
+  truncated: boolean
+}
+
+/**
+ * 导出本人全部会话数据：**逐页拉取并合并**（客户端循环，上限 = 服务端上限口径 100 页 × 500）。
+ * 到顶或服务端 `truncated` 即停止 —— 界面据 `truncated` **如实告知**未取全，不静默截断。
+ */
+export async function exportMyConversations(): Promise<ConversationExportBundle> {
+  const pages: ConversationExportPage[] = []
+  let offset = 0
+  let fetched = 0
+  let truncated = false
+  for (let page = 0; page < EXPORT_MAX_PAGES; page += 1) {
+    const data = await exportMyConversationsPage(offset)
+    pages.push(data)
+    fetched += Array.isArray(data.conversations) ? data.conversations.length : 0
+    offset += EXPORT_PAGE_SIZE
+    if (data.truncated) {
+      truncated = true
+      break
+    }
+    // 取全即停；空页也停（防止服务端异常导致死循环）。
+    if (fetched >= (data.total_conversations ?? 0) || (data.conversations ?? []).length === 0) break
+  }
+  return { pages, truncated }
+}
+
+/** 运行结构判定（纯读；服务端不调模型、不改运行状态）。 */
+export function getRunAcceptance(runId: string): Promise<RunAcceptance> {
+  return request<RunAcceptance>(`/runs/${encodeURIComponent(runId)}/acceptance`)
 }

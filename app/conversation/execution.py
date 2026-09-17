@@ -46,10 +46,14 @@ from ..tool_execution.errors import ToolExecutionConfigError, ToolExecutionError
 from ..tool_execution.file_ops import CHANGE_KINDS, bounded_changes
 from ..tool_execution.params import path_param_names
 from ..tool_execution.service import ToolExecutionRequest
-from ..workforce.models import needs_approval
+from ..workforce.models import APPROVAL_FOR_ALL, needs_approval
 from .idempotency import ExecutionIdempotencyRecord
 from .models import (
+    MODE_ASK_REJECTION_MESSAGE,
+    MODE_ASK_REJECTION_REASON,
     ConversationMessage,
+    ConversationMode,
+    ConversationNotFound,
     InvalidConversation,
     MessageRole,
     normalize_content,
@@ -242,9 +246,24 @@ class ConversationExecutionService:
         if existing is not None:
             return self._rebuild(context, conversation_id, existing)
 
+        # P2c-4 §2.9：`ask` = 只问答 ⇒ **拒绝一切真实执行**（发起处）——fail-closed：
+        # 不创建承载任务 / 运行 / 消息；按 §4.1.3 四态口径落 `rejected` 幂等行（重放同码同文案）。
+        if conversation.mode is ConversationMode.ASK:
+            self._record_mode_rejection(context, conversation)
+            self._remember(
+                context, conversation_id, idempotency_key,
+                outcome="rejected", http_status=409,
+                message_id=None, run_id=None, approval_id=None,
+            )
+            raise ConversationExecutionError(MODE_ASK_REJECTION_MESSAGE, http_status=409)
+
         # agent_key 校验收紧（执行入口）：存在且启用，否则 422；同时取回治理两字段。
         governance = self._governance(context, conversation)
         autonomy_level, risk_threshold = governance
+        # P2c-4 §2.9：`plan` = 先计划后执行 ⇒ **强制待批**（合成取更严）——等价 `approval_for_all`
+        # 并经**唯一判定入口** `needs_approval` 生效（不另造判定；`critical` 仍仅 CEO / 超管可发起）。
+        if conversation.mode is ConversationMode.PLAN:
+            autonomy_level = APPROVAL_FOR_ALL
 
         invocation = self._resolve(content)
         if invocation is None:
@@ -472,6 +491,54 @@ class ConversationExecutionService:
             message_id=None, run_id=run_id, approval_id=None,
         )
         raise ConversationExecutionError(str(exc) or "执行被拒绝", http_status=exc.http_status) from exc
+
+    # ------------------------------------------------------------------ P2c-4 模式判定（推进处）
+
+    def ensure_resume_allowed(self, context: UserContext, run_id: str) -> None:
+        """**推进处**（审批决议后重跑）的模式判定：会话为 `ask` 时一律拒绝（fail-closed）。
+
+        运行经**幂等行**反查会话（`find_by_run`，与 P2c-2 的推进帧同源）：
+          * 无幂等行 / 未知会话（非对话触发的运行、或会话内容已物理删除）⇒ **不拦截**（已知边界，见契约）；
+          * 查得会话且模式为 `ask` ⇒ 写审计 `conversation.execution.rejected` 并抛 `409`
+            （**决议整体拒绝**：调用方须在落决议前调用本方法，宁可拒绝决议也不产生悬挂授权位）；
+          * **校验本身失败**（读幂等 / 读会话异常）⇒ `503` fail-closed（不猜测、不放行）。
+        """
+        if self.idempotency is None:
+            return
+        try:
+            record = self.idempotency.find_by_run(context.tenant_id, run_id)
+        except Exception as exc:  # noqa: BLE001 - 校验不可用一律 fail-closed（不放行）
+            raise ConversationExecutionError("审批前校验暂时不可用，请稍后重试", http_status=503) from exc
+        conversation_id = getattr(record, "conversation_id", None)
+        if not conversation_id:
+            return
+        try:
+            conversation = self.conversation_store.get_conversation(context, conversation_id)
+        except ConversationNotFound:
+            return
+        except Exception as exc:  # noqa: BLE001 - 同上：校验失败不放行
+            raise ConversationExecutionError("审批前校验暂时不可用，请稍后重试", http_status=503) from exc
+        if conversation.mode is not ConversationMode.ASK:
+            return
+        self._record_mode_rejection(context, conversation)
+        raise ConversationExecutionError(MODE_ASK_REJECTION_MESSAGE, http_status=409)
+
+    def _record_mode_rejection(self, context: UserContext, conversation) -> None:
+        """`ask` 模式拒绝执行的审计（受控键：会话号 / 模式 / 受控原因，**不落正文**）。"""
+        if self.audit is None:
+            return
+        self.audit.record(
+            AuditAction.CONVERSATION_EXECUTION_REJECTED,
+            tenant_id=context.tenant_id,
+            actor_id=context.user_id,
+            target_type="conversation",
+            target_id=conversation.conversation_id,
+            detail={
+                "conversation_id": conversation.conversation_id,
+                "mode": ConversationMode.ASK.value,
+                "reason": MODE_ASK_REJECTION_REASON,
+            },
+        )
 
     # ------------------------------------------------------------------ P2b 流帧写入（视图，失败只降级）
 

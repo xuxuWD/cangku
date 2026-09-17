@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
-import { createAgent, createRole, listAgents, listCandidates, listRoles, readAgentConfig, updateAgent, updateAgentConfig, updateRole } from './api'
+import { createAgent, createRole, listAgents, listCandidates, listModelCandidates, readAgentConfig, readToolCatalog, listRoles, updateAgent, updateAgentConfig, updateRole } from './api'
 import { asDirectoryError, initialDirectoryState } from './state'
 import { formatLocalTime } from '../../utils/time'
 import {
@@ -15,12 +15,18 @@ import {
   MAX_SHORT_TERM_TURNS,
   MAX_SYSTEM_PROMPT_LENGTH,
   MIN_APPROVAL_TIMEOUT_MINUTES,
+  MODEL_EMPTY_LABEL,
+  MODEL_NOT_REGISTERED_REASON,
   RISK_THRESHOLD_LABELS,
+  TOOL_NOT_IN_GATE_REASON,
+  TOOL_UNKNOWN_REASON,
   directoryStatusLabel,
   type AgentConfig,
   type AgentConfigUpdate,
   type DirectoryErrorShape,
   type DirectoryState,
+  type ToolCatalog,
+  type ToolCatalogItem,
 } from './types'
 
 type EditTarget = { kind: 'role' | 'agent'; key: string; name: string; description: string; role_key: string }
@@ -33,13 +39,59 @@ interface AgentConfigForm {
   system_prompt: string
   model_key: string
   temperature: string
-  tool_allowlist: string
+  tool_allowlist: string[]
   short_term_enabled: boolean
   short_term_turns: string
   autonomy_level: string
   risk_threshold: string
   approval_timeout_minutes: string
   daily_budget_yuan: string
+}
+
+/** 工具多选的一个可选项：目录项带风险档；闸门集合里的目录外键标 `planner`；两者皆非标 `unknown`。 */
+interface ToolOption {
+  key: string
+  selectable: boolean
+  reason: string | null
+  source: 'catalog' | 'planner' | 'unknown'
+  item: ToolCatalogItem | null
+}
+
+function buildToolOptions(catalog: ToolCatalog | null, selected: string[]): ToolOption[] {
+  if (!catalog) {
+    // 候选不可用 ⇒ 回落自由文本（不摆假选项）：仅按当前值原样呈现，保存以服务端为准。
+    return selected.map((key) => ({ key, selectable: true, reason: null, source: 'unknown' as const, item: null }))
+  }
+  const gate = new Set(catalog.allowlist)
+  const options: ToolOption[] = catalog.items.map((item) => ({
+    key: item.tool_key,
+    selectable: gate.has(item.tool_key),
+    reason: gate.has(item.tool_key) ? null : TOOL_NOT_IN_GATE_REASON,
+    source: 'catalog' as const,
+    item,
+  }))
+  const known = new Set(options.map((option) => option.key))
+  for (const key of catalog.allowlist) {
+    if (!known.has(key)) {
+      options.push({ key, selectable: true, reason: null, source: 'planner' as const, item: null })
+    }
+  }
+  // 当前值里既不在目录、也不在闸门集合内的键：灰显并给原因（保存会被后端 422 拒绝）。
+  for (const key of selected) {
+    if (!options.some((option) => option.key === key)) {
+      options.push({ key, selectable: false, reason: TOOL_UNKNOWN_REASON, source: 'unknown' as const, item: null })
+    }
+  }
+  return options
+}
+
+function toolOptionLabel(option: ToolOption): string {
+  if (option.item) {
+    const approval = option.item.requires_approval ? ' · 需审批' : ''
+    return `${option.key}（风险 ${option.item.risk_level}${approval}${option.item.has_side_effect ? ' · 有副作用' : ''}）`
+  }
+  if (option.source === 'planner') return `${option.key}（规划器白名单）`
+  return option.key
 }
 
 function configToForm(config: AgentConfig): AgentConfigForm {
@@ -49,7 +101,7 @@ function configToForm(config: AgentConfig): AgentConfigForm {
     model_key: config.model_key,
     // 温度固定显示两位小数（0.2 → 0.20），与后端 NUMERIC(3,2) 口径一致。
     temperature: config.temperature.toFixed(2),
-    tool_allowlist: config.tool_allowlist.join(', '),
+    tool_allowlist: [...config.tool_allowlist],
     short_term_enabled: memory.short_term_enabled === true,
     short_term_turns: typeof memory.short_term_turns === 'number' ? String(memory.short_term_turns) : '0',
     autonomy_level: config.autonomy_level,
@@ -70,7 +122,7 @@ function buildConfigPayload(form: AgentConfigForm): AgentConfigUpdate | null {
     system_prompt: form.system_prompt,
     model_key: form.model_key.trim(),
     temperature,
-    tool_allowlist: form.tool_allowlist.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+    tool_allowlist: [...form.tool_allowlist].sort(),
     memory_policy: { short_term_enabled: form.short_term_enabled, short_term_turns: turns },
     autonomy_level: form.autonomy_level,
     risk_threshold: form.risk_threshold,
@@ -91,6 +143,10 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
   const [configLoading, setConfigLoading] = useState(false)
   const [configSaving, setConfigSaving] = useState(false)
   const [configError, setConfigError] = useState<DirectoryErrorShape | null>(null)
+  // P2c-4：两个只读候选端点（仅超管）。读取失败 ⇒ `null`：**回落自由文本**，不摆假选项。
+  const [modelKeys, setModelKeys] = useState<string[] | null>(null)
+  const [toolCatalog, setToolCatalog] = useState<ToolCatalog | null>(null)
+  const [candidateError, setCandidateError] = useState<DirectoryErrorShape | null>(null)
 
   const load = useCallback(async () => {
     setState((old) => ({ ...old, loading: true, error: null }))
@@ -102,7 +158,29 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
     }
   }, [])
 
+  // 候选端点独立加载：目录列表挂了不应连带把选择器变成假选项（各自失败各自降级）。
+  // 响应形态不完整（缺 items / allowlist）**一律按不可用处理**并回落自由文本，不猜测补默认值。
+  const loadCandidates = useCallback(async () => {
+    setCandidateError(null)
+    try {
+      const [models, catalog] = await Promise.all([listModelCandidates(), readToolCatalog()])
+      if (!Array.isArray(models?.items) || !Array.isArray(catalog?.items) || !Array.isArray(catalog?.allowlist)) {
+        setModelKeys(null)
+        setToolCatalog(null)
+        setCandidateError({ status: 0, message: '候选端点返回的数据形态不完整，已回落自由文本输入。', retryable: true })
+        return
+      }
+      setModelKeys(models.items.filter((key): key is string => typeof key === 'string' && key.trim() !== ''))
+      setToolCatalog(catalog)
+    } catch (error) {
+      setModelKeys(null)
+      setToolCatalog(null)
+      setCandidateError(asDirectoryError(error))
+    }
+  }, [])
+
   useEffect(() => { void load() }, [load])
+  useEffect(() => { void loadCandidates() }, [loadCandidates])
 
   // 写操作统一走这里：成功→刷新列表并提示；失败→只把错误显示在表单区，不动已加载的列表。
   const submit = useCallback(async (operation: () => Promise<unknown>, success: string, reset?: () => void) => {
@@ -300,6 +378,10 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
                   loading={configLoading}
                   saving={configSaving}
                   error={configError}
+                  modelKeys={modelKeys}
+                  toolCatalog={toolCatalog}
+                  candidateError={candidateError}
+                  onReloadCandidates={() => void loadCandidates()}
                   onChange={setConfigForm}
                   onSave={() => void saveConfig()}
                   onClose={() => { setConfigTarget(null); setConfigError(null) }}
@@ -333,6 +415,10 @@ function AgentConfigEditor({
   loading,
   saving,
   error,
+  modelKeys,
+  toolCatalog,
+  candidateError,
+  onReloadCandidates,
   onChange,
   onSave,
   onClose,
@@ -344,10 +430,18 @@ function AgentConfigEditor({
   loading: boolean
   saving: boolean
   error: DirectoryErrorShape | null
+  /** P2c-4：模型候选键（`null` = 候选不可用 ⇒ 回落自由文本）。 */
+  modelKeys: string[] | null
+  /** P2c-4：工具目录 + 保存闸门（`null` = 候选不可用 ⇒ 回落自由文本）。 */
+  toolCatalog: ToolCatalog | null
+  candidateError: DirectoryErrorShape | null
+  onReloadCandidates: () => void
   onChange: (form: AgentConfigForm) => void
   onSave: () => void
   onClose: () => void
 }) {
+  const toolOptions = form ? buildToolOptions(toolCatalog, form.tool_allowlist) : []
+  const blockedTools = toolOptions.filter((option) => !option.selectable && form?.tool_allowlist.includes(option.key))
   return (
     <div className="ws-row ws-row--config">
       <div className="ws-row-main">
@@ -381,10 +475,32 @@ function AgentConfigEditor({
 
             <label className="ws-field">
               模型键
-              <input aria-label="模型键" value={form.model_key} placeholder="须在模型网关注册" onChange={(event) => onChange({ ...form, model_key: event.target.value })} />
-              {form.model_key.trim() === ''
-                ? <small className="ws-field-hint">当前为「{EMPTY_MODEL_KEY_LABEL}」。</small>
-                : <small className="ws-field-hint">不在模型网关候选内的键会被后端拒绝（422）。</small>}
+              {modelKeys ? (
+                <>
+                  <select aria-label="模型键" value={form.model_key} onChange={(event) => onChange({ ...form, model_key: event.target.value })}>
+                    <option value="">{modelKeys.length === 0 ? MODEL_EMPTY_LABEL : `（默认模型）`}</option>
+                    {modelKeys.map((key) => <option value={key} key={key}>{key}</option>)}
+                    {form.model_key.trim() !== '' && !modelKeys.includes(form.model_key) && (
+                      <option value={form.model_key} disabled>
+                        {form.model_key}（不可用：{MODEL_NOT_REGISTERED_REASON}）
+                      </option>
+                    )}
+                  </select>
+                  <small className="ws-field-hint">
+                    {modelKeys.length === 0
+                      ? '本部署未注册任何模型键（模型由配置注入）：只能使用默认模型；留空即默认。'
+                      : `候选 ${modelKeys.length} 个，来自模型网关注册键（与保存闸门同源）；不在候选内的键会被后端拒绝（422）。`}
+                  </small>
+                </>
+              ) : (
+                <>
+                  <input aria-label="模型键" value={form.model_key} placeholder="须在模型网关注册" onChange={(event) => onChange({ ...form, model_key: event.target.value })} />
+                  <small className="ws-field-hint">
+                    候选端点不可用（{candidateError?.message ?? '读取失败'}）⇒ 已回落自由文本；
+                    {form.model_key.trim() === '' ? `当前为「${EMPTY_MODEL_KEY_LABEL}」。` : '不在模型网关候选内的键会被后端拒绝（422）。'}
+                  </small>
+                </>
+              )}
             </label>
 
             <label className="ws-field">
@@ -393,11 +509,75 @@ function AgentConfigEditor({
               <small className="ws-field-hint">取值范围 0.00–2.00，步进 0.05。</small>
             </label>
 
-            <label className="ws-field ws-field--wide">
-              工具白名单
-              <input aria-label="工具白名单" value={form.tool_allowlist} placeholder="逗号分隔；留空表示不使用任何工具" onChange={(event) => onChange({ ...form, tool_allowlist: event.target.value })} />
-              <small className="ws-field-hint">P1 不会执行任何工具，白名单只存不用；白名单外的工具会被后端拒绝（422）。</small>
-            </label>
+            <fieldset className="ws-field ws-field--wide ws-fieldset">
+              <legend>工具白名单</legend>
+              {toolCatalog ? (
+                <>
+                  <div className="ws-tool-list" role="group" aria-label="工具白名单多选">
+                    {toolOptions.map((option) => {
+                      const checked = form.tool_allowlist.includes(option.key)
+                      return (
+                        <label className={`ws-check ws-tool-option ${option.selectable ? '' : 'is-disabled'}`} key={option.key}>
+                          <input
+                            type="checkbox"
+                            aria-label={`工具 ${option.key}`}
+                            checked={checked}
+                            disabled={!option.selectable}
+                            onChange={(event) => onChange({
+                              ...form,
+                              tool_allowlist: event.target.checked
+                                ? [...form.tool_allowlist, option.key].sort()
+                                : form.tool_allowlist.filter((item) => item !== option.key),
+                            })}
+                          />
+                          <span>{toolOptionLabel(option)}</span>
+                          {!option.selectable && <small className="ws-field-hint">{option.reason}</small>}
+                        </label>
+                      )
+                    })}
+                  </div>
+                  <small className="ws-field-hint">
+                    勾选项来自「执行工具目录」；能保存的键以「规划器工具白名单」（保存闸门）为准——
+                    不在其中的目录项已灰显并给出原因，保存仍由服务端校验（非法键 422）。
+                  </small>
+                  {blockedTools.length > 0 && (
+                    <div className="notice" role="status">
+                      <div>
+                        <strong>当前配置含不可用工具（{blockedTools.length} 项）</strong>
+                        <p>这些键不在保存闸门内，直接保存会被后端拒绝（422）。</p>
+                      </div>
+                      <button
+                        className="text-action"
+                        type="button"
+                        onClick={() => onChange({
+                          ...form,
+                          tool_allowlist: form.tool_allowlist.filter(
+                            (item) => !blockedTools.some((option) => option.key === item),
+                          ),
+                        })}
+                      >
+                        移除不可用工具
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <input
+                    aria-label="工具白名单"
+                    value={form.tool_allowlist.join(', ')}
+                    placeholder="逗号分隔；留空表示不使用任何工具"
+                    onChange={(event) => onChange({
+                      ...form,
+                      tool_allowlist: event.target.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+                    })}
+                  />
+                  <small className="ws-field-hint">
+                    工具目录端点不可用（{candidateError?.message ?? '读取失败'}）⇒ 已回落自由文本；白名单外的工具会被后端拒绝（422）。
+                  </small>
+                </>
+              )}
+            </fieldset>
 
             <label className="ws-field">
               短期记忆

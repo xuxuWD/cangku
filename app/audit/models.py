@@ -111,6 +111,12 @@ class AuditAction(StrEnum):
     # P2b 实时流（真源 specs/2026-09-17-realtime-stream-p2b-design.md §1.4）：
     # 熔断 / 写失败 / 悬挂兜底的治理事件；明细只记 `reason`（受控枚举）+ `run_id`。
     CONVERSATION_STREAM_UNAVAILABLE = "conversation.stream.unavailable"
+    # P2c-4（真源 specs/2026-09-17-frontend-interaction-p2c-design.md §2.9 / §2.11）：
+    # 模式变更 / 导出 / 物理删除 / `ask` 模式拒绝执行；明细只记受控枚举与计数，**不落正文**。
+    CONVERSATION_MODE_CHANGED = "conversation.mode.changed"
+    CONVERSATION_EXPORTED = "conversation.exported"
+    CONVERSATION_DELETED = "conversation.deleted"
+    CONVERSATION_EXECUTION_REJECTED = "conversation.execution.rejected"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -198,6 +204,16 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "recomputed_count",
         "create_opportunity",
         "model_key",
+        # P2c-4（会话模式 / 导出 / 物理删除）：模式为受控枚举、计数为整数，**均不含正文**。
+        "from_mode",
+        "to_mode",
+        "mode",
+        "conversation_count",
+        "message_count",
+        "frame_count",
+        "stream_state_count",
+        "idempotency_count",
+        "truncated",
     }
 )
 

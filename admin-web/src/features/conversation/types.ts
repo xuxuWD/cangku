@@ -4,12 +4,16 @@ import { RUN_EVENT_LABELS } from '../runDetail/types'
 
 export type ConversationStatus = 'active' | 'archived'
 export type ConversationRole = 'user' | 'assistant' | 'tool' | 'system'
+/** 每会话模式（P2c-4 §2.9，与后端受控枚举逐字一致：`ask` / `plan` / `goal` / `craft`）。 */
+export type ConversationMode = 'ask' | 'plan' | 'goal' | 'craft'
 
 export interface Conversation {
   conversation_id: string
   agent_key: string | null
   title: string
   status: string
+  /** P2c-4 只增字段：默认 `craft`（＝改造前行为）。 */
+  mode: ConversationMode
   created_at: string | null
   updated_at: string | null
 }
@@ -118,6 +122,25 @@ export const CONVERSATION_STATUS_LABELS: Record<ConversationStatus, string> = {
   archived: '已归档',
 }
 
+// 模式中文标签与提示（文案只描述服务端已定义的行为，不承诺额外能力）。
+export const CONVERSATION_MODE_LABELS: Record<ConversationMode, string> = {
+  ask: '只问答',
+  plan: '先计划后执行',
+  goal: '目标驱动',
+  craft: '完整执行',
+}
+
+export const CONVERSATION_MODE_HINTS: Record<ConversationMode, string> = {
+  ask: '只问答：服务端会拒绝一切真实执行（纯文本问答仍可用）。',
+  plan: '先计划后执行：真实调用一律先落待审批（等价「一律审批」）。',
+  goal: '目标驱动：执行照常，按数字员工的自治等级判定是否需要审批。',
+  craft: '完整执行（默认）：与改造前行为一致，按自治等级判定是否需要审批。',
+}
+
+export function conversationModeLabel(mode: string): string {
+  return CONVERSATION_MODE_LABELS[mode as ConversationMode] ?? mode
+}
+
 // 取不到标签时回落显示原值，避免出现空白。
 export function conversationStatusLabel(status: string): string {
   return CONVERSATION_STATUS_LABELS[status as ConversationStatus] ?? status
@@ -144,3 +167,48 @@ export function formatMessageTime(value: string | null): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
+
+// ---------------------------------------------------------------- P2c-4（模式 / 导出 / 物理删除 / 结构判定）
+
+/**
+ * 运行**结构判定**（P2c-4 §2.5）：三条件全满足 ⇒ `met`。判定由**服务端**给出，
+ * 前端只渲染结论与三个 `checks`，不自行复算规则。
+ */
+export interface RunAcceptance {
+  run_id: string
+  verdict: 'met' | 'unmet'
+  checks: { steps_complete: boolean; no_pending_approvals: boolean; finish_reason_ok: boolean }
+  steps: { completed: number; total: number }
+  pending_approvals: number
+  finish_reason: string | null
+  status: string
+}
+
+export interface ExportConversation extends Conversation {
+  messages: Array<Omit<ConversationMessage, 'conversation_id'>>
+  messages_total: number
+}
+
+export interface ConversationExportPage {
+  exported_at: string
+  limit: number
+  offset: number
+  conversations: ExportConversation[]
+  total_conversations: number
+  total_messages: number
+  truncated: boolean
+  limit_reason: string | null
+}
+
+export interface ConversationDeletionResult {
+  conversation_id: string
+  deleted: boolean
+  message_count: number
+  frame_count: number
+  stream_state_count: number
+  idempotency_count: number
+}
+
+// 与服务端一致：每页 500 会话；客户端最多合并 100 页（= 服务端 5 万条上限口径）。
+export const EXPORT_PAGE_SIZE = 500
+export const EXPORT_MAX_PAGES = 100

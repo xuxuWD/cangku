@@ -1,4 +1,5 @@
 import type { RunStream } from '../conversation/useRunStream'
+import { conversationModeLabel } from '../conversation/types'
 import type { RunApproval } from '../runDetail/types'
 import { finishReasonLabel, runStatusLabel } from '../runDetail/types'
 import { formatLocalTime } from '../../utils/time'
@@ -6,22 +7,49 @@ import { ApprovalCard } from './ApprovalCard'
 import { ArtifactPanel } from './ArtifactPanel'
 import { ProcessTimeline } from './ProcessTimeline'
 import { FileDiffPanel, TerminalOutputPanel } from './ToolOutputPanels'
+import type { RunAcceptanceState } from './useRunAcceptance'
 import type { RunApprovalsState } from './useRunApprovals'
 import type { RunArtifactsState } from './useRunArtifacts'
 import type { RunOverviewState } from './useRunOverview'
 
-/** 收尾检查（**展示型**）：只标记「已完成 / 未完成」，不改变运行状态、不强制退回（§2.5）。 */
-function WrapUpCheck({ metrics, approvals }: { metrics: NonNullable<RunOverviewState['metrics']>; approvals: RunApproval[] }) {
+/**
+ * 收尾检查（P2c-4 §2.5）：运行终态后展示「进度档 + 未决审批 + 结束原因 + 会话模式 + 产物数」，
+ * 并给出**服务端的结构判定结论「达标 / 未达标」**（三条件全满足＝达标）。
+ *
+ * 纪律：判定由服务端给出（**不调模型、不改运行状态**），前端只渲染结论与分项、**不自行复算**；
+ * 未达标时提供**一键重做**——仅当本页仍持有原结构化调用时可用（新幂等键 = 一次新的正常调用，
+ * 与原运行无状态耦合）；原件已不在（刷新 / 跨页）时**如实告知**「请重新输入」，不假装能重放。
+ */
+function WrapUpCheck({
+  metrics,
+  approvals,
+  acceptance,
+  mode,
+  artifactCount,
+  redoAvailable,
+  onRedo,
+}: {
+  metrics: NonNullable<RunOverviewState['metrics']>
+  approvals: RunApproval[]
+  acceptance: RunAcceptanceState
+  mode: string | undefined
+  artifactCount: number
+  redoAvailable: boolean
+  onRedo?: () => void
+}) {
   const finished = metrics.status === 'completed' || metrics.status === 'failed' || Boolean(metrics.finished_at)
   if (!finished) return null
   const pending = approvals.filter((item) => item.status === 'pending').length
   const stepsDone = metrics.step_count === 0 || metrics.completed_step_count >= metrics.step_count
-  const complete = stepsDone && pending === 0 && metrics.status !== 'failed'
+  const verdict = acceptance.acceptance?.verdict ?? null
+  const badge = verdict === 'met' ? '达标' : verdict === 'unmet' ? '未达标' : '判定不可用'
+  const badgeClass = verdict === 'met' ? 'completed' : verdict === 'unmet' ? 'failed' : 'reviewing'
+  const unmet = verdict === 'unmet'
   return (
     <section className="history-panel stage-panel" aria-label="收尾检查">
       <div className="panel-header">
         <h2>收尾检查</h2>
-        <span className={`status-badge status-${complete ? 'completed' : 'failed'}`}>{complete ? '已完成' : '未完成'}</span>
+        <span className={`status-badge status-${badgeClass}`}>{badge}</span>
       </div>
       <div className="panel-body">
         <div className="run-detail__grid">
@@ -39,8 +67,58 @@ function WrapUpCheck({ metrics, approvals }: { metrics: NonNullable<RunOverviewS
             <span className="run-detail__label">结束原因</span>
             <span className="run-detail__value">{finishReasonLabel(metrics.finish_reason)}</span>
           </div>
+          <div className="run-detail__item">
+            <span className="run-detail__label">会话模式</span>
+            <span className="run-detail__value">{mode ? conversationModeLabel(mode) : '—'}</span>
+          </div>
+          <div className="run-detail__item">
+            <span className="run-detail__label">产物</span>
+            <span className="run-detail__value">{artifactCount} 项</span>
+          </div>
         </div>
-        <p className="stage-hint">只做展示，不改变运行状态（结构判定与一键重做在 P2c-4 提供）。</p>
+
+        {acceptance.loading && !acceptance.acceptance && (
+          <div className="loading-state" role="status"><span className="loading-dot" />正在读取结构判定…</div>
+        )}
+        {acceptance.error && (
+          <div className="notice notice-error" role="alert">
+            <div><strong>结构判定读取失败</strong><p>{acceptance.error.message}</p></div>
+            {acceptance.error.retryable && (
+              <button className="text-action" type="button" onClick={acceptance.reload}>重新尝试</button>
+            )}
+          </div>
+        )}
+        {acceptance.acceptance && (
+          <p className="stage-hint">
+            结构判定（服务端只读运行字段，不调模型、不改运行状态）：步骤完成
+            {acceptance.acceptance.checks.steps_complete ? '✓' : '✗'} · 无未决审批
+            {acceptance.acceptance.checks.no_pending_approvals ? '✓' : '✗'} · 正常终态
+            {acceptance.acceptance.checks.finish_reason_ok ? '✓' : '✗'}
+          </p>
+        )}
+        {!acceptance.acceptance && !acceptance.loading && !acceptance.error && (
+          <p className="stage-hint">
+            未取得结构判定：{stepsDone && pending === 0 && metrics.status !== 'failed'
+              ? '本地展示口径看似完成，但判定以服务端为准（请重试读取）。'
+              : '未达标迹象已出现，判定以服务端为准（请重试读取）。'}
+          </p>
+        )}
+
+        {unmet && redoAvailable && onRedo && (
+          <>
+            <div className="panel-body">
+              <button className="button" type="button" onClick={onRedo}>一键重做</button>
+            </div>
+            <p className="stage-hint">
+              重做 = 以「新幂等键」重发本页仍持有的原结构化调用（新的运行，不改动原运行）；判定与重做都不会自动重跑。
+            </p>
+          </>
+        )}
+        {unmet && !redoAvailable && (
+          <p className="stage-hint">
+            未达标：原始参数未留存（安全口径，消息只落脱敏摘要），已无法一键重放——请重新输入调用后再次发送。
+          </p>
+        )}
       </div>
     </section>
   )
@@ -58,6 +136,10 @@ export function StagePanel({
   overview,
   approvals,
   artifacts,
+  acceptance,
+  mode,
+  redoAvailable = false,
+  onRedo,
   canDecide,
   expanded = false,
   onOpenRunDetail,
@@ -68,6 +150,13 @@ export function StagePanel({
   approvals: RunApprovalsState
   /** 产物登记（P2c-3；由页面的 `useRunArtifacts` 提供，纯展示）。 */
   artifacts: RunArtifactsState
+  /** 结构判定（P2c-4；由页面的 `useRunAcceptance` 提供，纯展示）。 */
+  acceptance: RunAcceptanceState
+  /** 会话模式（P2c-4；来自会话详情，纯展示）。 */
+  mode?: string
+  /** 一键重做是否可用（= 本页仍持有原结构化调用；刷新 / 跨页后不可用）。 */
+  redoAvailable?: boolean
+  onRedo?: () => void
   canDecide: boolean
   /** 窄屏抽屉是否展开（宽屏由 CSS 强制展示该面板）。 */
   expanded?: boolean
@@ -142,7 +231,17 @@ export function StagePanel({
         )}
       </section>
 
-      {metrics && <WrapUpCheck metrics={metrics} approvals={approvals.items} />}
+      {metrics && (
+        <WrapUpCheck
+          metrics={metrics}
+          approvals={approvals.items}
+          acceptance={acceptance}
+          mode={mode}
+          artifactCount={artifacts.items.length}
+          redoAvailable={redoAvailable}
+          onRedo={onRedo}
+        />
+      )}
 
       <section className="history-panel stage-panel" aria-label="过程时间线">
         <div className="panel-header">

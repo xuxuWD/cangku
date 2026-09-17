@@ -69,6 +69,13 @@ class ExecutionIdempotencyStore(Protocol):
         """按运行号反查「该运行由哪次对话调用产生」（P2c-2：决议后推进需定位会话）。"""
         ...
 
+    def delete_for_conversation(self, tenant_id: str, conversation_id: str) -> int:
+        """P2c-4 物理删除：真删该会话**全部**幂等行（**必须先于消息行**：它同时引用消息行与会话行）。
+
+        幂等（重复调用返回 `0`）；只删本租户本会话的行。
+        """
+        ...
+
 
 class InMemoryExecutionIdempotencyStore:
     """开发 / 测试用内存实现；复合主键即去重机制（并发写收敛为首次行）。"""
@@ -121,6 +128,17 @@ class InMemoryExecutionIdempotencyStore:
                 record.idempotency_key,
             ),
         )[0]
+
+    def delete_for_conversation(self, tenant_id: str, conversation_id: str) -> int:
+        with self._lock:
+            keys = [
+                key
+                for key in self._items
+                if key[0] == tenant_id and key[2] == conversation_id
+            ]
+            for key in keys:
+                self._items.pop(key, None)
+            return len(keys)
 
 
 class PostgresExecutionIdempotencyStore:
@@ -236,6 +254,19 @@ class PostgresExecutionIdempotencyStore:
                 )
                 row = cursor.fetchone()
         return self._hydrate(row) if row is not None else None
+
+    def delete_for_conversation(self, tenant_id: str, conversation_id: str) -> int:
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        DELETE FROM workbench_execution_idempotency
+                        WHERE tenant_id = %s AND conversation_id = %s
+                        """,
+                        (tenant_id, str(conversation_id)),
+                    )
+                    return int(cursor.rowcount)
 
 
 def record_to_dict(record: ExecutionIdempotencyRecord) -> dict[str, object]:

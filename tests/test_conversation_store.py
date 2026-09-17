@@ -238,7 +238,10 @@ class RecordingConnection:
         return self.cursor_instance
 
 
-CONVERSATION_ROW = ("t-1", "conv-1", "content-writer", "u-1", "咨询", "active", None, None, None)
+# 表列口径与迁移 038 一致：`..., updated_at, mode, deleted_at`（软删行为 `None`）。
+CONVERSATION_ROW = (
+    "t-1", "conv-1", "content-writer", "u-1", "咨询", "active", None, None, None, "craft", None,
+)
 MESSAGE_ROW = ("t-1", "msg-1", "conv-1", "user", "你好", None, None, None)
 
 

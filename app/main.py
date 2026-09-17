@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store
+from .bootstrap import allowed_tool_names, build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store, registered_model_keys
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 # P5a CRM（真源 specs/2026-09-17-crm-p5a-design.md §2.12）：路由层只做校验 / 视图 / 异常映射。
@@ -59,11 +59,13 @@ from .settings import get_settings, resolve_cors_options, validate_runtime_setti
 from .runtime.authorization import ExecutionNotAuthorized
 from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable, RuntimeEventType
 from .tool_execution.errors import ToolExecutionError
+from .tool_execution.catalog import build_tool_spec_catalog
 from .tool_execution.active_execution import ActiveExecutionRegistry
 from .tool_execution.callback_guard import CallbackRateLimiter, shared_secret_matches
 from .tool_execution.token_binding import BindingDenied, TokenBindingStore
 from .tool_execution.cleanup import build_body_cleanup_task, build_orphan_cleanup_task
 from .runtime.policy import ApprovalRequired, PolicyDenied
+from .runtime.acceptance import evaluate_acceptance
 from .runtime.records import FinishReason, RunRecordNotFound
 from .runtime.service import RunAccessDenied, RunApprovalDenied
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
@@ -156,6 +158,7 @@ from .conversation import (
     InvalidConversation,
     MessageRole,
     ensure_can_converse,
+    normalize_mode,
 )
 from .conversation.execution import (
     ConversationExecutionError,
@@ -203,9 +206,6 @@ workforce_directory_service = WorkforceDirectoryService(
     task_store=store,
 )
 conversation_store = build_conversation_store(settings)
-conversation_service = build_conversation_service(
-    settings, store=conversation_store, audit=audit_service
-)
 # P3 记忆层（规格 docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md §2.5/§2.8）：
 # 嵌入式服务开发环境缺 default 时由装配层回退到 FakeEmbeddingAdapter（仅验证链路）。
 memory_service = build_memory_service(settings, audit=audit_service)
@@ -280,6 +280,14 @@ execution_idempotency_store = build_execution_idempotency_store(settings)
 conversation_stream_store = build_conversation_stream_store(settings)
 conversation_stream_writer = build_conversation_stream_writer(
     settings, store=conversation_stream_store, audit=audit_service
+)
+# P2c-4 §2.11：会话服务需要流 / 幂等仓储（物理删除的按序跨仓储清理）⇒ 在两者装配之后构造。
+conversation_service = build_conversation_service(
+    settings,
+    store=conversation_store,
+    audit=audit_service,
+    stream_store=conversation_stream_store,
+    idempotency_store=execution_idempotency_store,
 )
 conversation_execution_service = build_conversation_execution_service(
     settings,
@@ -1378,6 +1386,56 @@ def workforce_candidates(context: UserContext = Depends(current_user)) -> Workfo
     return WorkforceCandidatesView(roles=result["roles"], agents=result["agents"])
 
 
+# ------------------------------------------------------------ P2c-4 只读候选端点（**推翻契约 Y1**）
+
+
+def _require_model_catalog_admin(context: UserContext) -> None:
+    """模型 / 工具候选端点与员工配置面同权限：**仅 `super_admin`**（其他角色 `403`）。"""
+    if context.role != "super_admin":
+        raise HTTPException(status_code=403, detail="只有超级管理员可以读取模型与工具候选")
+
+
+@app.get("/api/v1/workforce/model-candidates")
+def workforce_model_candidates(context: UserContext = Depends(current_user)) -> dict[str, object]:
+    """模型候选键只读列表（P2c-4 §2.10）：与员工配置 `model_key` 的**保存闸门同源**。
+
+    只返回候选键（`registered_model_keys(settings)`），**不含** base_url / api_key 等任何凭据或内部地址；
+    候选为空 = 本部署未注册模型键（界面如实告知「只能使用默认模型」，不摆假候选）。
+    """
+    _require_model_catalog_admin(context)
+    keys = sorted(registered_model_keys(settings))
+    return {"items": keys, "total": len(keys)}
+
+
+@app.get("/api/v1/tools/catalog")
+def tool_catalog(context: UserContext = Depends(current_user)) -> dict[str, object]:
+    """工具目录 + 保存闸门集合（P2c-4 §2.10 · **推翻契约 Y1**）。
+
+    - `items` = **执行工具目录**（`ToolSpecCatalog`：工具键 / 风险档 / 是否需审批 / 是否有副作用 /
+      是否可逆 / 参数与参数角色）——只读元数据，**不含**参数取值、凭据或内部地址；
+    - `allowlist` = 员工配置 `tool_allowlist` 的**保存闸门集合**（`WORKBENCH_PLANNER_TOOLS` 声明的键）；
+      两个集合**不是同一批名字**，故如实分开返回；**后端校验不变**（不在闸门集合内的键保存仍 `422`）。
+    """
+    _require_model_catalog_admin(context)
+    catalog = build_tool_spec_catalog()
+    items = [
+        {
+            "tool_key": spec.key,
+            "risk_level": spec.risk_level.value,
+            "requires_approval": bool(spec.requires_approval),
+            "has_side_effect": bool(spec.has_side_effect),
+            "reversible": bool(spec.reversible),
+            "params": [
+                {"name": name, "role": spec.param_roles[name].value}
+                for name in sorted(spec.param_roles)
+            ],
+        }
+        for spec in catalog.specs
+    ]
+    allowlist = sorted(allowed_tool_names(settings))
+    return {"items": items, "allowlist": allowlist, "total": len(items)}
+
+
 # ------------------------------------------------------------ 对话层（P1，D7：桩回复）
 
 
@@ -1403,12 +1461,16 @@ def _conversation_status_query(value: str | None) -> str | None:
 
 
 class ConversationView(BaseModel):
-    """会话视图：刻意不含 `operator_id` 与 `dsh_session_id`（账号 PII 与内部映射不外泄）。"""
+    """会话视图：刻意不含 `operator_id` 与 `dsh_session_id`（账号 PII 与内部映射不外泄）。
+
+    P2c-4 **只增** `mode`（`ask` / `plan` / `goal` / `craft`，默认 `craft`）。
+    """
 
     conversation_id: str
     agent_key: str | None = None
     title: str
     status: str
+    mode: str = "craft"
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -1443,6 +1505,13 @@ class ConversationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_key: str | None = Field(default=None, max_length=64)
     title: str = Field(default="", max_length=120)
+
+
+class ConversationModeRequest(BaseModel):
+    """改模式请求体（P2c-4 §2.9）；取值受控枚举，未知字段 `extra=forbid` ⇒ `422`。"""
+
+    model_config = ConfigDict(extra="forbid")
+    mode: str = Field(min_length=1, max_length=16)
 
 
 class MessageCreateRequest(BaseModel):
@@ -1492,6 +1561,7 @@ def _conversation_view(conversation: Conversation) -> ConversationView:
         agent_key=conversation.agent_key,
         title=conversation.title,
         status=conversation.status.value,
+        mode=conversation.mode.value,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
@@ -1919,6 +1989,101 @@ def archive_conversation(
     except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
         _raise_conversation_http(exc)
     return _conversation_view(conversation)
+
+
+# ------------------------------------------------------------ P2c-4 模式 / 导出 / 物理删除
+
+
+@app.post("/api/v1/conversations/{conversation_id}/mode", response_model=ConversationView)
+def set_conversation_mode(
+    conversation_id: str,
+    payload: ConversationModeRequest,
+    context: UserContext = Depends(current_user),
+) -> ConversationView:
+    """改**每会话模式**（P2c-4 §2.9）：仅会话本人；他人 / 跨租户 `404`；归档 `409`；非法取值 `422`。
+
+    设为同一值 = **无副作用**（不写审计）；变更写审计 `conversation.mode.changed`（受控枚举）。
+    """
+    try:
+        ensure_can_converse(context)
+        normalize_mode(payload.mode)
+        conversation = conversation_service.set_conversation_mode(context, conversation_id, payload.mode)
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return _conversation_view(conversation)
+
+
+@app.get("/api/v1/conversations/exports/mine")
+def export_my_conversations(
+    limit: int = Query(default=500, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    """导出**本人**全部未删除会话（含归档）与消息（P2c-4 §2.11）：分页 + **条目上限如实告知**。
+
+    返回的是**库中实际存在的字段**（用户原始输入自 U23 起只落脱敏摘要，不是原文重放）；
+    **不含**他人数据、**不含**审计明细、**不含** `operator_id` / `dsh_session_id`。
+    超上限（`{会话数 + 消息数} > 50000`）⇒ `truncated=true` + `limit_reason="total_items_exceeded"`（不静默截断）。
+    """
+    try:
+        ensure_can_converse(context)
+        result = conversation_service.export_mine(context, limit=limit, offset=offset)
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return {
+        "exported_at": result.exported_at,
+        "limit": result.limit,
+        "offset": result.offset,
+        "conversations": [
+            {
+                **_conversation_view(conversation).model_dump(),
+                "messages": [_export_message_view(message) for message in messages],
+                "messages_total": len(messages),
+            }
+            for conversation, messages in result.conversations
+        ],
+        "total_conversations": result.total_conversations,
+        "total_messages": result.total_messages,
+        "truncated": result.truncated,
+        "limit_reason": result.limit_reason,
+    }
+
+
+@app.post("/api/v1/conversations/{conversation_id}/delete")
+def delete_conversation(
+    conversation_id: str, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    """**物理删除**本人会话的内容行（P2c-4 §2.11）：同步、幂等（复删 `200` + 计数全 0、不重复写审计）。
+
+    真删：幂等行 → 帧 → 流状态 → 消息（+ 会话行软删 / 标题清空）；**保留**运行 / 待批 / 审计 / 产物登记。
+    他人 / 跨租户 / 已删除会话 `404`（与「不存在」不可区分）。
+    """
+    try:
+        ensure_can_converse(context)
+        outcome = conversation_service.delete_conversation(context, conversation_id)
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return {
+        "conversation_id": outcome.conversation_id,
+        "deleted": outcome.deleted,
+        "message_count": outcome.message_count,
+        "frame_count": outcome.frame_count,
+        "stream_state_count": outcome.stream_state_count,
+        "idempotency_count": outcome.idempotency_count,
+    }
+
+
+def _export_message_view(message: ConversationMessage) -> dict[str, object]:
+    """导出条目里的消息视图：与 `MessageView` 同字段，**不含** `conversation_id`（父级即会话）。"""
+    return {
+        "message_id": message.message_id,
+        "role": message.role.value,
+        "content": message.content,
+        "stub": message.role == MessageRole.ASSISTANT,
+        "tool_name": message.tool_name,
+        "tool_call_id": message.tool_call_id,
+        "created_at": message.created_at,
+    }
 
 
 # ------------------------------------------------------------ P3 记忆层（规格 2026-09-15-memory-layer-p3-design.md §2）
@@ -3474,6 +3639,47 @@ def list_run_artifacts(
     }
 
 
+@app.get("/api/v1/runs/{run_id}/acceptance")
+def get_run_acceptance(run_id: str, context: UserContext = Depends(current_user)) -> dict[str, object]:
+    """运行**结构判定**（P2c-4 §2.5「自动验收」）：三条件全满足 ⇒ `met`，否则 `unmet`（如实）。
+
+    **纯读**：不调模型、不写库、不改运行状态。归属判定同运行接口（跨租户 / 不可见 / 未知运行 `404`）。
+    三条件：① 步骤全部完成 ② 无未决审批 ③ `finish_reason` 为正常终态（`run_completed`）。
+    """
+    try:
+        record = run_metrics_service.store.get(context.tenant_id, run_id)
+    except RunRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    try:
+        store.get(context, record.task_id)
+    except TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    try:
+        _key, _adapter, state = runtime_service.adapter_for_task(context, run_id)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    result = evaluate_acceptance(
+        status=record.status,
+        step_count=record.step_count,
+        completed_step_count=record.completed_step_count,
+        finish_reason=str(record.finish_reason) if record.finish_reason else None,
+        approval_statuses=tuple(state.approvals.values()),
+    )
+    return {
+        "run_id": run_id,
+        "verdict": result.verdict.value,
+        "checks": {
+            "steps_complete": result.steps_complete,
+            "no_pending_approvals": result.no_pending_approvals,
+            "finish_reason_ok": result.finish_reason_ok,
+        },
+        "steps": {"completed": result.completed_steps, "total": result.total_steps},
+        "pending_approvals": result.pending_approvals,
+        "finish_reason": result.finish_reason,
+        "status": result.status,
+    }
+
+
 @app.get("/api/v1/runs/{run_id}/metrics", response_model=RunMetricsView)
 def get_run_metrics(run_id: str, context: UserContext = Depends(current_user)) -> RunMetricsView:
     try:
@@ -3601,6 +3807,12 @@ def decide_run_approval(
     context: UserContext = Depends(current_user),
 ) -> dict[str, object]:
     """决议运行内的审批项；仅 CEO/超级管理员，且发起人不能自审。"""
+    # P2c-4 §2.9（推进处 fail-closed）：会话模式为 `ask` ⇒ **整体拒绝**（不落决议、不重跑）。
+    # 放在最前：宁可拒绝决议，也不产生「已批准但被模式挡住」的悬挂授权位。
+    try:
+        conversation_execution_service.ensure_resume_allowed(context, run_id)
+    except ConversationExecutionError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
     try:
         runtime_service.decide_approval(
             context, run_id, approval_id, payload.approved, source=RUN_APPROVAL_SOURCE

@@ -72,6 +72,40 @@ export interface DirectoryErrorShape {
   retryable: boolean
 }
 
+// --------------------------------------------------------------- P2c-4 只读候选端点（契约「模型 / 工具候选端点」）
+
+export interface ModelCandidates {
+  items: string[]
+  total: number
+}
+
+export interface ToolCatalogParam {
+  name: string
+  role: string
+}
+
+export interface ToolCatalogItem {
+  tool_key: string
+  risk_level: string
+  requires_approval: boolean
+  has_side_effect: boolean
+  reversible: boolean
+  params: ToolCatalogParam[]
+}
+
+export interface ToolCatalog {
+  items: ToolCatalogItem[]
+  /** 保存闸门集合（`WORKBENCH_PLANNER_TOOLS` 声明的键）：不在其中的键保存会被后端 422 拒绝。 */
+  allowlist: string[]
+  total: number
+}
+
+// 不可用原因（**受控文案**，与服务端口径一致；界面灰显并给原因，不改变后端校验）。
+export const TOOL_NOT_IN_GATE_REASON = '未在本部署的规划器工具白名单（WORKBENCH_PLANNER_TOOLS）中登记：勾选后保存会被后端拒绝（422）'
+export const TOOL_UNKNOWN_REASON = '不在执行工具目录、也不在规划器白名单内：保存会被后端拒绝（422）'
+export const MODEL_NOT_REGISTERED_REASON = '未在模型网关注册：保存会被后端拒绝（422）'
+export const MODEL_EMPTY_LABEL = '（默认模型：本部署未注册模型键）'
+
 export type DirectoryTab = 'roles' | 'agents'
 
 export interface DirectoryState {

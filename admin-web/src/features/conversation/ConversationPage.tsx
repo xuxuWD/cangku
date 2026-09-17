@@ -5,16 +5,20 @@ import { Toast } from '../../components/Toast'
 import { ApprovalCard } from '../stage/ApprovalCard'
 import { StagePanel } from '../stage/StagePanel'
 import { ArtifactChips } from '../stage/ArtifactChips'
+import { useRunAcceptance } from '../stage/useRunAcceptance'
 import { useRunArtifacts } from '../stage/useRunArtifacts'
 import { useRunApprovals } from '../stage/useRunApprovals'
 import { useRunOverview } from '../stage/useRunOverview'
 import {
   archiveConversation,
   createConversation,
+  deleteConversation,
+  exportMyConversations,
   getConversation,
   listConversations,
   sendConversationMessage,
   sendConversationMessageStream,
+  setConversationMode,
 } from './api'
 import { parseToolInvocation } from './invocation'
 import { ProcessBar } from './ProcessBar'
@@ -22,14 +26,18 @@ import { asConversationError, initialConversationState } from './state'
 import { useRunStream } from './useRunStream'
 import { useSlotVisible } from './useSlotVisible'
 import {
+  CONVERSATION_MODE_HINTS,
+  CONVERSATION_MODE_LABELS,
   CONVERSATION_PAGE_SIZE,
   MAX_MESSAGE_LENGTH,
   MESSAGE_PAGE_SIZE,
   STUB_NOTICE,
+  conversationModeLabel,
   conversationStatusLabel,
   conversationTitle,
   formatMessageTime,
   roleLabel,
+  type ConversationMode,
   type ConversationState,
   type ConversationStatus,
 } from './types'
@@ -39,6 +47,8 @@ const STATUS_FILTERS: Array<{ value: ConversationStatus | 'all'; label: string }
   { value: 'active', label: '进行中' },
   { value: 'archived', label: '已归档' },
 ]
+
+const MODE_OPTIONS: ConversationMode[] = ['craft', 'goal', 'plan', 'ask']
 
 // 每条消息生成一个新幂等键（§3.2 第四条）：同一键重放由服务端返回既有结果，
 // 因此重试/双击不会产生第二次真实执行。优先用 `crypto.randomUUID`，不可用时回落。
@@ -68,6 +78,12 @@ export function ConversationPage({
   const [terminalToken, setTerminalToken] = useState(0)
   // 窄屏时舞台折叠为抽屉（默认收起）；宽屏由 CSS 强制展示，按钮不可见。
   const [stageOpen, setStageOpen] = useState(false)
+  // P2c-4：模式切换 / 删除 / 导出各自独立忙碌位（互不阻塞；失败不改动已加载列表）。
+  const [modeSaving, setModeSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  // P2c-4 §2.5：**一键重做**仅当本页仍持有原结构化调用时可用（内存态，刷新即失；不落库）。
+  const [lastInvocation, setLastInvocation] = useState<string | null>(null)
 
   const rootRef = useRef<HTMLElement | null>(null)
   const messagesLimitRef = useRef(messagesLimit)
@@ -120,6 +136,8 @@ export function ConversationPage({
     setDraft('')
     setMessagesLimit(MESSAGE_PAGE_SIZE)
     setStreamRunId(undefined)
+    // P2c-4 §2.5：跨会话不携带「原结构化调用」（一键重做只在**本页当次**持有原件时可用）。
+    setLastInvocation(null)
     // P2c-2：进入会话即开启读端做**回放**（§2.3 打开（回放））——历史会话由此解析出
     // 「最新 run」（响应头 `X-Stream-Run-Id` / 帧内 `run_id`），运行概览与审批随之可用。
     setStreamActive(Boolean(conversationId))
@@ -165,6 +183,8 @@ export function ConversationPage({
   const approvals = useRunApprovals(effectiveRunId)
   // P2c-3：产物登记（运行级元数据；随运行终态重取——写文件的工具多在审批后推进才产出）。
   const artifacts = useRunArtifacts(effectiveRunId, terminalToken)
+  // P2c-4：结构判定（服务端只读端点；随终态与决议后重取——未决审批与推进都会改变结论）。
+  const acceptance = useRunAcceptance(effectiveRunId, terminalToken)
   const role = import.meta.env.VITE_USER_ROLE || 'super_admin'
   const canDecide = (role === 'ceo' || role === 'super_admin') && !overview.isInitiator
   const pendingApprovals = approvals.items.filter((item) => item.status === 'pending')
@@ -201,9 +221,12 @@ export function ConversationPage({
     }
   }
 
-  const send = async () => {
-    const content = draft.trim()
-    if (!conversationId || !canSend || !content) return
+  const send = async (override?: string) => {
+    // P2c-4 §2.5：`override` 只由**一键重做**传入（本页仍持有的原结构化调用原文）；
+    // 重做走的是同一条正常发送路径 + **新幂等键** ⇒ 一次全新的调用（新 run），不改动原运行。
+    const content = (override ?? draft).trim()
+    if (!conversationId || !content) return
+    if (!override && !canSend) return
     setState((old) => ({ ...old, sending: true, sendError: null, streamNotice: null }))
     try {
       const invocation = parseToolInvocation(content)
@@ -214,6 +237,8 @@ export function ConversationPage({
         setStreamActive(true)
         setRestartToken((value) => value + 1)
         const result = await sendConversationMessageStream(conversationId, content, newIdempotencyKey())
+        // 结构化调用原文只留在**本页内存**（供未达标时一键重做）；不落库、不进存储。
+        setLastInvocation(content)
         if (result.runId) {
           setStreamRunId(result.runId)
           setRestartToken((value) => value + 1)
@@ -235,7 +260,7 @@ export function ConversationPage({
         // 纯文本 ⇒ 不带键（桩路径：不写帧、无流、无副作用）。
         await sendConversationMessage(conversationId, content)
       }
-      setDraft('')
+      if (!override) setDraft('')
       // 服务端已确认落库；重取详情拿到真实顺序与最新总数，不做乐观拼接。
       const nextLimit = Math.max(messagesLimit, (state.detail?.messages_total ?? 0) + 2)
       setMessagesLimit(nextLimit)
@@ -244,6 +269,91 @@ export function ConversationPage({
       setState((old) => ({ ...old, sending: false, sendError: null }))
     } catch (error) {
       setState((old) => ({ ...old, sending: false, sendError: asConversationError(error) }))
+    }
+  }
+
+  // P2c-4 §2.9：改模式（仅本人）。失败只提示，**不做本地乐观更新**（服务端权威态回流）。
+  const changeMode = async (mode: ConversationMode) => {
+    if (!conversationId || modeSaving) return
+    if (state.detail?.mode === mode) return
+    setModeSaving(true)
+    try {
+      const updated = await setConversationMode(conversationId, mode)
+      setState((old) => ({
+        ...old,
+        detail: old.detail ? { ...old.detail, mode: updated.mode, updated_at: updated.updated_at } : old.detail,
+        toast: `已切换为「${conversationModeLabel(updated.mode)}」`,
+      }))
+      await loadList(state.statusFilter, state.listOffset)
+    } catch (error) {
+      setState((old) => ({ ...old, detailError: asConversationError(error) }))
+    } finally {
+      setModeSaving(false)
+    }
+  }
+
+  // P2c-4 §2.11：**物理删除**（不可撤销）——二次确认后才发请求；成功后清空选择并回列表。
+  const remove = async () => {
+    if (!conversationId || deleting) return
+    const confirmed = globalThis.confirm?.(
+      '删除后：本会话的消息、过程帧、流状态与幂等记录会被物理删除（不可撤销，仅本人会话）；' +
+        '会话标题会清空，运行记录与审计按合规口径保留。确认删除？',
+    )
+    if (confirmed === false) return
+    setDeleting(true)
+    try {
+      const outcome = await deleteConversation(conversationId)
+      setState((old) => ({
+        ...old,
+        toast: `已删除（消息 ${outcome.message_count} / 帧 ${outcome.frame_count} / 流状态 ${outcome.stream_state_count} / 幂等 ${outcome.idempotency_count}）`,
+      }))
+      setStreamActive(false)
+      setLastInvocation(null)
+      onSelectConversation(undefined)
+      await loadList(state.statusFilter, state.listOffset)
+    } catch (error) {
+      setState((old) => ({ ...old, detailError: asConversationError(error) }))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  // P2c-4 §2.11：导出本人全部会话数据（逐页合并 → JSON 文件下载）；超上限**如实告知**。
+  const exportMine = async () => {
+    if (exporting) return
+    setExporting(true)
+    try {
+      const bundle = await exportMyConversations()
+      const payload = {
+        exported_at: bundle.pages[0]?.exported_at ?? new Date().toISOString(),
+        conversation_count: bundle.pages.reduce((total, page) => total + page.conversations.length, 0),
+        message_count: bundle.pages.reduce(
+          (total, page) => total + page.conversations.reduce((sum, item) => sum + item.messages.length, 0),
+          0,
+        ),
+        total_conversations: bundle.pages[0]?.total_conversations ?? 0,
+        total_messages: bundle.pages[0]?.total_messages ?? 0,
+        truncated: bundle.truncated,
+        limit_reason: bundle.pages.find((page) => page.limit_reason)?.limit_reason ?? null,
+        pages: bundle.pages.map((page) => ({ limit: page.limit, offset: page.offset, conversations: page.conversations })),
+      }
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `conversations-export-${Date.now()}.json`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setState((old) => ({
+        ...old,
+        toast: bundle.truncated
+          ? `已导出 ${payload.conversation_count} 个会话（数据量超过服务端上限，未包含全部；已如实标注 truncated）`
+          : `已导出 ${payload.conversation_count} 个会话 / ${payload.message_count} 条消息`,
+      }))
+    } catch (error) {
+      setState((old) => ({ ...old, conversationsError: asConversationError(error) }))
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -283,6 +393,9 @@ export function ConversationPage({
           </div>
           <div className="actions">
             <button className="button primary" type="button" disabled={creating || forbidden} onClick={() => void startConversation()}>新建会话</button>
+            <button className="button" type="button" disabled={forbidden || exporting} onClick={() => void exportMine()}>
+              {exporting ? '正在导出…' : '导出我的数据'}
+            </button>
             <button className="button" type="button" disabled={forbidden} onClick={() => void loadList(state.statusFilter, state.listOffset)}>刷新</button>
           </div>
         </div>
@@ -367,6 +480,7 @@ export function ConversationPage({
                     <strong>{conversationTitle(item.title)}</strong>
                     <div className="history-meta">
                       <span className={`status-badge status-${item.status}`}>{conversationStatusLabel(item.status)}</span>
+                      <span className="status-badge status-reviewing">{conversationModeLabel(item.mode)}</span>
                       {item.agent_key && <span className="ws-code">{item.agent_key}</span>}
                       <span>更新于 {formatMessageTime(item.updated_at)}</span>
                     </div>
@@ -409,6 +523,9 @@ export function ConversationPage({
                     <div className="history-actions">
                       <span className={`status-badge status-${detail.status}`}>{conversationStatusLabel(detail.status)}</span>
                       <button className="button" type="button" disabled={archived || state.archiving} onClick={() => void archive()}>归档</button>
+                      <button className="button" type="button" disabled={deleting} onClick={() => void remove()}>
+                        {deleting ? '正在删除…' : '删除会话'}
+                      </button>
                     </div>
                   </div>
 
@@ -417,6 +534,23 @@ export function ConversationPage({
                       {detail.agent_key && <span>执行人：<span className="ws-code">{detail.agent_key}</span></span>}
                       <span>共 {detail.messages_total} 条消息</span>
                     </div>
+                    <label className="ws-field conversation-mode">
+                      会话模式
+                      <select
+                        aria-label="会话模式"
+                        value={detail.mode}
+                        disabled={archived || modeSaving}
+                        onChange={(event) => void changeMode(event.target.value as ConversationMode)}
+                      >
+                        {MODE_OPTIONS.map((mode) => (
+                          <option value={mode} key={mode}>{CONVERSATION_MODE_LABELS[mode]}（{mode}）</option>
+                        ))}
+                      </select>
+                      <small className="ws-field-hint">
+                        {CONVERSATION_MODE_HINTS[detail.mode] ?? '模式由服务端判定，只收紧、不放松既有权限。'}
+                        {archived && '（会话已归档，不能再修改模式）'}
+                      </small>
+                    </label>
                   </div>
 
                   {detail.messages.length === 0 && (
@@ -491,7 +625,11 @@ export function ConversationPage({
                           {archived
                             ? '会话已归档，不能发送'
                             : draftInvocation
-                              ? `结构化调用：${draftInvocation.tool_key}（按真实执行路径发送）`
+                              ? detail.mode === 'ask'
+                                ? `结构化调用：${draftInvocation.tool_key}（当前为「只问答」，服务端会拒绝执行）`
+                                : detail.mode === 'plan'
+                                  ? `结构化调用：${draftInvocation.tool_key}（当前为「先计划后执行」，一律先落待批）`
+                                  : `结构化调用：${draftInvocation.tool_key}（按真实执行路径发送）`
                               : `最长 ${MAX_MESSAGE_LENGTH} 字符 · 纯文本不触发真实执行`}
                         </span>
                         <button className="composer-send" type="submit" disabled={!canSend} aria-label="发送消息">
@@ -528,6 +666,12 @@ export function ConversationPage({
               overview={overview}
               approvals={approvalsView}
               artifacts={artifacts}
+              acceptance={acceptance}
+              mode={detail?.mode}
+              redoAvailable={Boolean(lastInvocation)}
+              onRedo={() => {
+                if (lastInvocation) void send(lastInvocation)
+              }}
               canDecide={canDecide}
               expanded={stageOpen}
               onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}

@@ -653,7 +653,7 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 
 ## 对话式 AI 员工平台（P1）
 
-口径：`docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md`。租户语义 100% 落在本项目的 `workbench_conversations`（迁移 `023_conversational_agent`）；会话消息表 **append-only**（不提供编辑/删除；第一期不做物理删除、会话分享、多员工协同）。
+口径：`docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md`。租户语义 100% 落在本项目的 `workbench_conversations`（迁移 `023_conversational_agent`）；会话消息表 **append-only**（不提供编辑接口；**2026-09-17 修订（P2c-4）**：本人可发起**受控物理删除**——见「P2c 对话模式 · 导出与物理删除 · 候选端点 · 结构判定（P2c-4）」；会话分享与多员工协同属 **P2c-6**，仍未交付）。
 
 **P1 的对话语义**：Harness 使用 `MockRuntime`，**不做任何真实工具调用、不接真实模型**。助手回复是**确定性桩**，并在响应体显式标注 `stub: true`，绝不伪装成真实模型输出。会话与消息的数据模型、权限、审计、分页都是真实的。第一期**不开通文件读写与命令执行**（那是 P2 的能力，D8），配置里的 `tool_allowlist` 只存不用。
 
@@ -666,8 +666,8 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 
 **分页口径**：会话列表与会话详情内的消息都使用 `limit`（1–200，默认 50）+ `offset`（≥0，默认 0），并返回命中总数。
 
-- `POST /api/v1/conversations`：新建会话。请求体 `{"agent_key"?: string, "title"?: string}`（未知字段 `422`）。`agent_key` 缺省为默认员工；`agent_key` 只做标识归一，**不校验其在目录中是否启用**——历史会话在数字员工停用后仍必须可解析。成功 `201`，返回会话视图。
-- `GET /api/v1/conversations`：会话列表，**必须分页**。可选 `status=active|archived`（非法值 `422`）。返回 `{"items":[...],"total","limit","offset"}`。
+- `POST /api/v1/conversations`：新建会话。请求体 `{"agent_key"?: string, "title"?: string}`（未知字段 `422`）。`agent_key` 缺省为默认员工；`agent_key` 只做标识归一，**不校验其在目录中是否启用**——历史会话在数字员工停用后仍必须可解析。成功 `201`，返回会话视图（**2026-09-17 只增 `mode` 字段（P2c-4）**，新建一律 `craft`）。
+- `GET /api/v1/conversations`：会话列表，**必须分页**。可选 `status=active|archived`（非法值 `422`）。返回 `{"items":[...],"total","limit","offset"}`。**2026-09-17（P2c-4）**：条目**只增** `mode`；`deleted_at` 非空的会话**一律不出现**（列表 / 详情 / 流 / 发消息 / 改模式对其统一 `404`，与「不存在」不可区分）。
 - `GET /api/v1/conversations/{conversation_id}`：会话详情（含消息）。消息同样以 `limit`/`offset` 分页，返回 `messages`、`messages_total`、`messages_limit`、`messages_offset`。跨租户或不属于当前操作者的会话返回 `404`。
 - `POST /api/v1/conversations/{conversation_id}/messages`：发送一条用户消息，落库用户消息与**确定性桩回复**。请求体 `{"content": string}`（空/纯空白 `422`，超长 `422`，未知字段 `422`）。成功 `201`，返回 `{"message_id","conversation_id","stub": true, "reply": {...}}`，其中 `reply.stub=true`。向**已归档**会话发消息返回 `409`。审计动作 `conversation.message.sent`（只记标识与角色，**不记消息正文**）。
   - **用户消息 `content` 的落库语义（§8 U23，2026-09-14 裁决）＝ 脱敏摘要，非原文**：对话入口**不再把用户原始调用 JSON（或自由文本）逐字落** `workbench_conversation_messages.content`，改落**脱敏摘要** —— 调用 JSON 落 `tool_key` + 参数**键名清单** + 摘要指纹，自由文本落长度 + 指纹；**所有参数值一律不落**（含 `body` 类与 `control` 类，`path` / `target` 亦不保留）。因此 `GET /api/v1/conversations/{conversation_id}` 的 `messages[].content` 为摘要（前端按字符串展示即可），**不含正文原文 / 参数值 / 宿主路径 / 凭据**（与用例 33② 天然一致）。**不改变**响应结构与 `stub` 语义、**不改变**幂等重放（重放按助手消息 `message_id` 反查）与 `messages_total`。哨兵查询：`SELECT COUNT(*) FROM workbench_conversation_messages WHERE content LIKE '%' || <正文原文> || '%';` ⇒ 0。
@@ -759,7 +759,7 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 
 | # | 开口 | 决议 |
 | --- | --- | --- |
-| Y1 | 是否需要**工具目录只读端点** | **不加**。沿用既有 `model_key` / `tool_allowlist` 惯例：前端自由文本输入 + 提示，后端对非法键返回 `422`；不为假想需求预留端点 |
+| Y1 | 是否需要**工具目录只读端点** | ~~**不加**。沿用既有 `model_key` / `tool_allowlist` 惯例：前端自由文本输入 + 提示，后端对非法键返回 `422`；不为假想需求预留端点~~ **2026-09-17 推翻（P2c-4，用户裁决）**：新增两个**只读**候选端点（`GET /api/v1/workforce/model-candidates`、`GET /api/v1/tools/catalog`，仅 `super_admin`、无凭据）；前端改为候选下拉 / 目录多选，**后端校验不变（非法键仍 `422`）**——见「P2c 对话模式 · 导出与物理删除 · 候选端点 · 结构判定（P2c-4）」 |
 | Y2 | 工具执行的**运行/审批归属** | **自动创建「承载任务 + Run」**并复用既有 `/api/v1/runs/{run_id}/approvals/*`；**授权项与待批动作由新增迁移 `027` 承载**（2026-09-12 裁决 R1；`026` 降级为运行级快照，见规格 §4.1.5）；**不新增 `origin` 字段**（2026-09-12 裁决撤销）；**幂等键 = 请求头 `Idempotency-Key`**（2026-09-12 裁决 R2，原「`message_id` 派生」已废弃）；**仅当带该键时才触发真实执行**（2026-09-13 裁决 R6） |
 | Y3 | `tool.executed` / `tool.blocked` 的**明细键名单** | **最小集**：新增 `tool_key`、`risk_level`，复用 `run_id` / `runtime_key` / `status` / `reason`；不落 `args_digest`、虚拟路径、`sha256`、字节数 |
 
@@ -1032,5 +1032,72 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
   **逐租户**删除 `expires_at < now` 的行；清理**不写审计**（例行维护，与流帧 / 运行事件清理同口径）；**只清登记表**——帧、消息、审计、运行记录**不受影响**。
 - **写入（唯一入口）**：**工具执行链路**在 `fs.write` / `fs.overwrite` / `fs.delete` 产生变更时逐条登记（一条变更 = 一行，`artifact_id` 服务端生成）；
   **登记失败不影响执行结果**（与回传同为「视图」，失败只记日志）。
+
+## P2c 对话模式 · 导出与物理删除 · 候选端点 · 结构判定（P2c-4 · 2026-09-17）
+
+> 口径：`docs/superpowers/specs/2026-09-17-frontend-interaction-p2c-design.md` §2.5 / §2.9 / §2.10 / §2.11（**已评审 2026-09-17**；迁移 `038_conversation_mode_and_soft_delete`）。
+> **零破坏声明（可验证）**：`mode` 列带 `DEFAULT 'craft'` ⇒ 存量会话行为与改造前**逐字一致**；会话视图**只增** `mode`；
+> 既有 `POST .../messages`、`.../messages:stream`、归档端点与全部状态码分支**不变**（`ask` / `plan` 只**收紧**，不放松任何既有判定）。
+
+### 每会话模式（`ask` / `plan` / `goal` / `craft`）
+
+- **落库**：`workbench_conversations.mode TEXT NOT NULL DEFAULT 'craft' CHECK (mode IN ('ask','plan','goal','craft'))`；**存量会话一律 `craft`**（不回填其它值）。
+- **语义与合成（只收紧、不放松）**：
+
+| 模式 | 语义 | 与自治三档 / 既有判定的合成 |
+| --- | --- | --- |
+| `ask` | 只问答：**拒绝一切真实执行**（问答与「缺键桩路径」不受影响） | **覆盖（最严）**：发起与推进**两处**受控拒绝 + 审计 |
+| `plan` | 先计划后执行：**一律先落待批** | 强制 `requires_approval=true`（等价 `approval_for_all`）；**不放松** `critical` 仅 CEO/超管 |
+| `goal` | 目标驱动：执行照常 | 不放松（按自治三档） |
+| `craft` | 完整执行（**默认**，＝现状） | 不放松（按自治三档） |
+
+- **判定在服务端、两处生效（fail-closed）**：
+  - **发起**（`POST /api/v1/conversations/{conversation_id}/messages` 与 `.../messages:stream` 的**带 `Idempotency-Key`** 路径）：`ask` ⇒ **`409`**「该会话为只问答模式，已拒绝执行」+ 审计 `conversation.execution.rejected`（明细 `conversation_id` / `mode` / `reason`，受控枚举）；**不创建承载任务 / 运行 / 消息**（按幂等口径写 `rejected` 行，重放返回同一 `409`）。缺键桩路径**不受影响**（问答可用）。
+  - **推进**（`POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval`）：会话模式为 `ask` ⇒ 决议**整体拒绝**（`409`，**不落决议、不重跑**，待批动作保持 `pending`——切回模式后可再决议）；`plan` 的「强制待批」在发起处已生效，推进**只可能经「已批准」动作**（`find_approved` fail-closed `409`），故 `plan` 在推进处**天然不放松**。
+  - **已知边界（如实登记）**：会话内容物理删除后，运行与待批动作按保留口径**继续可决议**（模式判定无可关联会话 ⇒ 不拦截）；但已删除会话**不得**再发起执行（`404`）。
+- `POST /api/v1/conversations/{conversation_id}/mode`：改模式。请求体 `{"mode": "ask"|"plan"|"goal"|"craft"}`（未知字段 / 非法取值 `422`）。**仅会话本人**（他人 / 跨租户一律 `404`）；**归档会话 `409`**（沿用「归档不可再写」口径）。成功 `200` 返回会话视图（含 `mode`）；**设为同一值 = 无副作用**（不写审计，仍 `200`）。审计 `conversation.mode.changed`（明细 `conversation_id` / `from_mode` / `to_mode`，**受控枚举、不落自由文本**）。
+- 其余会话视图（详情 / 归档）**只增** `mode`；`GET /api/v1/conversations` **不新增**模式过滤参数（本期）。
+
+### 个人数据导出（本人）
+
+`GET /api/v1/conversations/exports/mine?limit=&offset=`
+
+- 返回**本人**（`operator_id` = 当前用户）的全部**未删除**会话（含归档）及其消息；**不含**他人数据、**不含**审计明细、**不含** `operator_id` / `dsh_session_id`。
+- **如实说明**：用户原始输入自 U23 起只落**脱敏摘要**——导出返回的是**库中实际存在的字段**，不是原文重放。
+- 分页：页单位为**会话**（`created_at` 降序），`limit` 1–500（默认 500）、`offset` ≥ 0。响应：
+  `{"exported_at", "limit", "offset", "conversations": [{"conversation_id","agent_key","title","status","mode","created_at","updated_at","messages":[{"message_id","role","content","stub","tool_name","tool_call_id","created_at"}],"messages_total"}], "total_conversations", "total_messages", "truncated", "limit_reason"}`。
+- **规模上限（不静默截断）**：本人在库条目（**会话数 + 消息数**）合计超过 **50000** ⇒ `truncated=true` + `limit_reason="total_items_exceeded"`（本次只返回上限内的条目；用户按页继续导出）。单页装配同样受该上限保护。
+- 权限：仅对话岗位（`customer_admin` `403`；未认证 `401`）。审计 `conversation.exported`（明细 `conversation_count` / `message_count` / `truncated`，**不落正文**）。
+
+### 物理删除（本人 · 同步 · 幂等）
+
+`POST /api/v1/conversations/{conversation_id}/delete`
+
+- **仅本人**；跨租户 / 他人 / 不存在一律 `404`；**复删幂等**（已删除会话再次调用仍 `200`，**不重复删除、不重复写审计**）。
+- **真删内容行（固定顺序、每步各自原子、可重试）**：`workbench_execution_idempotency`（该会话全部键，**先删**——它同时引用消息行与会话行，必须先于消息行）→ `workbench_conversation_stream_frames` + `workbench_conversation_stream_state` → `workbench_conversation_messages` + **会话行软删**（消息删除与「置 `deleted_at` / `title=''`」在**同一事务**内完成）。
+  失败语义：任一步失败 ⇒ 接口返回错误（`5xx`），**会话在最后一步完成前保持可见**（不会出现「看不见但内容还在」）；各步均可安全重试（重复删除不报错、不产生负面效果）；帧清理失败**不回滚**删除结果（孤儿帧由既有保留期清理兜底，且已不可见）。
+- **会话行不物理删**：置 `deleted_at`（软删）+ **标题清空**（`title=''`）；此后**列表 / 详情 / 流 / 发消息 / 改模式**一律 `404`（与「不存在」不可区分）。
+- **保留（不删）**：运行记录、待批动作、审计、产物登记（运行级、仅元数据）。
+- 成功 `200`：`{"conversation_id", "deleted": true, "message_count", "frame_count", "stream_state_count", "idempotency_count"}`（复删各计数为 `0`）；审计 `conversation.deleted`（明细为上述四个计数 + `conversation_id`，**不含正文**）。
+- **无管理端代删 / 批量删**；租户级导出 / 删除仍走既有租户生命周期口径（不变）。
+
+### 模型 / 工具候选端点（**推翻 Y1**，见「本节开口的决议」）
+
+两个端点均**只读**、**仅 `super_admin`**（其他角色 `403`）、**不返回任何凭据 / 内部地址 / 提示词**。
+
+- `GET /api/v1/workforce/model-candidates` → `{"items": [model_key...], "total": n}`：`registered_model_keys(settings)`（与员工配置保存闸门**同一来源**）。候选**为空** = 本部署未注册模型键（`WORKBENCH_PLANNER_MODEL_NAME` 未配置）——界面如实告知「只能使用默认模型」。
+- `GET /api/v1/tools/catalog` → `{"items": [{"tool_key","risk_level","requires_approval","has_side_effect","reversible","params":[{"name","role"}]}...], "allowlist": [tool_key...], "total": n}`：
+  - `items` = **执行工具目录**（`ToolSpecCatalog`，与执行入口**同一实例语义**）；
+  - `allowlist` = 员工配置 `tool_allowlist` 的**保存闸门集合**（`WORKBENCH_PLANNER_TOOLS` 声明的键）；**保存仍以服务端校验为准**（不在该集合内的键一律 `422`）——前端据此**灰显并给原因**，不改变后端校验；目录内不在闸门集合的键**如实标注不可用原因**。
+- 既有 `GET /api/v1/workforce/candidates`（岗位 / 员工候选）行为**不变**（两者不同物，勿混用）。
+
+### 运行结构判定（自动验收 · **不调模型** · **不改运行状态**）
+
+`GET /api/v1/runs/{run_id}/acceptance`
+
+- 归属判定同运行接口（跨租户 / 不可见 / 未知运行 `404`）；**纯读**：**不调模型、不写库、不改运行状态**。
+- **结构判定**（三条件**全满足** ⇒ `met`）：① 步骤全部完成（`completed_step_count >= step_count`；`step_count = 0` 视为满足）② 无未决审批（运行审批状态无 `pending`）③ `finish_reason` 为**正常终态**（`run_completed`；`cancelled_by_user` / `step_failed` / `approval_rejected` 均**不算**）。
+- 响应 `{"run_id", "verdict": "met"|"unmet", "checks": {"steps_complete", "no_pending_approvals", "finish_reason_ok"}, "steps": {"completed", "total"}, "pending_approvals", "finish_reason", "status"}`；**非终态运行 ⇒ `unmet`**（如实，不谎报）。
+- **一键重做属前端行为**：未达标时，**仅当页面仍持有原结构化调用**时以**新幂等键**重发（＝一次新的正常调用、新 run，与原运行**无状态耦合**）；跨页 / 刷新后按既有安全口径**不重放原参数**（界面如实告知「原始参数未留存，请重新输入」）。**不做自动重跑、不做 LLM 判分**。
 
 

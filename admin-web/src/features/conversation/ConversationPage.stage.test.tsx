@@ -19,7 +19,7 @@ function sseResponse(chunks: string[], headers: Record<string, string> = {}): Re
 const sseFrame = (seq: number, kind: string, isTerminal = false) =>
   `id: ${seq}\nevent: ${kind}\ndata: ${JSON.stringify({ seq, kind, payload: { status: 'ok', tool_key: 'cmd.run' }, is_terminal: isTerminal })}\n\n`
 
-const conversation = { conversation_id: 'conv-1', agent_key: 'agent-ops', title: '整理客户反馈', status: 'active', created_at: '2026-09-11T02:00:00Z', updated_at: '2026-09-11T02:00:00Z' }
+const conversation = { conversation_id: 'conv-1', agent_key: 'agent-ops', title: '整理客户反馈', status: 'active', mode: 'craft', created_at: '2026-09-11T02:00:00Z', updated_at: '2026-09-11T02:00:00Z' }
 
 const metrics = {
   run_id: 'run-9', task_id: 'task-1', proposal_id: null, runtime_key: 'dsh', status: 'completed',
@@ -34,11 +34,20 @@ const task = {
 
 interface Call { url: string; method: string; body: string; headers: Record<string, string> }
 
-function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean; frames?: string[]; streamHeaders?: Record<string, string> } = {}) {
+function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean; frames?: string[]; streamHeaders?: Record<string, string>; acceptance?: Record<string, unknown> } = {}) {
   const calls: Call[] = []
   const approvals = options.approvals ?? []
   const produceRun = options.produceRun !== false
   const frames = options.frames ?? [sseFrame(1, 'tool.call'), sseFrame(2, 'run.completed', true)]
+  const acceptance = options.acceptance ?? {
+    run_id: 'run-9',
+    verdict: 'met',
+    checks: { steps_complete: true, no_pending_approvals: true, finish_reason_ok: true },
+    steps: { completed: 1, total: 1 },
+    pending_approvals: 0,
+    finish_reason: 'run_completed',
+    status: 'completed',
+  }
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
@@ -61,6 +70,7 @@ function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean; frame
       return json({ message_id: 'msg-2', conversation_id: 'conv-1', stub: true, reply: { message_id: 'msg-3', conversation_id: 'conv-1', role: 'assistant', content: '（P1 桩回复）已收到你的消息。', stub: true, tool_name: null, tool_call_id: null, created_at: null } }, 201)
     }
     if (url.includes('/conversations/conv-1/stream')) return sseResponse(frames, options.streamHeaders)
+    if (url.includes('/runs/run-9/acceptance')) return json(acceptance)
     if (url.includes('/runs/run-9/metrics')) return json(metrics)
     if (url.includes('/runs/run-9/approvals/') && method === 'POST') return json({ run_id: 'run-9', approval_id: 'ap-1', status: 'approved', run_status: 'completed' })
     if (url.includes('/runs/run-9/approvals')) return json({ items: approvals })
@@ -170,7 +180,7 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     expect(screen.queryByRole('button', { name: '驳回' })).toBeNull()
   })
 
-  it('收尾检查（展示型）：终态后给出进度档但不改运行状态', async () => {
+  it('收尾检查（P2c-4）：终态后给出进度档与服务端结构判定（达标），且不改运行状态', async () => {
     const { fetchMock } = makeFetch()
     vi.stubGlobal('fetch', fetchMock)
 
@@ -181,7 +191,49 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
 
     expect(await screen.findByText('收尾检查')).toBeInTheDocument()
     expect(await screen.findByText('进度档')).toBeInTheDocument()
-    expect(screen.getByText('只做展示，不改变运行状态（结构判定与一键重做在 P2c-4 提供）。')).toBeInTheDocument()
+    // 结构判定结论来自服务端端点（前端只渲染，不自行复算）。
+    expect(await screen.findByText('达标')).toBeInTheDocument()
+    expect(screen.getByText(/结构判定（服务端只读运行字段，不调模型、不改运行状态）/, { exact: false })).toBeInTheDocument()
+    expect(screen.getAllByText('会话模式').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('完整执行').length).toBeGreaterThan(0)
+    expect(screen.getByText('产物')).toBeInTheDocument()
+    // 达标 ⇒ 不给一键重做。
+    expect(screen.queryByRole('button', { name: '一键重做' })).toBeNull()
+  })
+
+  it('收尾检查（P2c-4）：未达标 + 本页持有原件 ⇒ 一键重做以新幂等键重发（原运行不变）', async () => {
+    const acceptance = {
+      run_id: 'run-9',
+      verdict: 'unmet',
+      checks: { steps_complete: false, no_pending_approvals: true, finish_reason_ok: true },
+      steps: { completed: 0, total: 1 },
+      pending_approvals: 0,
+      finish_reason: 'run_completed',
+      status: 'completed',
+    }
+    const { fetchMock, calls } = makeFetch({ acceptance })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: invocation } })
+    await userEvent.click(screen.getByRole('button', { name: '发送消息' }))
+
+    expect(await screen.findByText('未达标')).toBeInTheDocument()
+    const redo = await screen.findByRole('button', { name: '一键重做' })
+    const sendsBefore = calls.filter((call) => call.url.includes('/messages:stream')).length
+    expect(sendsBefore).toBe(1)
+
+    await userEvent.click(redo)
+    await waitFor(() =>
+      expect(calls.filter((call) => call.url.includes('/messages:stream')).length).toBe(2),
+    )
+    // 重做 = 一次新的正常调用：**新幂等键**、请求体与原调用逐字一致（原运行不被改写）。
+    const sends = calls.filter((call) => call.url.includes('/messages:stream'))
+    const keys = sends.map((call) => call.headers['Idempotency-Key'])
+    expect(keys[0]).toBeTruthy()
+    expect(new Set(keys).size).toBe(2)
+    expect(sends[1].body).toBe(sends[0].body)
   })
 
   it('结构化调用未产生运行（后端未装配真实执行）⇒ 关流并如实告知，不留「执行中」假象', async () => {

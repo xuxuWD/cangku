@@ -996,12 +996,21 @@ def build_conversation_store(settings: Settings, *, connection=None, migrate: bo
     raise ValueError("不支持的对话存储类型")
 
 
-def build_conversation_service(settings: Settings, *, store, audit=None):
-    """装配对话服务（P1 使用确定性桩回复，不接真实模型，D7）。"""
+def build_conversation_service(settings: Settings, *, store, audit=None, stream_store=None, idempotency_store=None):
+    """装配对话服务（P1 使用确定性桩回复，不接真实模型，D7）。
+
+    P2c-4 §2.11：物理删除需按序跨仓储清理（幂等行 → 帧 / 流状态 → 消息 + 会话软删），
+    故把**流仓储**与**执行幂等仓储**注入服务；两者缺任一即删除路径 fail-closed 拒绝。
+    """
     validate_runtime_settings(settings)
     from .conversation.service import ConversationService
 
-    return ConversationService(store, audit=audit)
+    return ConversationService(
+        store,
+        audit=audit,
+        stream_store=stream_store,
+        idempotency_store=idempotency_store,
+    )
 
 
 def build_execution_idempotency_store(settings: Settings, *, connection=None, migrate: bool = True):
