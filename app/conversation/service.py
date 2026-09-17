@@ -32,6 +32,7 @@ from .models import (
 from .redaction import redact_message_content
 from .store import (
     MAX_EXPORT_LIMIT,
+    MAX_LIMIT,
     ConversationDeletion,
     ConversationExportPage,
     ConversationStore,
@@ -312,11 +313,21 @@ class ConversationService:
         )
         return True
 
-    def list_participants(self, context: UserContext, conversation_id: str) -> list[dict[str, object]]:
+    def list_participants(
+        self,
+        context: UserContext,
+        conversation_id: str,
+        *,
+        limit: int = MAX_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, object]], int]:
         """参与者列表（**本人或成员可见**）：发起人列首位（`is_owner` / `permission="owner"`）+ 成员。
 
         `display_name` / `role` 由账号仓储解析；账号缺失 ⇒ 回退 `member_id` / `None`（**不编造**）。
         「最近活动时间」不在这里——取会话 `updated_at`（不做实时在线态）。
+        **分页（2026-09-18 收尾裁决 B）**：返回 `(本页条目, 命中总数)`——`total` 恒为命中总数，
+        不静默截断（客户端据 `total` 与条目数判断是否还有下一页）；切片在**组装后**执行，
+        使「发起人首位 + 成员按加入时间」这一排序口径只有一处实现。
         """
         conversation = self.store.get_conversation(context, conversation_id)
         owner = self._resolve_account(conversation.operator_id)
@@ -331,22 +342,24 @@ class ConversationService:
                 "created_at": conversation.created_at,
             }
         ]
-        if self.members is None:
-            return items
-        for member in self.members.list_for_conversation(context.tenant_id, conversation.conversation_id):
-            account = self._resolve_account(member.member_id)
-            items.append(
-                {
-                    "member_id": member.member_id,
-                    "display_name": account.full_name if account is not None else member.member_id,
-                    "role": account.role if account is not None else None,
-                    "permission": member.permission,
-                    "is_owner": False,
-                    "added_by": member.added_by,
-                    "created_at": member.created_at,
-                }
-            )
-        return items
+        if self.members is not None:
+            for member in self.members.list_for_conversation(context.tenant_id, conversation.conversation_id):
+                account = self._resolve_account(member.member_id)
+                items.append(
+                    {
+                        "member_id": member.member_id,
+                        "display_name": account.full_name if account is not None else member.member_id,
+                        "role": account.role if account is not None else None,
+                        "permission": member.permission,
+                        "is_owner": False,
+                        "added_by": member.added_by,
+                        "created_at": member.created_at,
+                    }
+                )
+        total = len(items)
+        start = max(0, int(offset))
+        size = max(1, min(int(limit), MAX_LIMIT))
+        return items[start : start + size], total
 
     def _require_shareable_conversation(self, context: UserContext, conversation_id: str) -> Conversation:
         """成员管理的前置：**仅会话本人**（他人 / 跨租户 `404`）、未软删、且**未归档**（归档 `409`）。"""

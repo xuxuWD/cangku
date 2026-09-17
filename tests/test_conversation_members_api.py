@@ -192,10 +192,12 @@ def add_member(conversation_id: str, member_id: str, *, permission: str | None =
     )
 
 
-def list_members(conversation_id: str, *, who: str = OWNER, tenant: str = TENANT, role: str = "employee"):
+def list_members(conversation_id: str, *, who: str = OWNER, tenant: str = TENANT, role: str = "employee",
+                 params: dict | None = None):
     return client.get(
         f"/api/v1/conversations/{conversation_id}/members",
         headers=headers(role=role, user_id=who, tenant_id=tenant),
+        params=params,
     )
 
 
@@ -488,6 +490,34 @@ def test_write_member_execution_uses_own_identity_and_critical_is_denied(monkeyp
 
 
 # ------------------------------------------------------------ ⑧参与者列表
+
+
+def test_members_list_is_paginated_and_never_silently_truncated() -> None:
+    """参与者列表**必须分页**（收尾裁决 B）：`total` 恒为命中总数，`limit` / `offset` 只增字段。"""
+    conversation_id = create_conversation()["conversation_id"]
+    add_member(conversation_id, MEMBER)
+    add_member(conversation_id, READER)
+
+    # 缺省一页（limit 200）⇒ 全部命中：发起人 + 2 名成员。
+    default_page = list_members(conversation_id).json()
+    assert default_page["total"] == 3
+    assert default_page["limit"] == 200
+    assert default_page["offset"] == 0
+    assert len(default_page["items"]) == 3
+
+    first = list_members(conversation_id, params={"limit": 2, "offset": 0}).json()
+    assert first["total"] == 3  # 命中总数不因分页而变（不静默截断）
+    assert first["limit"] == 2 and first["offset"] == 0
+    assert [item["member_id"] for item in first["items"]] == [OWNER, MEMBER]  # 发起人仍列首位
+    second = list_members(conversation_id, params={"limit": 2, "offset": 2}).json()
+    assert second["total"] == 3
+    assert [item["member_id"] for item in second["items"]] == [READER]
+    assert list_members(conversation_id, params={"limit": 2, "offset": 3}).json()["items"] == []
+
+    # 越界与非法值：由查询参数约束拒绝（422），不做静默钳制。
+    assert list_members(conversation_id, params={"limit": 0}).status_code == 422
+    assert list_members(conversation_id, params={"limit": 201}).status_code == 422
+    assert list_members(conversation_id, params={"offset": -1}).status_code == 422
 
 
 def test_participants_list_has_owner_first_and_falls_back_honestly(_isolate) -> None:

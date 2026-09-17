@@ -576,7 +576,7 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 `GET /api/v1/runs/{run_id}/metrics`
 
-返回单次运行的结构化指标：`run_id`、`task_id`、`proposal_id`、`runtime_key`、`status`、`step_count`、`completed_step_count`、`tool_calls`、`successful_tools`、`knowledge_hits`、`latency_ms`、`started_at`、`finished_at`、`finish_reason`。运行记录不存在，或该运行所属任务对调用者不可见时，统一返回 `404`「运行记录不存在」（跨租户不泄露存在性）。
+返回单次运行的结构化指标：`run_id`、`task_id`、`proposal_id`、`runtime_key`、`status`、`step_count`、`completed_step_count`、`tool_calls`、`successful_tools`、`knowledge_hits`、`latency_ms`、`started_at`、`finished_at`、`finish_reason`。运行记录不存在，或该运行所属任务对调用者不可见时，统一返回 `404`「运行记录不存在」（跨租户不泄露存在性）。**2026-09-17（P2c-6）**：**会话成员可见**（经「运行 → 会话（幂等行反查）→ 成员判定」放行；控制类端点不适用，见「会话协作」节）。
 
 - `finish_reason` 是**受控枚举**（`run_completed` / `cancelled_by_user` / `step_failed` / `approval_rejected`），仅终态非空；非终态（`running` / `paused`）恒为 `null`，且此时 `finished_at` 也为 `null`。`failed` 细分为「步骤本身失败」与「审批被人工驳回」两种。
 - `finish_reason` **不承载自由文本**：失败与取消的具体原因（哪一步、什么原因）需查 `GET /api/v1/runs/{run_id}/events`。
@@ -626,10 +626,10 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 - **已知限制**：事件行与状态行是同一事务内的两次写入（跨进程读只保证各自完整）；同一次运行的并发修改以**最后写入获胜**（同一 run 内并发写同一序号会因主键冲突直接失败，不会写出重复序号）；重启不会补回此前只在内存里的历史运行；敏感键规则是「键名精确匹配（忽略大小写）」，`cookies` 这类变体不匹配；**迁移 `034` 回填的存量事件没有原始时间戳**，其 `occurred_at` 用状态行创建时间近似填充（仅影响这些老事件的保留期计龄）；存量老运行的知识命中计数为 `0`（不回溯统计），新运行的计数从改造后开始累积。
 
 - POST /api/v1/tasks/{task_id}/runs：在指定任务下创建运行。请求可指定 runtime_key、mode 和步骤计划；服务端从任务快照重建租户、用户、岗位、项目、预算、知识/文件范围和策略版本，客户端不能覆盖这些字段。创建成功即写入运行记录（响应中的 `status` 反映启动后的真实状态）。
-- GET /api/v1/runs/{run_id}/events?cursor=...：返回脱敏事件摘要（数据来自 append-only 表 `workbench_runtime_events`），支持断点读取——`cursor` 语义不变，返回**序号严格大于该游标**的事件；超出保留期的事件已不再可查；内部 Harness session、凭据和原始敏感载荷不返回。
+- GET /api/v1/runs/{run_id}/events?cursor=...：返回脱敏事件摘要（数据来自 append-only 表 `workbench_runtime_events`），支持断点读取——`cursor` 语义不变，返回**序号严格大于该游标**的事件；超出保留期的事件已不再可查；内部 Harness session、凭据和原始敏感载荷不返回。**2026-09-17（P2c-6）**：**会话成员可读**；**非发起人且非成员**沿用既有 `403`「当前员工无权操作此运行」（该端点未纳入「不泄露存在性」的 `404` 口径，如实登记、本批不改）。
 - POST /api/v1/runs/{run_id}/pause、POST /api/v1/runs/{run_id}/resume、POST /api/v1/runs/{run_id}/cancel：任务创建人、CEO 或超级管理员可操作；跨租户运行统一返回 404。三个动作都会**回写运行记录**（取消后 `status=cancelled`、`finish_reason=cancelled_by_user`、`finished_at` 非空；暂停与恢复为非终态，`finish_reason` 与 `finished_at` 均为 `null`）。取消成功后会向任务创建人发出一条 `run.cancelled` 站内通知。
 - POST /api/v1/runs/{run_id}/approvals：登记高风险动作审批请求，返回审批号和 pending 状态，不代表已执行。
-- GET /api/v1/runs/{run_id}/approvals：列出该运行的审批项（含已决议），返回 `{"items":[{"approval_id","step_id","tool","status"}]}`；`status ∈ pending/approved/rejected`，`step_id`/`tool` 仅在审批项对应计划步骤时非空。跨租户或运行不存在返回 `404`。
+- GET /api/v1/runs/{run_id}/approvals：列出该运行的审批项（含已决议），返回 `{"items":[{"approval_id","step_id","tool","status"}]}`；`status ∈ pending/approved/rejected`，`step_id`/`tool` 仅在审批项对应计划步骤时非空。跨租户或运行不存在返回 `404`。**2026-09-17（P2c-6）**：**会话成员可读该列表**；**决议端点（下面 `POST .../approval`）不放松**（仍仅 `ceo` / `super_admin` 且不得自审）。
 - POST /api/v1/runs/{run_id}/approvals/{approval_id}/approval：决议一个审批项，请求体 `{"approved": true|false}`（不接受未知字段，否则 `422`）。**通过**则执行被批准的步骤，待该运行的审批项全部决议后运行置 `completed`；**驳回**则运行立即置 `failed` 并停止执行剩余步骤。成功返回 `{"run_id","approval_id","status","run_status"}`，并**新增可选字段** `execution: {outcome, code?, message_id?}`（`outcome ∈ executed / pending_approval / rejected / failed`；由规格 §4.1.6-7 定义；**不改既有字段**，客户端须对未知字段容错）。
   - 权限：**仅 `ceo`/`super_admin`**，且**发起人不能审批自己发起的运行**（否则 `403`，与计划提案同一口径）。
   - **执行授权位**（迁移 `026`）：**通过**时按服务端认证态登记「谁在何时批准了哪个计划摘要」（`execution_authorized_at/by` + `authorized_plan_digest`），**驳回**时撤销既有授权。授权来源由服务端判定（HTTP 入口固定为 `user`，白名单 `user/system/api/ui/automation`，**`agent` 被显式拒绝**）；请求体塞 `authorized_by` 会 `422`。
@@ -667,9 +667,9 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 **分页口径**：会话列表与会话详情内的消息都使用 `limit`（1–200，默认 50）+ `offset`（≥0，默认 0），并返回命中总数。
 
 - `POST /api/v1/conversations`：新建会话。请求体 `{"agent_key"?: string, "title"?: string}`（未知字段 `422`）。`agent_key` 缺省为默认员工；`agent_key` 只做标识归一，**不校验其在目录中是否启用**——历史会话在数字员工停用后仍必须可解析。成功 `201`，返回会话视图（**2026-09-17 只增 `mode` 字段（P2c-4）**，新建一律 `craft`）。
-- `GET /api/v1/conversations`：会话列表，**必须分页**。可选 `status=active|archived`（非法值 `422`）。返回 `{"items":[...],"total","limit","offset"}`。**2026-09-17（P2c-4）**：条目**只增** `mode`；`deleted_at` 非空的会话**一律不出现**（列表 / 详情 / 流 / 发消息 / 改模式对其统一 `404`，与「不存在」不可区分）。
-- `GET /api/v1/conversations/{conversation_id}`：会话详情（含消息）。消息同样以 `limit`/`offset` 分页，返回 `messages`、`messages_total`、`messages_limit`、`messages_offset`。跨租户或不属于当前操作者的会话返回 `404`。
-- `POST /api/v1/conversations/{conversation_id}/messages`：发送一条用户消息，落库用户消息与**确定性桩回复**。请求体 `{"content": string}`（空/纯空白 `422`，超长 `422`，未知字段 `422`）。成功 `201`，返回 `{"message_id","conversation_id","stub": true, "reply": {...}}`，其中 `reply.stub=true`。向**已归档**会话发消息返回 `409`。审计动作 `conversation.message.sent`（只记标识与角色，**不记消息正文**）。
+- `GET /api/v1/conversations`：会话列表，**必须分页**。可选 `status=active|archived`（非法值 `422`）。返回 `{"items":[...],"total","limit","offset"}`。**2026-09-17（P2c-4）**：条目**只增** `mode`；`deleted_at` 非空的会话**一律不出现**（列表 / 详情 / 流 / 发消息 / 改模式对其统一 `404`，与「不存在」不可区分）。**2026-09-17（P2c-6）**：列表范围 = 「**本人 ∪ 成员**」（非 `ceo` / `super_admin` 时；被点名分享的会话同样入列，见「会话协作」节）。
+- `GET /api/v1/conversations/{conversation_id}`：会话详情（含消息）。消息同样以 `limit`/`offset` 分页，返回 `messages`、`messages_total`、`messages_limit`、`messages_offset`。跨租户或不属于当前操作者的会话返回 `404`。**2026-09-17（P2c-6）**：读路径 = 「**本人 ∪ 成员**」（`ceo` / `super_admin` 既有只读口径不变）；消息条目**只增** `sender_id`（见「会话协作」节）。
+- `POST /api/v1/conversations/{conversation_id}/messages`：发送一条用户消息，落库用户消息与**确定性桩回复**。请求体 `{"content": string}`（空/纯空白 `422`，超长 `422`，未知字段 `422`）。成功 `201`，返回 `{"message_id","conversation_id","stub": true, "reply": {...}}`，其中 `reply.stub=true`。向**已归档**会话发消息返回 `409`。审计动作 `conversation.message.sent`（只记标识与角色，**不记消息正文**）。**2026-09-17（P2c-6）**：发言写权限 = 「**本人 ∪ `write` 成员**」；`read` 成员 ⇒ `403`（**不落库 / 不执行 / 不写幂等行**），非成员且非本人仍 `404`（见「会话协作」节）。
   - **用户消息 `content` 的落库语义（§8 U23，2026-09-14 裁决）＝ 脱敏摘要，非原文**：对话入口**不再把用户原始调用 JSON（或自由文本）逐字落** `workbench_conversation_messages.content`，改落**脱敏摘要** —— 调用 JSON 落 `tool_key` + 参数**键名清单** + 摘要指纹，自由文本落长度 + 指纹；**所有参数值一律不落**（含 `body` 类与 `control` 类，`path` / `target` 亦不保留）。因此 `GET /api/v1/conversations/{conversation_id}` 的 `messages[].content` 为摘要（前端按字符串展示即可），**不含正文原文 / 参数值 / 宿主路径 / 凭据**（与用例 33② 天然一致）。**不改变**响应结构与 `stub` 语义、**不改变**幂等重放（重放按助手消息 `message_id` 反查）与 `messages_total`。哨兵查询：`SELECT COUNT(*) FROM workbench_conversation_messages WHERE content LIKE '%' || <正文原文> || '%';` ⇒ 0。
   - **用户消息 `tool_name` 的落库语义（§8 U23「展示弥补」，2026-09-14）**：为让 UI 仍能看出「用户调用了哪个工具」，**调用 JSON 路径**的两个写入点（`201 executed` / `202 pending_approval`）把解析出的 `tool_key` 落到**用户消息行**的 `tool_name` 列（该列已存在、此前未用）；`content` **仍为脱敏摘要**——`tool_name` 的回填**不得**把任何参数值塞回 `content`。**桩路径**（无 `Idempotency-Key`、不触发真实执行）保持 `tool_name = null`。因此 `GET /api/v1/conversations/{conversation_id}` 的 `messages[]` 中：**用户消息**的 `tool_name` 为本次调用的工具键（桩路径与**存量消息**为 `null`），**助手消息**的 `tool_name` 恒为 `null`。前端在用户气泡展示该字段，字段为空时不渲染（存量消息自然降级为不显示）。
 - `POST /api/v1/conversations/{conversation_id}/archive`：归档会话（不删除）。成功返回更新后的会话视图（`status=archived`）；改他人会话返回 `404`。审计动作 `conversation.archived`。
@@ -926,6 +926,7 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 **帧写入触发面**：**仅本端点**（旧 `POST .../messages` 零帧）。**幂等重放**：同键重放**不重复执行、不重复写帧**，
 返回既有结果 + 既有 `X-Stream-Run-Id`（客户端打开流时按已落帧补发至终态后关流）。
 **审批分支**：`202` 返回时流**不写终态帧**（保持 `streaming`；「待审批」展示由既有审批聚合承担）。
+**2026-09-17（P2c-6）**：写权限与旧端点**同一判定**——「本人 ∪ `write` 成员」；`read` 成员 ⇒ `403`（**零帧、零落库**）。
 **2026-09-17 修订（P2c-2）**：审批决议后的**推进路径接入同一帧写入**（推翻原「本期不做」）——推进时写既有 `kind`
 （**不新增取值域**）、**同一 run 的 `seq` 继续单调递增**；该 run 状态行已终态时**先重开**（`status` 置回 `streaming`
 并清 `expires_at`）再续写；`202` 后的推进帧与「首次结果帧」同属**一个 run 序列**。
@@ -956,6 +957,7 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
 - **状态 `unavailable` 的告知**：熔断时**已落的告知帧优先**；悬挂兜底（不补写帧）则由读端**补发一帧** `stream.unavailable`（`is_terminal=true`）后关流。
 - **错误语义**：未认证 `401`；`customer_admin`（非对话岗位）`403`；会话不存在 / 跨租户 / 他人会话 / 未知 run `404`；非法 `run_id` / `after_seq` / `Last-Event-ID` `422`；读端自身不可用 `503`。
   **归档会话可开流**（读语义同 `GET /conversations/{id}`）；向归档会话发消息仍 `409`。
+  **2026-09-17（P2c-6）**：读路径 = 「**本人 ∪ 成员**」——被点名分享的成员可开流（其余 / 跨租户仍 `404`）。
 
 ### 帧 `kind` 取值域（冻结）与脱敏
 
@@ -1023,7 +1025,7 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
 
 `GET /api/v1/runs/{run_id}/artifacts`
 
-只读列出本运行的产物登记。**归属判定与运行接口一致**（本人 / `ceo` / `super_admin`；跨租户 / 不可见 / 未知运行一律 `404`，不泄露存在性）。
+只读列出本运行的产物登记。**归属判定与运行接口一致**（本人 / `ceo` / `super_admin`；跨租户 / 不可见 / 未知运行一律 `404`，不泄露存在性）。**2026-09-17（P2c-6）**：**会话成员可见**（承载任务不可见时用同一成员判定兜底）。
 返回 `{"run_id": string, "items": [{"artifact_id", "virtual_path", "change_kind", "bytes", "sha256", "created_at", "expires_at"}], "total": int}`；
 **不返回** `tenant_id`、宿主真实路径、文件内容。**保留期已到（`expires_at <= now`、尚未被周期任务清理）的条目不再返回**（保留期外如实降级，不静默延长）。
 
@@ -1065,8 +1067,9 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
 - 返回**本人**（`operator_id` = 当前用户）的全部**未删除**会话（含归档）及其消息；**不含**他人数据、**不含**审计明细、**不含** `operator_id` / `dsh_session_id`。
 - **如实说明**：用户原始输入自 U23 起只落**脱敏摘要**——导出返回的是**库中实际存在的字段**，不是原文重放。
 - 分页：页单位为**会话**（`created_at` 降序），`limit` 1–500（默认 500）、`offset` ≥ 0。响应：
-  `{"exported_at", "limit", "offset", "conversations": [{"conversation_id","agent_key","title","status","mode","created_at","updated_at","messages":[{"message_id","role","content","stub","tool_name","tool_call_id","created_at"}],"messages_total"}], "total_conversations", "total_messages", "truncated", "limit_reason"}`。
+  `{"exported_at", "limit", "offset", "conversations": [{"conversation_id","agent_key","title","status","mode","created_at","updated_at","messages":[{"message_id","role","content","stub","tool_name","tool_call_id","created_at","sender_id"}],"messages_total"}], "total_conversations", "total_messages", "truncated", "limit_reason"}`。
 - **规模上限（不静默截断）**：本人在库条目（**会话数 + 消息数**）合计超过 **50000** ⇒ `truncated=true` + `limit_reason="total_items_exceeded"`（本次只返回上限内的条目；用户按页继续导出）。单页装配同样受该上限保护。
+- **2026-09-17（P2c-6）**：导出条目里的消息**只增** `sender_id`（与 `messages[]` 同一口径：`user` 为发言账号 id、助手 / 工具 / 系统恒 `null`、存量行 `null`）——导出的仍是**库中实际存在的字段**。
 - 权限：仅对话岗位（`customer_admin` `403`；未认证 `401`）。审计 `conversation.exported`（明细 `conversation_count` / `message_count` / `truncated`，**不落正文**）。
 
 ### 物理删除（本人 · 同步 · 幂等）
@@ -1095,7 +1098,7 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
 
 `GET /api/v1/runs/{run_id}/acceptance`
 
-- 归属判定同运行接口（跨租户 / 不可见 / 未知运行 `404`）；**纯读**：**不调模型、不写库、不改运行状态**。
+- 归属判定同运行接口（跨租户 / 不可见 / 未知运行 `404`）；**纯读**：**不调模型、不写库、不改运行状态**。**2026-09-17（P2c-6）**：**会话成员可见**（承载任务不可见时用同一成员判定兜底）。
 - **结构判定**（三条件**全满足** ⇒ `met`）：① 步骤全部完成（`completed_step_count >= step_count`；`step_count = 0` 视为满足）② 无未决审批（运行审批状态无 `pending`）③ `finish_reason` 为**正常终态**（`run_completed`；`cancelled_by_user` / `step_failed` / `approval_rejected` 均**不算**）。
 - 响应 `{"run_id", "verdict": "met"|"unmet", "checks": {"steps_complete", "no_pending_approvals", "finish_reason_ok"}, "steps": {"completed", "total"}, "pending_approvals", "finish_reason", "status"}`；**非终态运行 ⇒ `unmet`**（如实，不谎报）。
 - **一键重做属前端行为**：未达标时，**仅当页面仍持有原结构化调用**时以**新幂等键**重发（＝一次新的正常调用、新 run，与原运行**无状态耦合**）；跨页 / 刷新后按既有安全口径**不重放原参数**（界面如实告知「原始参数未留存，请重新输入」）。**不做自动重跑、不做 LLM 判分**。
@@ -1103,18 +1106,19 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
 ## 会话协作：分享与多端协同（P2c-6 · 2026-09-17）
 
 > 口径源：`docs/superpowers/specs/2026-09-17-frontend-interaction-p2c-design.md` §2.16（已评审 2026-09-17）。本批**推翻** P1 / P2b §1.3-8 的「不做会话分享与多端协同」；**保留**「不做实时在线态 / 不做协同编辑」（无 WebSocket 底座，消息 append-only）、「不做部门级 / 全租户 / 跨租户分享与公开链接」。
-> **实现期裁定（2026-09-17，写入规格 §2.16）**：① 归档会话加 / 撤成员 ⇒ `409`（与「改模式」同口径：归档不可再写管理动作）；② `GET .../members` 的 `items` **含发起人**（`is_owner: true` / `permission: "owner"`，列首位、不可撤销）——参与者列表与消息发言者归属由此统一解析；③ 「最近活动时间」= 会话 `updated_at`（成员表**不**建活动时间列，不做在线态）；④ `read` 成员发言 ⇒ `403`（可读即不隐藏存在性），**非成员且非本人** 仍 `404`。
+> **实现期裁定（2026-09-17，写入规格 §2.16）**：① 归档会话加 / 撤成员 ⇒ `409`（与「改模式」同口径：归档不可再写管理动作）；② `GET .../members` 的 `items` **含发起人**（`is_owner: true` / `permission: "owner"`，列首位、不可撤销）——参与者列表与消息发言者归属由此统一解析；③ 「最近活动时间」= 会话 `updated_at`（成员表**不**建活动时间列，不做在线态）；④ `read` 成员发言 ⇒ `403`（可读即不隐藏存在性），**非成员且非本人** 仍 `404`；⑤ 运行级**读**路径（`/runs/{id}/metrics`、`/events`、`/acceptance`、`/artifacts`、`/approvals`）成员可见——经「运行 → 会话（幂等行反查）→ 成员判定」的**同一读可见性辅助**放行，**控制类（pause / resume / cancel / 决议）不放松**。
 
-**成员表（迁移 `039_conversation_members`）**：`workbench_conversation_members(tenant_id, conversation_id, member_id, permission, added_by, created_at)`；主键 `(tenant_id, conversation_id, member_id)`；复合外键引用 `workbench_conversations(tenant_id, conversation_id)`；`permission` 受控枚举 `read` / `write`（表级 CHECK）。成员必须**同租户、已审批、非 `customer_admin`**。
+**成员表（迁移 `039_conversation_members`）**：`workbench_conversation_members(tenant_id, conversation_id, member_id, permission, added_by, created_at)`；主键 `(tenant_id, conversation_id, member_id)`；复合外键引用 `workbench_conversations(tenant_id, conversation_id)`（**`ON DELETE CASCADE`**：会话行真删时成员行随之清理；生产路径的「物理删除」只软删会话行，不触发本级联）；`permission` 受控枚举 `read` / `write`（表级 CHECK）。成员必须**同租户、已审批、非 `customer_admin`**。
 
 **可见性（唯一新增授权轴）**：
 - **读路径统一为「本人 ∪ 成员」**：会话列表 / 详情 / 消息 / 帧流 / **运行概览**（`/runs/{id}/metrics`、`/events`、`/acceptance`、`/artifacts`）/ **审批**（`/runs/{id}/approvals`）；`ceo` / `super_admin` 既有只读口径**不变**（**未被点名就不是成员**，不因角色自动可见他人会话）。
-- **写路径**：发言（含结构化调用与 `messages:stream`）＝**本人 ∪ `write` 成员**；归档 / 改模式 / 物理删除 / 增删成员**仍仅本人**（被分享者的管理动作一律拒绝）。
+- **写路径**：发言（含结构化调用与 `messages:stream`）＝**本人 ∪ `write` 成员**；归档 / 改模式 / 物理删除 / 增删成员**仍仅本人**（被分享者的管理动作一律 `404`，与「不属于本人」同口径——不区分「无权限」，避免探测）。
+- **非成员口径的已知差异（如实）**：运行级读端点中 `/runs/{id}/events` 对「非发起人且非成员」沿用既有 `403`，其余四个（`metrics` / `acceptance` / `artifacts` / `approvals`）为 `404`；两者**本批均不改**。
 
-**消息 `sender_id`（**只增**，可空）**：`messages[]` 只增 `sender_id`（发言账号 id；**助手 / 工具 / 系统消息恒 `null`**）；**存量行 `NULL` ⇒ 展示回退为「发起人」，零破坏**。发言审计 `conversation.message.sent` 的 `actor_id`/`sender_id` 均为**发言者本人**。
+**消息 `sender_id`（**只增**，可空）**：`messages[]` 只增 `sender_id`（发言账号 id；**助手 / 工具 / 系统消息恒 `null`**）；**存量行 `NULL` ⇒ 展示回退为「发起人」，零破坏**（不回填）。发言审计 `conversation.message.sent` 的 `actor_id` = **发言者本人**（明细键不变，**不含** `sender_id` / 正文）。
 
 - `POST /api/v1/conversations/{conversation_id}/members`：添加成员。**仅会话本人**（他人 / 跨租户 `404`；未认证 `401`；`customer_admin` `403`）。请求体 `{"member_id": string, "permission"?: "read"|"write"}`（`permission` 缺省 `read`；未知字段 `422`）。**成员不合法**（未知账号 / 跨租户 / 未审批 / `customer_admin`）⇒ `422`。**幂等**：已存在且权限相同 ⇒ `201` 且**不重复写审计**；权限不同 ⇒ 以新权限覆盖并写审计。归档会话 `409`。成功 `201` 返回 `{"conversation_id","member_id","permission"}`。审计动作 `conversation.member.added`（明细：`conversation_id` / `member_id` / `permission`，**不含正文 / 姓名 / 手机号**）。
-- `GET /api/v1/conversations/{conversation_id}/members`：**本人或成员可见**（他人 / 跨租户 `404`）。返回 `{"items":[{"member_id","display_name","role","permission","is_owner","added_by","created_at"}...],"total"}`——发起人为首项（`is_owner: true` / `permission: "owner"`）；`display_name` 由账号解析（账号缺失 ⇒ 回退 `member_id`，**不编造**）；`role` 取账号当前角色（缺失 ⇒ `null`）。
+- `GET /api/v1/conversations/{conversation_id}/members`：**本人或成员可见**（`ceo` / `super_admin` 既有只读口径不变，同样可读；他人 / 跨租户 `404`）。**分页**：`limit` 1–200（默认 **200**）+ `offset` ≥ 0（默认 0），非法值 `422`；**不静默截断**——`items` 恒为分页后的一页，`total` 恒为**命中总数**（客户端据 `total` 与 `items.length` 判断还有下一页）。返回 `{"items":[{"member_id","display_name","role","permission","is_owner","added_by","created_at"}...],"total","limit","offset"}`——发起人为首项（`is_owner: true` / `permission: "owner"`，`added_by` 为 `null`）；`display_name` 由账号解析（账号缺失 ⇒ 回退 `member_id`，**不编造**）；`role` 取账号当前角色（缺失 ⇒ `null`）。**2026-09-18 修订（P2c-6 收尾裁决 B）**：补分页（原设计无 `limit` / `offset`，与「列表必须分页」的红线口径对齐）；`limit` / `offset` 为响应**只增**字段，`items` / `total` 语义不变。
 - `DELETE /api/v1/conversations/{conversation_id}/members/{member_id}`：撤销成员。**仅会话本人**（他人 / 跨租户 `404`）。成功 `204`；**复删 / 目标不是成员（含发起人）一律 `204`（幂等 no-op，不重复写审计）**。审计动作 `conversation.member.removed`（同受控键）。**已读内容不可撤回**（如实告知，不做「收回」语义）。
 - **发言与执行（`write` 成员）**：可发言（含结构化调用）并触发执行——**一律以其本人身份**走既有全部闸门（工具白名单 / 自治三档 / 审批 / `critical` 仅 CEO·超管 / **发起人不得自审**）；`read` 成员发言 ⇒ `403`（不做任何落库 / 执行 / 幂等写入）。
 - **边界**：跨租户 / 部门级 / 全租户 / 公开链接**均不做**；成员**不得**归档、改模式、删会话、增删成员；**不做实时在线态**（参与者列表 + 最近活动时间为**非实时**呈现）。

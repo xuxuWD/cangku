@@ -20,6 +20,7 @@ export const initialConversationState: ConversationState = {
   toast: null,
   // P2c-6 会话协作：参与者名单初始为空（未选中会话 / 未加载完成都不得凭空造名单）。
   participants: [],
+  participantsTotal: 0,
   participantsLoading: false,
   participantsError: null,
   sharing: false,

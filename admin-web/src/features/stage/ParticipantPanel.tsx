@@ -18,6 +18,8 @@ import { formatLocalTime } from '../../utils/time'
  */
 export interface CollaborationPanelState {
   items: ConversationMember[]
+  /** 服务端返回的**命中总数**（`> items.length` ⇒ 本页之外还有成员，如实告知，不谎报为全部）。 */
+  total: number
   lastActivityAt: string | null
   loading: boolean
   error: string | null
@@ -29,15 +31,17 @@ export interface CollaborationPanelState {
 export function ParticipantPanel({ collaboration }: { collaboration: CollaborationPanelState }) {
   const [memberId, setMemberId] = useState('')
   const [permission, setPermission] = useState<MemberPermission>('read')
-  const { items, lastActivityAt, loading, error, sharing, onAdd, onRemove } = collaboration
+  const { items, total, lastActivityAt, loading, error, sharing, onAdd, onRemove } = collaboration
   const canShare = isConversationOwner(items)
   const owner = items.find((item) => item.is_owner)
+  const knownTotal = Math.max(total, items.length)
 
   return (
     <section className="history-panel stage-panel" aria-label="参与者与分享">
       <div className="panel-header">
         <h2>参与者</h2>
-        <span>{items.length} 人</span>
+        {/* 分页口径：只显示本页时如实标注「已显示前 N 人」（不静默截断）。 */}
+        <span>{knownTotal} 人{items.length < knownTotal ? `（已显示前 ${items.length} 人）` : ''}</span>
       </div>
       <div className="panel-body">
         <div className="history-meta">

@@ -385,7 +385,7 @@
 * **可见性判定（唯一新增授权轴）**：会话列表 / 详情 / 消息 / 帧流 / 运行概览 / 审批的**读路径统一为「本人 ∪ 成员」**；`ceo` / `super_admin` 既有只读口径不变（**未被点名就不是成员**，不因角色自动可见他人会话）。
 * **端点**（仅会话本人可增删；成员可读列表；**复用既有 `current_user` / 归属判定 / 审计**）：
   * `POST /api/v1/conversations/{id}/members`（`permission` 缺省 `read`）——`201`；非本人 `404`（与「修改他人会话 `404`」一致）；成员不合法（跨租户 / 未审批 / `customer_admin`）`422`；重复添加幂等；
-  * `GET /api/v1/conversations/{id}/members`——本人或成员可见；
+  * `GET /api/v1/conversations/{id}/members`——本人或成员可见（`ceo` / `super_admin` 既有只读口径不变）；**2026-09-18 收尾裁决 B**：补分页 `limit`（1–200，默认 200）+ `offset`（≥0，默认 0），响应**只增** `limit` / `offset`，`total` 恒为命中总数（**不静默截断**；`items` / `total` 语义不变）；
   * `DELETE /api/v1/conversations/{id}/members/{member_id}`——`204`；复删幂等；
   * 审计动作：`conversation.member.added` / `conversation.member.removed`（受控键，不落正文）。
 * **协同（`write` 成员）**：可发言（含结构化调用）并触发执行——**执行一律以其本人身份走既有全部闸门**（工具白名单 / 自治三档 / 审批 / `critical` 仅 CEO 超管 / 发起人不得自审）；消息新增 `sender_id`（存量行 `NULL` ⇒ 展示回退为发起人 / 系统，**零破坏**）。

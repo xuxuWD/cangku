@@ -83,6 +83,8 @@ export interface ConversationState {
   toast: string | null
   // P2c-6 会话协作：参与者名单（发言人回溯与分享区块共用同一份数据；不猜、不本地造名单）。
   participants: ConversationMember[]
+  /** 参与者**命中总数**（服务端口径；`> participants.length` ⇒ 本页之外还有成员，界面如实告知）。 */
+  participantsTotal: number
   participantsLoading: boolean
   participantsError: ConversationErrorShape | null
   sharing: boolean
@@ -242,7 +244,11 @@ export interface ConversationMember {
 
 export interface ConversationMemberList {
   items: ConversationMember[]
+  /** 命中总数（不静默截断：`total > items.length` ⇒ 还有下一页）。 */
   total: number
+  /** 分页（2026-09-18 收尾裁决 B，响应**只增**）：服务端实际生效的页大小与偏移。 */
+  limit: number
+  offset: number
 }
 
 export interface ConversationMemberGrant {

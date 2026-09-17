@@ -2161,6 +2161,9 @@ class ConversationMemberView(BaseModel):
 class ConversationMemberListView(BaseModel):
     items: list[ConversationMemberView]
     total: int
+    # 分页（2026-09-18 收尾裁决 B，**只增**）：`items` 为一页、`total` 恒为命中总数（不静默截断）。
+    limit: int
+    offset: int
 
 
 @app.post(
@@ -2194,20 +2197,31 @@ def add_conversation_member(
     "/api/v1/conversations/{conversation_id}/members", response_model=ConversationMemberListView
 )
 def list_conversation_members(
-    conversation_id: str, context: UserContext = Depends(current_user)
+    conversation_id: str,
+    limit: int = Query(default=200, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
 ) -> ConversationMemberListView:
     """参与者列表（P2c-6 §2.16）：**本人或成员可见**（他人 / 跨租户 `404`）。
 
     发起人列首位（`is_owner=true` / `permission="owner"`，不可撤销）；「最近活动时间」取会话 `updated_at`
     （成员表不建活动时间列，**不做实时在线态**）。
+    **分页（2026-09-18 收尾裁决 B）**：`limit` 1–200（默认 200）+ `offset` ≥ 0（非法值 `422`）；
+    **不静默截断**——`items` 为一页、`total` 恒为命中总数（客户端据 `total` 判断还有下一页）。
     """
     try:
         ensure_can_converse(context)
-        items = conversation_service.list_participants(context, conversation_id)
+        items, total = conversation_service.list_participants(
+            context, conversation_id, limit=limit, offset=offset
+        )
     except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
         _raise_conversation_http(exc)
-    views = [ConversationMemberView(**item) for item in items]
-    return ConversationMemberListView(items=views, total=len(views))
+    return ConversationMemberListView(
+        items=[ConversationMemberView(**item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.delete("/api/v1/conversations/{conversation_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)

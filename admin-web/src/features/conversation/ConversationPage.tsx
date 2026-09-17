@@ -139,9 +139,12 @@ export function ConversationPage({
     setState((old) => ({ ...old, participantsLoading: true, participantsError: null }))
     try {
       const data = await listConversationMembers(id)
+      const items = Array.isArray(data.items) ? data.items : []
       setState((old) => ({
         ...old,
-        participants: Array.isArray(data.items) ? data.items : [],
+        participants: items,
+        // 命中总数取服务端口径（`total > items.length` ⇒ 本页之外还有成员，界面如实告知，不谎报为全部）。
+        participantsTotal: typeof data.total === 'number' ? data.total : items.length,
         participantsLoading: false,
         participantsError: null,
       }))
@@ -149,6 +152,7 @@ export function ConversationPage({
       setState((old) => ({
         ...old,
         participants: [],
+        participantsTotal: 0,
         participantsLoading: false,
         participantsError: asConversationError(error),
       }))
@@ -745,6 +749,7 @@ export function ConversationPage({
               // P2c-6：参与者与分享（舞台呈现；数据与增删回调都由本页提供，舞台只渲染）。
               collaboration={{
                 items: state.participants,
+                total: state.participantsTotal,
                 lastActivityAt: detail?.updated_at ?? null,
                 loading: state.participantsLoading,
                 error: state.shareError?.message ?? state.participantsError?.message ?? null,

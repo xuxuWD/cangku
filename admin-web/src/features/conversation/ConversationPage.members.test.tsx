@@ -34,7 +34,7 @@ const memberItem = {
 
 interface Call { url: string; method: string; body: string }
 
-function makeFetch(options: { addStatus?: number; addDetail?: string; items?: unknown[] } = {}) {
+function makeFetch(options: { addStatus?: number; addDetail?: string; items?: unknown[]; itemsTotal?: number } = {}) {
   const calls: Call[] = []
   let items = options.items ?? [ownerItem, memberItem]
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -55,7 +55,9 @@ function makeFetch(options: { addStatus?: number; addDetail?: string; items?: un
       }]
       return json({ conversation_id: 'conv-1', member_id: body.member_id, permission: body.permission }, 201)
     }
-    if (url.includes('/conversations/conv-1/members')) return json({ items, total: items.length })
+    if (url.includes('/conversations/conv-1/members')) {
+      return json({ items, total: options.itemsTotal ?? items.length, limit: 200, offset: 0 })
+    }
     if (url.includes('/conversations/conv-1/stream')) {
       const body = new ReadableStream<Uint8Array>({ start(controller) { controller.close() } })
       return { ok: true, status: 200, body, headers: new Headers() } as unknown as Response
@@ -140,6 +142,16 @@ describe('ConversationPage（P2c-6 会话协作）', () => {
 
     expect(await screen.findByText('成员账号不存在，或不在本租户 / 未审批')).toBeInTheDocument()
     expect(screen.queryByText('新成员姓名')).toBeNull()
+  })
+
+  it('参与者超过一页 ⇒ 如实显示命中总数与已显示条数（不静默截断）', async () => {
+    const { fetchMock } = makeFetch({ itemsTotal: 3 })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+
+    const section = await screen.findByLabelText('参与者与分享')
+    expect(section).toHaveTextContent('3 人（已显示前 2 人）')
   })
 
   it('撤销成员：DELETE 后从名单移除并如实告知「已读不可撤回」', async () => {
