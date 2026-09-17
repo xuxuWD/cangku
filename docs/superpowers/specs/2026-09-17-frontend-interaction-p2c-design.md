@@ -59,6 +59,8 @@
 > **验证**：后端 **2395 passed**（含真库；新增 `tests/test_conversation_mode_api.py` 9 条、`tests/test_conversation_delete_export_api.py` 6 条、`tests/test_run_acceptance_api.py` 6 条、`tests/test_tool_catalog_api.py` 6 条、`tests/test_conversation_lifecycle_postgres.py` 7 条；`compileall` exit 0）；前端 `admin-web` **261 passed（36 文件）** + `tsc -b && vite build` 通过；`companion-pwa` **37 passed** + build；`desktop` **19 passed**。**反假三轮已实测变红**（均已复原）：① `ask` 只在前端拦（后端放行）⇒ 用例 ① 红（`201` 而非 `409`）；② 删除只做软删（消息行不真删）⇒ 真库用例 ② 红（`message_count` 断言失败）；③ 结构判定改接 LLM（探针调用）⇒ 「不调模型」断言红（5 条端点用例同时红）。**浏览器走查 1 轮**（dev：前端 5173 + **新代码**后端 8010）：默认对话视图 / 6 分组 / 新建会话 / 列表条目模式徽标 / 模式切换双向（`ask` ↔ `craft`，提示与徽标同步、列表回流）/ 「导出我的数据」触发导出接口 + 计数提示 / 删除会话（确认后计数提示 + 列表消失 + 回空态）/ 数字员工配置页**模型键为下拉**（本部署候选为空 ⇒ 如实显示「（默认模型：本部署未注册模型键）」）与**工具白名单为 13 项复选框列表**（本机未配置 `WORKBENCH_PLANNER_TOOLS` ⇒ 13 项**全部灰显**并给出受控原因，与「保存会被 422 拒绝」一致）/ 全程无 `.notice-error`。
 >
 > **未验证（登记）**：① 导出**文件是否真正落盘**未取证（走查环境未观察到下载栏与 `blob:` 资源，接口调用与计数提示已确认；下载行为依赖浏览器设置，组件级用例已断言 `createObjectURL` 与锚点点击被调用）；② 二次确认对话框**本身**未在自动化下被观测（由自动化层以 accept 放行，删除效果已确认）；③ **结构判定与一键重做的真实运行数据**端到端未取证（本机 dev 未装配真实执行 ⇒ 无运行；组件级用例覆盖 `met` / `unmet` / 重做新幂等键路径，真实执行装配后的端到端留 staging）；④ `mode=ask` 的**推进处拦截**在真实执行装配下的端到端未取证（接口层用例已覆盖：待批 → 切 `ask` → 决议 `409` 且不落决议 → 切回后可决议）；⑤ ≥1281px 宽视口三列常驻仍未实测（走查窗口 913px，承接 P2c-3 同项）；⑥ 本机 dev 的 `WORKBENCH_PLANNER_TOOLS` 为空 ⇒ 选择器「灰显给原因」路径已取证，而**可选（可保存）路径**只在组件测试里取证。
+>
+> **CI 销账（2026-09-17）**：提交 `5d92fcc` 推送后（`ad3711e..5d92fcc main -> main`）run **`35234051711` ⇒ 六 job 全绿**（后端 pytest + compileall、后端真库（含迁移 `038` 与 `test_conversation_lifecycle_postgres.py`）、**沙箱加固与真容器回归**、网页管理台 vitest + build、手机伴侣端 vitest + build、桌面端 node --test）。
 
 ***
 
