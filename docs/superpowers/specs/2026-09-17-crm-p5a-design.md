@@ -13,6 +13,8 @@
 
 > 体例说明：本阶段的「真库回归记录」在**开工日**按 [`knowledge-governance-design.md`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-15-knowledge-governance-design.md) §0 同体例补写（迁移从零应用 + 真库用例 + CI 销账）。本节先登记**起草时已核实的实现事实**（静态核对，非运行时取证）。
 
+> **真库回归记录（2026-09-17 开工日 + CI 销账）**：迁移 `035_crm_core` 由仓库自身 `apply_migrations` 从 `034` **增量应用成功**（本机测试库）；`tests/test_crm_postgres.py` **11 passed**（转化单事务回滚「无半成品」/ 跨租户复合外键 `ForeignKeyViolation` / 阶段机首写获胜 / 报价行 NUMERIC 精度往返与 confirmed 冻结 / 回款原子增量与超限 / 揭示审计 grep 无明文 / 自定义字段白名单 / 目标 UPSERT）；**CI 销账（2026-09-17）**：提交 `d15e883` 推送后 run `35180312922` ⇒ **六 job 全绿**（「后端真库」job 按 `ci.yml` 清单真跑本文件、`skipped==0`）。
+
 | # | 事实（静态核对） | 证据 |
 | --- | --- | --- |
 | 1 | **本仓无任何 CRM 业务表**：`workbench_customer_admins` 仅是客户管理员角色实体 | [006_commercial_g0.sql](file:///d:/徐徐AI学习/公司工作台/migrations/006_commercial_g0.sql#L18-L23)、立项文档 §1 事实 10 |

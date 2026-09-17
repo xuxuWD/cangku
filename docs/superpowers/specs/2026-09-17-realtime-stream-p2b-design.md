@@ -13,6 +13,8 @@
 
 > 体例说明：本阶段的「真库回归记录」在**开工日**按 [`knowledge-governance-design.md`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-15-knowledge-governance-design.md) §0 同体例补写（迁移从零应用 + 真库用例 + CI 销账）。本节先登记**起草时已核实的实现事实**（静态核对，非运行时取证）——它们是本设计全部「复用」断言的依据。
 
+> **真库回归记录（2026-09-17 开工日 + CI 销账）**：迁移 `036_conversation_stream` 由仓库自身 `apply_migrations` 从 `035` **增量应用成功**（本机测试库）；`tests/test_conversation_stream_postgres.py` **10 passed**（序号单调无跳号 / 续播真增量 / **跨租户复合外键拒写** / 双上限熔断返回 None 且不落帧 / 熔断后重开流可读**显式告知帧** / 清理**只清流帧**（消息表行数不变）/ 悬挂兜底幂等 / 活跃 run 优先级与水位 / 凭据形态落库为掩码且幂等）；端点层 `tests/test_conversation_stream_api.py` **15 passed**（含**零破坏哨兵**：旧 `POST /messages` 帧表计数为 0）；**CI 销账（2026-09-17）**：提交 `0ec4f4a` 推送后 run `35180312922` ⇒ **六 job 全绿**（「后端真库」job 按 `ci.yml` 清单真跑本文件、`skipped==0`）。
+
 | #  | 事实（静态核对）                                                                                                                                                                                                  | 证据                                                                                                        |
 | -- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | 1  | 过程事件枚举**十种已存在**（`plan.created` / `step.started` / `tool.call` / `tool.result` / `approval.requested` / `approval.decided` / `checkpoint.saved` / `run.paused` / `run.failed` / `run.completed`）⇒ 复用，不另起枚举 | [contracts.py](file:///d:/徐徐AI学习/公司工作台/app/runtime/contracts.py#L17-L27)                                  |
