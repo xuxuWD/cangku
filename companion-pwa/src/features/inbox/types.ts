@@ -10,8 +10,10 @@ export type InboxKind =
   | 'run.cancelled'
   | 'run.approval_rejected'
   | 'account.registration.approved'
+  | 'crm.activity.due'
+  | 'crm.renewal.window'
 
-export type InboxTargetType = 'task' | 'plan_proposal' | 'orchestration_proposal' | 'publication' | 'run'
+export type InboxTargetType = 'task' | 'plan_proposal' | 'orchestration_proposal' | 'publication' | 'run' | 'crm_activity' | 'crm_contract'
 
 export interface InboxItem {
   inbox_id: string
@@ -39,6 +41,8 @@ export const INBOX_KIND_LABELS: Record<InboxKind, string> = {
   'run.cancelled': '运行被取消',
   'run.approval_rejected': '运行审批被驳回',
   'account.registration.approved': '注册申请已通过',
+  'crm.activity.due': '跟进任务到期',
+  'crm.renewal.window': '合同进入续约窗口',
 }
 
 // 服务端新增 kind 时给出兜底文案，避免出现空白标签。

@@ -88,6 +88,29 @@ class AuditAction(StrEnum):
     # 用例变更与评测运行完成；只记标识 / 状态 / 计数 / 指纹，**不记用例内容与期望正文**。
     EVOLUTION_CASE_CHANGED = "evolution.case.changed"
     EVOLUTION_EVAL_COMPLETED = "evolution.eval.completed"
+    # P5a CRM（真源 specs/2026-09-17-crm-p5a-design.md §2.10，最小集 17 条）：
+    # 只记标识与受控枚举（**不落正文 / PII / 敏感字段值**）；`from_stage` / `to_stage` /
+    # `field_name` 为受控枚举，不得写入自由文本。
+    CRM_ACCOUNT_CREATED = "crm.account.created"
+    CRM_CONTACT_CREATED = "crm.contact.created"
+    CRM_LEAD_CONVERTED = "crm.lead.converted"
+    CRM_OPPORTUNITY_CREATED = "crm.opportunity.created"
+    CRM_OPPORTUNITY_STAGE_CHANGED = "crm.opportunity.stage_changed"
+    CRM_ACTIVITY_LOGGED = "crm.activity.logged"
+    CRM_QUOTE_CREATED = "crm.quote.created"
+    CRM_QUOTE_CONFIRMED = "crm.quote.confirmed"
+    CRM_QUOTE_CONVERTED = "crm.quote.converted"
+    CRM_QUOTE_VOIDED = "crm.quote.voided"
+    CRM_CONTRACT_CREATED = "crm.contract.created"
+    CRM_CONTRACT_SIGNED = "crm.contract.signed"
+    CRM_CONTRACT_VOIDED = "crm.contract.voided"
+    CRM_CONTRACT_PAYMENT_REGISTERED = "crm.contract.payment_registered"
+    CRM_INSIGHT_GENERATED = "crm.insight.generated"
+    CRM_SENSITIVE_REVEALED = "crm.sensitive.revealed"
+    CRM_HEALTH_RECOMPUTED = "crm.health.recomputed"
+    # P2b 实时流（真源 specs/2026-09-17-realtime-stream-p2b-design.md §1.4）：
+    # 熔断 / 写失败 / 悬挂兜底的治理事件；明细只记 `reason`（受控枚举）+ `run_id`。
+    CONVERSATION_STREAM_UNAVAILABLE = "conversation.stream.unavailable"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -159,6 +182,22 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "case_count",
         "pass_count",
         "suite_digest",
+        # P5a CRM（只记标识与受控枚举，不落正文 / PII / 敏感字段值；口径见 crm-p5a-design §2.10）
+        "account_id",
+        "contact_id",
+        "lead_id",
+        "opportunity_id",
+        "quote_id",
+        "contract_id",
+        "insight_id",
+        "activity_id",
+        "from_stage",
+        "to_stage",
+        "amount_cents",
+        "field_name",
+        "recomputed_count",
+        "create_opportunity",
+        "model_key",
     }
 )
 

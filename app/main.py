@@ -4,20 +4,27 @@ import atexit
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+import time
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import NoReturn
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
+# P5a CRM（真源 specs/2026-09-17-crm-p5a-design.md §2.12）：路由层只做校验 / 视图 / 异常映射。
+from .crm.followup import FollowupPlanError
+from .crm.masking import mask_record
+from .crm.models import CrmNotFound, CrmStateConflict, InvalidCrm
 from .domain import (
     AuditEvent,
     IdempotencyConflict,
@@ -151,6 +158,11 @@ from .conversation import (
     ensure_can_converse,
 )
 from .conversation.execution import ConversationExecutionError
+from .conversation.stream import (
+    REASON_STALLED,
+    STATUS_UNAVAILABLE,
+    UNAVAILABLE_KIND,
+)
 
 
 app = FastAPI(title="公司数字员工工作台", version="0.1.0")
@@ -193,6 +205,10 @@ conversation_service = build_conversation_service(
 # P3 记忆层（规格 docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md §2.5/§2.8）：
 # 嵌入式服务开发环境缺 default 时由装配层回退到 FakeEmbeddingAdapter（仅验证链路）。
 memory_service = build_memory_service(settings, audit=audit_service)
+# P5a CRM（真源 specs/2026-09-17-crm-p5a-design.md，已评审 2026-09-17）：
+# 跟进计划生成器缺省 Mock（**不编造建议**，输出「依据不足」）；真实模型网关接入属部署装配
+# （本期未接，登记为未验证——不得声称已具备真实 LLM 建议能力）。
+crm_service = build_crm_service(settings, audit=audit_service)
 # P4 技能层（规格 docs/superpowers/specs/2026-09-15-skill-layer-p4-design.md §2.3/§2.4）：
 # 来源白名单为空 = 技能层关闭（可登记、不可启用，fail-closed）；allowed-tools 与执行目录取交集。
 # M3 打通：注入 P3 记忆服务实例 → 技能经验沉淀入事实类记忆（memory_service 已在上面装配）。
@@ -252,6 +268,12 @@ if body_cleanup_task is not None:
     app.add_event_handler("shutdown", body_cleanup_task.stop)
 # 段二-4 对话入口路由（§3.7 Y2 / §3.2 第四条）：幂等行落 027 的 `workbench_execution_idempotency`。
 execution_idempotency_store = build_execution_idempotency_store(settings)
+# P2b 实时流（规格 §2.2/§2.3/§2.4）：流仓储 + 写入网关。**只有 `messages:stream` 路径写帧**；
+# 旧 `POST /messages` 走 `handle_message(stream=False)` ⇒ 零帧（零破坏哨兵）。
+conversation_stream_store = build_conversation_stream_store(settings)
+conversation_stream_writer = build_conversation_stream_writer(
+    settings, store=conversation_stream_store, audit=audit_service
+)
 conversation_execution_service = build_conversation_execution_service(
     settings,
     conversations=conversation_service,
@@ -262,6 +284,7 @@ conversation_execution_service = build_conversation_execution_service(
     idempotency=execution_idempotency_store,
     audit=audit_service,
     directory_store=workforce_directory_store,
+    stream_writer=conversation_stream_writer,
 )
 # 段二（dsh 接入段）执行回调接收 + ②④ 判定（§3.5 P1 第 3 条 / §8 U21 裁决「候选②」）：
 # 边车是**无状态纯转发**，②④ 判定落回**工作台**的权威状态处——`expected` 从工作台权威状态重建
@@ -1584,6 +1607,201 @@ def send_conversation_message(
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
     response.status_code = result.http_status
     return result.body
+
+
+@app.post(
+    "/api/v1/conversations/{conversation_id}/messages:stream",
+    status_code=status.HTTP_201_CREATED,
+)
+def send_conversation_message_stream(
+    conversation_id: str,
+    payload: MessageCreateRequest,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    """发送一条用户消息（**实时流路径**，P2b §2.4 / Q7 候选①）。
+
+    请求体 / 请求头 / 响应体 / 状态码与 `POST .../messages` **逐字一致**（复用同一执行服务）；
+    **唯一差异**：① 执行过程写流帧（先落库，供 `GET .../stream` 增量读取）；② 响应头多一个
+    `X-Stream-Run-Id`（有运行时）；不带 `Idempotency-Key` 时仍是既有桩回复且**不写帧**。
+    """
+    try:
+        ensure_can_converse(context)
+        result = conversation_execution_service.handle_message(
+            context,
+            conversation_id,
+            content=payload.content,
+            idempotency_key=idempotency_key,
+            stream=True,
+        )
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    except ConversationExecutionError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    response.status_code = result.http_status
+    run_id = result.body.get("run_id")
+    if run_id:
+        response.headers["X-Stream-Run-Id"] = str(run_id)
+    return result.body
+
+
+# ------------------------------------------------------------ P2b 实时流（SSE 读端点 §2.3）
+
+# SSE 心跳注释间隔（秒）：注释行不产生事件、不干扰 `Last-Event-ID`（规格 §2.3）。
+SSE_HEARTBEAT_SECONDS = 15.0
+# 单次增量读的帧数上限（读端只做短轮询；超出的下一轮继续）。
+SSE_FRAME_BATCH = 200
+
+
+def _sse_start_cursor(last_event_id: str | None, after_seq: int | None) -> int:
+    """续播起点 = **max(`Last-Event-ID`, `after_seq`)**（防降级重放导致重复投递，规格 §2.3）。
+
+    非法值一律 `422`；起点**大于** `last_seq` 不报错（只等新帧）。
+    """
+    values: list[int] = []
+    if last_event_id is not None:
+        text = last_event_id.strip()
+        if not text.isdigit():
+            raise HTTPException(status_code=422, detail="Last-Event-ID 必须是非负整数")
+        values.append(int(text))
+    if after_seq is not None:
+        if after_seq < 0:
+            raise HTTPException(status_code=422, detail="after_seq 必须是非负整数")
+        values.append(int(after_seq))
+    return max(values) if values else 0
+
+
+def _sse_chunk(*, seq: int, kind: str, payload: dict[str, object], is_terminal: bool) -> str:
+    """SSE 帧：`id: <seq>` + `event: <kind>` + `data: <json>`（规格 §2.3 冻结格式）。"""
+    data = json.dumps(
+        {"seq": seq, "kind": kind, "payload": payload, "is_terminal": is_terminal},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return f"id: {seq}\nevent: {kind}\ndata: {data}\n\n"
+
+
+def _sse_unavailable_reason(store, tenant_id: str, conversation_id: str, run_id: str, last_seq: int) -> str:
+    """`unavailable` 终态的原因：优先取**已落的告知帧**（熔断），否则按悬挂兜底口径（`stalled`）。"""
+    try:
+        tail = store.list_frames(
+            tenant_id, conversation_id, run_id, after_seq=max(0, int(last_seq) - 1), limit=1
+        )
+    except Exception:  # noqa: BLE001 - 探测失败按悬挂口径告知，不谎报
+        return REASON_STALLED
+    if tail and tail[0].kind == UNAVAILABLE_KIND:
+        return str(tail[0].payload.get("reason") or REASON_STALLED)
+    return REASON_STALLED
+
+
+def _sse_frame_stream(
+    conversation_id: str, context: UserContext, run_id: str | None, start_seq: int
+):
+    """SSE 增量生成器：短轮询 PG（不引入 Redis / WebSocket），心跳保活，终态主动关流。
+
+    - 缺省 run = `latest_run_id`（无 run ⇒ 挂起仅心跳；轮询中发现新 run 后自动开始补发）；
+    - 读到 `is_terminal=True` 帧 ⇒ 关流；重连且起点已覆盖终态 ⇒ 立即关流；
+    - 状态 `unavailable` 且无告知帧（悬挂兜底）⇒ 补发一帧 `stream.unavailable` 后关流；
+    - 单连接超 `stream_max_connection_seconds` ⇒ 关流（客户端自动重连续播）；
+    - 读失败 ⇒ 关流（**不谎报**为正常结束；客户端按既有 `Last-Event-ID` 重试）。
+    """
+    store = conversation_stream_store
+    settings = get_settings()
+    poll_seconds = max(0.05, float(settings.stream_poll_interval_ms) / 1000.0)
+    max_connection = float(settings.stream_max_connection_seconds)
+    started = time.monotonic()
+    last = int(start_seq)
+    last_heartbeat = started
+    active_run = run_id
+    notified_unavailable = False
+    while True:
+        now = time.monotonic()
+        if now - started >= max_connection:
+            return
+        if active_run is None:
+            try:
+                active_run = store.latest_run_id(context.tenant_id, conversation_id)
+            except Exception:  # noqa: BLE001 - 读失败关流，不谎报
+                return
+            if active_run is None:
+                if now - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
+                    last_heartbeat = now
+                    yield ": hb\n\n"
+                time.sleep(poll_seconds)
+                continue
+        try:
+            frames = store.list_frames(
+                context.tenant_id, conversation_id, active_run,
+                after_seq=last, limit=SSE_FRAME_BATCH,
+            )
+            state = store.get_state(context.tenant_id, conversation_id, active_run)
+        except Exception:  # noqa: BLE001
+            return
+        if frames:
+            for frame in frames:
+                last = max(last, int(frame.seq))
+                if frame.kind == UNAVAILABLE_KIND:
+                    notified_unavailable = True
+                yield _sse_chunk(
+                    seq=int(frame.seq), kind=frame.kind,
+                    payload=dict(frame.payload), is_terminal=bool(frame.is_terminal),
+                )
+                last_heartbeat = time.monotonic()
+                if frame.is_terminal:
+                    return
+            continue
+        if state is not None and state.is_terminal:
+            if state.status == STATUS_UNAVAILABLE and not notified_unavailable:
+                # 悬挂兜底不补写帧 ⇒ 读端按状态**显式告知**后关流（熔断时已落的那帧优先）。
+                yield _sse_chunk(
+                    seq=int(state.last_seq) + 1, kind=UNAVAILABLE_KIND,
+                    payload={
+                        "reason": _sse_unavailable_reason(
+                            store, context.tenant_id, conversation_id, active_run, int(state.last_seq)
+                        )
+                    },
+                    is_terminal=True,
+                )
+            return
+        if time.monotonic() - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
+            last_heartbeat = time.monotonic()
+            yield ": hb\n\n"
+        time.sleep(poll_seconds)
+
+
+@app.get("/api/v1/conversations/{conversation_id}/stream")
+def stream_conversation(
+    conversation_id: str,
+    run_id: str | None = Query(default=None, min_length=1, max_length=128),
+    after_seq: int | None = Query(default=None, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    context: UserContext = Depends(current_user),
+) -> StreamingResponse:
+    """SSE 读取一次运行的流帧（P2b §2.3）：认证 + 归属 + 续播 + 心跳 + 终态关流。
+
+    权限沿用对话端点口径：未认证 `401`；`customer_admin` `403`；跨租户 / 他人会话 / 未知 run `404`；
+    非法 `run_id` / `after_seq` / `Last-Event-ID` `422`。响应 `Cache-Control: no-cache` +
+    `X-Accel-Buffering: no`（反代不缓冲）。
+    """
+    try:
+        ensure_can_converse(context)
+        conversation_service.get_conversation(context, conversation_id)
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    start_seq = _sse_start_cursor(last_event_id, after_seq)
+    if run_id is not None:
+        try:
+            state = conversation_stream_store.get_state(context.tenant_id, conversation_id, run_id)
+        except Exception as exc:  # noqa: BLE001 - 读失败不泄露内部细节
+            raise HTTPException(status_code=503, detail="流暂不可用") from exc
+        if state is None:
+            raise HTTPException(status_code=404, detail="运行不存在或不属于该会话")
+    return StreamingResponse(
+        _sse_frame_stream(conversation_id, context, run_id, start_seq),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/v1/conversations/{conversation_id}/archive", response_model=ConversationView)
@@ -4052,3 +4270,882 @@ def reject_orchestration_proposal(
         approved=False,
     )
     return _orchestration_view(proposal)
+
+
+# ---------------------------------------------------------------- CRM（P5a，真源 specs/2026-09-17-crm-p5a-design.md §2.12）
+#
+# 本层只做请求校验（extra=forbid）→ 服务调用 → 视图 / 异常映射；权限与归属在服务层统一判定。
+# 敏感字段：列表 / 详情默认**掩码**（mask_record）；明文仅经 reveal 专用端点（POST + 审计留痕）；
+# 数字员工侧另经进程内工具面（永不返回敏感字段，见 app/crm/tools.py）。
+
+
+class CrmStrictModel(BaseModel):
+    """CRM 请求基类：未知字段一律拒绝（extra=forbid；宪法白名单口径）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _raise_crm_http(exc: Exception) -> NoReturn:
+    """CRM 领域异常 → HTTP 语义（§2.9）：404 不泄露存在性 / 403 角色 / 409 状态 / 422 输入 / 502 网关。"""
+    if isinstance(exc, FollowupPlanError):
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if isinstance(exc, CrmStateConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, InvalidCrm):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, CrmNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, PolicyError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    raise exc
+
+
+def _crm_do(func, *args, **kwargs):
+    """统一异常映射包装（服务层异常 → HTTP 语义）。"""
+    try:
+        return func(*args, **kwargs)
+    except (FollowupPlanError, CrmStateConflict, InvalidCrm, CrmNotFound, PolicyError) as exc:
+        _raise_crm_http(exc)
+
+
+# ------------------------------------------------------------ 视图（掩码出口统一在此）
+
+
+def _crm_account_view(account) -> dict:
+    return {
+        "account_id": account.account_id,
+        "name": account.name,
+        "industry": account.industry,
+        "source": account.source,
+        "status": account.status,
+        "owner_id": account.owner_id,
+        "custom_fields": dict(account.custom_fields or {}),
+        "health_score": account.health_score,
+        "health_band": account.health_band,
+        "health_computed_at": account.health_computed_at,
+        "created_at": account.created_at,
+        "updated_at": account.updated_at,
+    }
+
+
+def _contact_view(contact) -> dict:
+    masked = mask_record(contact)
+    return {
+        "contact_id": masked["contact_id"],
+        "account_id": masked.get("account_id"),
+        "name": masked["name"],
+        "title": masked["title"],
+        "phone": masked["phone"],
+        "email": masked["email"],
+        "is_primary": masked["is_primary"],
+        "birthday": masked.get("birthday"),
+        "owner_id": masked["owner_id"],
+        "custom_fields": dict(masked.get("custom_fields") or {}),
+        "created_at": masked["created_at"],
+    }
+
+
+def _lead_view(lead) -> dict:
+    masked = mask_record(lead)
+    return {
+        "lead_id": masked["lead_id"],
+        "name": masked["name"],
+        "company": masked["company"],
+        "phone": masked["phone"],
+        "email": masked["email"],
+        "source": masked["source"],
+        "status": masked["status"],
+        "owner_id": masked["owner_id"],
+        "converted_account_id": masked.get("converted_account_id"),
+        "custom_fields": dict(masked.get("custom_fields") or {}),
+        "created_at": masked["created_at"],
+    }
+
+
+def _opportunity_view(opportunity) -> dict:
+    return {
+        "opportunity_id": opportunity.opportunity_id,
+        "account_id": opportunity.account_id,
+        "name": opportunity.name,
+        "stage": opportunity.stage,
+        "amount_cents": opportunity.amount_cents,
+        "expected_close": opportunity.expected_close,
+        "owner_id": opportunity.owner_id,
+        "stage_entered_at": opportunity.stage_entered_at,
+        "closed_at": opportunity.closed_at,
+        "custom_fields": dict(opportunity.custom_fields or {}),
+        "created_at": opportunity.created_at,
+    }
+
+
+def _activity_view(activity) -> dict:
+    return {
+        "activity_id": activity.activity_id,
+        "kind": activity.kind,
+        "subject": activity.subject,
+        "account_id": activity.account_id,
+        "contact_id": activity.contact_id,
+        "opportunity_id": activity.opportunity_id,
+        "owner_id": activity.owner_id,
+        "status": activity.status,
+        "due_at": activity.due_at,
+        "occurred_at": activity.occurred_at,
+        "created_by_kind": activity.created_by_kind,
+    }
+
+
+def _quote_view(quote) -> dict:
+    return {
+        "quote_id": quote.quote_id,
+        "account_id": quote.account_id,
+        "opportunity_id": quote.opportunity_id,
+        "quote_no": quote.quote_no,
+        "status": quote.status,
+        "subtotal_cents": quote.subtotal_cents,
+        "tax_cents": quote.tax_cents,
+        "total_cents": quote.total_cents,
+        "valid_until": quote.valid_until,
+        "confirmed_at": quote.confirmed_at,
+        "converted_contract_id": quote.converted_contract_id,
+        "owner_id": quote.owner_id,
+        "created_at": quote.created_at,
+    }
+
+
+def _quote_line_view(line) -> dict:
+    return {
+        "line_no": line.line_no,
+        "description": line.description,
+        "qty": line.qty,
+        "unit_price_cents": line.unit_price_cents,
+        "tax_rate_bp": line.tax_rate_bp,
+        "line_subtotal_cents": line.line_subtotal_cents,
+        "line_tax_cents": line.line_tax_cents,
+    }
+
+
+def _contract_view(contract) -> dict:
+    return {
+        "contract_id": contract.contract_id,
+        "account_id": contract.account_id,
+        "quote_id": contract.quote_id,
+        "opportunity_id": contract.opportunity_id,
+        "contract_no": contract.contract_no,
+        "title": contract.title,
+        "status": contract.status,
+        "amount_cents": contract.amount_cents,
+        "paid_cents": contract.paid_cents,
+        "starts_on": contract.starts_on,
+        "ends_on": contract.ends_on,
+        "document_object_key": contract.document_object_key,
+        "signed_at": contract.signed_at,
+        "owner_id": contract.owner_id,
+        "created_at": contract.created_at,
+    }
+
+
+def _insight_view(insight) -> dict:
+    return {
+        "insight_id": insight.insight_id,
+        "account_id": insight.account_id,
+        "kind": insight.kind,
+        "content": dict(insight.content),
+        "evidence_refs": list(insight.evidence_refs),
+        "dropped_refs": list(insight.dropped_refs),
+        "model_key": insight.model_key,
+        "generated_by": insight.generated_by,
+        "created_at": insight.created_at,
+    }
+
+
+def _target_view(target) -> dict:
+    return {
+        "target_id": target.target_id,
+        "owner_id": target.owner_id,
+        "period_month": target.period_month,
+        "amount_target_cents": target.amount_target_cents,
+        "count_target": target.count_target,
+    }
+
+
+def _field_def_view(definition) -> dict:
+    return {
+        "object_key": definition.object_key,
+        "field_key": definition.field_key,
+        "label": definition.label,
+        "field_type": definition.field_type,
+        "required": definition.required,
+        "options": list(definition.options),
+        "active": definition.active,
+    }
+
+
+# ------------------------------------------------------------ 请求模型
+
+
+class CrmAccountCreateRequest(CrmStrictModel):
+    name: str = Field(min_length=1, max_length=200)
+    industry: str = Field(default="", max_length=200)
+    owner_id: str | None = Field(default=None, max_length=64)
+    custom_fields: dict | None = None
+
+
+class CrmAccountUpdateRequest(CrmStrictModel):
+    name: str | None = Field(default=None, max_length=200)
+    industry: str | None = Field(default=None, max_length=200)
+    status: str | None = Field(default=None, max_length=32)
+    custom_fields: dict | None = None
+
+
+class CrmContactCreateRequest(CrmStrictModel):
+    name: str = Field(min_length=1, max_length=200)
+    title: str = Field(default="", max_length=200)
+    phone: str = Field(default="", max_length=64)
+    email: str = Field(default="", max_length=254)
+    is_primary: bool = False
+    birthday: date | None = None
+    custom_fields: dict | None = None
+
+
+class CrmContactUpdateRequest(CrmStrictModel):
+    name: str | None = Field(default=None, max_length=200)
+    title: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=64)
+    email: str | None = Field(default=None, max_length=254)
+    is_primary: bool | None = None
+    birthday: date | None = None
+    custom_fields: dict | None = None
+
+
+class CrmLeadCreateRequest(CrmStrictModel):
+    name: str = Field(min_length=1, max_length=200)
+    company: str = Field(default="", max_length=200)
+    phone: str = Field(default="", max_length=64)
+    email: str = Field(default="", max_length=254)
+    source: str = Field(default="manual", max_length=64)
+    custom_fields: dict | None = None
+
+
+class CrmLeadConvertRequest(CrmStrictModel):
+    create_opportunity: bool = False
+    opportunity_name: str | None = Field(default=None, max_length=200)
+    account_name: str | None = Field(default=None, max_length=200)
+
+
+class CrmRevealRequest(CrmStrictModel):
+    field: str = Field(min_length=1, max_length=64)
+
+
+# ------------------------------------------------------------ 账户
+
+
+@app.get("/api/v1/crm/accounts")
+def crm_list_accounts(
+    owner_id: str | None = Query(default=None, max_length=64),
+    status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    """客户列表（employee 仅本人负责）。"""
+    items, total = _crm_do(
+        crm_service.list_accounts, context, owner_id=owner_id, status=status_filter, limit=limit, offset=offset
+    )
+    return {
+        "items": [_crm_account_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/v1/crm/accounts", status_code=status.HTTP_201_CREATED)
+def crm_create_account(
+    payload: CrmAccountCreateRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    """建客户（`owner_id` 缺省 = 操作者本人；非特权岗位指定他人 ⇒ 404）。"""
+    account = _crm_do(
+        crm_service.create_account, context, name=payload.name, industry=payload.industry,
+        owner_id=payload.owner_id, custom_fields=payload.custom_fields,
+    )
+    return _crm_account_view(account)
+
+
+@app.get("/api/v1/crm/accounts/{account_id}")
+def crm_get_account(account_id: str, context: UserContext = Depends(current_user)) -> dict:
+    account = _crm_do(crm_service.get_account, context, account_id)
+    return _crm_account_view(account)
+
+
+@app.patch("/api/v1/crm/accounts/{account_id}")
+def crm_update_account(
+    account_id: str, payload: CrmAccountUpdateRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    account = _crm_do(
+        crm_service.update_account, context, account_id,
+        name=payload.name, industry=payload.industry, status=payload.status,
+        custom_fields=payload.custom_fields,
+    )
+    return _crm_account_view(account)
+
+
+@app.post("/api/v1/crm/accounts/{account_id}/followup-plan")
+def crm_generate_followup_plan(
+    account_id: str, context: UserContext = Depends(current_user)
+) -> dict:
+    """生成跟进计划（人工触发）：建议附**证据引用**；全部无效或网关未接 ⇒ 「依据不足」。
+
+    网关失败 ⇒ 502（不降级、不落库）；**建议永不直接执行**。
+    """
+    insight = _crm_do(crm_service.generate_followup_plan, context, account_id)
+    return _insight_view(insight)
+
+
+@app.get("/api/v1/crm/accounts/{account_id}/insights")
+def crm_list_insights(
+    account_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    items, total = _crm_do(crm_service.list_insights, context, account_id, limit=limit, offset=offset)
+    return {
+        "items": [_insight_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+# ------------------------------------------------------------ 联系人（敏感字段默认掩码）
+
+
+@app.get("/api/v1/crm/accounts/{account_id}/contacts")
+def crm_list_contacts(
+    account_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    items, total = _crm_do(
+        crm_service.list_contacts, context, account_id=account_id, limit=limit, offset=offset
+    )
+    return {
+        "items": [_contact_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/v1/crm/accounts/{account_id}/contacts", status_code=status.HTTP_201_CREATED)
+def crm_create_contact(
+    account_id: str, payload: CrmContactCreateRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    contact = _crm_do(
+        crm_service.create_contact, context, name=payload.name, account_id=account_id,
+        title=payload.title, phone=payload.phone, email=payload.email,
+        is_primary=payload.is_primary, birthday=payload.birthday, custom_fields=payload.custom_fields,
+    )
+    return _contact_view(contact)
+
+
+@app.get("/api/v1/crm/contacts/{contact_id}")
+def crm_get_contact(contact_id: str, context: UserContext = Depends(current_user)) -> dict:
+    contact = _crm_do(crm_service.get_contact, context, contact_id)
+    return _contact_view(contact)
+
+
+@app.patch("/api/v1/crm/contacts/{contact_id}")
+def crm_update_contact(
+    contact_id: str, payload: CrmContactUpdateRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    contact = _crm_do(
+        crm_service.update_contact, context, contact_id,
+        name=payload.name, title=payload.title, phone=payload.phone, email=payload.email,
+        is_primary=payload.is_primary, birthday=payload.birthday, custom_fields=payload.custom_fields,
+    )
+    return _contact_view(contact)
+
+
+@app.post("/api/v1/crm/contacts/{contact_id}/reveal")
+def crm_reveal_contact_field(
+    contact_id: str, payload: CrmRevealRequest, response: Response,
+    context: UserContext = Depends(current_user),
+) -> dict:
+    """敏感字段揭示（**专用端点**）：数据范围内 + 审计 `crm.sensitive.revealed`（不落字段值）。"""
+    value = _crm_do(
+        crm_service.reveal_sensitive, context, entity="contact", entity_id=contact_id, field=payload.field
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"contact_id": contact_id, "field": payload.field, "value": value}
+
+
+# ------------------------------------------------------------ 线索
+
+
+@app.get("/api/v1/crm/leads")
+def crm_list_leads(
+    owner_id: str | None = Query(default=None, max_length=64),
+    status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    items, total = _crm_do(
+        crm_service.list_leads, context, owner_id=owner_id, status=status_filter, limit=limit, offset=offset
+    )
+    return {
+        "items": [_lead_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/v1/crm/leads", status_code=status.HTTP_201_CREATED)
+def crm_create_lead(payload: CrmLeadCreateRequest, context: UserContext = Depends(current_user)) -> dict:
+    lead = _crm_do(
+        crm_service.create_lead, context, name=payload.name, company=payload.company,
+        phone=payload.phone, email=payload.email, source=payload.source,
+        custom_fields=payload.custom_fields,
+    )
+    return _lead_view(lead)
+
+
+@app.post("/api/v1/crm/leads/{lead_id}/convert", status_code=status.HTTP_201_CREATED)
+def crm_convert_lead(
+    lead_id: str, payload: CrmLeadConvertRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    """线索转化（单事务）：产出 Account + Contact（+ 可选 Opportunity）；重复转化 ⇒ 409。"""
+    account, contact, opportunity = _crm_do(
+        crm_service.convert_lead, context, lead_id,
+        create_opportunity=payload.create_opportunity, opportunity_name=payload.opportunity_name,
+        account_name=payload.account_name,
+    )
+    return {
+        "account": _crm_account_view(account),
+        "contact": _contact_view(contact),
+        "opportunity": _opportunity_view(opportunity) if opportunity is not None else None,
+    }
+
+
+@app.post("/api/v1/crm/leads/{lead_id}/reveal")
+def crm_reveal_lead_field(
+    lead_id: str, payload: CrmRevealRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    value = _crm_do(
+        crm_service.reveal_sensitive, context, entity="lead", entity_id=lead_id, field=payload.field
+    )
+    return {"lead_id": lead_id, "field": payload.field, "value": value}
+
+
+# ------------------------------------------------------------ 商机
+
+
+class CrmOpportunityCreateRequest(CrmStrictModel):
+    account_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    amount_cents: int = Field(default=0, ge=0)
+    expected_close: date | None = None
+    custom_fields: dict | None = None
+
+
+class CrmOpportunityStageRequest(CrmStrictModel):
+    to_stage: str = Field(min_length=1, max_length=32)
+
+
+class CrmActivityCreateRequest(CrmStrictModel):
+    kind: str = Field(min_length=1, max_length=16)
+    subject: str = Field(default="", max_length=200)
+    content: str = Field(default="", max_length=8000)
+    account_id: str | None = Field(default=None, max_length=64)
+    contact_id: str | None = Field(default=None, max_length=64)
+    opportunity_id: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=16)
+    due_at: datetime | None = None
+
+
+@app.get("/api/v1/crm/opportunities")
+def crm_list_opportunities(
+    owner_id: str | None = Query(default=None, max_length=64),
+    account_id: str | None = Query(default=None, max_length=64),
+    stage: str | None = Query(default=None, max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    items, total = _crm_do(
+        crm_service.list_opportunities, context,
+        owner_id=owner_id, account_id=account_id, stage=stage, limit=limit, offset=offset,
+    )
+    return {
+        "items": [_opportunity_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/v1/crm/opportunities", status_code=status.HTTP_201_CREATED)
+def crm_create_opportunity(
+    payload: CrmOpportunityCreateRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    opportunity = _crm_do(
+        crm_service.create_opportunity, context, account_id=payload.account_id, name=payload.name,
+        amount_cents=payload.amount_cents, expected_close=payload.expected_close,
+        custom_fields=payload.custom_fields,
+    )
+    return _opportunity_view(opportunity)
+
+
+@app.get("/api/v1/crm/opportunities/{opportunity_id}")
+def crm_get_opportunity(
+    opportunity_id: str, context: UserContext = Depends(current_user)
+) -> dict:
+    """商机详情（含**阶段事件时间线**——转化率 / 账龄的事实源）。"""
+    opportunity = _crm_do(crm_service.get_opportunity, context, opportunity_id)
+    events = _crm_do(crm_service.list_stage_events, context, opportunity_id)
+    return {
+        "opportunity": _opportunity_view(opportunity),
+        "stage_events": [
+            {
+                "event_id": event.event_id,
+                "from_stage": event.from_stage,
+                "to_stage": event.to_stage,
+                "amount_cents": event.amount_cents,
+                "actor_id": event.actor_id,
+                "occurred_at": event.occurred_at,
+            }
+            for event in events
+        ],
+    }
+
+
+@app.post("/api/v1/crm/opportunities/{opportunity_id}/stage")
+def crm_change_opportunity_stage(
+    opportunity_id: str, payload: CrmOpportunityStageRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    """阶段迁移（白名单；非法迁移 / 并发先写 ⇒ 409；每次迁移 append 阶段事件）。"""
+    opportunity = _crm_do(
+        crm_service.change_opportunity_stage, context, opportunity_id, to_stage=payload.to_stage
+    )
+    return _opportunity_view(opportunity)
+
+
+# ------------------------------------------------------------ 跟进活动
+
+
+@app.get("/api/v1/crm/activities")
+def crm_list_activities(
+    account_id: str | None = Query(default=None, max_length=64),
+    contact_id: str | None = Query(default=None, max_length=64),
+    opportunity_id: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    items, total = _crm_do(
+        crm_service.list_activities, context,
+        account_id=account_id, contact_id=contact_id, opportunity_id=opportunity_id,
+        limit=limit, offset=offset,
+    )
+    return {
+        "items": [_activity_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/v1/crm/activities", status_code=status.HTTP_201_CREATED)
+def crm_log_activity(
+    payload: CrmActivityCreateRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    """登记跟进活动（`task` 类默认 `planned` 且必须带 `due_at`；到期提醒幂等）。"""
+    activity = _crm_do(
+        crm_service.log_activity, context, kind=payload.kind, subject=payload.subject,
+        content=payload.content, account_id=payload.account_id, contact_id=payload.contact_id,
+        opportunity_id=payload.opportunity_id, status=payload.status, due_at=payload.due_at,
+    )
+    return _activity_view(activity)
+
+
+# ------------------------------------------------------------ 报价（金额由服务端重算）
+
+
+class CrmQuoteLineItem(CrmStrictModel):
+    description: str = Field(min_length=1, max_length=2000)
+    qty: Decimal
+    unit_price_cents: int = Field(ge=0)
+    tax_rate_bp: int = Field(default=0, ge=0, le=10000)
+
+
+class CrmQuoteCreateRequest(CrmStrictModel):
+    account_id: str = Field(min_length=1, max_length=64)
+    lines: list[CrmQuoteLineItem] = Field(min_length=1, max_length=200)
+    opportunity_id: str | None = Field(default=None, max_length=64)
+    valid_until: date | None = None
+
+
+class CrmQuoteLinesRequest(CrmStrictModel):
+    lines: list[CrmQuoteLineItem] = Field(min_length=1, max_length=200)
+
+
+class CrmContractCreateRequest(CrmStrictModel):
+    account_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    amount_cents: int = Field(default=0, ge=0)
+    opportunity_id: str | None = Field(default=None, max_length=64)
+    starts_on: date | None = None
+    ends_on: date | None = None
+    document_object_key: str = Field(default="", max_length=512)
+
+
+class CrmContractSignatureRequest(CrmStrictModel):
+    signed_at: datetime
+    document_object_key: str | None = Field(default=None, max_length=512)
+
+
+class CrmPaymentRequest(CrmStrictModel):
+    amount_cents: int = Field(gt=0)
+
+
+class CrmTargetUpsertRequest(CrmStrictModel):
+    owner_id: str = Field(min_length=1, max_length=64)
+    period_month: date
+    amount_target_cents: int = Field(default=0, ge=0)
+    count_target: int = Field(default=0, ge=0)
+
+
+class CrmFieldDefUpsertRequest(CrmStrictModel):
+    object_key: str = Field(min_length=1, max_length=32)
+    field_key: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=200)
+    field_type: str = Field(min_length=1, max_length=16)
+    required: bool = False
+    options: list[str] | None = None
+
+
+def _crm_lines_payload(lines: list[CrmQuoteLineItem]) -> list[dict]:
+    return [
+        {
+            "description": item.description,
+            "qty": str(item.qty),
+            "unit_price_cents": item.unit_price_cents,
+            "tax_rate_bp": item.tax_rate_bp,
+        }
+        for item in lines
+    ]
+
+
+@app.get("/api/v1/crm/quotes")
+def crm_list_quotes(
+    account_id: str | None = Query(default=None, max_length=64),
+    status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    items, total = _crm_do(
+        crm_service.list_quotes, context, account_id=account_id, status=status_filter,
+        limit=limit, offset=offset,
+    )
+    return {
+        "items": [_quote_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/v1/crm/quotes", status_code=status.HTTP_201_CREATED)
+def crm_create_quote(payload: CrmQuoteCreateRequest, context: UserContext = Depends(current_user)) -> dict:
+    """建报价（行金额 / 税额由服务端重算：Decimal + ROUND_HALF_UP，整数分）。"""
+    quote = _crm_do(
+        crm_service.create_quote, context, account_id=payload.account_id,
+        lines=_crm_lines_payload(payload.lines), opportunity_id=payload.opportunity_id,
+        valid_until=payload.valid_until,
+    )
+    lines = _crm_do(crm_service.store.list_quote_lines, context.tenant_id, quote.quote_id)
+    return {"quote": _quote_view(quote), "lines": [_quote_line_view(line) for line in lines]}
+
+
+@app.get("/api/v1/crm/quotes/{quote_id}")
+def crm_get_quote(quote_id: str, context: UserContext = Depends(current_user)) -> dict:
+    quote = _crm_do(crm_service.get_quote, context, quote_id)
+    lines = _crm_do(crm_service.store.list_quote_lines, context.tenant_id, quote_id)
+    return {"quote": _quote_view(quote), "lines": [_quote_line_view(line) for line in lines]}
+
+
+@app.put("/api/v1/crm/quotes/{quote_id}/lines")
+def crm_replace_quote_lines(
+    quote_id: str, payload: CrmQuoteLinesRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    """行全量替换（仅 `draft`；confirmed 冻结 ⇒ 409）。"""
+    quote = _crm_do(
+        crm_service.replace_quote_lines, context, quote_id, lines=_crm_lines_payload(payload.lines)
+    )
+    lines = _crm_do(crm_service.store.list_quote_lines, context.tenant_id, quote_id)
+    return {"quote": _quote_view(quote), "lines": [_quote_line_view(line) for line in lines]}
+
+
+@app.post("/api/v1/crm/quotes/{quote_id}/confirm")
+def crm_confirm_quote(quote_id: str, context: UserContext = Depends(current_user)) -> dict:
+    quote = _crm_do(crm_service.confirm_quote, context, quote_id)
+    return _quote_view(quote)
+
+
+@app.post("/api/v1/crm/quotes/{quote_id}/void")
+def crm_void_quote(quote_id: str, context: UserContext = Depends(current_user)) -> dict:
+    quote = _crm_do(crm_service.void_quote, context, quote_id)
+    return _quote_view(quote)
+
+
+@app.post("/api/v1/crm/quotes/{quote_id}/convert-to-contract", status_code=status.HTTP_201_CREATED)
+def crm_convert_quote_to_contract(
+    quote_id: str, context: UserContext = Depends(current_user)
+) -> dict:
+    """报价转合同（单事务；仅 `confirmed`；金额取报价合计）。"""
+    contract = _crm_do(crm_service.convert_quote_to_contract, context, quote_id)
+    return _contract_view(contract)
+
+
+# ------------------------------------------------------------ 合同（签署 / 回款均人工登记）
+
+
+@app.get("/api/v1/crm/contracts")
+def crm_list_contracts(
+    account_id: str | None = Query(default=None, max_length=64),
+    status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    items, total = _crm_do(
+        crm_service.list_contracts, context, account_id=account_id, status=status_filter,
+        limit=limit, offset=offset,
+    )
+    return {
+        "items": [_contract_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/v1/crm/contracts", status_code=status.HTTP_201_CREATED)
+def crm_create_contract(
+    payload: CrmContractCreateRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    contract = _crm_do(
+        crm_service.create_contract, context, account_id=payload.account_id, title=payload.title,
+        amount_cents=payload.amount_cents, opportunity_id=payload.opportunity_id,
+        starts_on=payload.starts_on, ends_on=payload.ends_on,
+        document_object_key=payload.document_object_key,
+    )
+    return _contract_view(contract)
+
+
+@app.get("/api/v1/crm/contracts/{contract_id}")
+def crm_get_contract(contract_id: str, context: UserContext = Depends(current_user)) -> dict:
+    contract = _crm_do(crm_service.get_contract, context, contract_id)
+    return _contract_view(contract)
+
+
+@app.post("/api/v1/crm/contracts/{contract_id}/submit-for-sign")
+def crm_submit_contract_for_sign(
+    contract_id: str, context: UserContext = Depends(current_user)
+) -> dict:
+    contract = _crm_do(crm_service.submit_contract_for_sign, context, contract_id)
+    return _contract_view(contract)
+
+
+@app.post("/api/v1/crm/contracts/{contract_id}/register-signature")
+def crm_register_signature(
+    contract_id: str, payload: CrmContractSignatureRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    """**人工登记**签署结果（本段无 provider；系统只做台账，不承诺法律效力）。"""
+    contract = _crm_do(
+        crm_service.register_signature, context, contract_id,
+        signed_at=payload.signed_at, document_object_key=payload.document_object_key,
+    )
+    return _contract_view(contract)
+
+
+@app.post("/api/v1/crm/contracts/{contract_id}/register-payment")
+def crm_register_payment(
+    contract_id: str, payload: CrmPaymentRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    """回款**人工登记**（原子增量；超合同金额 ⇒ 409）。"""
+    contract = _crm_do(crm_service.register_payment, context, contract_id, amount_cents=payload.amount_cents)
+    return _contract_view(contract)
+
+
+@app.post("/api/v1/crm/contracts/{contract_id}/void")
+def crm_void_contract(contract_id: str, context: UserContext = Depends(current_user)) -> dict:
+    contract = _crm_do(crm_service.void_contract, context, contract_id)
+    return _contract_view(contract)
+
+
+# ------------------------------------------------------------ 目标 / 自定义字段 / 进度指标
+
+
+@app.get("/api/v1/crm/targets")
+def crm_list_targets(
+    period_month: date | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    """目标列表（employee 仅自己；管理角色全量）。"""
+    items, total = _crm_do(
+        crm_service.list_targets, context, period_month=period_month, limit=limit, offset=offset
+    )
+    return {
+        "items": [_target_view(item) for item in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.put("/api/v1/crm/targets")
+def crm_set_target(payload: CrmTargetUpsertRequest, context: UserContext = Depends(current_user)) -> dict:
+    """目标写入（UPSERT；限 `ceo` / `super_admin`，其余 ⇒ 403）。"""
+    target = _crm_do(
+        crm_service.set_target, context, owner_id=payload.owner_id, period_month=payload.period_month,
+        amount_target_cents=payload.amount_target_cents, count_target=payload.count_target,
+    )
+    return _target_view(target)
+
+
+@app.get("/api/v1/crm/field-defs")
+def crm_list_field_defs(
+    object_key: str = Query(..., min_length=1, max_length=32),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    items = _crm_do(crm_service.list_field_defs, context, object_key=object_key)
+    return {"items": [_field_def_view(item) for item in items]}
+
+
+@app.put("/api/v1/crm/field-defs")
+def crm_upsert_field_def(
+    payload: CrmFieldDefUpsertRequest, context: UserContext = Depends(current_user)
+) -> dict:
+    """字段定义写入（管理动作：`ceo` / `super_admin`；§1.3-9 本段不做字段管理 UI，走 API）。"""
+    definition = _crm_do(
+        crm_service.upsert_field_def, context, object_key=payload.object_key,
+        field_key=payload.field_key, label=payload.label, field_type=payload.field_type,
+        required=payload.required, options=payload.options,
+    )
+    return _field_def_view(definition)
+
+
+@app.get("/api/v1/crm/progress/summary")
+def crm_progress_summary(
+    scope: str = Query(default="me", max_length=8),
+    context: UserContext = Depends(current_user),
+) -> dict:
+    """多维度进度指标（§2.6）：分母为零一律 `null`；`scope=all` 需管理角色（否则 403）。"""
+    return _crm_do(crm_service.progress_summary, context, scope=scope)

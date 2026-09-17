@@ -73,13 +73,14 @@ def test_default_catalog_declares_every_param_role() -> None:
     body_tools = {
         spec.key for spec in catalog.specs if ParamRole.BODY in spec.param_roles.values()
     }
-    # §3.1.1：本规格内仅 fs.write / fs.overwrite 含 body 类参数。
-    assert body_tools == {"fs.write", "fs.overwrite"}
+    # §3.1.1：P2a 段二内仅 fs.write / fs.overwrite 含 body 类参数；
+    # P5a 起 crm.activity.log 的 subject / content 亦为 body 类（进程内工具同样受受控密文列保护）。
+    assert body_tools == {"fs.write", "fs.overwrite", "crm.activity.log"}
 
 
 def test_default_catalog_covers_appendix_tool_list() -> None:
     catalog = ToolSpecCatalog(default_tool_specs())
-    assert {spec.key for spec in catalog.specs} == {
+    expected = {
         "fs.list",
         "fs.read",
         "fs.stat",
@@ -89,5 +90,16 @@ def test_default_catalog_covers_appendix_tool_list() -> None:
         "fs.delete",
         "artifact.export",
     }
+    # P5a CRM 受控工具面（crm-p5a-design §2.8）：读 ×4（low）+ 写 ×1（medium）。
+    expected |= {
+        "crm.account.search",
+        "crm.account.get",
+        "crm.opportunity.list",
+        "crm.progress.summary",
+        "crm.activity.log",
+    }
+    assert {spec.key for spec in catalog.specs} == expected
     # critical 的承担工具 = artifact.export（§3.1.1）。
     assert catalog.get("artifact.export").risk_level is RiskLevel.CRITICAL
+    # CRM 写工具的风险档 = medium（走九步闸门审批；§2.8）。
+    assert catalog.get("crm.activity.log").risk_level is RiskLevel.MEDIUM

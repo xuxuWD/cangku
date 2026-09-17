@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from app import worker
@@ -31,13 +33,24 @@ def _clean_wiring(monkeypatch):
     monkeypatch.setattr(worker, "_lifecycle_runner", None)
     monkeypatch.setattr(worker, "_knowledge_review_scanner", None)
     monkeypatch.setattr(worker, "_runtime_event_purger", None)
+    # 2026-09-17 新增第 5/6 个注入点（P5a CRM 服务 / 站内通知）；「必须逐个列全」的口径见上。
+    monkeypatch.setattr(worker, "_crm_service", None)
+    monkeypatch.setattr(worker, "_crm_notifier", None)
+    # 2026-09-17 新增第 7 个注入点（P2b 流帧清理器）；「必须逐个列全」的口径见上。
+    monkeypatch.setattr(worker, "_conversation_stream_purger", None)
     monkeypatch.setattr(worker, "_runtime_builder", None)
     yield
 
 
 class _Settings:
+    """最小 settings 桩；数值字段与 `app.settings.Settings` 缺省一致（仅任务读取所需项）。"""
+
     def __init__(self, env: str) -> None:
         self.env = env
+
+    # 流帧清理任务（P2b）读取的两项（其余用例不读）。
+    stream_stalled_hours = 6
+    stream_retention_days = 7
 
 
 def _use_env(monkeypatch, env: str) -> None:
@@ -113,6 +126,25 @@ def test_partial_explicit_wiring_is_not_overwritten(monkeypatch) -> None:
     assert calls == [], "已接线时不得自动装配"
 
 
+def test_conversation_stream_purger_is_an_explicit_wiring_point(monkeypatch) -> None:
+    """P2b 流帧清理器同样是显式注入点：注入其一即视为已接线（不触发自动装配）。"""
+    _use_env(monkeypatch, "staging")
+    calls: list[str] = []
+    monkeypatch.setattr(worker, "_runtime_builder", lambda: calls.append("built"))
+
+    class _Purger:
+        def mark_stalled(self, *, cutoff, expires_at) -> int:
+            return 0
+
+        def purge_expired(self, *, cutoff) -> int:
+            return 0
+
+    worker.configure_conversation_stream_purger(_Purger())
+
+    assert worker.purge_conversation_stream() == {"stalled": 0, "purged": 0}
+    assert calls == [], "已接线时不得自动装配"
+
+
 def test_wiring_failure_fails_the_task(monkeypatch) -> None:
     """装配失败**不吞**：任务显式失败（不静默返回零值，避免「任务看起来成功但其实没跑」）。"""
     _use_env(monkeypatch, "staging")
@@ -185,3 +217,57 @@ def test_export_package_purge_delegates_to_the_wired_lifecycle_runner(monkeypatc
 
     assert worker.purge_export_packages() == 5
     assert calls == ["purged"]
+
+
+# ------------------------------------------------------------ 流帧清理任务（P2b §2.6）
+#
+# 口径：先**悬挂兜底**（未终态且 `updated_at` 超阈 ⇒ `unavailable('stalled')` + `expires_at`），
+# 再按 `expires_at` 删除到期 run 的帧与状态行；**只清流帧**（消息表 / 审计 / 运行事件不受影响）。
+# 与既有周期任务同口径：**未接线即返回零值**，绝不伪造清理结果。
+
+
+def test_conversation_stream_purge_task_is_scheduled_alongside_existing_periodic_tasks() -> None:
+    from app.settings import Settings
+    from app.worker import celery_app
+
+    entry = celery_app.conf.beat_schedule["conversation-stream-purge"]
+    settings = Settings()
+
+    assert entry["task"] == "app.worker.purge_conversation_stream"
+    assert entry["schedule"] == settings.stream_purge_interval_seconds
+    assert entry["schedule"] > 0
+
+
+def test_conversation_stream_purge_returns_zero_when_worker_is_not_wired(monkeypatch) -> None:
+    monkeypatch.setattr(worker, "_ensure_runtime", lambda: None)
+
+    assert worker.purge_conversation_stream() == {"stalled": 0, "purged": 0}
+
+
+def test_conversation_stream_purge_stalls_then_purges_with_configured_windows(monkeypatch) -> None:
+    """一次调用两段都跑：先悬挂兜底（阈值取自配置），再按到期时刻清理——**顺序不可颠倒**。"""
+    from app.settings import Settings
+
+    settings = Settings()
+    seen: list[tuple[str, object]] = []
+
+    class _Purger:
+        def mark_stalled(self, *, cutoff, expires_at) -> int:
+            seen.append(("stalled", (cutoff, expires_at)))
+            return 2
+
+        def purge_expired(self, *, cutoff) -> int:
+            seen.append(("purged", cutoff))
+            return 3
+
+    monkeypatch.setattr(worker, "_ensure_runtime", lambda: None)
+    worker.configure_conversation_stream_purger(_Purger())
+
+    assert worker.purge_conversation_stream() == {"stalled": 2, "purged": 3}
+    assert [name for name, _ in seen] == ["stalled", "purged"]
+    # 悬挂窗口 = now - STALLED_HOURS（阈值取自配置，不写死 6h）
+    stalled_cutoff, stalled_expiry = seen[0][1]
+    assert 5 * 3600 < (datetime.now(UTC) - stalled_cutoff).total_seconds() < 7 * 3600
+    assert settings.stream_stalled_hours == 6
+    # 兜底置位的过期时刻 = now + 保留期（默认 7 天）
+    assert 6 < (stalled_expiry - datetime.now(UTC)).total_seconds() / 86400 < 8

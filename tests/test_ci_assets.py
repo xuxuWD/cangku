@@ -171,6 +171,10 @@ def test_postgres_job_runs_only_the_real_db_modules() -> None:
     # 时都漏了这一处）——正是上面教训所指的「job 里写了、断言没钉」。缺口已由本断言补上。
     assert "tests/test_evolution_postgres.py" in command
     assert "tests/test_runtime_events_postgres.py" in command
+    # 2026-09-17 补钉：P5a CRM 真库回归（迁移 035，转化单事务 / 复合外键 / 报价与回款）
+    assert "tests/test_crm_postgres.py" in command
+    # 2026-09-17 补钉：P2b 实时流真库回归（迁移 036，序号 / 续播 / 熔断告知帧 / 脱敏落库 / 清理）
+    assert "tests/test_conversation_stream_postgres.py" in command
 
 
 def test_postgres_job_requires_zero_skipped() -> None:

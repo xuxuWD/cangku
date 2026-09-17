@@ -545,6 +545,92 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- P5a CRM 周期任务（crm-p5a-design §2.11）：3 个 beat 间隔，命名与区间口径同上一节 ----
+    # 健康度重算：默认每日一次（逐租户全量重算，批量收集避免 N+1）。
+    crm_health_recompute_interval_seconds: int = Field(
+        default=86400,
+        ge=300,
+        le=7 * 24 * 3600,
+        validation_alias=AliasChoices(
+            "CRM_HEALTH_RECOMPUTE_INTERVAL_SECONDS",
+            "WORKBENCH_CRM_HEALTH_RECOMPUTE_INTERVAL_SECONDS",
+        ),
+    )
+    # 活动到期提醒：默认每小时扫一次（幂等：同任务同日只投递一次）。
+    crm_activity_reminder_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=7 * 24 * 3600,
+        validation_alias=AliasChoices(
+            "CRM_ACTIVITY_REMINDER_INTERVAL_SECONDS",
+            "WORKBENCH_CRM_ACTIVITY_REMINDER_INTERVAL_SECONDS",
+        ),
+    )
+    # 续约窗口提醒 + 过期翻转：默认每日一次。
+    crm_renewal_window_interval_seconds: int = Field(
+        default=86400,
+        ge=300,
+        le=7 * 24 * 3600,
+        validation_alias=AliasChoices(
+            "CRM_RENEWAL_WINDOW_INTERVAL_SECONDS",
+            "WORKBENCH_CRM_RENEWAL_WINDOW_INTERVAL_SECONDS",
+        ),
+    )
+
+    # ---- P2b 实时流（realtime-stream-p2b-design §2.2）：7 项，均有安全缺省 ----
+    # 保留期：流是体感数据、帧量大 ⇒ 比运行事件（30 天）短。
+    stream_retention_days: int = Field(
+        default=7,
+        ge=1,
+        le=90,
+        validation_alias=AliasChoices("STREAM_RETENTION_DAYS", "WORKBENCH_STREAM_RETENTION_DAYS"),
+    )
+    # 熔断：每 run 帧数与 payload 累计字节双上限（超限置 unavailable 并显式告知，不静默丢帧）。
+    stream_max_frames: int = Field(
+        default=2000,
+        ge=100,
+        le=20000,
+        validation_alias=AliasChoices("STREAM_MAX_FRAMES", "WORKBENCH_STREAM_MAX_FRAMES"),
+    )
+    stream_max_bytes: int = Field(
+        default=4 * 1024 * 1024,
+        ge=256 * 1024,
+        le=64 * 1024 * 1024,
+        validation_alias=AliasChoices("STREAM_MAX_BYTES", "WORKBENCH_STREAM_MAX_BYTES"),
+    )
+    # SSE 连接最长生命周期（到点关流，客户端自动重连续播）。
+    stream_max_connection_seconds: int = Field(
+        default=1800,
+        ge=60,
+        le=7200,
+        validation_alias=AliasChoices(
+            "STREAM_MAX_CONNECTION_SECONDS", "WORKBENCH_STREAM_MAX_CONNECTION_SECONDS"
+        ),
+    )
+    # 读端轮询增量间隔（毫秒）。
+    stream_poll_interval_ms: int = Field(
+        default=500,
+        ge=200,
+        le=5000,
+        validation_alias=AliasChoices("STREAM_POLL_INTERVAL_MS", "WORKBENCH_STREAM_POLL_INTERVAL_MS"),
+    )
+    # 悬挂兜底：未终态且 updated_at 超此值 ⇒ 置 unavailable('stalled') 并设 expires_at。
+    stream_stalled_hours: int = Field(
+        default=6,
+        ge=1,
+        le=72,
+        validation_alias=AliasChoices("STREAM_STALLED_HOURS", "WORKBENCH_STREAM_STALLED_HOURS"),
+    )
+    # 清理任务 beat 间隔。
+    stream_purge_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        validation_alias=AliasChoices(
+            "STREAM_PURGE_INTERVAL_SECONDS", "WORKBENCH_STREAM_PURGE_INTERVAL_SECONDS"
+        ),
+    )
+
     # ---- 段二（dsh 接入段）新增配置：共 25 项（= 规格 §4 清单 24 项 + 网关侧 `mint_secret`）----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
     # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。

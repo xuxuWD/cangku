@@ -162,6 +162,70 @@ def default_tool_specs() -> tuple[ToolSpec, ...]:
             requires_approval=True,
             reversible=False,
         ),
+        # P5a CRM 受控工具面（真源 specs/2026-09-17-crm-p5a-design.md §2.8）：
+        # 读 ×4（low）+ 写 ×1（medium，登记跟进活动，走九步闸门审批）；
+        # **敏感字段不进任何工具输出**（序列化器统一 to_safe_dict）；不提供外发 / 删除工具；
+        # 数字员工数据范围 = 会话操作者本人负责的对象（owner_id）。
+        ToolSpec(
+            key="crm.account.search",
+            params_schema={"query": "string", "limit": "integer"},
+            param_roles={"query": ParamRole.CONTROL, "limit": ParamRole.CONTROL},
+            risk_level=RiskLevel.LOW,
+            has_side_effect=False,
+            requires_approval=False,
+            reversible=True,
+        ),
+        ToolSpec(
+            key="crm.account.get",
+            params_schema={"account_id": "string"},
+            param_roles={"account_id": ParamRole.CONTROL},
+            risk_level=RiskLevel.LOW,
+            has_side_effect=False,
+            requires_approval=False,
+            reversible=True,
+        ),
+        ToolSpec(
+            key="crm.opportunity.list",
+            params_schema={"stage": "string", "limit": "integer"},
+            param_roles={"stage": ParamRole.CONTROL, "limit": ParamRole.CONTROL},
+            risk_level=RiskLevel.LOW,
+            has_side_effect=False,
+            requires_approval=False,
+            reversible=True,
+        ),
+        ToolSpec(
+            key="crm.progress.summary",
+            params_schema={"scope": "string"},
+            param_roles={"scope": ParamRole.CONTROL},
+            risk_level=RiskLevel.LOW,
+            has_side_effect=False,
+            requires_approval=False,
+            reversible=True,
+        ),
+        ToolSpec(
+            key="crm.activity.log",
+            params_schema={
+                "kind": "string",
+                "subject": "string",
+                "content": "string",
+                "account_id": "string",
+                "contact_id": "string",
+                "opportunity_id": "string",
+            },
+            param_roles={
+                "kind": ParamRole.CONTROL,
+                "subject": ParamRole.BODY,
+                "content": ParamRole.BODY,
+                "account_id": ParamRole.CONTROL,
+                "contact_id": ParamRole.CONTROL,
+                "opportunity_id": ParamRole.CONTROL,
+            },
+            risk_level=RiskLevel.MEDIUM,
+            has_side_effect=True,
+            requires_approval=True,
+            # 活动登记可经软删（deleted_at）撤销 ⇒ 视为可逆（工具面本身不提供删除）。
+            reversible=True,
+        ),
     )
 
 

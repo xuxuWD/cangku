@@ -391,11 +391,16 @@ class ContainerExecutor:
         workspace_path: str,
         spec: ContainerSpec | None = None,
         environment: Mapping[str, str] | None = None,
+        requester: str | None = None,
+        tenant_id: str | None = None,
     ) -> ExecutionOutcome:
         """真实执行一次工具调用：超时 → **拒绝并终止容器**（fail-closed）。
 
         `environment` = 本次 turn 的容器内环境（**短期网关令牌**；由控制面 mint 后注入）。
+        `requester` / `tenant_id`（P5a 起接口统一携带）：容器执行不使用（进程内 CRM 工具才需要），
+        仅为**签名统一**接受并忽略——既有行为不变。
         """
+        del requester, tenant_id
         self.enforce_orphan_limit()
         container = self.create(
             tool_key=tool_key,
@@ -511,7 +516,10 @@ class DeterministicFakeExecutor:
         workspace_path: str,
         spec: ContainerSpec | None = None,
         environment=None,
+        requester: str | None = None,
+        tenant_id: str | None = None,
     ) -> ExecutionOutcome:
+        del requester, tenant_id  # 测试桩不需要操作者上下文（P5a 起接口统一携带，桩忽略之）
         self._calls.append(
             {
                 "tool_key": tool_key,

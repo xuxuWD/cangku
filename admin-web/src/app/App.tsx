@@ -10,6 +10,11 @@ import { WorkforceSettingsPage } from '../features/workforceSettings/WorkforceSe
 import { UsageBillingPage } from '../features/billing/UsageBillingPage'
 import { ConversationPage } from '../features/conversation/ConversationPage'
 import { HomePage } from '../features/home/HomePage'
+import { CrmAccountsPage } from '../features/crm/CrmAccountsPage'
+import { CrmOpportunitiesPage } from '../features/crm/CrmOpportunitiesPage'
+import { CrmQuotesPage } from '../features/crm/CrmQuotesPage'
+import { CrmContractsPage } from '../features/crm/CrmContractsPage'
+import { CrmProgressPage } from '../features/crm/CrmProgressPage'
 import { AppShell, type AppView } from './AppShell'
 import { useEffect, useState } from 'react'
 
@@ -26,6 +31,11 @@ const VIEW_QUERY: Record<Exclude<AppView, 'run'>, string> = {
   workforce: '?view=workforce',
   workforceSettings: '?view=workforceSettings',
   billing: '?view=billing',
+  crmAccounts: '?view=crmAccounts',
+  crmOpportunities: '?view=crmOpportunities',
+  crmQuotes: '?view=crmQuotes',
+  crmContracts: '?view=crmContracts',
+  crmProgress: '?view=crmProgress',
 }
 
 const DIRECT_VIEWS = Object.keys(VIEW_QUERY) as AppView[]
@@ -43,6 +53,11 @@ const VIEW_ORDER: AppView[] = [
   'workforceSettings',
   'billing',
   'audit',
+  'crmAccounts',
+  'crmOpportunities',
+  'crmQuotes',
+  'crmContracts',
+  'crmProgress',
   'run',
 ]
 
@@ -121,6 +136,16 @@ export default function App() {
         return <WorkforceSettingsPage onNavigate={navigate} />
       case 'billing':
         return <UsageBillingPage onNavigate={navigate} />
+      case 'crmAccounts':
+        return <CrmAccountsPage onNavigate={navigate} />
+      case 'crmOpportunities':
+        return <CrmOpportunitiesPage onNavigate={navigate} />
+      case 'crmQuotes':
+        return <CrmQuotesPage onNavigate={navigate} />
+      case 'crmContracts':
+        return <CrmContractsPage onNavigate={navigate} />
+      case 'crmProgress':
+        return <CrmProgressPage onNavigate={navigate} />
       case 'run':
         return <RunDetailPage runId={route.runId ?? ''} onNavigate={navigate} />
       default:

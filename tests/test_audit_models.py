@@ -73,7 +73,27 @@ def test_action_values_are_stable_strings() -> None:
     # P6a 自进化·评测集（2026-09-16）：两个动作码，值必须稳定为契约字符串（self-evolution-p6 §2.9）。
     assert AuditAction.EVOLUTION_CASE_CHANGED.value == "evolution.case.changed"
     assert AuditAction.EVOLUTION_EVAL_COMPLETED.value == "evolution.eval.completed"
-    assert len(set(AuditAction)) == 66
+    # P5a CRM（2026-09-17）：十七个动作码，值必须稳定为契约字符串（crm-p5a-design §2.10）。
+    assert AuditAction.CRM_ACCOUNT_CREATED.value == "crm.account.created"
+    assert AuditAction.CRM_CONTACT_CREATED.value == "crm.contact.created"
+    assert AuditAction.CRM_LEAD_CONVERTED.value == "crm.lead.converted"
+    assert AuditAction.CRM_OPPORTUNITY_CREATED.value == "crm.opportunity.created"
+    assert AuditAction.CRM_OPPORTUNITY_STAGE_CHANGED.value == "crm.opportunity.stage_changed"
+    assert AuditAction.CRM_ACTIVITY_LOGGED.value == "crm.activity.logged"
+    assert AuditAction.CRM_QUOTE_CREATED.value == "crm.quote.created"
+    assert AuditAction.CRM_QUOTE_CONFIRMED.value == "crm.quote.confirmed"
+    assert AuditAction.CRM_QUOTE_CONVERTED.value == "crm.quote.converted"
+    assert AuditAction.CRM_QUOTE_VOIDED.value == "crm.quote.voided"
+    assert AuditAction.CRM_CONTRACT_CREATED.value == "crm.contract.created"
+    assert AuditAction.CRM_CONTRACT_SIGNED.value == "crm.contract.signed"
+    assert AuditAction.CRM_CONTRACT_VOIDED.value == "crm.contract.voided"
+    assert AuditAction.CRM_CONTRACT_PAYMENT_REGISTERED.value == "crm.contract.payment_registered"
+    assert AuditAction.CRM_INSIGHT_GENERATED.value == "crm.insight.generated"
+    assert AuditAction.CRM_SENSITIVE_REVEALED.value == "crm.sensitive.revealed"
+    assert AuditAction.CRM_HEALTH_RECOMPUTED.value == "crm.health.recomputed"
+    # P2b 实时流（2026-09-17）：一个动作码（熔断 / 写失败 / 悬挂兜底治理事件）。
+    assert AuditAction.CONVERSATION_STREAM_UNAVAILABLE.value == "conversation.stream.unavailable"
+    assert len(set(AuditAction)) == 84
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

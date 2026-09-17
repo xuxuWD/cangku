@@ -29,10 +29,37 @@ class RuntimeEventPurgerProtocol(Protocol):
         ...
 
 
+class ConversationStreamPurgerProtocol(Protocol):
+    """P2b 流帧清理器（`PostgresStreamStore` 满足该协议）：悬挂兜底 + 到期清理。"""
+
+    def mark_stalled(self, *, cutoff: datetime, expires_at: datetime) -> int:
+        ...
+
+    def purge_expired(self, *, cutoff: datetime) -> int:
+        ...
+
+
+class CrmServiceProtocol(Protocol):
+    """P5a CRM 服务在 worker 侧的最小接口（避免 worker 依赖 CRM 全量模块）。"""
+
+    store: object
+
+    def recompute_health_for_tenant(self, tenant_id: str) -> int:
+        ...
+
+
+class CrmNotifierProtocol(Protocol):
+    def notify(self, *, tenant_id: str, recipient_id: str, kind, target_type=None, target_id=None) -> None:
+        ...
+
+
 _outbox_publisher: OutboxPublisherProtocol | None = None
 _lifecycle_runner: LifecycleRunnerProtocol | None = None
 _knowledge_review_scanner: KnowledgeReviewScannerProtocol | None = None
 _runtime_event_purger: RuntimeEventPurgerProtocol | None = None
+_conversation_stream_purger: ConversationStreamPurgerProtocol | None = None
+_crm_service: CrmServiceProtocol | None = None
+_crm_notifier: CrmNotifierProtocol | None = None
 
 
 def configure_outbox_publisher(publisher: OutboxPublisherProtocol | None) -> None:
@@ -57,6 +84,22 @@ def configure_runtime_event_purger(purger: RuntimeEventPurgerProtocol | None) ->
     """注入运行事件保留期清理器（`PostgresRuntimeStateStore` 满足该协议）；测试可置 None。"""
     global _runtime_event_purger
     _runtime_event_purger = purger
+
+
+def configure_conversation_stream_purger(purger: ConversationStreamPurgerProtocol | None) -> None:
+    """注入流帧清理器（P2b §2.6；`PostgresStreamStore` 满足该协议）；测试可置 None。"""
+    global _conversation_stream_purger
+    _conversation_stream_purger = purger
+
+
+def configure_crm(*, service: CrmServiceProtocol | None, notifier: CrmNotifierProtocol | None) -> None:
+    """注入 P5a CRM 服务与站内通知（`CrmService` / `InboxService` 满足协议）；测试可置 None。
+
+    **未接线时 3 个 CRM 周期任务一律返回零值**（不伪造扫描结果，沿用既有周期任务口径）。
+    """
+    global _crm_service, _crm_notifier
+    _crm_service = service
+    _crm_notifier = notifier
 
 
 def configure_runtime(*, settings=None, connection=None, redis_client=None, audit=None) -> OutboxPublisherProtocol:
@@ -94,6 +137,27 @@ def configure_runtime(*, settings=None, connection=None, redis_client=None, audi
     configure_lifecycle(lifecycle)
     configure_knowledge_review(governance)
     configure_runtime_event_purger(PostgresRuntimeStateStore(connection))
+    # P2b 流帧清理（§2.6）：先悬挂兜底（未终态且久无更新 ⇒ unavailable('stalled') + expires_at），
+    # 再按 expires_at 删除到期 run 的帧与状态行；**只清流帧**（消息表 / 审计 / 运行事件不受影响）。
+    from .conversation.stream import PostgresStreamStore
+
+    configure_conversation_stream_purger(
+        PostgresStreamStore(
+            connection,
+            max_frames=settings.stream_max_frames,
+            max_bytes=settings.stream_max_bytes,
+        )
+    )
+    # P5a CRM（crm-p5a-design §2.11）：健康度重算 / 活动到期提醒 / 续约窗口三个周期任务，
+    # 共用同一连接与审计；收件箱复用既有装配（`migrate=False`——迁移归 API 进程）。
+    from .bootstrap import build_inbox_service
+    from .crm.service import CrmService
+    from .crm.store_postgres import PostgresCrmStore
+
+    configure_crm(
+        service=CrmService(PostgresCrmStore(connection), audit=audit),
+        notifier=build_inbox_service(settings, audit=audit, connection=connection, migrate=False),
+    )
     return publisher
 
 
@@ -131,12 +195,32 @@ def create_celery_app() -> Celery:
                 "task": "app.worker.purge_runtime_events",
                 "schedule": settings.runtime_events_purge_interval_seconds,
             },
+            # P2b 实时流（§2.6）：悬挂兜底 + 按 `expires_at` 清理到期流帧（**只清流帧**）。
+            # 间隔由 **beat** 侧读取 ⇒ 与 worker 侧必须同值（口径同既有条目）。
+            "conversation-stream-purge": {
+                "task": "app.worker.purge_conversation_stream",
+                "schedule": settings.stream_purge_interval_seconds,
+            },
             # 组 10.7：过期导出包（`expires_at = 完成时刻 + 7 天`）物理清理——导出包是租户数据副本，
             # 过期后不再可取回（GET /api/v1/commercial/exports/{package_id} ⇒ 404），此处只保留「到点即清」。
             # 间隔由 **beat** 侧读取 ⇒ 与 worker 侧必须同值。
             "export-packages-purge": {
                 "task": "app.worker.purge_export_packages",
                 "schedule": settings.export_package_purge_interval_seconds,
+            },
+            # P5a CRM（crm-p5a-design §2.11）：健康度重算 / 活动到期提醒（幂等）/ 续约窗口。
+            # 间隔由 **beat** 侧读取 ⇒ 与 worker 侧必须同值（口径同既有条目）。
+            "crm-health-recompute": {
+                "task": "app.worker.recompute_crm_health",
+                "schedule": settings.crm_health_recompute_interval_seconds,
+            },
+            "crm-activity-reminder": {
+                "task": "app.worker.remind_crm_activities",
+                "schedule": settings.crm_activity_reminder_interval_seconds,
+            },
+            "crm-renewal-window": {
+                "task": "app.worker.remind_crm_renewals",
+                "schedule": settings.crm_renewal_window_interval_seconds,
             },
         },
     )
@@ -181,12 +265,28 @@ def _ensure_runtime() -> None:
     `configure_*`），就视为已接线、不再自动装配（避免把显式注入悄悄替换掉）。
     装配失败**不吞**：直接向上抛（任务 FAILURE、日志可见），不做「静默零值」。
     """
-    if _outbox_publisher is not None or _lifecycle_runner is not None or _knowledge_review_scanner is not None or _runtime_event_purger is not None:
+    if (
+        _outbox_publisher is not None
+        or _lifecycle_runner is not None
+        or _knowledge_review_scanner is not None
+        or _runtime_event_purger is not None
+        or _conversation_stream_purger is not None
+        or _crm_service is not None
+        or _crm_notifier is not None
+    ):
         return
     if get_settings().env == "development":
         return
     with _runtime_lock:
-        if _outbox_publisher is not None or _lifecycle_runner is not None or _knowledge_review_scanner is not None or _runtime_event_purger is not None:
+        if (
+        _outbox_publisher is not None
+        or _lifecycle_runner is not None
+        or _knowledge_review_scanner is not None
+        or _runtime_event_purger is not None
+        or _conversation_stream_purger is not None
+        or _crm_service is not None
+        or _crm_notifier is not None
+    ):
             return
         builder = _runtime_builder or _build_production_runtime
         builder()
@@ -252,6 +352,30 @@ def purge_runtime_events() -> int:
 
 
 @celery_app.task
+def purge_conversation_stream() -> dict[str, int]:
+    """流帧保留期清理（P2b §2.6）：先**悬挂兜底**置 `unavailable('stalled')`，再删到期 run 的帧与状态行。
+
+    - 悬挂兜底：`status='streaming'` 且 `updated_at < now - WORKBENCH_STREAM_STALLED_HOURS`（默认 6h）
+      ⇒ 置 `unavailable` + `is_terminal` + `expires_at = now + WORKBENCH_STREAM_RETENTION_DAYS`（默认 7 天）；
+    - 到期清理：删除 `expires_at < now` 的 run 的**全部帧行 + 状态行**；**只清流帧**——
+      消息表 / 审计 / 运行事件**不受影响**（清理**不写审计**，与运行事件清理同口径）；
+    - 与既有周期任务同口径：**未接线即返回零值**，绝不伪造清理结果；development 下不自动装配。
+    """
+    _ensure_runtime()
+    purger = _conversation_stream_purger
+    if purger is None:
+        return {"stalled": 0, "purged": 0}
+    settings = get_settings()
+    reference = datetime.now(UTC)
+    stalled = purger.mark_stalled(
+        cutoff=reference - timedelta(hours=settings.stream_stalled_hours),
+        expires_at=reference + timedelta(days=settings.stream_retention_days),
+    )
+    purged = purger.purge_expired(cutoff=reference)
+    return {"stalled": stalled, "purged": purged}
+
+
+@celery_app.task
 def purge_export_packages() -> int:
     """导出包过期清理（组 10.7）：物理删除 `expires_at <= 任务执行时刻` 的导出包，返回删除条数。
 
@@ -266,3 +390,96 @@ def purge_export_packages() -> int:
     if runner is None:
         return 0
     return runner.purge_expired_export_packages()
+
+
+@celery_app.task
+def recompute_crm_health() -> dict[str, int]:
+    """CRM 健康度逐租户重算（crm-p5a-design §2.11）：返回 {tenants, accounts}。
+
+    - 逐租户全量重算（批量收集，避免 N+1）；审计为**每租户一行汇总**（`crm.health.recomputed`）；
+    - 与既有周期任务同口径：**未接线即返回零值**，绝不伪造扫描结果。
+    """
+    _ensure_runtime()
+    service = _crm_service
+    if service is None:
+        return {"tenants": 0, "accounts": 0}
+    tenant_ids = service.store.list_tenant_ids()
+    accounts = 0
+    for tenant_id in tenant_ids:
+        accounts += service.recompute_health_for_tenant(tenant_id)
+    return {"tenants": len(tenant_ids), "accounts": accounts}
+
+
+@celery_app.task
+def remind_crm_activities() -> dict[str, int]:
+    """CRM 活动到期提醒（§2.11）：扫描 `kind=task` 且 `planned` 且 `due_at ≤ now+1d` 的活动。
+
+    **幂等**：同一活动同一天只投递一次（`reminded_on` 回写；重复扫描不重复投递）。
+    未接线即返回零值（不伪造）。
+    """
+    _ensure_runtime()
+    service = _crm_service
+    notifier = _crm_notifier
+    if service is None or notifier is None:
+        return {"scanned": 0, "delivered": 0}
+    from .inbox import InboxKind  # 延迟导入：worker 不因此在顶层耦合收件箱实现
+
+    reference = datetime.now(UTC)
+    today = reference.date()
+    due_before = reference + timedelta(days=1)
+    scanned = 0
+    delivered = 0
+    for tenant_id in service.store.list_tenant_ids():
+        for activity in service.store.list_due_activities(tenant_id, due_before=due_before):
+            scanned += 1
+            if activity.reminded_on == today:
+                continue
+            notifier.notify(
+                tenant_id=tenant_id,
+                recipient_id=activity.owner_id,
+                kind=InboxKind.CRM_ACTIVITY_DUE,
+                target_type="crm_activity",
+                target_id=activity.activity_id,
+            )
+            activity.reminded_on = today
+            service.store.update_activity(activity)
+            delivered += 1
+    return {"scanned": scanned, "delivered": delivered}
+
+
+@celery_app.task
+def remind_crm_renewals() -> dict[str, int]:
+    """CRM 续约窗口提醒 + 过期翻转（§2.11）：窗口内 `signed` 合同通知 `owner_id`；到期未续 ⇒ `expired`。
+
+    ⚠️ 本段按规格字面实现「扫描即提醒」（每日一次；**跨日幂等未做**——规格未要求，如需可加字段）。
+    未接线即返回零值（不伪造）。
+    """
+    _ensure_runtime()
+    service = _crm_service
+    notifier = _crm_notifier
+    if service is None or notifier is None:
+        return {"reminded": 0, "expired": 0}
+    from .crm.models import RENEWAL_WINDOW_DAYS
+    from .inbox import InboxKind
+
+    reference = datetime.now(UTC)
+    today = reference.date()
+    until = today + timedelta(days=RENEWAL_WINDOW_DAYS)
+    reminded = 0
+    expired = 0
+    for tenant_id in service.store.list_tenant_ids():
+        for contract in service.store.list_contracts_in_renewal_window(tenant_id, from_date=today, until=until):
+            notifier.notify(
+                tenant_id=tenant_id,
+                recipient_id=contract.owner_id,
+                kind=InboxKind.CRM_RENEWAL_WINDOW,
+                target_type="crm_contract",
+                target_id=contract.contract_id,
+            )
+            reminded += 1
+        for contract in service.store.list_expired_contracts(tenant_id, today=today):
+            contract.status = "expired"
+            contract.updated_at = reference
+            service.store.update_contract(contract)
+            expired += 1
+    return {"reminded": reminded, "expired": expired}

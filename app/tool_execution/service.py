@@ -460,6 +460,10 @@ class ToolExecutionService:
                 params=params,
                 workspace_path=workspace_path,
                 environment=environment,
+                # P5a：进程内 CRM 工具需要操作者上下文（数据范围 = 会话操作者本人负责的对象）；
+                # 容器执行器接受并忽略这两个参数（签名统一，既有行为不变）。
+                requester=request.requested_by,
+                tenant_id=request.tenant_id,
             )
         except Exception as exc:  # noqa: BLE001 - 铸令牌 / 执行异常一律 502
             self._fail(request, spec, key="runtime_error", action=action, cause=exc)

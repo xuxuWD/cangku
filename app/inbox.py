@@ -54,6 +54,9 @@ class InboxKind(StrEnum):
     RUN_CANCELLED = "run.cancelled"
     RUN_APPROVAL_REJECTED = "run.approval_rejected"
     ACCOUNT_REGISTRATION_APPROVED = "account.registration.approved"
+    # P5a CRM（crm-p5a-design §2.11）：活动到期提醒与续约窗口提醒（文案固定、不含客户名 / 金额）。
+    CRM_ACTIVITY_DUE = "crm.activity.due"
+    CRM_RENEWAL_WINDOW = "crm.renewal.window"
 
 
 # 固定文案：不含用户输入、手机号或客户原文，避免把敏感内容复制进收件箱。
@@ -68,6 +71,8 @@ _TITLES: dict[InboxKind, str] = {
     InboxKind.RUN_CANCELLED: "你的任务运行已取消",
     InboxKind.RUN_APPROVAL_REJECTED: "你的任务运行被审批驳回",
     InboxKind.ACCOUNT_REGISTRATION_APPROVED: "你的账号申请已通过审批",
+    InboxKind.CRM_ACTIVITY_DUE: "你有 CRM 跟进任务已到期或即将到期",
+    InboxKind.CRM_RENEWAL_WINDOW: "有合同进入续约窗口，请安排跟进",
 }
 
 

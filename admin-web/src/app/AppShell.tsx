@@ -17,6 +17,11 @@ export type AppView =
   | 'workforce'
   | 'workforceSettings'
   | 'billing'
+  | 'crmAccounts'
+  | 'crmOpportunities'
+  | 'crmQuotes'
+  | 'crmContracts'
+  | 'crmProgress'
 
 const navigation: Array<{ icon: IconName; label: string; view: AppView }> = [
   { icon: 'home', label: '首页', view: 'home' },
@@ -30,6 +35,11 @@ const navigation: Array<{ icon: IconName; label: string; view: AppView }> = [
   { icon: 'agent', label: '数字员工设置', view: 'workforceSettings' },
   { icon: 'model', label: '用量与费用', view: 'billing' },
   { icon: 'check', label: '安全与审计', view: 'audit' },
+  { icon: 'user', label: '客户', view: 'crmAccounts' },
+  { icon: 'project', label: '商机', view: 'crmOpportunities' },
+  { icon: 'document', label: '报价', view: 'crmQuotes' },
+  { icon: 'content', label: '合同', view: 'crmContracts' },
+  { icon: 'model', label: '进度概览', view: 'crmProgress' },
 ]
 
 /** 侧栏分组标签：只是把入口归类，不引入任何统计数字。 */

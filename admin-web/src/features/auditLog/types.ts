@@ -110,6 +110,26 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'knowledge.search.blocked': '知识检索被守卫拦截',
   'evolution.case.changed': '评测用例已变更',
   'evolution.eval.completed': '评测运行已完成',
+  // P5a CRM（2026-09-17）：十七个动作码（crm-p5a-design §2.10）。
+  'crm.account.created': '客户已创建',
+  'crm.contact.created': '联系人已创建',
+  'crm.lead.converted': '线索已转化',
+  'crm.opportunity.created': '商机已创建',
+  'crm.opportunity.stage_changed': '商机阶段已迁移',
+  'crm.activity.logged': '跟进活动已登记',
+  'crm.quote.created': '报价已创建',
+  'crm.quote.confirmed': '报价已确认',
+  'crm.quote.converted': '报价已转合同',
+  'crm.quote.voided': '报价已作废',
+  'crm.contract.created': '合同已创建',
+  'crm.contract.signed': '合同签署已登记',
+  'crm.contract.voided': '合同已作废',
+  'crm.contract.payment_registered': '合同回款已登记',
+  'crm.insight.generated': '跟进计划已生成',
+  'crm.sensitive.revealed': '敏感字段已揭示',
+  'crm.health.recomputed': '客户健康度已重算',
+  // P2b 实时流（2026-09-17）：熔断 / 写失败 / 悬挂兜底的治理事件。
+  'conversation.stream.unavailable': '实时流已熔断或不可用',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

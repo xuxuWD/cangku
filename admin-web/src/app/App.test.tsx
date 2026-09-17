@@ -117,6 +117,25 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: '用量与费用' })).toBeInTheDocument())
   })
 
+  it('navigates to the CRM accounts page from the sidebar', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/inbox?')) return json({ items: [], unread_count: 0 })
+      if (url.includes('/crm/accounts?')) return json({ items: [], total: 0, limit: 50, offset: 0 })
+      return json({})
+    }))
+
+    await user.click(screen.getByText('客户', { selector: '.nav-item' }))
+
+    expect(window.location.search).toBe('?view=crmAccounts')
+    await waitFor(() => expect(screen.getByRole('heading', { name: '客户' })).toBeInTheDocument())
+    expect(await screen.findByText('暂无客户')).toBeInTheDocument()
+  })
+
   it('navigates to the conversation page from the sidebar', async () => {
     const user = userEvent.setup()
     render(<App />)

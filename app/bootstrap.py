@@ -230,6 +230,39 @@ def build_inbox_service(settings: Settings, *, audit=None, connection=None, migr
     raise ValueError("不支持的收件箱存储类型")
 
 
+def build_crm_service(
+    settings: Settings, *, audit=None, connection=None, migrate: bool = True, followup_generator=None
+):
+    """按存储模式装配 P5a CRM 服务（§2.1 / §2.7）。
+
+    - `memory`：仅 development（内存仓储）；
+    - `postgres`：PG 仓储（缺连接时自建池；`migrate=True` 时应用迁移，worker 侧传 False）；
+    - `followup_generator`：跟进计划生成器（缺省 `MockFollowupGenerator`——**不编造建议**；
+      接真实模型网关时由部署装配注入，本函数不持有任何密钥）。
+    """
+    from .crm.service import CrmService
+    from .crm.store import InMemoryCrmStore
+    from .crm.store_postgres import PostgresCrmStore
+
+    validate_runtime_settings(settings)
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存 CRM 仓储")
+        return CrmService(InMemoryCrmStore(), audit=audit, followup_generator=followup_generator)
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return CrmService(
+            PostgresCrmStore(connection), audit=audit, followup_generator=followup_generator
+        )
+    raise ValueError("不支持的 CRM 存储类型")
+
+
 def build_publication_service(
     settings: Settings,
     *,
@@ -726,6 +759,15 @@ def build_tool_execution(
         executor = ContainerExecutor.from_settings(
             settings, token_revoker=turn_tokens.on_terminal
         )
+        # P5a CRM（crm-p5a-design §2.8）：CRM 受控工具为**进程内执行**，经组合执行器接入——
+        # `crm.*` 分流到 `CrmToolExecutor`（数据范围 = 会话操作者本人负责的对象），
+        # 其余工具原样委托容器执行器（既有行为逐字节不变）。
+        from .crm.service import CrmService
+        from .crm.store_postgres import PostgresCrmStore
+        from .crm.tools import CrmRoutingExecutor, CrmToolExecutor
+
+        crm_service = CrmService(PostgresCrmStore(connection), audit=audit)
+        executor = CrmRoutingExecutor(crm=CrmToolExecutor(lambda: crm_service), inner=executor)
         workspace = WorkspaceManager(settings.exec_workspace_root)
         tool_execution = ToolExecutionService(
             catalog=catalog,
@@ -989,11 +1031,15 @@ def build_conversation_execution_service(
     audit=None,
     directory_store=None,
     catalog=None,
+    stream_writer=None,
 ):
     """装配对话入口路由（段二-4，规格 §3.7 Y2 / §3.2 第四条）。
 
     `tool_execution=None`（`backend=mock`）时服务仍装配，但**只走既有 `stub=true` 通路**
     （缺键语义与「未启用真实执行」同构，不创建承载任务 / 运行）。
+
+    `stream_writer`（P2b §2.2）为**可选注入**：缺省 `None` ⇒ 行为与改造前完全一致；
+    注入后也**只有 `messages:stream` 端点**（`handle_message(..., stream=True)`）会写帧。
     """
     validate_runtime_settings(settings)
     from .conversation.execution import ConversationExecutionService
@@ -1012,7 +1058,45 @@ def build_conversation_execution_service(
         catalog=catalog,
         audit=audit,
         directory_store=directory_store,
+        stream_writer=stream_writer,
     )
+
+
+def build_conversation_stream_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """装配实时流仓储（P2b，表 `workbench_conversation_stream_frames` / `_state`，迁移 036）。
+
+    口径同 `build_conversation_store`：内存实现仅 development；PG 缺省自建池并跑迁移。
+    熔断双上限（`stream_max_frames` / `stream_max_bytes`）在此注入 ⇒ 读端与写端同源。
+    """
+    validate_runtime_settings(settings)
+    from .conversation.stream import InMemoryStreamStore, PostgresStreamStore
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存流仓储")
+        return InMemoryStreamStore(
+            max_frames=settings.stream_max_frames, max_bytes=settings.stream_max_bytes
+        )
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresStreamStore(
+            connection, max_frames=settings.stream_max_frames, max_bytes=settings.stream_max_bytes
+        )
+    raise ValueError("不支持的流存储类型")
+
+
+def build_conversation_stream_writer(settings: Settings, *, store, audit=None):
+    """装配流写入网关（P2b §2.2）：脱敏 → 熔断 → 落库；熔断 / 写失败写审计（执行不阻断）。"""
+    validate_runtime_settings(settings)
+    from .conversation.stream_writer import StreamWriter
+
+    return StreamWriter(store, audit=audit, retention_days=settings.stream_retention_days)
 
 
 def build_exec_callback_guard(settings: Settings, *, audit=None, store=None, registry=None):
