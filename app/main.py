@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store
+from .bootstrap import build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 # P5a CRM（真源 specs/2026-09-17-crm-p5a-design.md §2.12）：路由层只做校验 / 视图 / 异常映射。
@@ -249,6 +249,8 @@ runtime_service = build_runtime_service(
 exec_authority_store = TokenBindingStore()
 exec_authority_registry = ActiveExecutionRegistry()
 # 段二（dsh 接入段）：backend=mock 时为 None；backend=dsh 且缺件时记 error 但不退进程（§4.1.6-2/-3）。
+# P2c-3 产物登记（运行级元数据）与只读端点共用**同一实例**（登记了就能查到；保留期在此注入）。
+run_artifact_store = build_run_artifact_store(settings)
 tool_execution_service = build_tool_execution(
     settings,
     run_metrics=run_metrics_service,
@@ -257,6 +259,7 @@ tool_execution_service = build_tool_execution(
     tool_actions=tool_action_store,
     token_store=exec_authority_store,
     token_registry=exec_authority_registry,
+    artifacts=run_artifact_store,
 )
 # 孤儿容器清扫（§3.3 生命周期 / §8 U17 ⑥）：启动时 + 按 WORKBENCH_BODY_CLEANUP_INTERVAL_SECONDS
 # 周期，**跑在 API 进程内**；未启用真实执行（backend=mock）时不注册（不引入后台线程）。
@@ -1719,7 +1722,11 @@ def _resume_result_payload(approval_id: str, result) -> dict[str, object]:
         "sha256": summary_digest(summary),
         "resumed": True,
     }
-    payload.update(bounded_output_fields(getattr(result, "output", None)))
+    payload.update(
+        bounded_output_fields(
+            getattr(result, "output", None), file_changes_max=get_settings().file_changes_max
+        )
+    )
     return payload
 
 
@@ -3438,6 +3445,33 @@ def stream_runtime_events(run_id: str, cursor: str | None = None, context: UserC
         detail = str(exc)
         raise HTTPException(status_code=404 if detail == "运行不存在" else 403, detail=detail) from exc
     return [event.to_public_dict() for event in events]
+
+
+@app.get("/api/v1/runs/{run_id}/artifacts")
+def list_run_artifacts(
+    run_id: str, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    """产物登记只读列表（P2c-3 §2.7 / 契约「产物登记与只读端点」）。
+
+    - **归属判定与运行接口一致**（同 `/runs/{run_id}/metrics`）：本租户运行记录 + 承载任务可见性；
+      跨租户 / 不可见 / 未知运行一律 `404`（不泄露存在性）；
+    - **只返回元数据**（虚拟路径 / 变更类型 / 字节 / sha256 / 时间）——**不含** `tenant_id`、宿主真实路径与内容；
+    - 保留期已到（`expires_at <= now`、尚未被周期任务清理）的条目**不再返回**（保留期外如实降级）。
+    """
+    try:
+        record = run_metrics_service.store.get(context.tenant_id, run_id)
+    except RunRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    try:
+        store.get(context, record.task_id)
+    except TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    items = run_artifact_store.list_for_run(context.tenant_id, run_id)
+    return {
+        "run_id": run_id,
+        "items": [item.to_view() for item in items],
+        "total": len(items),
+    }
 
 
 @app.get("/api/v1/runs/{run_id}/metrics", response_model=RunMetricsView)

@@ -306,8 +306,16 @@ def test_tag_image_is_rejected() -> None:
 
 
 def test_unknown_tool_fails_closed_before_starting_container(executor) -> None:
+    """未实现 / 未装配的工具在**起容器之前**即 fail-closed（P2c-3 起 `fs.*` 已落地，
+    故此处改用仍不装配的 `artifact.export` 作样本；口径不变）。"""
     with pytest.raises(ToolExecutionConfigError):
-        executor.execute(tool_key="fs.list", params={"path": "/workspace"}, workspace_path="/tmp/x")
+        executor.execute(
+            tool_key="artifact.export",
+            params={"path": "/workspace/a.txt", "target": "team-a"},
+            workspace_path="/tmp/x",
+        )
+    with pytest.raises(ToolExecutionConfigError):
+        executor.execute(tool_key="fs.chmod", params={"path": "/workspace/a.txt"}, workspace_path="/tmp/x")
 
 
 def test_terminal_state_revoker_is_called_on_success(client) -> None:

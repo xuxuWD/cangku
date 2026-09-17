@@ -642,6 +642,43 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- P2c-3 文件变更通道（有界）：单文件 diff 摘录上限（字节）/ 每次执行最多变更条数 ----
+    # `0` = 关闭该通道（不产出 `diff_excerpt` / 不产出变更记录且**不登记产物**）；
+    # 与输出回传同为「视图」：任何截断 / 失败都不影响执行结果。
+    file_diff_excerpt_max_bytes: int = Field(
+        default=8192,
+        ge=0,
+        le=65536,
+        validation_alias=AliasChoices(
+            "FILE_DIFF_EXCERPT_MAX_BYTES", "WORKBENCH_FILE_DIFF_EXCERPT_MAX_BYTES"
+        ),
+    )
+    file_changes_max: int = Field(
+        default=50,
+        ge=0,
+        le=200,
+        validation_alias=AliasChoices("FILE_CHANGES_MAX", "WORKBENCH_FILE_CHANGES_MAX"),
+    )
+
+    # ---- P2c-3 产物登记（运行级元数据）：保留期（天）+ 清理任务 beat 间隔（秒）----
+    run_artifact_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        validation_alias=AliasChoices(
+            "RUN_ARTIFACT_RETENTION_DAYS", "WORKBENCH_RUN_ARTIFACT_RETENTION_DAYS"
+        ),
+    )
+    run_artifact_purge_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        validation_alias=AliasChoices(
+            "RUN_ARTIFACT_PURGE_INTERVAL_SECONDS",
+            "WORKBENCH_RUN_ARTIFACT_PURGE_INTERVAL_SECONDS",
+        ),
+    )
+
     # ---- 段二（dsh 接入段）新增配置：共 25 项（= 规格 §4 清单 24 项 + 网关侧 `mint_secret`）----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
     # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。

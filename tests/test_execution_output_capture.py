@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from app.tool_execution.executor import ContainerExecutor
 
@@ -187,3 +188,113 @@ def test_capture_failure_does_not_change_execution_result() -> None:
     assert outcome.summary["status"] == "ok"
     assert outcome.output is None  # 回传降级为「无」（流是视图）
     assert container.removed is True
+
+
+# ------------------------------------------------------------ ⑤ P2c-3 文件变更记录
+
+
+FS_PARAMS = {"path": "/workspace/a.txt", "content": "x"}
+MARKER = "__WORKBENCH_FS_RESULT__"
+
+
+def change_line(*changes: dict) -> bytes:
+    return (MARKER + " " + json.dumps({"changes": list(changes)}, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def run_fs(container: FakeContainer, *, tool_key: str = "fs.write", **overrides):
+    return make_executor(container, **overrides).execute(
+        tool_key=tool_key, params=FS_PARAMS, workspace_path=WORKSPACE
+    )
+
+
+def test_file_changes_are_parsed_and_marker_is_stripped_from_excerpt() -> None:
+    container = FakeContainer(
+        chunks=[
+            "已写入 /workspace/a.txt（5 字节）\n".encode("utf-8"),
+            change_line(
+                {
+                    "virtual_path": "/workspace/a.txt",
+                    "change_kind": "created",
+                    "bytes": 5,
+                    "sha256": "sha256:abc",
+                    "diff_excerpt": "hello",
+                }
+            ),
+        ]
+    )
+    outcome = run_fs(container, output_excerpt_max_bytes=1024, file_changes_max=50)
+
+    assert outcome.ok is True
+    assert len(outcome.file_changes) == 1
+    change = outcome.file_changes[0]
+    assert change.virtual_path == "/workspace/a.txt"
+    assert change.change_kind == "created" and change.diff_excerpt == "hello"
+    assert outcome.file_changes_truncated is False
+    assert outcome.output is not None
+    assert MARKER not in outcome.output.excerpt  # 标记行面向本进程，不进摘录
+    assert "已写入 /workspace/a.txt（5 字节）" in outcome.output.excerpt
+
+
+def test_file_changes_are_truncated_and_declared() -> None:
+    container = FakeContainer(
+        chunks=[
+            change_line(
+                *[
+                    {
+                        "virtual_path": f"/workspace/{index}.txt",
+                        "change_kind": "created",
+                        "bytes": index,
+                        "sha256": f"sha256:{index}",
+                    }
+                    for index in range(3)
+                ]
+            )
+        ]
+    )
+    outcome = run_fs(container, output_excerpt_max_bytes=1024, file_changes_max=2)
+
+    assert [change.bytes for change in outcome.file_changes] == [0, 1]
+    assert outcome.file_changes_truncated is True  # 截断**显式告知**
+
+
+def test_file_changes_channel_is_off_by_default() -> None:
+    """默认（未注入配置）⇒ 关闭：既有调用方零变化（不解析、不产出）。"""
+    container = FakeContainer(
+        chunks=[change_line({"virtual_path": "/workspace/a.txt", "change_kind": "created", "bytes": 1, "sha256": "sha256:x"})]
+    )
+    outcome = run_fs(container, output_excerpt_max_bytes=1024)
+
+    assert outcome.file_changes == () and outcome.file_changes_truncated is False
+
+
+def test_cmd_run_output_marker_is_never_parsed() -> None:
+    """防伪造：`cmd.run` 的 stdout 是**用户可控内容**，其中的标记行不得产出变更记录。"""
+    container = FakeContainer(
+        chunks=[change_line({"virtual_path": "/workspace/a.txt", "change_kind": "created", "bytes": 1, "sha256": "sha256:x"})]
+    )
+    outcome = make_executor(container, output_excerpt_max_bytes=1024, file_changes_max=50).execute(
+        tool_key="cmd.run", params=PARAMS, workspace_path=WORKSPACE
+    )
+
+    assert outcome.file_changes == ()
+
+
+def test_file_changes_reads_logs_even_when_excerpt_is_disabled() -> None:
+    container = FakeContainer(
+        chunks=[change_line({"virtual_path": "/workspace/a.txt", "change_kind": "created", "bytes": 1, "sha256": "sha256:x"})]
+    )
+    outcome = run_fs(container, output_excerpt_max_bytes=0, file_changes_max=50)
+
+    assert container.logs_calls == 1  # 输出回传关闭，但变更通道开启 ⇒ 仍需读日志
+    assert outcome.output is None  # 输出回传确实关闭
+    assert len(outcome.file_changes) == 1
+
+
+def test_malformed_change_marker_does_not_break_execution() -> None:
+    container = FakeContainer(chunks=[(MARKER + " not-json\n").encode("utf-8")])
+    outcome = run_fs(container, output_excerpt_max_bytes=1024, file_changes_max=50)
+
+    assert outcome.ok is True  # 回传是视图：坏标记只影响回传
+    assert outcome.file_changes == ()
+    assert outcome.output is not None
+    assert MARKER not in outcome.output.excerpt

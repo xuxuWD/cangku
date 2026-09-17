@@ -138,6 +138,8 @@ def build_service(
     needs_approval_fn=None,
     trusted_uid: int | None = None,
     write_mask: int | None = None,
+    file_changes_max: int = 0,
+    artifacts=None,
 ):
     trusted = tmp_path / "trusted"
     trusted.mkdir(exist_ok=True)
@@ -159,6 +161,9 @@ def build_service(
         trusted_uid=_current_owner_uid() if trusted_uid is None else trusted_uid,
         write_mask=0o022 if write_mask is None else write_mask,
         now=lambda: NOW,
+        # P2c-3：变更通道与产物登记（缺省关闭 / 不登记 ⇒ 既有用例零变化）。
+        file_changes_max=file_changes_max,
+        artifacts=artifacts,
     )
     return service, trusted, workspace_root
 
@@ -458,6 +463,110 @@ def test_bounded_output_rides_along_and_never_pollutes_executed_audit(tmp_path) 
     assert set(detail) <= {"tool_key", "risk_level", "status", "reason", "run_id"}
     assert "output_excerpt" not in detail  # 摘录不进审计
     assert "abcdef1234567890" not in str(detail)  # 内容不进审计
+
+
+class _FileChangeExecutor:
+    """只回「执行摘要 + 文件变更」的假执行器（P2c-3 用例；不启容器）。"""
+
+    def __init__(self, *changes, truncated: bool = False) -> None:
+        self._changes = tuple(changes)
+        self._truncated = truncated
+
+    def execute(self, **kwargs):  # noqa: ANN003 - 与真实执行器同签名（此处仅回填）
+        return ExecutionOutcome(
+            ok=True,
+            summary={"tool_key": "fs.write", "status": "ok", "exit_code": 0},
+            file_changes=self._changes,
+            file_changes_truncated=self._truncated,
+        )
+
+
+class RecordingArtifactStore:
+    """记录登记请求的假仓储（P2c-3 用例；`register` 签名与真实仓储一致）。"""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls: list[dict] = []
+        self.fail = fail
+
+    def register(self, tenant_id, run_id, changes, *, now=None) -> int:  # noqa: ANN001
+        if self.fail:
+            raise RuntimeError("登记仓储不可用")
+        items = tuple(changes)
+        self.calls.append({"tenant_id": tenant_id, "run_id": run_id, "changes": items, "now": now})
+        return len(items)
+
+
+def _change(index: int, *, kind: str = "created"):
+    from app.tool_execution.file_ops import FileChange
+
+    return FileChange(
+        virtual_path=f"/workspace/{index}.txt",
+        change_kind=kind,
+        bytes=index,
+        sha256=f"sha256:{index}",
+        diff_excerpt=f"content-{index}",
+    )
+
+
+def test_file_changes_ride_along_truncated_and_registered(tmp_path) -> None:
+    """P2c-3 §2.7：变更记录**按同一上限截断**后同时进结果与产物登记（帧里有的才登记）。"""
+    audit = RecordingAudit()
+    artifacts = RecordingArtifactStore()
+    service, trusted, _ws = build_service(
+        tmp_path,
+        audit=audit,
+        executor=_FileChangeExecutor(_change(0), _change(1), _change(2)),
+        file_changes_max=2,
+        artifacts=artifacts,
+    )
+    _elf(str(trusted / "ls"))
+    result = service.execute(run_cmd(str(trusted / "ls"), ["/workspace"]))
+
+    assert result.outcome == "executed"
+    payload = dict(result.output or {})
+    assert [item["virtual_path"] for item in payload["file_changes"]] == [
+        "/workspace/0.txt",
+        "/workspace/1.txt",
+    ]
+    assert payload["file_changes_truncated"] is True  # 截断**显式告知**
+    assert len(artifacts.calls) == 1
+    registered = artifacts.calls[0]["changes"]
+    assert [item.virtual_path for item in registered] == ["/workspace/0.txt", "/workspace/1.txt"]
+    assert artifacts.calls[0]["tenant_id"] == "t-1" and artifacts.calls[0]["run_id"] == "run-1"
+    # 不进审计（口径不变）
+    executed = [call for call in audit.calls if call[0] == AuditAction.TOOL_EXECUTED]
+    assert set(executed[-1][1]["detail"]) <= {"tool_key", "risk_level", "status", "reason", "run_id"}
+
+
+def test_file_changes_channel_off_keeps_output_shape(tmp_path) -> None:
+    """`file_changes_max=0`（默认）⇒ **不产出、不登记**：既有输出形状逐字不变。"""
+    artifacts = RecordingArtifactStore()
+    service, trusted, _ws = build_service(
+        tmp_path,
+        executor=_FileChangeExecutor(_change(0)),
+        artifacts=artifacts,
+    )
+    _elf(str(trusted / "ls"))
+    result = service.execute(run_cmd(str(trusted / "ls"), ["/workspace"]))
+
+    assert result.output is None  # 既无摘录也无变更 ⇒ 无回传字段
+    assert artifacts.calls == []
+
+
+def test_artifact_registration_failure_never_changes_execution_result(tmp_path) -> None:
+    """登记是「视图」：仓储失败**不影响执行结果**（结果仍 201，变更仍随帧回传）。"""
+    artifacts = RecordingArtifactStore(fail=True)
+    service, trusted, _ws = build_service(
+        tmp_path,
+        executor=_FileChangeExecutor(_change(0)),
+        file_changes_max=50,
+        artifacts=artifacts,
+    )
+    _elf(str(trusted / "ls"))
+    result = service.execute(run_cmd(str(trusted / "ls"), ["/workspace"]))
+
+    assert result.outcome == "executed" and result.code == 201
+    assert len(result.output["file_changes"]) == 1
 
 
 def test_blacklist_layer_a_executable_names() -> None:

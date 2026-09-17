@@ -38,6 +38,8 @@ def _clean_wiring(monkeypatch):
     monkeypatch.setattr(worker, "_crm_notifier", None)
     # 2026-09-17 新增第 7 个注入点（P2b 流帧清理器）；「必须逐个列全」的口径见上。
     monkeypatch.setattr(worker, "_conversation_stream_purger", None)
+    # 2026-09-17 新增第 8 个注入点（P2c-3 产物登记清理器）；「必须逐个列全」的口径见上。
+    monkeypatch.setattr(worker, "_run_artifact_purger", None)
     monkeypatch.setattr(worker, "_runtime_builder", None)
     yield
 
@@ -271,3 +273,39 @@ def test_conversation_stream_purge_stalls_then_purges_with_configured_windows(mo
     assert settings.stream_stalled_hours == 6
     # 兜底置位的过期时刻 = now + 保留期（默认 7 天）
     assert 6 < (stalled_expiry - datetime.now(UTC)).total_seconds() / 86400 < 8
+
+
+def test_run_artifacts_purge_task_is_scheduled_alongside_existing_periodic_tasks() -> None:
+    """P2c-3：产物登记清理必须进 beat 周期表（否则保留期只写在库里、永不执行）。"""
+    from app.settings import Settings
+    from app.worker import celery_app
+
+    entry = celery_app.conf.beat_schedule["run-artifacts-purge"]
+    settings = Settings()
+
+    assert entry["task"] == "app.worker.purge_run_artifacts"
+    assert entry["schedule"] == settings.run_artifact_purge_interval_seconds
+    assert settings.run_artifact_purge_interval_seconds == 3600
+
+
+def test_run_artifacts_purge_returns_zero_when_worker_is_not_wired(monkeypatch) -> None:
+    monkeypatch.setattr(worker, "_ensure_runtime", lambda: None)
+
+    assert worker.purge_run_artifacts() == 0
+
+
+def test_run_artifacts_purge_delegates_with_now_cutoff(monkeypatch) -> None:
+    """清理按**任务执行时刻**为截止（保留期已在写端落到 `expires_at`，此处不重复计算）。"""
+    seen: list[object] = []
+
+    class _Purger:
+        def purge_expired(self, *, cutoff) -> int:
+            seen.append(cutoff)
+            return 4
+
+    monkeypatch.setattr(worker, "_ensure_runtime", lambda: None)
+    worker.configure_run_artifact_purger(_Purger())
+
+    assert worker.purge_run_artifacts() == 4
+    assert len(seen) == 1
+    assert abs((datetime.now(UTC) - seen[0]).total_seconds()) < 60  # 截止 = 执行时刻

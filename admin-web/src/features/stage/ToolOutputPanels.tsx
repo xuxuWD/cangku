@@ -1,4 +1,5 @@
 import type { StreamFrame } from '../conversation/types'
+import { changeKindLabel } from '../runDetail/types'
 
 /**
  * 内容级回传的两个面板（P2c-2 事项 I；契约「内容级回传」）。
@@ -79,7 +80,7 @@ export function TerminalOutputPanel({ frames }: { frames: StreamFrame[] }) {
   )
 }
 
-interface FileChangeEntry {
+export interface FileChangeEntry {
   seq: number
   virtualPath: string
   changeKind: string | null
@@ -88,15 +89,8 @@ interface FileChangeEntry {
   diffExcerpt: string | null
 }
 
-const CHANGE_KIND_LABELS: Record<string, string> = {
-  create: '新建',
-  write: '写入',
-  overwrite: '覆盖',
-  delete: '删除',
-  modify: '修改',
-}
-
-function fileChangeEntries(frames: StreamFrame[]): FileChangeEntry[] {
+/** 从帧里收集变更条目（**逐条白名单**；缺虚拟路径即整条丢弃，不猜测）。P2c-3 与其他面板共用。 */
+export function collectFileChanges(frames: StreamFrame[]): FileChangeEntry[] {
   const entries: FileChangeEntry[] = []
   for (const frame of frames) {
     const changes = frame.payload.file_changes
@@ -119,15 +113,23 @@ function fileChangeEntries(frames: StreamFrame[]): FileChangeEntry[] {
   return entries
 }
 
+/** 帧里是否出现过「变更被截断」的显式告知（`file_changes_truncated`）。 */
+export function fileChangesTruncated(frames: StreamFrame[]): boolean {
+  return frames.some((frame) => frame.payload.file_changes_truncated === true)
+}
+
 /** 文件改动面板：虚拟路径 + 变更类型 + 字节 + 有界 diff 摘录（数据随 P2c-3 的 `fs.*` 落地）。 */
 export function FileDiffPanel({ frames }: { frames: StreamFrame[] }) {
-  const changes = fileChangeEntries(frames)
+  const changes = collectFileChanges(frames)
   if (changes.length === 0) return null
   return (
     <section className="history-panel stage-panel" aria-label="文件改动">
       <div className="panel-header">
         <h2>文件改动</h2>
-        <span>{changes.length} 项</span>
+        <span>
+          {changes.length} 项
+          {fileChangesTruncated(frames) ? ' · 已截断' : ''}
+        </span>
       </div>
       <div className="panel-body">
         <ul className="file-changes">
@@ -136,9 +138,7 @@ export function FileDiffPanel({ frames }: { frames: StreamFrame[] }) {
               <div className="file-change__line">
                 <span className="file-change__path">{change.virtualPath}</span>
                 {change.changeKind && (
-                  <span className="file-change__kind">
-                    {CHANGE_KIND_LABELS[change.changeKind] ?? change.changeKind}
-                  </span>
+                  <span className="file-change__kind">{changeKindLabel(change.changeKind)}</span>
                 )}
                 {change.bytes !== null && <span className="file-change__bytes">{change.bytes} B</span>}
               </div>
@@ -150,7 +150,10 @@ export function FileDiffPanel({ frames }: { frames: StreamFrame[] }) {
             </li>
           ))}
         </ul>
-        <p className="stage-hint">diff 为**有界摘录**；完整内容不进入回传通道。</p>
+        <p className="stage-hint">
+          diff 为**有界摘录**；完整内容不进入回传通道。
+          {fileChangesTruncated(frames) ? '本次变更条数超过上限，已截断（仅展示前若干条）。' : ''}
+        </p>
       </div>
     </section>
   )

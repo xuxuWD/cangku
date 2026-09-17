@@ -714,6 +714,7 @@ def build_tool_execution(
     tool_actions=_UNSET,
     token_store=None,
     token_registry=None,
+    artifacts=_UNSET,
 ):
     """按 backend 装配段二工具执行服务（规格 §4.1.6-2）。
 
@@ -722,6 +723,8 @@ def build_tool_execution(
       即"拒绝启用真实执行，但不拒绝整个服务进程启动"（§4.1.6-3）；
     - `tool_actions` 由 `app/main.py` 传入与 `RuntimeService` 共用的**同一 027 仓储实例**；
       未显式传入（`_UNSET`，如单测直连）时才在内部装配；
+    - `artifacts`（P2c-3 产物登记仓储）同口径：由 `app/main.py` 传入**装配期单例**（与只读端点共用，
+      保证「登记了就能查到」）；未显式传入时才在内部装配。
     - `token_store` / `token_registry` 是 ②④ 的**权威状态**（§3.5 P1 第 3 条 / §8 U24）：
       由 `app/main.py` 传入**装配期单例**，与 `build_exec_callback_guard`（判定侧）**共用同一实例**。
       未传入时（单测直连）内部新建——此时 mint 侧与回调判定侧**不共享**，②④ 会恒 `403`。
@@ -769,6 +772,9 @@ def build_tool_execution(
         crm_service = CrmService(PostgresCrmStore(connection), audit=audit)
         executor = CrmRoutingExecutor(crm=CrmToolExecutor(lambda: crm_service), inner=executor)
         workspace = WorkspaceManager(settings.exec_workspace_root)
+        # P2c-3：产物登记（运行级元数据）——写端与清理端同源（同一保留期）；登记失败不影响执行。
+        if artifacts is _UNSET:
+            artifacts = build_run_artifact_store(settings, connection=connection, migrate=migrate)
         tool_execution = ToolExecutionService(
             catalog=catalog,
             body_cipher=body_cipher,
@@ -788,6 +794,9 @@ def build_tool_execution(
                 else None
             ),
             turn_tokens=turn_tokens,
+            # P2c-3：文件变更通道上限（`0` = 关闭）与产物登记仓储（best-effort 登记）。
+            file_changes_max=settings.file_changes_max,
+            artifacts=artifacts,
         )
     except ToolExecutionConfigError as exc:
         get_logger().error("段二真实执行装配失败，已拒绝启用：%s", exc)
@@ -1059,7 +1068,36 @@ def build_conversation_execution_service(
         audit=audit,
         directory_store=directory_store,
         stream_writer=stream_writer,
+        # P2c-3：帧 payload 的**契约边界**按 `WORKBENCH_FILE_CHANGES_MAX` 再次截断。
+        file_changes_max=settings.file_changes_max,
     )
+
+
+def build_run_artifact_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """装配产物登记仓储（P2c-3，表 `workbench_run_artifacts`，迁移 037）。
+
+    口径同其它仓储：内存实现仅 development；PG 缺省自建池并跑迁移（API 进程负责迁移，
+    worker 侧以 `migrate=False` 复用既有连接）。保留期在此注入 ⇒ 写端与清理端同源。
+    """
+    validate_runtime_settings(settings)
+    from .runtime.artifacts import InMemoryRunArtifactStore, PostgresRunArtifactStore
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存产物登记仓储")
+        return InMemoryRunArtifactStore(retention_days=settings.run_artifact_retention_days)
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresRunArtifactStore(
+            connection, retention_days=settings.run_artifact_retention_days
+        )
+    raise ValueError("不支持的产物登记存储类型")
 
 
 def build_conversation_stream_store(settings: Settings, *, connection=None, migrate: bool = True):

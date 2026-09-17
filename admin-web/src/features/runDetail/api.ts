@@ -1,5 +1,5 @@
 import { runErrorFromStatus } from './state'
-import type { RunApprovalDecision, RunApprovalList, RunEvent, RunMetrics, RunTask } from './types'
+import type { RunApprovalDecision, RunApprovalList, RunArtifactList, RunEvent, RunMetrics, RunTask } from './types'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1').replace(/\/$/, '')
 
@@ -46,6 +46,11 @@ export function listRunEvents(runId: string): Promise<RunEvent[]> {
 
 export function listRunApprovals(runId: string): Promise<RunApprovalList> {
   return request<RunApprovalList>(`/runs/${encodeURIComponent(runId)}/approvals`)
+}
+
+// P2c-3：产物登记只读列表（**只含元数据**；保留期已到的条目服务端不再返回）。
+export function listRunArtifacts(runId: string): Promise<RunArtifactList> {
+  return request<RunArtifactList>(`/runs/${encodeURIComponent(runId)}/artifacts`)
 }
 
 export function decideRunApproval(runId: string, approvalId: string, approved: boolean): Promise<RunApprovalDecision> {

@@ -43,6 +43,7 @@ from ..runtime.authorization import plan_digest
 from ..runtime.contracts import AgentPlan, RuntimeEventType
 from ..tool_execution.args_digest import args_digest as _args_digest
 from ..tool_execution.errors import ToolExecutionConfigError, ToolExecutionError
+from ..tool_execution.file_ops import CHANGE_KINDS, bounded_changes
 from ..tool_execution.params import path_param_names
 from ..tool_execution.service import ToolExecutionRequest
 from ..workforce.models import needs_approval
@@ -130,6 +131,8 @@ class ConversationExecutionService:
         mode: str = "product_manager",
         now: Callable[[], datetime] | None = None,
         stream_writer=None,
+        # P2c-3：变更通道上限（`0` = 关闭 ⇒ 帧里不出现 `file_changes`，零破坏）。
+        file_changes_max: int = 0,
     ) -> None:
         self.conversations = conversations
         self.conversation_store = conversation_store
@@ -147,6 +150,8 @@ class ConversationExecutionService:
         # P2b §2.2：流写入网关（**可选注入**，缺省 `None` ⇒ 行为与改造前完全一致）；
         # 且只有 `handle_message(..., stream=True)`（`messages:stream` 端点）才真正写帧。
         self.stream_writer = stream_writer
+        # P2c-3：变更通道上限（帧 payload 的**契约边界**再次截断；`0` = 关闭）。
+        self.file_changes_max = int(file_changes_max)
 
     # ------------------------------------------------------------------ 公开入口
 
@@ -384,7 +389,11 @@ class ConversationExecutionService:
             stream, context, conversation_id, run_id,
             kind=RuntimeEventType.TOOL_RESULT.value,
             payload=_tool_result_summary(
-                spec, result, step_id=step_id, params_digest=params_digest
+                spec,
+                result,
+                step_id=step_id,
+                params_digest=params_digest,
+                file_changes_max=self.file_changes_max,
             ),
         )
         try:
@@ -729,13 +738,14 @@ def summary_digest(summary: Mapping[str, Any]) -> str:
 
 
 def _tool_result_summary(
-    spec, result, *, step_id: str, params_digest: str
+    spec, result, *, step_id: str, params_digest: str, file_changes_max: int = 0
 ) -> dict[str, Any]:
     """`tool.result` 帧的 payload：摘要 + `args_digest` + `sha256` **＋ 有界摘录**（P2c-2 §2.6）。
 
     **仍不落**：stdout 全文、文件正文、宿主真实路径、凭据 / 认证头 / Cookie；
     有界摘录**只增** `output_excerpt` / `output_truncated` / `output_bytes` / `output_sha256`
-    （统一在写帧网关过 `redact_payload`；**不进审计、不进消息表**）。
+    与 `file_changes` / `file_changes_truncated`（P2c-3；统一在写帧网关过 `redact_payload`；
+    **不进审计、不进消息表**）。
     """
     summary = dict(result.summary or {})
     payload: dict[str, Any] = {
@@ -746,12 +756,21 @@ def _tool_result_summary(
         "args_digest": params_digest,
         "sha256": summary_digest(summary),
     }
-    payload.update(bounded_output_fields(getattr(result, "output", None)))
+    payload.update(
+        bounded_output_fields(
+            getattr(result, "output", None), file_changes_max=file_changes_max
+        )
+    )
     return payload
 
 
-def bounded_output_fields(output: object) -> dict[str, Any]:
-    """把执行结果的**有界输出**并入 payload（**白名单键**；缺省不出现 ⇒ 既有帧逐字节不变）。"""
+def bounded_output_fields(output: object, *, file_changes_max: int = 0) -> dict[str, Any]:
+    """把执行结果的**有界输出**并入 payload（**白名单键**；缺省不出现 ⇒ 既有帧逐字节不变）。
+
+    P2c-3 增：`file_changes`（逐条白名单只读五键）与 `file_changes_truncated`（截断告知）。
+    **契约边界**：这里再次按 `WORKBENCH_FILE_CHANGES_MAX` 截断——即使上游（执行器 / 打桩）给出更多，
+    帧里也**绝不会**超过上限；`0` = 关闭变更通道（不产出、不出现截断标记）。
+    """
     if not isinstance(output, Mapping):
         return {}
     fields: dict[str, Any] = {}
@@ -766,7 +785,46 @@ def bounded_output_fields(output: object) -> dict[str, Any]:
     sha = output.get("output_sha256")
     if isinstance(sha, str) and sha:
         fields["output_sha256"] = sha
+    raw_changes = output.get("file_changes")
+    if isinstance(raw_changes, (list, tuple)) and raw_changes and int(file_changes_max) > 0:
+        changes = [item for item in (_change_view(item) for item in raw_changes) if item]
+        kept, truncated = bounded_changes(changes, file_changes_max)
+        if kept:
+            fields["file_changes"] = list(kept)
+        if truncated or output.get("file_changes_truncated") is True:
+            fields["file_changes_truncated"] = True
     return fields
+
+
+def _change_view(item: object) -> dict[str, Any] | None:
+    """单条变更的**白名单投影**（`virtual_path` / `change_kind` / `bytes` / `sha256` / `diff_excerpt`）。
+
+    形态不符（缺虚拟路径 / 类型非法 / 字节数非法 / 摘要非法）⇒ 丢弃该条（不猜测、不补默认值）。
+    """
+    if not isinstance(item, Mapping):
+        return None
+    virtual_path = item.get("virtual_path")
+    change_kind = item.get("change_kind")
+    size = item.get("bytes")
+    sha256 = item.get("sha256")
+    if not isinstance(virtual_path, str) or not virtual_path:
+        return None
+    if change_kind not in CHANGE_KINDS:
+        return None
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        return None
+    if not isinstance(sha256, str) or not sha256.startswith("sha256:"):
+        return None
+    view: dict[str, Any] = {
+        "virtual_path": virtual_path,
+        "change_kind": change_kind,
+        "bytes": int(size),
+        "sha256": sha256,
+    }
+    excerpt = item.get("diff_excerpt")
+    if isinstance(excerpt, str) and excerpt:
+        view["diff_excerpt"] = excerpt
+    return view
 
 
 def _plan_steps(plan: AgentPlan) -> list[dict[str, Any]]:

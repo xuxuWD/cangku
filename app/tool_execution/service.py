@@ -26,12 +26,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from ..audit.models import AuditAction
+from ..runtime.artifacts import register_run_artifacts
 from ..runtime.authorization import AuthorizationAction
 from ..workforce.models import DEFAULT_APPROVAL_TIMEOUT_MINUTES, needs_approval
 from .args_digest import args_digest
 from .blacklist import CommandDenied, CommandGate
 from .catalog import ParamRole, ToolSpec, ToolSpecCatalog
 from .errors import BodyCipherError, ToolExecutionConfigError, ToolExecutionError
+from .file_ops import bounded_changes, changes_payload
 from .log import get_logger
 from .params import ParamValidationError, path_param_names, validate_params
 from .paths import PathDenied, PathGuard, path_blacklist_hit
@@ -146,28 +148,39 @@ class ToolExecutionResult:
     output: Mapping[str, object] | None = None
 
 
-def _output_payload(captured: Any) -> Mapping[str, object] | None:
-    """把执行器的**有界输出**折算为契约字段（P2c-2 §2.6）；无回传 / 形态不符 ⇒ `None`。
+def _output_payload(
+    captured: Any,
+    changes: Sequence[Any] = (),
+    *,
+    file_changes_max: int = 0,
+) -> Mapping[str, object] | None:
+    """把执行器的**有界输出**折算为契约字段（P2c-2 §2.6 / P2c-3 §2.7）；无回传 ⇒ `None`。
 
-    **只读白名单键**（`output_excerpt` / `output_truncated` / `output_bytes` / `output_sha256`）——
-    不 dump 任意对象，防止执行器实现的内部字段意外外溢到帧；**此处不做脱敏**（统一在写帧网关
-    过 `redact_payload`，保证「同一函数同一规则」）。
+    **只读白名单键**（`output_excerpt` / `output_truncated` / `output_bytes` / `output_sha256` /
+    `file_changes` / `file_changes_truncated`）——不 dump 任意对象，防止执行器实现的内部字段
+    意外外溢到帧；**此处不做脱敏**（统一在写帧网关过 `redact_payload`，保证「同一函数同一规则」）。
+    变更记录的**截断在契约边界完成**（`file_changes_max`；`0` = 关闭变更通道 ⇒ 不产出、不登记）。
     """
-    if captured is None:
-        return None
     payload: dict[str, object] = {}
-    excerpt = getattr(captured, "excerpt", None)
-    if isinstance(excerpt, str) and excerpt:
-        payload["output_excerpt"] = excerpt
-    truncated = getattr(captured, "truncated", None)
-    if isinstance(truncated, bool):
-        payload["output_truncated"] = truncated
-    bytes_read = getattr(captured, "bytes_read", None)
-    if isinstance(bytes_read, int) and not isinstance(bytes_read, bool):
-        payload["output_bytes"] = int(bytes_read)
-    sha = getattr(captured, "sha256", None)
-    if isinstance(sha, str) and sha:
-        payload["output_sha256"] = sha
+    if captured is not None:
+        excerpt = getattr(captured, "excerpt", None)
+        if isinstance(excerpt, str) and excerpt:
+            payload["output_excerpt"] = excerpt
+        truncated = getattr(captured, "truncated", None)
+        if isinstance(truncated, bool):
+            payload["output_truncated"] = truncated
+        bytes_read = getattr(captured, "bytes_read", None)
+        if isinstance(bytes_read, int) and not isinstance(bytes_read, bool):
+            payload["output_bytes"] = int(bytes_read)
+        sha = getattr(captured, "sha256", None)
+        if isinstance(sha, str) and sha:
+            payload["output_sha256"] = sha
+    if changes and int(file_changes_max) > 0:
+        kept, truncated_changes = bounded_changes(changes, file_changes_max)
+        if kept:
+            payload["file_changes"] = changes_payload(kept)
+        if truncated_changes:
+            payload["file_changes_truncated"] = True
     return payload or None
 
 
@@ -196,6 +209,9 @@ class ToolExecutionService:
         now: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
         turn_tokens=None,
+        # P2c-3 文件变更通道与产物登记（缺省 = 关闭 / 不登记 ⇒ 既有调用方零变化）。
+        file_changes_max: int = 0,
+        artifacts=None,
     ) -> None:
         self.catalog = catalog
         self.body_cipher = body_cipher
@@ -203,6 +219,9 @@ class ToolExecutionService:
         # ⑧ 前的**短期网关令牌**接线（§3.5 P1 第 3 条 ②④⑤）：一次 turn = 一次 ⑧ 执行。
         # 为 `None`（如单测直连 / backend=mock）时**不注入任何 env**（既有行为不变）。
         self.turn_tokens = turn_tokens
+        # P2c-3：变更通道上限（`0` = 关闭）与产物登记仓储（`None` = 不登记；登记失败不影响执行）。
+        self.file_changes_max = int(file_changes_max)
+        self.artifacts = artifacts
         self.workspace = workspace
         self.tool_actions = tool_actions
         self.run_records = run_records
@@ -360,18 +379,22 @@ class ToolExecutionService:
 
         # ⑧ 执行
         self._trace(GATE_EXECUTE)
-        summary, output = self._step_execute(request, spec, params, workspace_path, resume_action)
+        summary, output, changes = self._step_execute(
+            request, spec, params, workspace_path, resume_action
+        )
 
         # ⑨ 结果只落摘要 + 审计（**有界摘录不进审计**：只随帧回传，见 P2c-2 §2.6）
         self._trace(GATE_AUDIT)
         self._record_executed(request, spec, resume_action, summary)
+        # P2c-3：产物登记（**best-effort**；与帧回传同为「视图」，失败不影响执行结果）。
+        self._record_artifacts(request, changes)
         return ToolExecutionResult(
             outcome="executed",
             code=201,
             approval_id=resume_action.approval_id if resume_action else None,
             action_id=resume_action.action_id if resume_action else None,
             summary=summary,
-            output=_output_payload(output),
+            output=_output_payload(output, changes, file_changes_max=self.file_changes_max),
         )
 
     def _step_whitelist(
@@ -472,8 +495,9 @@ class ToolExecutionService:
         params: Mapping[str, Any],
         workspace_path: str,
         action: ToolAction | None,
-    ) -> tuple[Mapping[str, object], Any | None]:
-        """⑧ 执行；返回 `(摘要, 有界输出)`——有界输出由调用方折成契约字段（不落审计 / 消息表）。"""
+    ) -> tuple[Mapping[str, object], Any | None, tuple[Any, ...]]:
+        """⑧ 执行；返回 `(摘要, 有界输出, 文件变更记录)`——后两者由调用方折成契约字段
+        （不落审计 / 消息表；变更记录按上限截断后**同时**用于产物登记与帧回传）。"""
         try:
             # ⑧ 前进入新 turn（§3.5 P1 第 3 条）：mint + 落自持绑定 + 登记当前执行；返回容器内 env。
             # 终态吊销由 `ContainerExecutor(token_revoker=…)` 触发（容器到达终态即 retire + revoke）。
@@ -500,9 +524,11 @@ class ToolExecutionService:
             self._fail(request, spec, key="timeout", action=action)
         if not getattr(outcome, "ok", False):
             self._fail(request, spec, key="runtime_error", action=action)
+        changes = tuple(getattr(outcome, "file_changes", ()) or ())
         return (
             dict(getattr(outcome, "summary", {}) or {}),
             getattr(outcome, "output", None),
+            changes,
         )
 
     # ------------------------------------------------------------------ ⑥ / ⑨
@@ -551,6 +577,28 @@ class ToolExecutionService:
                 audit_action=PERSIST_FAILURE_SEMANTICS.audit_action,
                 keep_approved=False,
             ) from exc
+
+    def _record_artifacts(
+        self, request: ToolExecutionRequest, changes: Sequence[Any]
+    ) -> None:
+        """产物登记（P2c-3 §2.7）：一条变更 = 一行（**只登记元数据**，不进审计）。
+
+        - 变更通道关闭（`file_changes_max == 0`）或未装配登记仓储 ⇒ 不登记（no-op）；
+        - 与帧回传**同一集合**（先按同一上限截断，保证「帧里有的才登记」）；
+        - **best-effort**：登记失败只记日志，**不影响执行结果**（流 / 登记都是视图）。
+        """
+        if self.artifacts is None or not changes or self.file_changes_max <= 0:
+            return
+        kept, _truncated = bounded_changes(changes, self.file_changes_max)
+        if not kept:
+            return
+        register_run_artifacts(
+            self.artifacts,
+            tenant_id=request.tenant_id,
+            run_id=request.run_id,
+            changes=kept,
+            now=self._now(),
+        )
 
     def _record_executed(
         self,

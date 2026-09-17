@@ -175,6 +175,8 @@ def test_postgres_job_runs_only_the_real_db_modules() -> None:
     assert "tests/test_crm_postgres.py" in command
     # 2026-09-17 补钉：P2b 实时流真库回归（迁移 036，序号 / 续播 / 熔断告知帧 / 脱敏落库 / 清理）
     assert "tests/test_conversation_stream_postgres.py" in command
+    # 2026-09-17 补钉：P2c-3 产物登记真库回归（迁移 037，登记读回 / 跨租户拒写 / 保留期清理）
+    assert "tests/test_run_artifacts_postgres.py" in command
 
 
 def test_postgres_job_requires_zero_skipped() -> None:

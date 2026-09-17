@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -39,13 +40,19 @@ from app.conversation.stream import (
     InMemoryStreamStore,
 )
 from app.conversation.stream_writer import StreamWriter
-from app.domain import TaskStore, UserContext
+from app.domain import RiskLevel, Task, TaskStatus, TaskStore, UserContext
 from app.main import app
-from app.runtime.records import InMemoryRunRecordStore
+from app.runtime.artifacts import InMemoryRunArtifactStore
+from app.runtime.records import InMemoryRunRecordStore, RunRecord
 from app.runtime.run_metrics import RunMetricsService
 from app.runtime.service import RuntimeService
+from app.tool_execution.body_cipher import BodyCipher
 from app.tool_execution.catalog import build_tool_spec_catalog
-from app.tool_execution.service import ToolExecutionResult
+from app.tool_execution.executor import ExecutionOutcome
+from app.tool_execution.file_ops import FileChange
+from app.tool_execution.service import ToolExecutionResult, ToolExecutionService
+from app.tool_execution.store import InMemoryToolActionStore
+from app.tool_execution.workspace import WorkspaceManager
 from app.workforce.store import InMemoryWorkforceDirectoryStore
 
 client = TestClient(app)
@@ -93,6 +100,7 @@ def _isolate(monkeypatch):
     directory.create_employee(admin, agent_key=AGENT, name="内容员工", role_key="writer")
     stream_store = InMemoryStreamStore()
     stream_writer = StreamWriter(stream_store, audit=audit, retention_days=7)
+    artifact_store = InMemoryRunArtifactStore(retention_days=30)
 
     monkeypatch.setattr(main, "store", task_store)
     monkeypatch.setattr(main, "run_metrics_service", metrics)
@@ -103,6 +111,7 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(main, "execution_idempotency_store", idempotency)
     monkeypatch.setattr(main, "conversation_stream_store", stream_store)
     monkeypatch.setattr(main, "conversation_stream_writer", stream_writer)
+    monkeypatch.setattr(main, "run_artifact_store", artifact_store)
     return {
         "tasks": task_store,
         "conversations": conversations,
@@ -111,10 +120,11 @@ def _isolate(monkeypatch):
         "directory": directory,
         "stream_store": stream_store,
         "stream_writer": stream_writer,
+        "artifact_store": artifact_store,
     }
 
 
-def wire_execution(monkeypatch, tool_execution, env) -> ConversationExecutionService:
+def wire_execution(monkeypatch, tool_execution, env, *, file_changes_max: int = 50) -> ConversationExecutionService:
     """接线执行服务：与生产装配同口径（`stream_writer` 注入，只有 `stream=True` 才写帧）。"""
     service = ConversationExecutionService(
         conversations=main.conversation_service,
@@ -127,6 +137,8 @@ def wire_execution(monkeypatch, tool_execution, env) -> ConversationExecutionSer
         audit=main.audit_service,
         directory_store=env["directory"],
         stream_writer=main.conversation_stream_writer,
+        # P2c-3：与生产同口径（`WORKBENCH_FILE_CHANGES_MAX` 默认 50）。
+        file_changes_max=file_changes_max,
     )
     monkeypatch.setattr(main, "conversation_execution_service", service)
     return service
@@ -700,3 +712,224 @@ def test_approval_decision_appends_resume_frames(monkeypatch, _isolate) -> None:
     assert resume_frame.payload["output_excerpt"] == "deleted"  # 有界回传随推进帧一并可见
     assert [frame.seq for frame in frames] == list(range(1, len(frames) + 1))  # seq 单调无跳号
     # 无流路径零破坏的对照组由 `test_resume_frames_are_skipped_without_stream` 覆盖。
+
+
+# ------------------------------------------------------------ ⑤ P2c-3 变更记录 + 产物登记
+
+
+def _change(index: int, *, kind: str = "created", diff: str | None = None) -> dict:
+    payload = {
+        "virtual_path": f"/workspace/{index}.txt",
+        "change_kind": kind,
+        "bytes": 10 + index,
+        "sha256": f"sha256:{index:064d}",
+    }
+    if diff is not None:
+        payload["diff_excerpt"] = diff
+    return payload
+
+
+def executed_with_changes(*changes: dict, truncated: bool = False) -> ToolExecutionResult:
+    return ToolExecutionResult(
+        outcome="executed",
+        code=201,
+        summary={"tool_key": "fs.write", "status": "ok", "exit_code": 0},
+        output={
+            "output_excerpt": "已写入 /workspace/0.txt（10 字节）",
+            "file_changes": list(changes),
+            "file_changes_truncated": truncated,
+        },
+    )
+
+
+class _StubChangeExecutor:
+    """打桩执行器：返回**真实执行器同构**的结局（含 `FileChange` 对象；不启容器）。"""
+
+    def __init__(self, *change_payloads: dict) -> None:
+        self._changes = tuple(FileChange(**payload) for payload in change_payloads)
+        self.calls = 0
+
+    def execute(self, **kwargs):  # noqa: ANN003 - 与真实执行器同签名（此处仅回填）
+        self.calls += 1
+        return ExecutionOutcome(
+            ok=True,
+            summary={"tool_key": "fs.write", "status": "ok", "exit_code": 0},
+            file_changes=self._changes,
+        )
+
+
+def _body_key() -> str:
+    return base64.b64encode(b"p2c3-test-body-encryption-key-32").decode("ascii")
+
+
+def test_file_changes_land_in_frame_and_register_artifacts(monkeypatch, _isolate) -> None:
+    """P2c-3 真库用例 ①（帧层）：`fs.write/overwrite/delete` 的变更记录**逐字入帧**（白名单键）。"""
+    cases = [
+        ("fs.write", _change(0, kind="created")),
+        ("fs.overwrite", _change(1, kind="overwritten")),
+        ("fs.delete", _change(2, kind="deleted")),
+    ]
+    for index, (tool_key, change) in enumerate(cases):
+        fake = FakeToolExecution(result=executed_with_changes(change))
+        wire_execution(monkeypatch, fake, _isolate)
+        conversation_id = create_conversation()
+        if tool_key == "fs.delete":
+            params = {"path": change["virtual_path"]}
+        else:
+            params = {"path": change["virtual_path"], "content": "x"}
+        response = send(conversation_id, invocation(tool_key, params), key=f"k-fs-{index}", path_suffix=":stream")
+        assert response.status_code == 201, response.text
+        run_id = response.json()["run_id"]
+
+        frames = frames_of(_isolate, conversation_id, run_id)
+        result_frame = next(frame for frame in frames if frame.kind == "tool.result")
+        payload = result_frame.payload
+        # 虚拟路径 / 类型 / 字节 / sha256 逐字入帧；未截断 ⇒ **不出现**截断键（零破坏）
+        assert payload["file_changes"] == [change]
+        assert "file_changes_truncated" not in payload
+
+
+def test_approved_file_change_registers_artifact_and_reads_back(monkeypatch, _isolate, tmp_path) -> None:
+    """P2c-3 判据 ①/③ 端到端（**真实执行服务** + 打桩执行器）：写文件需审批 ⇒ 决议后重跑 ⇒
+    变更记录在**推进帧**可见 + **产物登记**落库 + 只读端点可取回（跨租户 `404` 由下一例覆盖）。"""
+    shared_actions = InMemoryToolActionStore()
+    runtime = RuntimeService(main.store, run_metrics=main.run_metrics_service, tool_actions=shared_actions)
+    monkeypatch.setattr(main, "runtime_service", runtime)
+    executor = _StubChangeExecutor(_change(7, kind="created", diff="hello\nworld"))
+    service = ToolExecutionService(
+        catalog=build_tool_spec_catalog(),
+        body_cipher=BodyCipher.from_base64(_body_key()),
+        executor=executor,
+        workspace=WorkspaceManager(str(tmp_path / "ws")),
+        tool_actions=shared_actions,
+        audit=main.audit_service,
+        authorize_execution=None,
+        trusted_roots=(str(tmp_path),),
+        file_changes_max=50,
+        artifacts=_isolate["artifact_store"],
+    )
+    wire_execution(monkeypatch, service, _isolate)
+    monkeypatch.setattr(main, "tool_execution_service", service)
+    conversation_id = create_conversation()
+
+    response = send(
+        conversation_id,
+        invocation("fs.write", {"path": "/workspace/7.txt", "content": "hello"}),
+        key="k-artifact",
+        path_suffix=":stream",
+    )
+    assert response.status_code == 202, response.text  # ⑥ 先落库、再阻塞
+    run_id = response.json()["run_id"]
+    assert _isolate["artifact_store"].list_for_run(TENANT, run_id) == []  # 尚未执行 ⇒ 无产物
+
+    decision = client.post(
+        f"/api/v1/runs/{run_id}/approvals/{response.json()['approval_id']}/approval",
+        headers=headers("ceo", user_id="ceo-1"),
+        json={"approved": True},
+    )
+    assert decision.status_code == 200, decision.text
+    assert executor.calls == 1  # 决议后重跑确实执行了一次
+
+    frames = frames_of(_isolate, conversation_id, run_id)
+    resume_frame = next(frame for frame in frames if frame.kind == "tool.result")
+    assert resume_frame.payload["file_changes"] == [_change(7, kind="created", diff="hello\nworld")]
+
+    artifacts = response_artifacts(run_id)
+    assert artifacts["total"] == 1
+    item = artifacts["items"][0]
+    assert item["virtual_path"] == "/workspace/7.txt" and item["change_kind"] == "created"
+    assert item["bytes"] == 17 and item["sha256"].startswith("sha256:")
+    assert set(item) == {
+        "artifact_id",
+        "virtual_path",
+        "change_kind",
+        "bytes",
+        "sha256",
+        "created_at",
+        "expires_at",
+    }  # 只读元数据：**不含**内容 / tenant_id / 宿主路径
+
+
+def response_artifacts(run_id: str, *, user_id: str = EMPLOYEE, tenant: str = TENANT) -> dict:
+    response = client.get(
+        f"/api/v1/runs/{run_id}/artifacts", headers=headers(user_id=user_id, tenant=tenant)
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_file_changes_are_redacted_and_capped_in_frame(monkeypatch, _isolate) -> None:
+    """帧侧硬边界：**脱敏**（键名 + 值形状）与**上限截断告知**（P2c-3 §2.6 沿用 P2c-2 口径）。"""
+    secret = "Authorization: Bearer abcdef1234567890"
+    fake = FakeToolExecution(
+        result=executed_with_changes(
+            _change(0, diff=f"line1\n{secret}"),
+            _change(1),
+            _change(2),
+        )
+    )
+    wire_execution(monkeypatch, fake, _isolate, file_changes_max=2)
+    conversation_id = create_conversation()
+    response = send(
+        conversation_id,
+        invocation("fs.write", {"path": "/workspace/0.txt", "content": "x"}),
+        key="k-cap",
+        path_suffix=":stream",
+    )
+    assert response.status_code == 201
+    run_id = response.json()["run_id"]
+
+    payload = next(
+        frame.payload for frame in frames_of(_isolate, conversation_id, run_id) if frame.kind == "tool.result"
+    )
+    assert len(payload["file_changes"]) == 2  # 上限截断
+    assert payload["file_changes_truncated"] is True  # 必须显式告知
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "abcdef1234567890" not in serialized  # 凭据形态值被掩码（同一脱敏函数）
+    assert secret not in serialized
+
+
+def test_artifacts_endpoint_ownership_and_retention(monkeypatch, _isolate) -> None:
+    """端点归属（跨租户 / 他人 / 未知运行 `404`）与**保留期外不返回**（如实降级）。"""
+    store = _isolate["artifact_store"]
+    store.register(TENANT, "run-art-1", [FileChange(**_change(0))])
+    # 过期行（保留期已到、尚未被清理）⇒ 不返回
+    store.register(
+        TENANT, "run-art-1", [FileChange(**_change(1))], now=datetime.now(UTC) - timedelta(days=40)
+    )
+
+    # 造一条本租户承载任务 + 运行记录，使归属判定通过（同 `/runs/{run_id}/metrics` 口径）
+    task = Task(
+        tenant_id=TENANT,
+        project_id=None,
+        created_by=EMPLOYEE,
+        employee_key=AGENT,
+        title="产物端点用例",
+        risk_level=RiskLevel.LOW,
+        budget=0,
+        idempotency_key="artifacts-endpoint",
+        request_fingerprint="fp",
+        status=TaskStatus.QUEUED,
+    )
+    _isolate["tasks"].create(UserContext(TENANT, EMPLOYEE, "employee"), task)
+    main.run_metrics_service.store.upsert(
+        RunRecord(
+            run_id="run-art-1",
+            tenant_id=TENANT,
+            task_id=task.id,
+            runtime_key="mock",
+            status="completed",
+            started_at=datetime.now(UTC),
+        )
+    )
+
+    assert response_artifacts("run-art-1")["total"] == 1  # 仅未过期的那一条
+
+    cross = client.get("/api/v1/runs/run-art-1/artifacts", headers=headers(tenant="t-other"))
+    assert cross.status_code == 404
+    other_user = client.get(
+        "/api/v1/runs/run-art-1/artifacts", headers=headers(user_id=OTHER_USER)
+    )
+    assert other_user.status_code == 404  # 他人运行（非 ceo / super_admin）不可见
+    missing = client.get("/api/v1/runs/run-missing/artifacts", headers=headers())
+    assert missing.status_code == 404

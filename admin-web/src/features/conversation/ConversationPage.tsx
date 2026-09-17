@@ -4,6 +4,8 @@ import { Icon } from '../../components/Icon'
 import { Toast } from '../../components/Toast'
 import { ApprovalCard } from '../stage/ApprovalCard'
 import { StagePanel } from '../stage/StagePanel'
+import { ArtifactChips } from '../stage/ArtifactChips'
+import { useRunArtifacts } from '../stage/useRunArtifacts'
 import { useRunApprovals } from '../stage/useRunApprovals'
 import { useRunOverview } from '../stage/useRunOverview'
 import {
@@ -161,6 +163,8 @@ export function ConversationPage({
   const effectiveRunId = streamRunId ?? stream.runId ?? undefined
   const overview = useRunOverview(effectiveRunId, terminalToken)
   const approvals = useRunApprovals(effectiveRunId)
+  // P2c-3：产物登记（运行级元数据；随运行终态重取——写文件的工具多在审批后推进才产出）。
+  const artifacts = useRunArtifacts(effectiveRunId, terminalToken)
   const role = import.meta.env.VITE_USER_ROLE || 'super_admin'
   const canDecide = (role === 'ceo' || role === 'super_admin') && !overview.isInitiator
   const pendingApprovals = approvals.items.filter((item) => item.status === 'pending')
@@ -437,6 +441,12 @@ export function ConversationPage({
 
                   <ProcessBar frames={stream.frames} status={stream.status} error={stream.error} noData={stream.noData} />
 
+                  <ArtifactChips
+                    frames={stream.frames}
+                    runId={effectiveRunId}
+                    onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}
+                  />
+
                   {pendingApprovals.length > 0 && (
                     <div className="conversation-approvals" aria-label="待审批">
                       {pendingApprovals.map((approval) => (
@@ -517,6 +527,7 @@ export function ConversationPage({
               stream={stream}
               overview={overview}
               approvals={approvalsView}
+              artifacts={artifacts}
               canDecide={canDecide}
               expanded={stageOpen}
               onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}

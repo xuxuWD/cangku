@@ -49,6 +49,41 @@ export interface RunApprovalList {
   items: RunApproval[]
 }
 
+// P2c-3：产物登记（**运行级元数据**）——契约「产物登记与只读端点」。
+// **只含元数据**（虚拟路径 / 变更类型 / 字节 / sha256 / 时间），不含文件内容、不含 tenant_id。
+export interface RunArtifact {
+  artifact_id: string
+  virtual_path: string
+  change_kind: string
+  bytes: number
+  sha256: string
+  created_at: string
+  expires_at: string | null
+}
+
+export interface RunArtifactList {
+  run_id: string
+  items: RunArtifact[]
+  total: number
+}
+
+// 变更类型中文标签；**未知取值原样展示**（不猜测）。
+export const CHANGE_KIND_LABELS: Record<string, string> = {
+  created: '新建',
+  overwritten: '覆盖',
+  deleted: '删除',
+  // 兼容历史取值（P2c-2 前端预置位；服务端已冻结为上面三值）
+  create: '新建',
+  write: '写入',
+  overwrite: '覆盖',
+  delete: '删除',
+  modify: '修改',
+}
+
+export function changeKindLabel(kind: string): string {
+  return CHANGE_KIND_LABELS[kind] ?? kind
+}
+
 export interface RunApprovalDecision {
   run_id: string
   approval_id: string

@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
 from .errors import ToolExecutionConfigError, WorkspaceError
+from .file_ops import FS_TOOLS, FileChange, bounded_changes, build_fs_command, parse_marker
 from .log import get_logger
 from ..runtime.adapters.dsh import ALLOWED_IN_CONTAINER_ENV_NAMES
 
@@ -81,11 +82,18 @@ def _digest_pinned(image: str) -> bool:
     return "@sha256:" in image
 
 
-def _command_for(tool_key: str, params: Mapping[str, Any]) -> list[str]:
+def _command_for(
+    tool_key: str,
+    params: Mapping[str, Any],
+    *,
+    workspace_mount: str = WORKSPACE_MOUNT,
+    diff_excerpt_max_bytes: int = 0,
+) -> list[str]:
     """把一次工具调用映射为容器内的**结构化命令**（不经过 shell 解释）。
 
-    段二-3 只交付容器边界本身；需要在容器内落地的自建工具（`fs.*` / `artifact.export`）
-    由后续适配器段实现（规格 §F）。此处对未实现的工具** fail-closed **，绝不静默返回成功。
+    - `cmd.run`：原样透传 `executable + args[]`（白名单与黑名单在 ④ 已判定）；
+    - `fs.*`（P2c-3）：自建内联脚本（`python3 -c <脚本> --op …`），不经 shell、不依赖 coreutils；
+    - 其余（含 `artifact.export`，默认不装配）**fail-closed**，绝不静默返回成功。
     """
     if tool_key == "cmd.run":
         executable = params.get("executable")
@@ -97,6 +105,13 @@ def _command_for(tool_key: str, params: Mapping[str, Any]) -> list[str]:
         ):
             raise ToolExecutionConfigError("cmd.run 的 args 必须为字符串数组，拒绝执行")
         return [executable, *args]
+    if tool_key in FS_TOOLS:
+        return build_fs_command(
+            tool_key,
+            params,
+            workspace_mount=workspace_mount,
+            diff_excerpt_max_bytes=diff_excerpt_max_bytes,
+        )
     raise ToolExecutionConfigError(f"工具 {tool_key} 在容器内的执行入口尚未实现，拒绝执行")
 
 
@@ -265,12 +280,16 @@ class ExecutionOutcome:
     """一次执行的**确定性**结果摘要（供 ⑨ 落摘要 / 用例断言；不含正文与宿主路径）。
 
     `output`（P2c-2 新增，缺省 `None`）：本次执行的**有界输出摘录**（未装配回传时为 `None`）。
+    `file_changes` / `file_changes_truncated`（P2c-3 新增，缺省空 / `False`）：文件变更记录
+    （**仅 `fs.write/overwrite/delete`**；按 `WORKBENCH_FILE_CHANGES_MAX` 截断并显式告知）。
     """
 
     ok: bool
     summary: dict[str, object]
     timed_out: bool = False
     output: OutputCapture | None = None
+    file_changes: tuple[FileChange, ...] = ()
+    file_changes_truncated: bool = False
 
 
 class OrphanLimitExceeded(ToolExecutionConfigError):
@@ -307,6 +326,9 @@ class ContainerExecutor:
         # 有界回传（P2c-2）：`0` = 关闭（默认，既有调用方零变化）；生产由 `from_settings` 注入。
         output_excerpt_max_bytes: int = 0,
         output_capture_hard_limit_bytes: int = OUTPUT_CAPTURE_HARD_LIMIT_BYTES,
+        # 文件变更通道（P2c-3）：`0` = 关闭（默认，既有调用方零变化）；生产由 `from_settings` 注入。
+        file_diff_excerpt_max_bytes: int = 0,
+        file_changes_max: int = 0,
     ) -> None:
         if not isinstance(image_digest, str) or not image_digest.strip():
             raise ToolExecutionConfigError(
@@ -322,6 +344,8 @@ class ContainerExecutor:
             raise ToolExecutionConfigError("孤儿上限必须为非负整数")
         if output_excerpt_max_bytes < 0 or output_capture_hard_limit_bytes < 0:
             raise ToolExecutionConfigError("输出回传上限必须为非负整数（0 = 关闭）")
+        if file_diff_excerpt_max_bytes < 0 or file_changes_max < 0:
+            raise ToolExecutionConfigError("文件变更通道上限必须为非负整数（0 = 关闭）")
         self.image_digest = image_digest
         self.pids_limit = pids_limit
         self.memory_mb = memory_mb
@@ -334,6 +358,8 @@ class ContainerExecutor:
         self._client_factory = client_factory or _default_client_factory
         self.output_excerpt_max_bytes = int(output_excerpt_max_bytes)
         self.output_capture_hard_limit_bytes = int(output_capture_hard_limit_bytes)
+        self.file_diff_excerpt_max_bytes = int(file_diff_excerpt_max_bytes)
+        self.file_changes_max = int(file_changes_max)
         self._client: Any | None = None
         # 本进程内**当前在跑**的容器 id；不在此集合、却带托管标签的容器即「孤儿」。
         self._live: set[str] = set()
@@ -357,6 +383,8 @@ class ContainerExecutor:
             orphan_limit=settings.exec_orphan_limit,
             token_revoker=token_revoker,
             output_excerpt_max_bytes=settings.output_excerpt_max_bytes,
+            file_diff_excerpt_max_bytes=settings.file_diff_excerpt_max_bytes,
+            file_changes_max=settings.file_changes_max,
         )
 
     # ------------------------------------------------------------------ 装配
@@ -437,7 +465,12 @@ class ContainerExecutor:
         environment: Mapping[str, str] | None = None,
     ) -> Any:
         """创建并启动一个加固容器（**工作卷 = 容器内 tmpfs**）；调用方负责销毁。"""
-        command = _command_for(tool_key, params)
+        command = _command_for(
+            tool_key,
+            params,
+            workspace_mount=self.workspace_mount,
+            diff_excerpt_max_bytes=self.file_diff_excerpt_max_bytes,
+        )
         self._ensure_internal_network()
         spec = self.build_spec(environment=environment)
         kwargs = spec.create_kwargs(
@@ -487,6 +520,8 @@ class ContainerExecutor:
         timed_out = False
         status_code: int | None = None
         captured: OutputCapture | None = None
+        changes: tuple[FileChange, ...] = ()
+        changes_truncated = False
         try:
             try:
                 result = container.wait(timeout=self.timeout_seconds)
@@ -497,7 +532,13 @@ class ContainerExecutor:
                 timed_out = True
                 self._kill(container)
             # P2c-2 §2.6 实现注意：**必须在 `remove_container()` 之前**有界读取（容器即删、工作卷即毁）。
-            captured = self._capture_output(container)
+            changes_enabled = self.file_changes_max > 0 and tool_key in FS_TOOLS
+            if self.output_excerpt_max_bytes > 0 or changes_enabled:
+                raw = self._read_logs(container)
+                if raw is not None:
+                    if changes_enabled:
+                        changes, changes_truncated = self._file_changes(tool_key, raw)
+                    captured = self._capture_output(raw, strip_marker=changes_enabled)
         finally:
             self.remove_container(container)
             self._revoke_on_terminal(_run_id_from(workspace_path))
@@ -513,21 +554,22 @@ class ContainerExecutor:
             timed_out=timed_out,
             summary=summary,
             output=captured,
+            file_changes=changes,
+            file_changes_truncated=changes_truncated,
         )
 
     # ------------------------------------------------------------------ 有界回传
 
-    def _capture_output(self, container: Any) -> OutputCapture | None:
-        """有界读取容器输出（P2c-2 §2.6）：**读取失败 / 超限不影响执行结果**（回传是视图）。
+    def _read_logs(self, container: Any) -> bytes | None:
+        """**有界读取**容器日志（P2c-2 §2.6）：读取失败 / 超限**不影响执行结果**（回传是视图）。
 
-        - `output_excerpt_max_bytes == 0` ⇒ **不读日志**（关闭回传，省开销）；
         - 流式读取到**硬上限**即停（不继续 drain，防超长输出拖垮内存 / 时间）；
-        - 文本判定用**严格 UTF-8**：非 UTF-8 / 二进制只留 `bytes` + `sha256`（不落内容）。
+        - 失败只记日志并返回 `None`（回传降级为「无」）。
         """
-        cap = int(self.output_excerpt_max_bytes)
-        if cap <= 0:
-            return None
+        cap = max(int(self.output_excerpt_max_bytes), 0)
         ceiling = max(int(self.output_capture_hard_limit_bytes), cap)
+        if ceiling <= 0:
+            return None
         try:
             buffer = bytearray()
             for chunk in container.logs(stream=True, stdout=True, stderr=True):
@@ -542,7 +584,35 @@ class ContainerExecutor:
         except Exception as exc:  # noqa: BLE001 - 读取失败只降级回传
             get_logger().error("执行输出读取失败（有界回传跳过，不影响执行）：%s", exc)
             return None
-        raw = bytes(buffer)
+        return bytes(buffer)
+
+    def _file_changes(
+        self, tool_key: str, raw: bytes
+    ) -> tuple[tuple[FileChange, ...], bool]:
+        """从容器输出解析**文件变更记录**并按 `WORKBENCH_FILE_CHANGES_MAX` 截断（P2c-3）。
+
+        - 只对 `fs.*` 生效：`cmd.run` 的 stdout 是**用户可控内容**，解析标记会被伪造变更记录；
+        - 输出非 UTF-8（不应发生：脚本只写文本）⇒ 按无变更处理；
+        - 任何解析失败都只影响回传，**不影响执行结果**。
+        """
+        if self.file_changes_max <= 0 or tool_key not in FS_TOOLS:
+            return (), False
+        text = _decode_utf8(raw, allow_truncated_tail=False)
+        if text is None:
+            return (), False
+        changes, _excerpt = parse_marker(text)
+        return bounded_changes(changes, self.file_changes_max)
+
+    def _capture_output(self, raw: bytes, *, strip_marker: bool = False) -> OutputCapture | None:
+        """把**已读到**的字节折算为契约回传字段（纯函数；`0` = 关闭回传 ⇒ `None`）。
+
+        - 文本判定用**严格 UTF-8**：非 UTF-8 / 二进制只留 `bytes` + `sha256`（不落内容）；
+        - `strip_marker`（`fs.*`）：把变更标记行从**摘录**中去掉（标记面向本进程，不面向用户）。
+        """
+        cap = int(self.output_excerpt_max_bytes)
+        if cap <= 0:
+            return None
+        ceiling = max(int(self.output_capture_hard_limit_bytes), cap)
         hit_ceiling = len(raw) >= ceiling
         text = _decode_utf8(raw, allow_truncated_tail=hit_ceiling)
         if text is None:
@@ -552,6 +622,8 @@ class ContainerExecutor:
                 bytes_read=len(raw),
                 sha256="sha256:" + hashlib.sha256(raw).hexdigest(),
             )
+        if strip_marker:
+            _changes, text = parse_marker(text)
         return OutputCapture(
             excerpt=_truncate_utf8(text, cap),
             truncated=hit_ceiling or len(raw) > cap,

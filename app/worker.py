@@ -39,6 +39,13 @@ class ConversationStreamPurgerProtocol(Protocol):
         ...
 
 
+class RunArtifactPurgerProtocol(Protocol):
+    """P2c-3 产物登记清理器（`PostgresRunArtifactStore` 满足该协议）：按保留期逐租户删除。"""
+
+    def purge_expired(self, *, cutoff: datetime) -> int:
+        ...
+
+
 class CrmServiceProtocol(Protocol):
     """P5a CRM 服务在 worker 侧的最小接口（避免 worker 依赖 CRM 全量模块）。"""
 
@@ -58,6 +65,7 @@ _lifecycle_runner: LifecycleRunnerProtocol | None = None
 _knowledge_review_scanner: KnowledgeReviewScannerProtocol | None = None
 _runtime_event_purger: RuntimeEventPurgerProtocol | None = None
 _conversation_stream_purger: ConversationStreamPurgerProtocol | None = None
+_run_artifact_purger: RunArtifactPurgerProtocol | None = None
 _crm_service: CrmServiceProtocol | None = None
 _crm_notifier: CrmNotifierProtocol | None = None
 
@@ -90,6 +98,12 @@ def configure_conversation_stream_purger(purger: ConversationStreamPurgerProtoco
     """注入流帧清理器（P2b §2.6；`PostgresStreamStore` 满足该协议）；测试可置 None。"""
     global _conversation_stream_purger
     _conversation_stream_purger = purger
+
+
+def configure_run_artifact_purger(purger: RunArtifactPurgerProtocol | None) -> None:
+    """注入产物登记清理器（P2c-3 §2.7；`PostgresRunArtifactStore` 满足该协议）；测试可置 None。"""
+    global _run_artifact_purger
+    _run_artifact_purger = purger
 
 
 def configure_crm(*, service: CrmServiceProtocol | None, notifier: CrmNotifierProtocol | None) -> None:
@@ -148,6 +162,13 @@ def configure_runtime(*, settings=None, connection=None, redis_client=None, audi
             max_bytes=settings.stream_max_bytes,
         )
     )
+    # P2c-3 产物登记清理（§2.7）：按保留期**逐租户**删除到期行；**只清登记表**
+    # （帧 / 消息 / 审计 / 运行记录不受影响）；保留期与写端同源（同一 settings）。
+    from .runtime.artifacts import PostgresRunArtifactStore
+
+    configure_run_artifact_purger(
+        PostgresRunArtifactStore(connection, retention_days=settings.run_artifact_retention_days)
+    )
     # P5a CRM（crm-p5a-design §2.11）：健康度重算 / 活动到期提醒 / 续约窗口三个周期任务，
     # 共用同一连接与审计；收件箱复用既有装配（`migrate=False`——迁移归 API 进程）。
     from .bootstrap import build_inbox_service
@@ -200,6 +221,12 @@ def create_celery_app() -> Celery:
             "conversation-stream-purge": {
                 "task": "app.worker.purge_conversation_stream",
                 "schedule": settings.stream_purge_interval_seconds,
+            },
+            # P2c-3 产物登记（§2.7）：按保留期清理到期元数据行（**只清登记表**）。
+            # 间隔由 **beat** 侧读取 ⇒ 与 worker 侧必须同值（口径同既有条目）。
+            "run-artifacts-purge": {
+                "task": "app.worker.purge_run_artifacts",
+                "schedule": settings.run_artifact_purge_interval_seconds,
             },
             # 组 10.7：过期导出包（`expires_at = 完成时刻 + 7 天`）物理清理——导出包是租户数据副本，
             # 过期后不再可取回（GET /api/v1/commercial/exports/{package_id} ⇒ 404），此处只保留「到点即清」。
@@ -271,6 +298,7 @@ def _ensure_runtime() -> None:
         or _knowledge_review_scanner is not None
         or _runtime_event_purger is not None
         or _conversation_stream_purger is not None
+        or _run_artifact_purger is not None
         or _crm_service is not None
         or _crm_notifier is not None
     ):
@@ -284,6 +312,7 @@ def _ensure_runtime() -> None:
         or _knowledge_review_scanner is not None
         or _runtime_event_purger is not None
         or _conversation_stream_purger is not None
+        or _run_artifact_purger is not None
         or _crm_service is not None
         or _crm_notifier is not None
     ):
@@ -373,6 +402,23 @@ def purge_conversation_stream() -> dict[str, int]:
     )
     purged = purger.purge_expired(cutoff=reference)
     return {"stalled": stalled, "purged": purged}
+
+
+@celery_app.task
+def purge_run_artifacts() -> int:
+    """产物登记保留期清理（P2c-3 §2.7）：**逐租户**删除 `expires_at < 任务执行时刻` 的登记行。
+
+    - 保留期在**写端**已按 `WORKBENCH_RUN_ARTIFACT_RETENTION_DAYS`（默认 30 天）落到 `expires_at`
+      ⇒ 本任务只按该时刻执行，不重复计算保留期；
+    - **只清登记表**：帧、消息、审计、运行记录**不受影响**；清理**不写审计**（例行维护，
+      与流帧 / 运行事件清理同口径）；
+    - 与既有周期任务同口径：**未接线即返回 0**，绝不伪造清理结果（development 下不自动装配）。
+    """
+    _ensure_runtime()
+    purger = _run_artifact_purger
+    if purger is None:
+        return 0
+    return purger.purge_expired(cutoff=datetime.now(UTC))
 
 
 @celery_app.task

@@ -1405,6 +1405,34 @@ button, select, input, textarea { font: inherit }
 .file-change__bytes { font-size: 11px; color: var(--fg-muted) }
 .file-change__diff { max-height: 180px }
 
+/* P2c-3：产出 chip（对话流内，数据来自帧的 file_changes）+ 产物登记面板（只读元数据） */
+.artifact-chips { display: grid; gap: 8px; padding: 0 20px 12px }
+.artifact-chips__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
+.artifact-chips__title { font-size: 11px; color: var(--fg-muted) }
+.artifact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--bg-card);
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--fg-secondary);
+}
+.artifact-chip[aria-expanded='true'] { border-color: var(--border-strong, var(--border-soft)) }
+.artifact-chip__path { font-weight: 600; overflow-wrap: anywhere }
+.artifact-chip__kind,
+.artifact-chip__bytes { color: var(--fg-muted) }
+.artifact-chip__detail { display: grid; gap: 6px }
+.artifact-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px }
+.artifact-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px }
+.artifact-row__path { font-weight: 600; overflow-wrap: anywhere }
+.artifact-row__kind,
+.artifact-row__bytes,
+.artifact-row__sha { font-size: 11px; color: var(--fg-muted) }
+
 .conversation-approvals { display: grid; gap: 10px; padding: 0 20px 16px }
 .approval-card {
   display: grid;

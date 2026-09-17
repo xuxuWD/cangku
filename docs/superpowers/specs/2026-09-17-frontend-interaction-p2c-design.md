@@ -48,6 +48,11 @@
 > **交付记录（P2c-2，2026-09-17 本机）**：① **契约修订先行**——`api-contract.md` 新增「内容级回传」（`tool.result` **只增** `output_excerpt` / `output_truncated` / `output_bytes` / `output_sha256`；三个配置项 `WORKBENCH_OUTPUT_EXCERPT_MAX_BYTES` / `WORKBENCH_FILE_DIFF_EXCERPT_MAX_BYTES` / `WORKBENCH_FILE_CHANGES_MAX`；七条硬边界）、审批分支改「**决议后推进接入同一帧写入**」（推翻「本期不做」）、SSE 读端**只增**响应头 `X-Stream-Run-Id` 与帧内 `run_id`；`P2b 规格` §1.3 / §2.5 / §5 / §6 回改留痕。② **后端**：`ContainerExecutor` 新增 `OutputCapture` + `_capture_output`（**流式有界读取**、1 MiB 硬上限、`0` = 关闭且**不读日志**、严格 UTF-8 判定 + 尾部半截字符容忍、**读取先于 `remove_container()`**、读取失败不影响执行）；`ToolExecutionResult.output`（白名单折算、**不进审计**）；`tool.result` 帧 payload 只增摘录字段（缺省不出现 ⇒ 既有帧逐字节不变）；`StreamStore.reopen_if_terminal`（PG + 内存；`unavailable` 不复活）；`ExecutionIdempotencyStore.find_by_run`（PG + 内存，走 027 既有索引）；`decide_run_approval` 接入 `_resume_stream_frames`（写 `tool.result` + 终态收口；决议后**重开读端**由前端承担）。③ **前端**：新增 `features/stage/ToolOutputPanels.tsx`（终端输出 / 文件改动面板，帧驱动 + 白名单 + 截断告知，**无数据不渲染**）；`useRunStream` **解析 run**（响应头 / 帧内 `run_id`，显式 `runId` 优先；无 run ⇒ 关流 + `noData` 如实告知；发送中 `awaitRun` 继续等）；对话页**进入会话即开回放读端**、`effectiveRunId` 驱动概览与审批、决议成功后重开读端尾随推进帧。
 > **验证**：后端 **2315 passed**（含新增：`tests/test_execution_output_capture.py` 8 条；`tests/test_conversation_stream_api.py` +5 条（帧携带 + 掩码 / 审计零污染链 / 决议后推进端到端 / 历史会话解析 / SSE 只增字段）；`tests/test_conversation_stream_postgres.py` +4 条（重开续写 / 熔断不复活 / 缺状态行不建 / 摘录落库掩码）；`tests/test_conversation_stream_writer.py` +1 条（**摘录同样受字节熔断**）；`tests/test_tool_execution_gate.py` +1 条）。前端 `admin-web` **235 passed（33 文件）** + `tsc -b && vite build` 通过；`companion-pwa` 37；`desktop` 19。**反假两轮已实测变红**：① 去掉摘录上限 ⇒ 3 条变红；② 推进不接帧（`_resume_stream_frames` 直返）⇒ 2 条变红（均已复原）。**浏览器走查 1 轮**（本机 dev：前端 5173 + 后端 8010 新代码）：默认视图 / 侧栏 6 组 / 新建会话 / 舞台三空态 / **无「终端输出」「文件改动」假面板** / 纯文本桩回复 / 结构化调用「本次没有过程流」并回空态 / 全程无 `.notice-error`（`net::ERR_ABORTED` 的流中断为「切走即断」设计行为）。
 > **未验证（登记）**：真实执行装配后的**帧驱动端到端**（终端面板实际数据 / 决议后推进的真实帧）留 staging；≥1281px 宽视口三列常驻未实测（走查窗口 913px）。
+> **CI 销账（2026-09-17）**：提交 `a1eb73f`（P2c-1）推送后 run `35192322076` ⇒ **六 job 全绿**；**P2c-2 提交 `2e9dcb4` 尚未推送**（本机代理上游 502，网络受限；恢复后与 P2c-3 一并推送并在 CI 销账）。
+>
+> **交付记录（P2c-3，2026-09-17 本机）**：① **契约与规格先行**——契约「内容级回传」补 `file_changes` 取值域与 `file_changes_truncated`（**只增**）、三个配置项的 `0` 语义、硬边界第 7 条（`fs.*` 在「空工作卷」下的语义）；新增「产物登记与只读端点」（`GET /api/v1/runs/{run_id}/artifacts`、保留期 30 天、清理任务与两项配置）；规格 §2.7 补「实现期裁定 1–5」（落地形态 / 内容传递 / 空工作卷语义 / 端点与清理口径 / 截断告知）并收口 §6-5。② **后端**：新增 `app/tool_execution/file_ops.py`（**自建内联脚本** + 结构化 argv + base64 内容传递 + 覆盖 / 幂等删除语义 + 变更标记解析与上限折算）；`_command_for` 接入 `fs.*`（`artifact.export` 仍 fail-closed）；`ContainerExecutor` 新增变更通道（来源白名单只认 `fs.*`、标记行不进摘录、`0` = 关闭）；`service.py` 把变更折算进 `ToolExecutionResult.output` 并**best-effort 登记产物**（与帧同一集合、失败不阻断执行）；新增 `app/runtime/artifacts.py`（内存 + PG 仓储、复合外键跨租户拒写、保留期到期过滤、逐租户清理）+ 迁移 `037_run_artifacts` + worker 周期任务 `run-artifacts-purge` + 只读端点（归属判定同运行接口）。③ **前端**：`ArtifactPanel`（四态 + 白名单投影 + 保留期如实告知）、`ArtifactChips`（对话流内按虚拟路径聚合、点开 diff 摘录、截断告知）、`useRunArtifacts`、`listRunArtifacts`，并统一 `changeKindLabel`（`created` / `overwritten` / `deleted`）。
+> **验证**：后端 **2361 passed**（含真库：新增 `tests/test_fs_tools.py` 21 条、`tests/test_execution_output_capture.py` +7 条、`tests/test_tool_execution_gate.py` +3 条、`tests/test_conversation_stream_api.py` +4 条（含**真实执行服务端到端**：`fs.write` 202 → 决议 → 重跑 → 变更入推进帧 + 产物登记 + 端点读回）、`tests/test_run_artifacts_postgres.py` 5 条、`tests/test_worker_runtime_wiring.py` +3 条）；**真容器** `tests/test_container_executor_fs.py` **5 passed**（fs.write 变更记录 / 标记剥离 / 文件不跨执行留存 / 容器内路径闸门拒绝逃逸 / 空卷幂等删除）。前端 `admin-web` **248 passed（35 文件）** + `tsc -b && vite build` 通过；`.env.staging.example` 迁移清单补 `037_run_artifacts`（预检守护用例）。**反假四轮已实测变红**（均已复原）：① 去掉 `fs.*` 来源白名单（内外两道）⇒ `cmd.run` 伪造标记能产出假变更记录（1 条红）；② 去掉变更上限截断 ⇒ helper / 执行器 / 服务 / 帧**四层用例同时红**（4 条）；③ 去掉容器内 realpath 落点判定 ⇒ **符号链接逃逸**用例红（读到了工作卷之外）；④ 登记失败不兜底 ⇒ 执行结果被登记失败打断（1 条红）。**浏览器走查 1 轮**（dev：前端 5173 + 后端 8010 新代码，已用 `openapi.json` 核对端点注册）：默认对话视图 / 新建会话 / 纯文本发送成功 / 舞台三空态 / **无「终端输出」「文件改动」「产物登记」假面板** / 控制台无 error。
+> **未验证（登记）**：本机 dev 未装配真实执行（结构化调用回落桩路径、无运行）⇒ **产物面板与产出 chip 的真实数据渲染**未取证（组件级用例 + 真容器用例已覆盖语义，真实端到端留 staging）；`fs.overwrite` / `fs.delete` 的「目标已存在」分支在**跨执行**场景不可达（空工作卷架构限制，已写入契约硬边界第 7 条，宿主侧脚本用例覆盖该分支）。
 
 ***
 
@@ -229,6 +234,18 @@
 * **产物登记（新表）**：`workbench_run_artifacts`（`tenant_id` / `run_id` / `artifact_id` / `virtual_path` / `change_kind` / `bytes` / `sha256` / `created_at` / `expires_at`），写进复合外键（跨租户拒写同既有手法）+ 只读端点 `GET /api/v1/runs/{run_id}/artifacts`（归属判定同运行接口）；保留期与清理并入 worker 周期任务（逐租户）。
 * **产出 chip**：对话流内由 `file_changes` 聚合成 chip（点击展开 diff 摘录 / 跳运行详情）；跨运行查询走产物端点。
 
+**实现期裁定（2026-09-17 · P2c-3 开工取证后，逐条留痕）**：
+
+1. **落地形态取证结论（§6-5 收口）**：执行镜像 = `python:3.12-slim@sha256:7838…`（钉死，段二-3 已取证）⇒ 容器内**保证存在 `python3`**；`fs.*` 采用**自建内联脚本**（`python3 -c <脚本> --op …`，结构化 argv，不经 shell），**不依赖 coreutils 变体差异**（`file` 等命令在该镜像中不保证存在）。
+2. **内容传递**：`fs.write` / `fs.overwrite` 的 `content`（body 类参数）以 **base64 经 argv** 传入（不经 env / 不经卷）；唯一入口 `messages:stream` 的**消息长度上限 8000 字符**，故 argv 量级安全；脚本侧对超限（>96 KiB）**fail-closed 拒绝**（不截断内容）。
+3. **「空工作卷」下的工具语义**（事实 11 的直接后果：**文件不跨执行留存**，故「覆盖既有」「删除既有」在跨执行场景不可达）：
+   * `fs.write` = 新建（目标已存在 ⇒ 拒绝）；
+   * `fs.overwrite` = 覆盖语义写入（存在 ⇒ 替换记 `overwritten`；不存在 ⇒ 新建记 `created`）——即「允许目标存在的写入」；
+   * `fs.delete` = 幂等删除（存在 ⇒ 删除记 `deleted`；不存在 ⇒ 成功且**不产出变更记录**，不伪造变更）。
+   口径已写入契约「内容级回传」硬边界第 7 条；**不因该语义放宽容器边界**（tmpfs / 只读根 / 非 root / 无外网一律不动）。
+4. **端点与清理口径**：`GET /api/v1/runs/{run_id}/artifacts` 归属判定**复用运行接口口径**（`workbench_run_records` + 承载任务可见性 ⇒ 跨租户 / 不可见 `404`）；**保留期已到的条目不再返回**（保留期外如实降级）；保留期 `WORKBENCH_RUN_ARTIFACT_RETENTION_DAYS`（默认 30）、清理间隔 `WORKBENCH_RUN_ARTIFACT_PURGE_INTERVAL_SECONDS`（默认 3600s）。
+5. **截断告知字段**：`file_changes` 超 `WORKBENCH_FILE_CHANGES_MAX` 时置 `file_changes_truncated=true`（**只增**字段，缺省不出现 ⇒ 既有帧逐字节不变）。
+
 ### 2.8 审批后推进的过程事件（事项 H）
 
 * resume（决议后推进）路径接入**同一** `StreamWriter`：写 `tool.call` / `tool.result` / `step.started` / `run.completed|failed` 等既有 kind（不新增 kind）；同一 run 的 `seq` 继续单调递增（状态行已终态时**先重开**——`status` 置回 `streaming` 并清 `expires_at`，或按 §5 的备选以「新 run」呈现）。
@@ -391,11 +408,12 @@
 
 ## 6. 未验证登记（如实）
 
-1. **P2c-1 已交付**（见 §0 交付记录）；**其余批次（P2c-2…6）尚未实现**（未验证）。
+1. **P2c-1 / P2c-2 / P2c-3 已交付**（见 §0 交付记录）；**其余批次（P2c-4 / P2c-5 / P2c-6）尚未实现**（未验证）。
 2. **反代下 SSE 缓冲**未实测（P2b §6-2 同项）；**长连接资源画像**未压测。
 3. **Electron（桌面端）下 `fetch` 流式读与 CSP** 未核对（§0 事实 18；P2c-5 核对项）。
-4. **`container.logs()` 有界读取在超长输出下的行为**（内存 / 截断点）未实测——实现前须真容器取证。
-5. **`fs.*` 容器内落地的具体实现形态**未定（二进制存在性 / 依赖；属 P2c-3 开工前的只读取证项）。
+4. **`container.logs()` 有界读取在超长输出下的行为**（内存 / 截断点）：**常规输出已由真容器用例覆盖**（P2c-3）；
+   **超长输出（> 硬上限）与极端截断点的内存画像**仍未实测（须 staging / 压测取证）。
+5. **`fs.*` 容器内落地的具体实现形态**：**已取证并落地**（P2c-3）——执行镜像保证 `python3`，采用自建内联脚本（§2.7 实现期裁定 1–2）；**coreutils 命令集在该镜像中不保证齐备**（`file` 等），故不依赖它们。
 6. **内容级回传对帧体积与熔断触达率的影响**未量化（§5-3 参数须在 staging 校准）。
 7. **PWA 现状无对话能力**（§0 事实 17）⇒「PWA 消费流」实为新建面板，工作量按新建计（不得读作"接一下流"）。
 8. **调研来源更正**（C/E/G 实为 OpenWorkBuddy、G 数字未复现）已按 2026-09-13 回填写入 §2.14；引用不得混用。

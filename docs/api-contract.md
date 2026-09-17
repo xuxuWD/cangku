@@ -978,19 +978,26 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
 
 | 字段 | 内容 |
 | --- | --- |
-| `output_excerpt` | `cmd.run` / `fs.read` 的**文本输出摘录**（UTF-8；按上限截断） |
-| `output_truncated` / `output_bytes` | 是否被截断 + **原始**字节数（截断**必须显式告知**） |
-| `file_changes` | 文件变更数组 `[{"virtual_path","change_kind","bytes","sha256","diff_excerpt"?}]`（最多 `WORKBENCH_FILE_CHANGES_MAX` 条/步，超出**截断告知**；数据源随 P2c-3 的 `fs.*` 接入，**字段先冻结**） |
+| `output_excerpt` | `cmd.run` 的 stdout/stderr 与 `fs.read/list/stat` 的执行结果文本的**摘录**（UTF-8；按上限截断） |
+| `output_truncated` / `output_bytes` | 是否被截断 + 本次**捕获输出**的字节数（截断**必须显式告知**） |
+| `file_changes` | 文件变更数组 `[{"virtual_path","change_kind","bytes","sha256","diff_excerpt"?}]`（**P2c-3 起为真实数据源**：`fs.write/overwrite/delete` 执行时产出；`change_kind` ∈ `created` / `overwritten` / `deleted`；**最多 `WORKBENCH_FILE_CHANGES_MAX` 条/步**，超出**截断告知**） |
+| `file_changes_truncated` | 变更条数被 `WORKBENCH_FILE_CHANGES_MAX` 截断时为 `true`（**只增**字段；**不出现 = 未截断**） |
 
 **硬边界（不可协商）**：
 
-1. **有界**：`WORKBENCH_OUTPUT_EXCERPT_MAX_BYTES`（默认 **16384**，范围 0–262144，**`0` = 关闭回传**）；
-   `WORKBENCH_FILE_DIFF_EXCERPT_MAX_BYTES`（默认 **8192**，范围 0–65536）；`WORKBENCH_FILE_CHANGES_MAX`（默认 **50**，范围 0–200）。
+1. **有界**：`WORKBENCH_OUTPUT_EXCERPT_MAX_BYTES`（默认 **16384**，范围 0–262144，**`0` = 关闭输出回传**——不读容器日志）；
+   `WORKBENCH_FILE_DIFF_EXCERPT_MAX_BYTES`（默认 **8192**，范围 0–65536，**`0` = 不产出 `diff_excerpt`**，仍记 `bytes` + `sha256`）；
+   `WORKBENCH_FILE_CHANGES_MAX`（默认 **50**，范围 0–200，**`0` = 关闭变更通道**——不解析变更标记、不登记产物）。
 2. **非文本不回传**：非 UTF-8 / 二进制**只留** `bytes` + `sha256`（不落内容）。
 3. **脱敏**：摘录一律过 `redact_payload`（键名 + 值形状；掩码幂等）；**宿主真实路径不得出现**（只用虚拟路径）。
 4. **不进审计、不进消息表**：审计仍为最小集（`tool.executed` 明细键不变）；消息仍为 U23 摘要。
 5. **保留期随帧（7 天）**；帧字节熔断（4 MiB/run）**继续生效**——大输出会更快触熔断（见下节，运维可调）。
 6. **回传失败 / 超限不影响执行结果**（流是视图，绝不阻断或改变执行语义）。
+7. **`fs.*` 语义以「工作卷随容器即毁」为前提（P2c-3）**：每次工具执行 = **独立容器 + 空工作卷**（tmpfs，运行结束销毁；容器边界见「工具执行（P2a 段二）」）——
+   `fs.write` = **新建**（目标已存在 ⇒ 拒绝，不覆盖）；`fs.overwrite` = **覆盖语义写入**（目标存在 ⇒ 替换并记 `overwritten`；不存在 ⇒ 新建并记 `created`）；
+   `fs.delete` = **幂等删除**（目标存在 ⇒ 删除并记 `deleted`；不存在 ⇒ 成功且**不产出变更记录**——不伪造变更）；
+   `fs.read` 对非 UTF-8 / 二进制内容**只回一行摘要**（字节数 + sha256），不落内容。
+   **文件不跨执行留存**（工作卷随容器销毁）⇒「产物」= **登记记录（元数据）**，不是可回读的文件副本；`fs.read/list/stat` 只能读**本次执行内**的文件。
 
 ### 保留期 · 熔断 · 悬挂 · 清理
 
@@ -1008,5 +1015,22 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
   序号**不复用**（清理后该 run 不再追加）。
 - **已知限制**：~~审批决议后的推进过程事件**本期不做**~~（**2026-09-17 修订（P2c-2）**：已纳入，见上「审批分支」）；
   反代缓冲行为与长连接资源画像**未在 staging 实测**（`X-Accel-Buffering: no` 已预置）；多副本下的 SSE 路由语义属部署配置范畴。
+
+### 产物登记与只读端点（**P2c-3 新增** · 2026-09-17）
+
+> **性质**：产物登记 = **运行级的元数据登记**（虚拟路径 / 变更类型 / 字节 / sha256 / 时间），**不是**文件副本、**不含内容**；
+> 保留期比帧长（**30 天**），供跨运行查询；**不进审计、不进消息表**（口径同「内容级回传」）。
+
+`GET /api/v1/runs/{run_id}/artifacts`
+
+只读列出本运行的产物登记。**归属判定与运行接口一致**（本人 / `ceo` / `super_admin`；跨租户 / 不可见 / 未知运行一律 `404`，不泄露存在性）。
+返回 `{"run_id": string, "items": [{"artifact_id", "virtual_path", "change_kind", "bytes", "sha256", "created_at", "expires_at"}], "total": int}`；
+**不返回** `tenant_id`、宿主真实路径、文件内容。**保留期已到（`expires_at <= now`、尚未被周期任务清理）的条目不再返回**（保留期外如实降级，不静默延长）。
+
+- **保留期**：`WORKBENCH_RUN_ARTIFACT_RETENTION_DAYS`（默认 **30**，范围 1–365）；登记时置 `expires_at = now() + 保留期`。
+- **清理任务**（worker 周期 `run-artifacts-purge`，间隔 `WORKBENCH_RUN_ARTIFACT_PURGE_INTERVAL_SECONDS` 默认 3600s，范围 60–86400）：
+  **逐租户**删除 `expires_at < now` 的行；清理**不写审计**（例行维护，与流帧 / 运行事件清理同口径）；**只清登记表**——帧、消息、审计、运行记录**不受影响**。
+- **写入（唯一入口）**：**工具执行链路**在 `fs.write` / `fs.overwrite` / `fs.delete` 产生变更时逐条登记（一条变更 = 一行，`artifact_id` 服务端生成）；
+  **登记失败不影响执行结果**（与回传同为「视图」，失败只记日志）。
 
 

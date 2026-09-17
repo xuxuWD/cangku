@@ -3,9 +3,11 @@ import type { RunApproval } from '../runDetail/types'
 import { finishReasonLabel, runStatusLabel } from '../runDetail/types'
 import { formatLocalTime } from '../../utils/time'
 import { ApprovalCard } from './ApprovalCard'
+import { ArtifactPanel } from './ArtifactPanel'
 import { ProcessTimeline } from './ProcessTimeline'
 import { FileDiffPanel, TerminalOutputPanel } from './ToolOutputPanels'
 import type { RunApprovalsState } from './useRunApprovals'
+import type { RunArtifactsState } from './useRunArtifacts'
 import type { RunOverviewState } from './useRunOverview'
 
 /** 收尾检查（**展示型**）：只标记「已完成 / 未完成」，不改变运行状态、不强制退回（§2.5）。 */
@@ -55,6 +57,7 @@ export function StagePanel({
   stream,
   overview,
   approvals,
+  artifacts,
   canDecide,
   expanded = false,
   onOpenRunDetail,
@@ -63,6 +66,8 @@ export function StagePanel({
   stream: RunStream
   overview: RunOverviewState
   approvals: RunApprovalsState
+  /** 产物登记（P2c-3；由页面的 `useRunArtifacts` 提供，纯展示）。 */
+  artifacts: RunArtifactsState
   canDecide: boolean
   /** 窄屏抽屉是否展开（宽屏由 CSS 强制展示该面板）。 */
   expanded?: boolean
@@ -149,6 +154,7 @@ export function StagePanel({
 
       <TerminalOutputPanel frames={stream.frames} />
       <FileDiffPanel frames={stream.frames} />
+      <ArtifactPanel runId={runId} artifacts={artifacts} onOpenRunDetail={onOpenRunDetail} />
 
       <section className="history-panel stage-panel" aria-label="审批">
         <div className="panel-header">

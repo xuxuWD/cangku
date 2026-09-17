@@ -171,6 +171,7 @@ jobs:
             tests/test_runtime_events_postgres.py \
             tests/test_crm_postgres.py \
             tests/test_conversation_stream_postgres.py \
+            tests/test_run_artifacts_postgres.py \
             --junitxml=postgres-junit.xml
           python - <<'PY'
           import sys
