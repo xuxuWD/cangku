@@ -142,6 +142,33 @@ class ToolExecutionResult:
     approval_id: str | None = None
     action_id: str | None = None
     summary: Mapping[str, object] | None = None
+    # P2c-2：**有界输出摘录**（只随帧回传；**不进审计、不进消息表**；无回传时为 `None`）。
+    output: Mapping[str, object] | None = None
+
+
+def _output_payload(captured: Any) -> Mapping[str, object] | None:
+    """把执行器的**有界输出**折算为契约字段（P2c-2 §2.6）；无回传 / 形态不符 ⇒ `None`。
+
+    **只读白名单键**（`output_excerpt` / `output_truncated` / `output_bytes` / `output_sha256`）——
+    不 dump 任意对象，防止执行器实现的内部字段意外外溢到帧；**此处不做脱敏**（统一在写帧网关
+    过 `redact_payload`，保证「同一函数同一规则」）。
+    """
+    if captured is None:
+        return None
+    payload: dict[str, object] = {}
+    excerpt = getattr(captured, "excerpt", None)
+    if isinstance(excerpt, str) and excerpt:
+        payload["output_excerpt"] = excerpt
+    truncated = getattr(captured, "truncated", None)
+    if isinstance(truncated, bool):
+        payload["output_truncated"] = truncated
+    bytes_read = getattr(captured, "bytes_read", None)
+    if isinstance(bytes_read, int) and not isinstance(bytes_read, bool):
+        payload["output_bytes"] = int(bytes_read)
+    sha = getattr(captured, "sha256", None)
+    if isinstance(sha, str) and sha:
+        payload["output_sha256"] = sha
+    return payload or None
 
 
 class ToolExecutionService:
@@ -331,11 +358,11 @@ class ToolExecutionService:
         self._trace(GATE_AUTHORIZE)
         self._step_authorize(request, spec, resume_action, actor, plan)
 
-        # ⑧ 执行（本步骤为假执行器）
+        # ⑧ 执行
         self._trace(GATE_EXECUTE)
-        summary = self._step_execute(request, spec, params, workspace_path, resume_action)
+        summary, output = self._step_execute(request, spec, params, workspace_path, resume_action)
 
-        # ⑨ 结果只落摘要 + 审计
+        # ⑨ 结果只落摘要 + 审计（**有界摘录不进审计**：只随帧回传，见 P2c-2 §2.6）
         self._trace(GATE_AUDIT)
         self._record_executed(request, spec, resume_action, summary)
         return ToolExecutionResult(
@@ -344,6 +371,7 @@ class ToolExecutionService:
             approval_id=resume_action.approval_id if resume_action else None,
             action_id=resume_action.action_id if resume_action else None,
             summary=summary,
+            output=_output_payload(output),
         )
 
     def _step_whitelist(
@@ -444,7 +472,8 @@ class ToolExecutionService:
         params: Mapping[str, Any],
         workspace_path: str,
         action: ToolAction | None,
-    ) -> Mapping[str, object]:
+    ) -> tuple[Mapping[str, object], Any | None]:
+        """⑧ 执行；返回 `(摘要, 有界输出)`——有界输出由调用方折成契约字段（不落审计 / 消息表）。"""
         try:
             # ⑧ 前进入新 turn（§3.5 P1 第 3 条）：mint + 落自持绑定 + 登记当前执行；返回容器内 env。
             # 终态吊销由 `ContainerExecutor(token_revoker=…)` 触发（容器到达终态即 retire + revoke）。
@@ -471,7 +500,10 @@ class ToolExecutionService:
             self._fail(request, spec, key="timeout", action=action)
         if not getattr(outcome, "ok", False):
             self._fail(request, spec, key="runtime_error", action=action)
-        return dict(getattr(outcome, "summary", {}) or {})
+        return (
+            dict(getattr(outcome, "summary", {}) or {}),
+            getattr(outcome, "output", None),
+        )
 
     # ------------------------------------------------------------------ ⑥ / ⑨
 

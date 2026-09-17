@@ -25,6 +25,7 @@ import pytest
 
 from app.conversation.stream import (
     MESSAGE_ASSISTANT_KIND,
+    STATUS_COMPLETED,
     STATUS_STREAMING,
     STATUS_UNAVAILABLE,
     UNAVAILABLE_KIND,
@@ -108,6 +109,46 @@ def test_sequence_is_monotonic_and_terminal_is_last(env) -> None:
     state = store.get_state(TENANT, CONVERSATION, RUN)
     assert state is not None and state.last_seq == 3 and state.frame_count == 3
     assert state.byte_count > 0
+
+
+# ------------------------------------------------------------ ①-b 终态重开（P2c-2 §2.8）
+
+
+def test_reopen_if_terminal_continues_sequence(env) -> None:
+    """决议后推进：已终态的流**先重开**（清 `expires_at`）⇒ 续写 `seq` 继续单调；熔断不复活。"""
+    store, _ = env
+    assert store.append_frame(TENANT, CONVERSATION, RUN, kind=TOOL_RESULT_KIND, payload={"n": 1}) is not None
+    store.set_terminal(
+        TENANT, CONVERSATION, RUN, status=STATUS_COMPLETED, expires_at=_now() + timedelta(hours=1)
+    )
+
+    assert store.reopen_if_terminal(TENANT, CONVERSATION, RUN) is True
+    state = store.get_state(TENANT, CONVERSATION, RUN)
+    assert state.status == STATUS_STREAMING and state.is_terminal is False
+    assert state.expires_at is None  # 重开后不再受原保留期约束（终态收口时重新置）
+
+    frame = store.append_frame(TENANT, CONVERSATION, RUN, kind=TOOL_RESULT_KIND, payload={"n": 2})
+    assert frame is not None and frame.seq == 2  # `seq` **继续单调**（不复用、不跳号）
+    assert store.reopen_if_terminal(TENANT, CONVERSATION, RUN) is False  # 已非终态 ⇒ 不再重开
+
+
+def test_reopen_does_not_revive_unavailable(env) -> None:
+    """熔断 / 悬挂（`unavailable`）**不复活**：该 run 已显式告知「过程流不可用」。"""
+    store, _ = env
+    store.set_unavailable(
+        TENANT, CONVERSATION, RUN, reason="byte_limit", expires_at=_now() + timedelta(hours=1)
+    )
+    assert store.reopen_if_terminal(TENANT, CONVERSATION, RUN) is False
+    assert store.get_state(TENANT, CONVERSATION, RUN).status == STATUS_UNAVAILABLE
+    # 且**不可续写**（append 仍被状态位拒绝）
+    assert store.append_frame(TENANT, CONVERSATION, RUN, kind=TOOL_RESULT_KIND, payload={"n": 2}) is None
+
+
+def test_reopen_missing_state_is_noop(env) -> None:
+    """零破坏：状态行不存在（该 run 从未开流）⇒ 不创建、返回 `False`。"""
+    store, _ = env
+    assert store.reopen_if_terminal(TENANT, CONVERSATION, "run-never-streamed") is False
+    assert store.get_state(TENANT, CONVERSATION, "run-never-streamed") is None
 
 
 # ------------------------------------------------------------ ② 续播真增量
@@ -294,3 +335,34 @@ def test_redacted_summary_extras_survive_masking(env) -> None:
     assert stored["args_digest"] == "sha256:" + "a" * 64
     assert stored["sha256"] == "sha256:" + "b" * 64
     assert stored["summary"] == {"tool_key": "fs.list", "status": "ok"}
+
+
+# ------------------------------------------------------------ ⑨ 内容级回传（P2c-2 有界摘录）
+
+
+def test_bounded_output_fields_land_with_secrets_masked(env) -> None:
+    """P2c-2 §2.6：`tool.result` 的**有界摘录**可落库；摘录内凭据被掩码；数值字段原样保留。"""
+    store, _ = env
+    writer = StreamWriter(store, audit=None, retention_days=7)
+    payload = {
+        "step_id": "step-1",
+        "tool_key": "cmd.run",
+        "status": "ok",
+        "summary": {"tool_key": "cmd.run", "status": "ok", "exit_code": 0},
+        "args_digest": "sha256:" + "a" * 64,
+        "sha256": "sha256:" + "b" * 64,
+        "output_excerpt": "ok\nAuthorization: Bearer abcdef1234567890\n",
+        "output_truncated": True,
+        "output_bytes": 4096,
+        "output_sha256": "sha256:" + "c" * 64,
+    }
+    assert writer.write(TENANT, CONVERSATION, RUN, kind=TOOL_RESULT_KIND, payload=payload) is not None
+
+    stored = store.list_frames(TENANT, CONVERSATION, RUN)[0].payload
+    assert stored["output_truncated"] is True  # 截断**显式告知**
+    assert stored["output_bytes"] == 4096  # 读取到的字节数（有界读取）
+    assert stored["output_sha256"] == "sha256:" + "c" * 64
+    assert "ok" in stored["output_excerpt"]  # 文本摘录保留（非敏感）
+    assert "abcdef1234567890" not in json.dumps(stored, ensure_ascii=False)  # 摘录内凭据掩码
+    # 摘要口径不被摘录污染（既有字段零变化）
+    assert stored["summary"] == {"tool_key": "cmd.run", "status": "ok", "exit_code": 0}

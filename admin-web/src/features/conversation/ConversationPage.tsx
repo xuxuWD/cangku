@@ -118,7 +118,9 @@ export function ConversationPage({
     setDraft('')
     setMessagesLimit(MESSAGE_PAGE_SIZE)
     setStreamRunId(undefined)
-    setStreamActive(false)
+    // P2c-2：进入会话即开启读端做**回放**（§2.3 打开（回放））——历史会话由此解析出
+    // 「最新 run」（响应头 `X-Stream-Run-Id` / 帧内 `run_id`），运行概览与审批随之可用。
+    setStreamActive(Boolean(conversationId))
     setRestartToken((value) => value + 1)
     messageFrameSeqRef.current = 0
     setState((old) => ({ ...old, detail: null, detailError: null, sendError: null, streamNotice: null }))
@@ -139,6 +141,8 @@ export function ConversationPage({
     runId: streamRunId,
     enabled: visible && streamActive,
     restartToken,
+    // 发送进行中⇒缺 run 时继续等（边执行边看）；历史会话回放则缺 run 即如实告知（P2c-2）。
+    awaitRun: state.sending,
     onTerminal: handleTerminal,
   })
 
@@ -152,11 +156,26 @@ export function ConversationPage({
     if (conversationId) void loadDetail(conversationId, messagesLimitRef.current)
   }, [stream.frames, conversationId, loadDetail])
 
-  const overview = useRunOverview(streamRunId, terminalToken)
-  const approvals = useRunApprovals(streamRunId)
+  // P2c-2：显式 run（本次发送）优先；否则用读端解析出的 run（响应头 `X-Stream-Run-Id` / 帧内 `run_id`），
+  // 使**历史会话**（未发生本次发送）也能加载运行概览与审批（此前只有过程时间线可用）。
+  const effectiveRunId = streamRunId ?? stream.runId ?? undefined
+  const overview = useRunOverview(effectiveRunId, terminalToken)
+  const approvals = useRunApprovals(effectiveRunId)
   const role = import.meta.env.VITE_USER_ROLE || 'super_admin'
   const canDecide = (role === 'ceo' || role === 'super_admin') && !overview.isInitiator
   const pendingApprovals = approvals.items.filter((item) => item.status === 'pending')
+
+  // 决议后**重开读端**尾随推进帧（P2c-2 §2.8：推进在同一 run 续写；成功后才有帧可看）。
+  const handleDecide = async (approvalId: string, approved: boolean): Promise<string | null> => {
+    const failure = await approvals.decide(approvalId, approved)
+    if (failure === null) {
+      setStreamActive(true)
+      setRestartToken((value) => value + 1)
+    }
+    return failure
+  }
+  // 舞台与对话流**共用同一决议入口**（两处同源；重开读端的副作用只在一处）。
+  const approvalsView = { ...approvals, decide: handleDecide }
 
   const forbidden = state.conversationsError?.status === 403
   const archived = state.detail?.status !== 'active'
@@ -426,7 +445,7 @@ export function ConversationPage({
                           approval={approval}
                           canDecide={canDecide}
                           deciding={approvals.decidingId === approval.approval_id}
-                          onDecide={(approved) => void approvals.decide(approval.approval_id, approved)}
+                          onDecide={(approved) => void handleDecide(approval.approval_id, approved)}
                         />
                       ))}
                     </div>
@@ -494,10 +513,10 @@ export function ConversationPage({
             </section>
 
             <StagePanel
-              runId={streamRunId}
+              runId={effectiveRunId}
               stream={stream}
               overview={overview}
-              approvals={approvals}
+              approvals={approvalsView}
               canDecide={canDecide}
               expanded={stageOpen}
               onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}

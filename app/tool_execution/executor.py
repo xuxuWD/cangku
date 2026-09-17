@@ -34,6 +34,7 @@ tmpfs，该挂载会被改写成 `mode=755`（root:root）**，以 65534 运行�
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
@@ -69,6 +70,11 @@ SCRATCH_TMPFS_OPTIONS = (
     f"{TMPFS_COMMON_OPTIONS},uid={EXEC_UID},gid={EXEC_GID},mode=1777"
 )
 
+# 有界回传（P2c-2 §2.6 / 契约「内容级回传」）：读取**硬上限**（常量，不可配置放大）。
+# 理由：摘录上限可配（0–256 KiB），但**读取本身**必须有独立天花板，否则一次超长输出会把
+# 内存 / 时间拖垮（`container.logs()` 已按流式读取，到上限即停、不继续 drain）。
+OUTPUT_CAPTURE_HARD_LIMIT_BYTES = 1 << 20  # 1 MiB
+
 
 def _digest_pinned(image: str) -> bool:
     """镜像必须按 digest 钉死（`repo@sha256:…`）；tag 一律拒绝。"""
@@ -98,6 +104,48 @@ def _run_id_from(workspace_path: str) -> str:
     """工作卷路径形如 `<root>/<tenant>/<run>`：取末段作为 run 标签（仅用于标签/清扫）。"""
     cleaned = str(workspace_path).replace("\\", "/").rstrip("/")
     return cleaned.rsplit("/", 1)[-1] if cleaned else ""
+
+
+def _truncated_tail_length(raw: bytes) -> int:
+    """尾部是否为**被切断的多字节序列**（1–3 字节）；是则返回该长度，否则 `0`。
+
+    仅用于「读到硬上限」的场景：截断点可能切裂一个多字节字符，**不得**因此把合法文本
+    误判成二进制（也不得反过来把真正的二进制字节当文本——只认「起始字节 + 续字节」形态）。
+    """
+    for size in (1, 2, 3):
+        if size > len(raw):
+            return 0
+        lead = raw[len(raw) - size]
+        tail = raw[len(raw) - size + 1 :]
+        if 0xC2 <= lead <= 0xF7 and all(0x80 <= byte <= 0xBF for byte in tail):
+            needed = 2 if lead <= 0xDF else (3 if lead <= 0xEF else 4)
+            if size < needed:
+                return size
+    return 0
+
+
+def _decode_utf8(raw: bytes, *, allow_truncated_tail: bool) -> str | None:
+    """**严格** UTF-8 解码；返回 `None` 表示非 UTF-8 / 二进制（⇒ 只留字节数与摘要）。"""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if allow_truncated_tail:
+        cut = _truncated_tail_length(raw)
+        if cut:
+            try:
+                return raw[:-cut].decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+    return None
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """把文本裁剪到 **≤ `max_bytes` 字节**（按字节计，且不切裂多字节字符）。"""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 @dataclass(frozen=True)
@@ -197,12 +245,32 @@ class ContainerSpec:
 
 
 @dataclass(frozen=True)
+class OutputCapture:
+    """容器输出的**有界读取**结果（P2c-2 §2.6 / 契约「内容级回传」）。
+
+    - `excerpt` **仅当**读取到的字节可按 UTF-8 严格解码时给出（按上限裁剪，按**字节**计）；
+    - 非 UTF-8 / 二进制 ⇒ `excerpt=None` + `sha256`（**只留字节数与摘要，不落内容**）；
+    - `bytes_read` = **实际读取**的字节数（有界读取：到硬上限即停；此时 `truncated=True`，该值是**下界**）；
+    - 回传始终是**视图**：读取失败 / 超限**不影响执行结果**。
+    """
+
+    excerpt: str | None
+    truncated: bool
+    bytes_read: int
+    sha256: str | None = None
+
+
+@dataclass(frozen=True)
 class ExecutionOutcome:
-    """一次执行的**确定性**结果摘要（供 ⑨ 落摘要 / 用例断言；不含正文与宿主路径）。"""
+    """一次执行的**确定性**结果摘要（供 ⑨ 落摘要 / 用例断言；不含正文与宿主路径）。
+
+    `output`（P2c-2 新增，缺省 `None`）：本次执行的**有界输出摘录**（未装配回传时为 `None`）。
+    """
 
     ok: bool
     summary: dict[str, object]
     timed_out: bool = False
+    output: OutputCapture | None = None
 
 
 class OrphanLimitExceeded(ToolExecutionConfigError):
@@ -236,6 +304,9 @@ class ContainerExecutor:
         network_name: str = INTERNAL_NETWORK_NAME,
         client_factory: Callable[[], Any] | None = None,
         token_revoker: Callable[[str], None] | None = None,
+        # 有界回传（P2c-2）：`0` = 关闭（默认，既有调用方零变化）；生产由 `from_settings` 注入。
+        output_excerpt_max_bytes: int = 0,
+        output_capture_hard_limit_bytes: int = OUTPUT_CAPTURE_HARD_LIMIT_BYTES,
     ) -> None:
         if not isinstance(image_digest, str) or not image_digest.strip():
             raise ToolExecutionConfigError(
@@ -249,6 +320,8 @@ class ContainerExecutor:
             raise ToolExecutionConfigError("容器资源参数非法")
         if orphan_limit < 0:
             raise ToolExecutionConfigError("孤儿上限必须为非负整数")
+        if output_excerpt_max_bytes < 0 or output_capture_hard_limit_bytes < 0:
+            raise ToolExecutionConfigError("输出回传上限必须为非负整数（0 = 关闭）")
         self.image_digest = image_digest
         self.pids_limit = pids_limit
         self.memory_mb = memory_mb
@@ -259,6 +332,8 @@ class ContainerExecutor:
         self.orphan_limit = orphan_limit
         self.network_name = network_name
         self._client_factory = client_factory or _default_client_factory
+        self.output_excerpt_max_bytes = int(output_excerpt_max_bytes)
+        self.output_capture_hard_limit_bytes = int(output_capture_hard_limit_bytes)
         self._client: Any | None = None
         # 本进程内**当前在跑**的容器 id；不在此集合、却带托管标签的容器即「孤儿」。
         self._live: set[str] = set()
@@ -281,6 +356,7 @@ class ContainerExecutor:
             timeout_seconds=settings.exec_timeout_seconds,
             orphan_limit=settings.exec_orphan_limit,
             token_revoker=token_revoker,
+            output_excerpt_max_bytes=settings.output_excerpt_max_bytes,
         )
 
     # ------------------------------------------------------------------ 装配
@@ -410,6 +486,7 @@ class ContainerExecutor:
         )
         timed_out = False
         status_code: int | None = None
+        captured: OutputCapture | None = None
         try:
             try:
                 result = container.wait(timeout=self.timeout_seconds)
@@ -419,6 +496,8 @@ class ContainerExecutor:
                     raise
                 timed_out = True
                 self._kill(container)
+            # P2c-2 §2.6 实现注意：**必须在 `remove_container()` 之前**有界读取（容器即删、工作卷即毁）。
+            captured = self._capture_output(container)
         finally:
             self.remove_container(container)
             self._revoke_on_terminal(_run_id_from(workspace_path))
@@ -433,6 +512,50 @@ class ContainerExecutor:
             ok=not timed_out and status_code == 0,
             timed_out=timed_out,
             summary=summary,
+            output=captured,
+        )
+
+    # ------------------------------------------------------------------ 有界回传
+
+    def _capture_output(self, container: Any) -> OutputCapture | None:
+        """有界读取容器输出（P2c-2 §2.6）：**读取失败 / 超限不影响执行结果**（回传是视图）。
+
+        - `output_excerpt_max_bytes == 0` ⇒ **不读日志**（关闭回传，省开销）；
+        - 流式读取到**硬上限**即停（不继续 drain，防超长输出拖垮内存 / 时间）；
+        - 文本判定用**严格 UTF-8**：非 UTF-8 / 二进制只留 `bytes` + `sha256`（不落内容）。
+        """
+        cap = int(self.output_excerpt_max_bytes)
+        if cap <= 0:
+            return None
+        ceiling = max(int(self.output_capture_hard_limit_bytes), cap)
+        try:
+            buffer = bytearray()
+            for chunk in container.logs(stream=True, stdout=True, stderr=True):
+                if not chunk:
+                    continue
+                remaining = ceiling - len(buffer)
+                if remaining <= 0:
+                    break
+                buffer.extend(bytes(chunk)[:remaining])
+                if len(buffer) >= ceiling:
+                    break
+        except Exception as exc:  # noqa: BLE001 - 读取失败只降级回传
+            get_logger().error("执行输出读取失败（有界回传跳过，不影响执行）：%s", exc)
+            return None
+        raw = bytes(buffer)
+        hit_ceiling = len(raw) >= ceiling
+        text = _decode_utf8(raw, allow_truncated_tail=hit_ceiling)
+        if text is None:
+            return OutputCapture(
+                excerpt=None,
+                truncated=hit_ceiling or len(raw) > cap,
+                bytes_read=len(raw),
+                sha256="sha256:" + hashlib.sha256(raw).hexdigest(),
+            )
+        return OutputCapture(
+            excerpt=_truncate_utf8(text, cap),
+            truncated=hit_ceiling or len(raw) > cap,
+            bytes_read=len(raw),
         )
 
     # ------------------------------------------------------------------ 内部

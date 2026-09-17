@@ -42,7 +42,11 @@ from app.tool_execution.blacklist import (
 from app.tool_execution.body_cipher import BodyCipher
 from app.tool_execution.catalog import ToolSpecCatalog, default_tool_specs
 from app.tool_execution.errors import ToolExecutionError
-from app.tool_execution.executor import DeterministicFakeExecutor
+from app.tool_execution.executor import (
+    DeterministicFakeExecutor,
+    ExecutionOutcome,
+    OutputCapture,
+)
 from app.tool_execution.params import path_param_names
 from app.tool_execution.paths import path_blacklist_hit
 from app.tool_execution.service import (
@@ -414,6 +418,46 @@ def test_exec_name_in_whitelist_passes_to_execution(tmp_path) -> None:
     result = service.execute(run_cmd(str(trusted / "ls"), ["/workspace"]))
     assert result.outcome == "executed"
     assert GATE_EXEC_BLACKLIST in service.gate_trace
+
+
+class _OutputExecutor:
+    """只回「执行摘要 + 有界输出」的假执行器（P2c-2 用例；不启容器）。"""
+
+    def __init__(self, output: OutputCapture) -> None:
+        self._output = output
+
+    def execute(self, **kwargs):  # noqa: ANN003 - 与真实执行器同签名（此处仅回填）
+        return ExecutionOutcome(
+            ok=True,
+            summary={"tool_key": "cmd.run", "status": "ok", "exit_code": 0},
+            output=self._output,
+        )
+
+
+def test_bounded_output_rides_along_and_never_pollutes_executed_audit(tmp_path) -> None:
+    """P2c-2 §2.6：有界摘录**只随帧回传** —— 结果携带 `output`，`tool.executed` 审计**零污染**。"""
+    audit = RecordingAudit()
+    capture = OutputCapture(
+        excerpt="line1\nAuthorization: Bearer abcdef1234567890",
+        truncated=True,
+        bytes_read=4096,
+    )
+    service, trusted, _ws = build_service(tmp_path, audit=audit, executor=_OutputExecutor(capture))
+    _elf(str(trusted / "ls"))
+    result = service.execute(run_cmd(str(trusted / "ls"), ["/workspace"]))
+
+    assert result.outcome == "executed"
+    assert result.output == {
+        "output_excerpt": "line1\nAuthorization: Bearer abcdef1234567890",
+        "output_truncated": True,
+        "output_bytes": 4096,
+    }
+    executed = [call for call in audit.calls if call[0] == AuditAction.TOOL_EXECUTED]
+    assert executed, "已执行必须写 tool.executed"
+    detail = executed[-1][1]["detail"]
+    assert set(detail) <= {"tool_key", "risk_level", "status", "reason", "run_id"}
+    assert "output_excerpt" not in detail  # 摘录不进审计
+    assert "abcdef1234567890" not in str(detail)  # 内容不进审计
 
 
 def test_blacklist_layer_a_executable_names() -> None:

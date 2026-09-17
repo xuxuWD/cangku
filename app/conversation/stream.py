@@ -183,6 +183,23 @@ class InMemoryStreamStore:
             state.expires_at = expires_at
             state.updated_at = now or _now()
 
+    def reopen_if_terminal(self, tenant_id: str, conversation_id: str, run_id: str) -> bool:
+        """P2c-2 §2.8：决议后推进前，把**已终态**的流状态先行重开（`seq` 继续单调）。
+
+        - 仅对 `completed` / `failed` 生效（`status` 置回 `streaming`、清 `expires_at`）；
+        - `unavailable`（熔断 / 悬挂兜底）**不复活**——该 run 已显式告知「过程流不可用」；
+        - 状态行不存在（该 run 从未开流）⇒ 不创建（零破坏：旧端点 / `mock` 路径无流）。
+        """
+        with self._lock:
+            state = self._states.get((tenant_id, conversation_id, run_id))
+            if state is None or not state.is_terminal or state.status == STATUS_UNAVAILABLE:
+                return False
+            state.status = STATUS_STREAMING
+            state.is_terminal = False
+            state.expires_at = None
+            state.updated_at = _now()
+            return True
+
     def set_unavailable(
         self,
         tenant_id: str,
@@ -454,6 +471,26 @@ class PostgresStreamStore:
                         """,
                         (status, expires_at, now or _now(), tenant_id, conversation_id, run_id),
                     )
+
+    def reopen_if_terminal(self, tenant_id: str, conversation_id: str, run_id: str) -> bool:
+        """P2c-2 §2.8：决议后推进前，把**已终态**的流状态先行重开（`seq` 继续单调）。
+
+        仅对 `completed` / `failed` 生效；`unavailable` **不复活**；状态行不存在 ⇒ 不创建。
+        返回是否发生了重开。
+        """
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE workbench_conversation_stream_state
+                        SET status = 'streaming', is_terminal = false, expires_at = NULL, updated_at = %s
+                        WHERE tenant_id = %s AND conversation_id = %s AND run_id = %s
+                          AND is_terminal = true AND status <> 'unavailable'
+                        """,
+                        (_now(), tenant_id, conversation_id, run_id),
+                    )
+                    return cursor.rowcount > 0
 
     def set_unavailable(
         self,

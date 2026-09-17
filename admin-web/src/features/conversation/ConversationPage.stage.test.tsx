@@ -5,7 +5,7 @@ import { ConversationPage } from './ConversationPage'
 const json = (body: unknown, status = 200): Response =>
   ({ ok: status < 400, status, json: async () => body }) as Response
 
-function sseResponse(chunks: string[]): Response {
+function sseResponse(chunks: string[], headers: Record<string, string> = {}): Response {
   const encoder = new TextEncoder()
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -13,7 +13,7 @@ function sseResponse(chunks: string[]): Response {
       controller.close()
     },
   })
-  return { ok: true, status: 200, body } as unknown as Response
+  return { ok: true, status: 200, body, headers: new Headers(headers) } as unknown as Response
 }
 
 const sseFrame = (seq: number, kind: string, isTerminal = false) =>
@@ -34,10 +34,11 @@ const task = {
 
 interface Call { url: string; method: string; body: string; headers: Record<string, string> }
 
-function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean } = {}) {
+function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean; frames?: string[]; streamHeaders?: Record<string, string> } = {}) {
   const calls: Call[] = []
   const approvals = options.approvals ?? []
   const produceRun = options.produceRun !== false
+  const frames = options.frames ?? [sseFrame(1, 'tool.call'), sseFrame(2, 'run.completed', true)]
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
@@ -59,7 +60,7 @@ function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean } = {}
     if (url.includes('/messages')) {
       return json({ message_id: 'msg-2', conversation_id: 'conv-1', stub: true, reply: { message_id: 'msg-3', conversation_id: 'conv-1', role: 'assistant', content: '（P1 桩回复）已收到你的消息。', stub: true, tool_name: null, tool_call_id: null, created_at: null } }, 201)
     }
-    if (url.includes('/conversations/conv-1/stream')) return sseResponse([sseFrame(1, 'tool.call'), sseFrame(2, 'run.completed', true)])
+    if (url.includes('/conversations/conv-1/stream')) return sseResponse(frames, options.streamHeaders)
     if (url.includes('/runs/run-9/metrics')) return json(metrics)
     if (url.includes('/runs/run-9/approvals/') && method === 'POST') return json({ run_id: 'run-9', approval_id: 'ap-1', status: 'approved', run_status: 'completed' })
     if (url.includes('/runs/run-9/approvals')) return json({ items: approvals })
@@ -127,7 +128,8 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     })
     expect(posted.url).not.toContain(':stream')
     expect(posted.headers['Idempotency-Key']).toBeUndefined()
-    expect(calls.some((call) => call.url.includes('/stream'))).toBe(false)
+    // 纯文本**不触发实时发送路径**（`messages:stream` 不出现；进入会话的回放读端是另一回事，P2c-2 起）
+    expect(calls.some((call) => call.method === 'POST' && call.url.includes(':stream'))).toBe(false)
     // 桩路径照旧：发送后重取详情（不做乐观拼接），草稿清空
     expect(await screen.findByLabelText('消息内容')).toHaveValue('')
     expect(calls.some((call) => call.method === 'GET' && call.url.includes('/conversations/conv-1?'))).toBe(true)
@@ -179,7 +181,7 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
 
     expect(await screen.findByText('收尾检查')).toBeInTheDocument()
     expect(await screen.findByText('进度档')).toBeInTheDocument()
-    expect(screen.getByText('只做展示，不改变运行状态（自动判分属 P6，不在本期）。')).toBeInTheDocument()
+    expect(screen.getByText('只做展示，不改变运行状态（结构判定与一键重做在 P2c-4 提供）。')).toBeInTheDocument()
   })
 
   it('结构化调用未产生运行（后端未装配真实执行）⇒ 关流并如实告知，不留「执行中」假象', async () => {
@@ -198,5 +200,54 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     expect(screen.queryByText('执行中')).toBeNull()
     // 舞台回到「暂无运行」空态，而不是加载一个不存在的 run
     expect(screen.getByText('暂无运行')).toBeInTheDocument()
+  })
+
+  it('终端输出面板：只渲染有界摘录并显式告知截断（无输出则不摆面板）', async () => {
+    const outputFrame = `id: 3\nevent: tool.result\ndata: ${JSON.stringify({
+      seq: 3,
+      kind: 'tool.result',
+      payload: { tool_key: 'cmd.run', status: 'ok', output_excerpt: 'hello\nworld', output_truncated: true, output_bytes: 4096 },
+      is_terminal: false,
+    })}\n\n`
+    const { fetchMock } = makeFetch({ frames: [outputFrame, sseFrame(4, 'run.completed', true)] })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: invocation } })
+    await userEvent.click(screen.getByRole('button', { name: '发送消息' }))
+
+    expect(await screen.findByRole('region', { name: '终端输出' })).toBeInTheDocument()
+    expect(screen.getByLabelText('执行输出摘录')).toHaveTextContent('hello')
+    expect(screen.getByText(/输出超过回传上限，已截断（已读取 4096 字节/)).toBeInTheDocument()
+  })
+
+  it('无输出帧时不渲染终端 / 文件改动面板（不摆空面板）', async () => {
+    const { fetchMock } = makeFetch()
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: invocation } })
+    await userEvent.click(screen.getByRole('button', { name: '发送消息' }))
+
+    await screen.findAllByText('运行完成')
+    expect(screen.queryByRole('region', { name: '终端输出' })).toBeNull()
+    expect(screen.queryByRole('region', { name: '文件改动' })).toBeNull()
+  })
+
+  it('历史会话：读端响应头解析 run ⇒ 运行概览与审批可用（此前只有过程时间线）', async () => {
+    const { fetchMock, calls } = makeFetch({
+      frames: [sseFrame(1, 'run.completed', true)],
+      streamHeaders: { 'X-Stream-Run-Id': 'run-9' },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+
+    expect(await screen.findByText('步骤完成度')).toBeInTheDocument()
+    expect(calls.some((call) => call.url.includes('/runs/run-9/metrics'))).toBe(true)
+    expect(calls.some((call) => call.url.includes('/runs/run-9/approvals'))).toBe(true)
   })
 })

@@ -57,7 +57,7 @@ from .accounts.sso_store import SsoStateNotFound
 from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
 from .settings import get_settings, resolve_cors_options, validate_runtime_settings
 from .runtime.authorization import ExecutionNotAuthorized
-from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable
+from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable, RuntimeEventType
 from .tool_execution.errors import ToolExecutionError
 from .tool_execution.active_execution import ActiveExecutionRegistry
 from .tool_execution.callback_guard import CallbackRateLimiter, shared_secret_matches
@@ -157,7 +157,11 @@ from .conversation import (
     MessageRole,
     ensure_can_converse,
 )
-from .conversation.execution import ConversationExecutionError
+from .conversation.execution import (
+    ConversationExecutionError,
+    bounded_output_fields,
+    summary_digest,
+)
 from .conversation.stream import (
     REASON_STALLED,
     STATUS_UNAVAILABLE,
@@ -1672,10 +1676,16 @@ def _sse_start_cursor(last_event_id: str | None, after_seq: int | None) -> int:
     return max(values) if values else 0
 
 
-def _sse_chunk(*, seq: int, kind: str, payload: dict[str, object], is_terminal: bool) -> str:
-    """SSE 帧：`id: <seq>` + `event: <kind>` + `data: <json>`（规格 §2.3 冻结格式）。"""
+def _sse_chunk(
+    *, seq: int, kind: str, payload: dict[str, object], is_terminal: bool, run_id: str | None = None
+) -> str:
+    """SSE 帧：`id: <seq>` + `event: <kind>` + `data: <json>`（规格 §2.3 冻结格式）。
+
+    P2c-2（**只增**）：`data` 内新增 `run_id`——覆盖「连接建立时无 run、稍后新 run 出现」与多客户端场景，
+    客户端据此归组并解析「当前 run」（既有 `seq` / `kind` / `payload` / `is_terminal` 语义不变）。
+    """
     data = json.dumps(
-        {"seq": seq, "kind": kind, "payload": payload, "is_terminal": is_terminal},
+        {"run_id": run_id, "seq": seq, "kind": kind, "payload": payload, "is_terminal": is_terminal},
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -1693,6 +1703,80 @@ def _sse_unavailable_reason(store, tenant_id: str, conversation_id: str, run_id:
     if tail and tail[0].kind == UNAVAILABLE_KIND:
         return str(tail[0].payload.get("reason") or REASON_STALLED)
     return REASON_STALLED
+
+
+_TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+
+
+def _resume_result_payload(approval_id: str, result) -> dict[str, object]:
+    """决议后推进的 `tool.result` payload：与首次结果**同构**（**只增** `resumed`；白名单键）。"""
+    summary = dict(getattr(result, "summary", None) or {})
+    payload: dict[str, object] = {
+        "step_id": approval_id,
+        "tool_key": str(summary.get("tool_key") or ""),
+        "status": str(summary.get("status") or "ok"),
+        "summary": summary,
+        "sha256": summary_digest(summary),
+        "resumed": True,
+    }
+    payload.update(bounded_output_fields(getattr(result, "output", None)))
+    return payload
+
+
+def _resume_stream_frames(
+    context: UserContext,
+    run_id: str,
+    approval_id: str,
+    *,
+    approved: bool,
+    run_status: str,
+    result=None,
+) -> None:
+    """P2c-2 §2.8：审批决议后的推进接入**同一** `StreamWriter`（无流 ⇒ 零破坏）。
+
+    - 只有「经 `messages:stream` 发起过」的 run 才有流状态（会话经幂等行反查；旧端点 / `mock` 路径无流）；
+    - `unavailable`（熔断 / 悬挂兜底）**不复活**——该 run 已显式告知「过程流不可用」；
+    - 已终态的流**先重开**再续写（同一 run 的 `seq` 继续单调）；写既有 `kind`，**不新增取值域**；
+    - **流是视图**：本函数任何失败都只记日志，**不得**影响决议结果与响应体。
+    """
+    writer = conversation_stream_writer
+    store = conversation_stream_store
+    idempotency = execution_idempotency_store
+    if writer is None or store is None or idempotency is None:
+        return
+    try:
+        record = idempotency.find_by_run(context.tenant_id, run_id)
+        conversation_id = getattr(record, "conversation_id", None)
+        if not conversation_id:
+            return
+        state = store.get_state(context.tenant_id, conversation_id, run_id)
+        if state is None or getattr(state, "status", "") == STATUS_UNAVAILABLE:
+            return
+        store.reopen_if_terminal(context.tenant_id, conversation_id, run_id)
+        if approved and result is not None:
+            writer.write(
+                context.tenant_id,
+                conversation_id,
+                run_id,
+                kind=RuntimeEventType.TOOL_RESULT.value,
+                payload=_resume_result_payload(approval_id, result),
+            )
+        if run_status in _TERMINAL_RUN_STATUSES:
+            kind = (
+                RuntimeEventType.RUN_COMPLETED.value
+                if run_status == "completed"
+                else RuntimeEventType.RUN_FAILED.value
+            )
+            writer.write(
+                context.tenant_id,
+                conversation_id,
+                run_id,
+                kind=kind,
+                payload={"resumed": True, "status": run_status},
+                is_terminal=True,
+            )
+    except Exception as exc:  # noqa: BLE001 - 流写入失败绝不阻断决议
+        logger.warning("决议后推进的流写入失败（不影响决议结果）：%s", exc)
 
 
 def _sse_frame_stream(
@@ -1746,6 +1830,7 @@ def _sse_frame_stream(
                 yield _sse_chunk(
                     seq=int(frame.seq), kind=frame.kind,
                     payload=dict(frame.payload), is_terminal=bool(frame.is_terminal),
+                    run_id=active_run,
                 )
                 last_heartbeat = time.monotonic()
                 if frame.is_terminal:
@@ -1762,6 +1847,7 @@ def _sse_frame_stream(
                         )
                     },
                     is_terminal=True,
+                    run_id=active_run,
                 )
             return
         if time.monotonic() - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
@@ -1790,6 +1876,7 @@ def stream_conversation(
     except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
         _raise_conversation_http(exc)
     start_seq = _sse_start_cursor(last_event_id, after_seq)
+    resolved_run_id = run_id
     if run_id is not None:
         try:
             state = conversation_stream_store.get_state(context.tenant_id, conversation_id, run_id)
@@ -1797,10 +1884,20 @@ def stream_conversation(
             raise HTTPException(status_code=503, detail="流暂不可用") from exc
         if state is None:
             raise HTTPException(status_code=404, detail="运行不存在或不属于该会话")
+    else:
+        # P2c-2（只增）：响应头 `X-Stream-Run-Id` = 连接建立时解析到的**当前 run**；
+        # 会话尚无 run（挂起等待）⇒ 不写该头，客户端据此判定「本次没有过程流」。
+        try:
+            resolved_run_id = conversation_stream_store.latest_run_id(context.tenant_id, conversation_id)
+        except Exception:  # noqa: BLE001 - 解析失败只降级（流本身仍可用）
+            resolved_run_id = None
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    if resolved_run_id:
+        headers["X-Stream-Run-Id"] = str(resolved_run_id)
     return StreamingResponse(
         _sse_frame_stream(conversation_id, context, run_id, start_seq),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=headers,
     )
 
 
@@ -3508,25 +3605,36 @@ def decide_run_approval(
     # §4.1.6-7：成功路径在既有字段之上**新增可选字段** `execution: {outcome, code?, message_id?}`；
     # **既有字段一个都不改**；响应体**不含**参数原文 / 宿主路径 / 凭据（`ToolExecutionResult` 本身即无这些）。
     execution: dict[str, object] | None = None
+    resume_result = None
     if payload.approved and tool_execution_service is not None:
         try:
-            result = tool_execution_service.resume(
+            resume_result = tool_execution_service.resume(
                 tenant_id=context.tenant_id, run_id=run_id, approval_id=approval_id
             )
         except ToolExecutionError as exc:
             # §4.1.6-5 重跑失败语义：按受控异常携带的 HTTP 语义原样映射（409 / 422 / 403 / 502 / 504）。
             raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
-        if result is not None:
-            execution = {"outcome": result.outcome}
-            if result.code is not None:
-                execution["code"] = result.code
-            if result.message_id is not None:
-                execution["message_id"] = result.message_id
+        if resume_result is not None:
+            execution = {"outcome": resume_result.outcome}
+            if resume_result.code is not None:
+                execution["code"] = resume_result.code
+            if resume_result.message_id is not None:
+                execution["message_id"] = resume_result.message_id
+    run_status = runtime_service.snapshot(context, run_id).status
+    # P2c-2 §2.8：决议后推进接入**同一**帧写入（无流 ⇒ 零破坏；流写入失败不影响决议与响应体）。
+    _resume_stream_frames(
+        context,
+        run_id,
+        approval_id,
+        approved=payload.approved,
+        run_status=run_status,
+        result=resume_result,
+    )
     body: dict[str, object] = {
         "run_id": run_id,
         "approval_id": approval_id,
         "status": "approved" if payload.approved else "rejected",
-        "run_status": runtime_service.snapshot(context, run_id).status,
+        "run_status": run_status,
     }
     if execution is not None:
         body["execution"] = execution

@@ -93,6 +93,8 @@ export interface StreamFrame {
   kind: string
   payload: Record<string, unknown>
   is_terminal: boolean
+  /** 帧所属运行号（P2c-2 契约「只增」）：历史会话与多客户端据此解析「当前 run」。 */
+  run_id?: string
 }
 
 /** 读端连接态（四态：idle=未开启、connecting=建立中、streaming=接收中、closed/error=终态）。 */

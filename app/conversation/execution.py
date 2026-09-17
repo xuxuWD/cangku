@@ -722,7 +722,7 @@ def _params_digest(spec, params: Mapping[str, Any]) -> str:
     return _args_digest(params, path_params=path_param_names(spec))
 
 
-def _summary_digest(summary: Mapping[str, Any]) -> str:
+def summary_digest(summary: Mapping[str, Any]) -> str:
     """工具结果摘要的 sha256（可追溯指纹；**只对摘要定型**，不含 stdout / 文件正文）。"""
     encoded = json.dumps(dict(summary), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -731,19 +731,42 @@ def _summary_digest(summary: Mapping[str, Any]) -> str:
 def _tool_result_summary(
     spec, result, *, step_id: str, params_digest: str
 ) -> dict[str, Any]:
-    """`tool.result` 帧的 payload：**只含摘要 + `args_digest` + `sha256`**（§2.5 / Q9）。
+    """`tool.result` 帧的 payload：摘要 + `args_digest` + `sha256` **＋ 有界摘录**（P2c-2 §2.6）。
 
-    **不落**：stdout 全文、文件正文、宿主真实路径、凭据 / 认证头 / Cookie（工具结果本身已是摘要）。
+    **仍不落**：stdout 全文、文件正文、宿主真实路径、凭据 / 认证头 / Cookie；
+    有界摘录**只增** `output_excerpt` / `output_truncated` / `output_bytes` / `output_sha256`
+    （统一在写帧网关过 `redact_payload`；**不进审计、不进消息表**）。
     """
     summary = dict(result.summary or {})
-    return {
+    payload: dict[str, Any] = {
         "step_id": step_id,
         "tool_key": spec.key,
         "status": str(summary.get("status") or "ok"),
         "summary": summary,
         "args_digest": params_digest,
-        "sha256": _summary_digest(summary),
+        "sha256": summary_digest(summary),
     }
+    payload.update(bounded_output_fields(getattr(result, "output", None)))
+    return payload
+
+
+def bounded_output_fields(output: object) -> dict[str, Any]:
+    """把执行结果的**有界输出**并入 payload（**白名单键**；缺省不出现 ⇒ 既有帧逐字节不变）。"""
+    if not isinstance(output, Mapping):
+        return {}
+    fields: dict[str, Any] = {}
+    excerpt = output.get("output_excerpt")
+    if isinstance(excerpt, str) and excerpt:
+        fields["output_excerpt"] = excerpt
+    if "output_truncated" in output:
+        fields["output_truncated"] = bool(output.get("output_truncated"))
+    bytes_read = output.get("output_bytes")
+    if isinstance(bytes_read, int) and not isinstance(bytes_read, bool):
+        fields["output_bytes"] = int(bytes_read)
+    sha = output.get("output_sha256")
+    if isinstance(sha, str) and sha:
+        fields["output_sha256"] = sha
+    return fields
 
 
 def _plan_steps(plan: AgentPlan) -> list[dict[str, Any]]:

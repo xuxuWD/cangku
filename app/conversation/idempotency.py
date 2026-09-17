@@ -65,6 +65,10 @@ class ExecutionIdempotencyStore(Protocol):
 
     def insert(self, record: ExecutionIdempotencyRecord) -> tuple[ExecutionIdempotencyRecord, bool]: ...
 
+    def find_by_run(self, tenant_id: str, run_id: str) -> ExecutionIdempotencyRecord | None:
+        """按运行号反查「该运行由哪次对话调用产生」（P2c-2：决议后推进需定位会话）。"""
+        ...
+
 
 class InMemoryExecutionIdempotencyStore:
     """开发 / 测试用内存实现；复合主键即去重机制（并发写收敛为首次行）。"""
@@ -98,6 +102,25 @@ class InMemoryExecutionIdempotencyStore:
                 return existing, False
             self._items[key] = record
             return record, True
+
+    def find_by_run(self, tenant_id: str, run_id: str) -> ExecutionIdempotencyRecord | None:
+        """按运行号反查（多行命中时取**最早**创建的一行；仅在内存实现里做确定性排序）。"""
+        with self._lock:
+            candidates = [
+                record
+                for record in self._items.values()
+                if record.tenant_id == tenant_id and record.run_id == run_id
+            ]
+        if not candidates:
+            return None
+        return sorted(
+            candidates,
+            key=lambda record: (
+                record.created_at is None,
+                record.created_at,
+                record.idempotency_key,
+            ),
+        )[0]
 
 
 class PostgresExecutionIdempotencyStore:
@@ -197,6 +220,22 @@ class PostgresExecutionIdempotencyStore:
         if existing is None:
             raise ExecutionIdempotencyConflict("幂等行写入冲突但读不到既有行")
         return self._hydrate(existing), False
+
+    def find_by_run(self, tenant_id: str, run_id: str) -> ExecutionIdempotencyRecord | None:
+        """按运行号反查（走迁移 027 既有索引 `idx_workbench_execution_idempotency_run`）。"""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT {self._COLUMNS} FROM workbench_execution_idempotency
+                    WHERE tenant_id = %s AND run_id = %s
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (tenant_id, run_id),
+                )
+                row = cursor.fetchone()
+        return self._hydrate(row) if row is not None else None
 
 
 def record_to_dict(record: ExecutionIdempotencyRecord) -> dict[str, object]:

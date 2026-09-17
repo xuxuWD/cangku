@@ -24,7 +24,10 @@ from app import main
 from app.audit.service import AuditService
 from app.audit.store import InMemoryAuditStore
 from app.conversation.execution import ConversationExecutionService
-from app.conversation.idempotency import InMemoryExecutionIdempotencyStore
+from app.conversation.idempotency import (
+    ExecutionIdempotencyRecord,
+    InMemoryExecutionIdempotencyStore,
+)
 from app.conversation.service import ConversationService
 from app.conversation.store import InMemoryConversationStore
 from app.conversation.stream import (
@@ -56,15 +59,22 @@ OTHER_USER = "u-2"
 class FakeToolExecution:
     """打桩的工具执行入口：记录调用次数并返回受控结果（与实际执行语义无关）。"""
 
-    def __init__(self, *, result=None) -> None:
+    def __init__(self, *, result=None, resume_result=None) -> None:
         self.calls = 0
         self.requests = []
+        self.resume_calls = 0
         self._result = result if result is not None else ToolExecutionResult(outcome="executed", code=201)
+        self._resume_result = resume_result
 
     def execute(self, request, *, actor=None, plan=None):
         self.calls += 1
         self.requests.append(request)
         return self._result
+
+    def resume(self, *, tenant_id: str, run_id: str, approval_id: str):
+        """P2c-2 §2.8：审批通过后的推进入口（打桩；返回受控结果或 `None`）。"""
+        self.resume_calls += 1
+        return self._resume_result
 
 
 @pytest.fixture(autouse=True)
@@ -279,6 +289,41 @@ def test_stream_path_writes_frames_in_order_with_terminal_frame(monkeypatch, _is
     assert state.status == STATUS_COMPLETED and state.is_terminal is True
     assert state.expires_at is not None
     assert state.persisted_to_message_id == response.json()["message_id"]  # 水位已回填
+    # P2c-2：执行器**未携带**有界输出时，帧 payload **不出现** output_* 键（只增、缺省不出现）
+    assert not [
+        key for frame in frames for key in frame.payload if key.startswith("output_")
+    ]
+
+
+def test_tool_result_frame_carries_bounded_output_with_secrets_masked(monkeypatch, _isolate) -> None:
+    """P2c-2 §2.6：`tool.result` **只增**有界摘录；凭据在写帧网关被掩码；既有字段零变化。"""
+    output = {
+        "output_excerpt": "line1\nAuthorization: Bearer abcdef1234567890\n",
+        "output_truncated": True,
+        "output_bytes": 4000,
+    }
+    result = ToolExecutionResult(
+        outcome="executed",
+        code=201,
+        summary={"status": "ok", "tool_key": "fs.list", "exit_code": 0},
+        output=output,
+    )
+    wire_execution(monkeypatch, FakeToolExecution(result=result), _isolate)
+    conversation_id = create_conversation()
+
+    response = send(conversation_id, invocation(), key="k-output-1", path_suffix=":stream")
+
+    assert response.status_code == 201, response.text
+    run_id = response.json()["run_id"]
+    frames = frames_of(_isolate, conversation_id, run_id)
+    payload = next(frame.payload for frame in frames if frame.kind == "tool.result")
+    assert payload["output_truncated"] is True  # 截断**显式告知**
+    assert payload["output_bytes"] == 4000  # 读取到的字节数（有界读取）
+    assert payload["output_excerpt"].startswith("line1")
+    assert "abcdef1234567890" not in json.dumps(payload, ensure_ascii=False)  # 写帧网关统一脱敏
+    # 既有字段零变化（只增）
+    assert payload["summary"] == {"status": "ok", "tool_key": "fs.list", "exit_code": 0}
+    assert payload["status"] == "ok" and str(payload["step_id"]).startswith("step-")
 
 
 def test_replay_does_not_write_frames_again(monkeypatch, _isolate) -> None:
@@ -316,6 +361,7 @@ def test_stream_read_delivers_ordered_events_and_closes_on_terminal(monkeypatch,
     assert response_headers.get("content-type", "").startswith("text/event-stream")
     assert response_headers.get("cache-control") == "no-cache"
     assert response_headers.get("x-accel-buffering") == "no"
+    assert response_headers.get("x-stream-run-id") == run_id  # P2c-2 只增：连接已解析到 run 时回传
     events = _events(lines)
     assert [event["id"] for event in events] == ["1", "2", "3", "4", "5", "6"]
     assert [event["event"] for event in events] == [
@@ -326,8 +372,24 @@ def test_stream_read_delivers_ordered_events_and_closes_on_terminal(monkeypatch,
     assert [item["seq"] for item in payloads] == [1, 2, 3, 4, 5, 6]
     assert payloads[-1]["is_terminal"] is True
     assert payloads[0]["kind"] == "plan.created"
+    # P2c-2 只增：帧内 `run_id`（多客户端 / 「连接建立时无 run、稍后出现」据此归组）
+    assert [item["run_id"] for item in payloads] == [run_id] * 6
     # 终态帧之后**主动关流**：响应到此结束（不再是无限流）
     assert lines[-1] == "" or events[-1]["event"] == "run.completed"
+
+
+def test_stream_read_resolves_latest_run_for_history_session(monkeypatch, _isolate) -> None:
+    """历史会话（不带 `?run_id=`）⇒ 读端以**最新 run** 为准并回传 `X-Stream-Run-Id`（P2c-2 只增）。"""
+    fake = FakeToolExecution()
+    wire_execution(monkeypatch, fake, _isolate)
+    conversation_id = create_conversation()
+    run_id = send(conversation_id, invocation(), key="k-history", path_suffix=":stream").json()["run_id"]
+
+    status, response_headers, lines = _read_sse(f"/api/v1/conversations/{conversation_id}/stream")
+
+    assert status == 200
+    assert response_headers.get("x-stream-run-id") == run_id
+    assert json.loads(_events(lines)[0]["data"])["run_id"] == run_id
 
 
 def test_stream_read_resume_does_not_redeliver(monkeypatch, _isolate) -> None:
@@ -495,3 +557,146 @@ def test_messages_stream_rejects_unknown_fields_and_empty_content(monkeypatch, _
         headers=headers(),
         json={"content": ""},
     ).status_code == 422
+
+
+# ------------------------------------------------------------ ⑨ 决议后推进（P2c-2 §2.8）
+
+
+def _seed_pending_run(env, conversation_id: str, run_id: str, *, key: str) -> None:
+    """把「该 run 由本次带键调用产生」写进幂等仓储（决议后推进靠它反查会话）。"""
+    env["idempotency"].insert(
+        ExecutionIdempotencyRecord(
+            tenant_id=TENANT,
+            actor_id=EMPLOYEE,
+            conversation_id=conversation_id,
+            idempotency_key=key,
+            outcome="pending_approval",
+            http_status=202,
+            run_id=run_id,
+        )
+    )
+
+
+def test_resume_frames_reopen_terminal_stream_and_close_it(monkeypatch, _isolate) -> None:
+    """决议后推进：已终态的流**先重开**再续写（`seq` 单调）；写 `tool.result` + 终态收口。"""
+    conversation_id = create_conversation()
+    run_id = "run-resume-1"
+    _seed_pending_run(_isolate, conversation_id, run_id, key="k-resume-1")
+    store = _isolate["stream_store"]
+    store.append_frame(TENANT, conversation_id, run_id, kind="tool.call", payload={"step_id": "step-1"})
+    store.set_terminal(
+        TENANT, conversation_id, run_id, status="completed", expires_at=datetime.now(UTC) + timedelta(hours=1)
+    )
+    assert store.get_state(TENANT, conversation_id, run_id).is_terminal is True
+
+    result = ToolExecutionResult(
+        outcome="executed",
+        code=201,
+        summary={"tool_key": "cmd.run", "status": "ok", "exit_code": 0},
+        output={"output_excerpt": "done", "output_truncated": False, "output_bytes": 4},
+    )
+    main._resume_stream_frames(
+        UserContext(TENANT, "ceo-1", "ceo"),
+        run_id,
+        "step-1",
+        approved=True,
+        run_status="completed",
+        result=result,
+    )
+
+    frames = frames_of(_isolate, conversation_id, run_id)
+    assert [frame.kind for frame in frames] == ["tool.call", "tool.result", "run.completed"]
+    assert [frame.seq for frame in frames] == [1, 2, 3]  # 重开后 seq **继续单调**（不复用）
+    assert frames[-1].is_terminal is True
+    payload = frames[1].payload
+    assert payload["resumed"] is True and payload["output_excerpt"] == "done"
+    state = store.get_state(TENANT, conversation_id, run_id)
+    assert state.status == "completed" and state.is_terminal is True and state.expires_at is not None
+
+
+def test_resume_frames_are_skipped_without_stream(monkeypatch, _isolate) -> None:
+    """零破坏：该 run **从未开流**（旧 `POST /messages` / `mock` 路径）⇒ 一帧不写、不建状态行。"""
+    conversation_id = create_conversation()
+    run_id = "run-resume-2"
+    _isolate["idempotency"].insert(
+        ExecutionIdempotencyRecord(
+            tenant_id=TENANT,
+            actor_id=EMPLOYEE,
+            conversation_id=conversation_id,
+            idempotency_key="k-resume-2",
+            outcome="executed",
+            http_status=201,
+            run_id=run_id,
+        )
+    )
+
+    main._resume_stream_frames(
+        UserContext(TENANT, "ceo-1", "ceo"), run_id, "step-1", approved=True, run_status="completed"
+    )
+
+    assert frame_total(_isolate) == 0
+    assert _isolate["stream_store"].get_state(TENANT, conversation_id, run_id) is None
+
+
+def test_resume_frames_do_not_revive_unavailable_stream(monkeypatch, _isolate) -> None:
+    """熔断 / 悬挂（`unavailable`）**不复活**：已显式告知「过程流不可用」，决议不追加任何帧。"""
+    conversation_id = create_conversation()
+    run_id = "run-resume-3"
+    _seed_pending_run(_isolate, conversation_id, run_id, key="k-resume-3")
+    store = _isolate["stream_store"]
+    store.set_unavailable(
+        TENANT, conversation_id, run_id, reason="byte_limit", expires_at=datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    main._resume_stream_frames(
+        UserContext(TENANT, "ceo-1", "ceo"), run_id, "step-1", approved=True, run_status="completed"
+    )
+
+    assert frame_total(_isolate) == 0
+    state = store.get_state(TENANT, conversation_id, run_id)
+    assert state.status == "unavailable" and state.is_terminal is True
+
+
+def test_approval_decision_appends_resume_frames(monkeypatch, _isolate) -> None:
+    """P2c-2 §2.8 端到端：`202` 待批 → CEO 决议通过 ⇒ 该 run 的流续写并**终态收口**。"""
+    fake = FakeToolExecution(
+        result=ToolExecutionResult(outcome="pending_approval", code=202, approval_id="approval-x"),
+        resume_result=ToolExecutionResult(
+            outcome="executed",
+            code=201,
+            summary={"tool_key": "fs.delete", "status": "ok", "exit_code": 0},
+            output={"output_excerpt": "deleted", "output_truncated": False, "output_bytes": 7},
+        ),
+    )
+    wire_execution(monkeypatch, fake, _isolate)
+    monkeypatch.setattr(main, "tool_execution_service", fake)  # 决议端点按它触发「审批后重跑」
+    conversation_id = create_conversation()
+    response = send(
+        conversation_id, invocation("fs.delete", {"path": "/workspace/tmp.txt"}),
+        key="k-approve", path_suffix=":stream",
+    )
+    assert response.status_code == 202, response.text
+    run_id = response.json()["run_id"]
+
+    pending = client.get(
+        f"/api/v1/runs/{run_id}/approvals", headers=headers("ceo", user_id="ceo-1")
+    ).json()["items"]
+    approval_id = next(item["approval_id"] for item in pending if item["status"] == "pending")
+
+    decision = client.post(
+        f"/api/v1/runs/{run_id}/approvals/{approval_id}/approval",
+        headers=headers("ceo", user_id="ceo-1"),
+        json={"approved": True},
+    )
+    assert decision.status_code == 200, decision.text
+    assert fake.resume_calls == 1
+
+    frames = frames_of(_isolate, conversation_id, run_id)
+    kinds = [frame.kind for frame in frames]
+    assert kinds[-2:] == ["tool.result", "run.completed"], kinds  # 推进帧 + 终态收口
+    assert frames[-1].is_terminal is True
+    resume_frame = frames[-2]
+    assert resume_frame.payload["resumed"] is True
+    assert resume_frame.payload["output_excerpt"] == "deleted"  # 有界回传随推进帧一并可见
+    assert [frame.seq for frame in frames] == list(range(1, len(frames) + 1))  # seq 单调无跳号
+    # 无流路径零破坏的对照组由 `test_resume_frames_are_skipped_without_stream` 覆盖。

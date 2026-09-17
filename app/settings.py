@@ -631,6 +631,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- P2c-2 内容级回传（有界摘录）：执行输出文本摘录上限（字节）----
+    # `0` = 关闭回传（**不读容器日志**）；上限只影响回传，不影响执行结果（流是视图）。
+    output_excerpt_max_bytes: int = Field(
+        default=16384,
+        ge=0,
+        le=262144,
+        validation_alias=AliasChoices(
+            "OUTPUT_EXCERPT_MAX_BYTES", "WORKBENCH_OUTPUT_EXCERPT_MAX_BYTES"
+        ),
+    )
+
     # ---- 段二（dsh 接入段）新增配置：共 25 项（= 规格 §4 清单 24 项 + 网关侧 `mint_secret`）----
     # 口径见 docs/superpowers/specs/2026-09-12-dsh-integration-design.md §4；
     # 门禁 §B15 要求「实现前必须全部进 app/settings.py + `.env.staging.example` + 守护测试」。

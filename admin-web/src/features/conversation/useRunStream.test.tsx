@@ -1,7 +1,10 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useRunStream } from './useRunStream'
 
-function sseResponse(chunks: string[], options: { keepOpen?: boolean } = {}): Response {
+function sseResponse(
+  chunks: string[],
+  options: { keepOpen?: boolean; runId?: string | null } = {},
+): Response {
   const encoder = new TextEncoder()
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -9,7 +12,9 @@ function sseResponse(chunks: string[], options: { keepOpen?: boolean } = {}): Re
       if (!options.keepOpen) controller.close()
     },
   })
-  return { ok: true, status: 200, body } as unknown as Response
+  // 缺省带 `X-Stream-Run-Id`（模拟「该会话已有 run」）；`runId: null` 表示服务端无 run（P2c-2 只增头）。
+  const headers = new Headers(options.runId === null ? {} : { 'X-Stream-Run-Id': options.runId ?? 'run-1' })
+  return { ok: true, status: 200, body, headers } as unknown as Response
 }
 
 const frame = (seq: number, kind: string, isTerminal = false) =>
@@ -61,6 +66,99 @@ describe('useRunStream', () => {
     await waitFor(() => expect(result.current.status).toBe('error'))
     expect(result.current.error?.status).toBe(401)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('历史会话：run id 取自读端响应头 X-Stream-Run-Id（只增；供概览与审批使用）', async () => {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(frame(1, 'run.completed', true)))
+        controller.close()
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body,
+      headers: new Headers({ 'X-Stream-Run-Id': 'run-history' }),
+    }) as unknown as Response))
+
+    const { result } = renderHook(() => useRunStream({ conversationId: 'conv-1', enabled: true }))
+
+    await waitFor(() => expect(result.current.runId).toBe('run-history'))
+    expect(result.current.status).toBe('closed')
+  })
+
+  it('连接建立时无 run、帧内 run_id 出现（只增）⇒ 之后解析出当前 run', async () => {
+    const lateRun = `id: 1\nevent: tool.call\ndata: ${JSON.stringify({ run_id: 'run-late', seq: 1, kind: 'tool.call', payload: {}, is_terminal: true })}\n\n`
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse([lateRun])))
+
+    const { result } = renderHook(() => useRunStream({ conversationId: 'conv-1', enabled: true }))
+
+    await waitFor(() => expect(result.current.runId).toBe('run-late'))
+  })
+
+  it('显式 runId 优先于响应头（本次发送的 run 不被覆盖）', async () => {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(frame(1, 'run.completed', true)))
+        controller.close()
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body,
+      headers: new Headers({ 'X-Stream-Run-Id': 'run-from-header' }),
+    }) as unknown as Response))
+
+    const { result } = renderHook(() =>
+      useRunStream({ conversationId: 'conv-1', runId: 'run-explicit', enabled: true }),
+    )
+
+    await waitFor(() => expect(result.current.status).toBe('closed'))
+    expect(result.current.runId).toBe('run-explicit')
+  })
+
+  it('连接建立时无 run（无响应头）⇒ 关流并如实告知「无可用过程数据」（不空等）', async () => {
+    const body = new ReadableStream<Uint8Array>({ start() { /* 挂起：不发帧也不关闭 */ } })
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body,
+      headers: new Headers(),
+    }) as unknown as Response))
+
+    const { result } = renderHook(() => useRunStream({ conversationId: 'conv-1', enabled: true }))
+
+    await waitFor(() => expect(result.current.status).toBe('closed'))
+    expect(result.current.noData).toBe(true)
+  })
+
+  it('发送进行中（awaitRun）⇒ 缺 run 不关流，继续等新 run 出现（边执行边看）', async () => {
+    const lateRun = `id: 1\nevent: tool.call\ndata: ${JSON.stringify({ run_id: 'run-live', seq: 1, kind: 'tool.call', payload: {}, is_terminal: true })}\n\n`
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        setTimeout(() => {
+          controller.enqueue(encoder.encode(lateRun))
+          controller.close()
+        }, 20)
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body,
+      headers: new Headers(),
+    }) as unknown as Response))
+
+    const { result } = renderHook(() =>
+      useRunStream({ conversationId: 'conv-1', enabled: true, awaitRun: true }),
+    )
+
+    await waitFor(() => expect(result.current.runId).toBe('run-live'))
   })
 
   it('aborts the connection when the view is left (切走即断)', async () => {

@@ -1373,6 +1373,38 @@ button, select, input, textarea { font: inherit }
 .process-row__field dt { margin: 0; min-width: 56px; color: var(--fg-muted) }
 .process-row__field dd { margin: 0; color: var(--fg-secondary); overflow-wrap: anywhere }
 
+/* P2c-2：终端输出 / 文件改动（内容级回传的**有界摘录**；等宽字体 + 区域滚动） */
+.terminal-output,
+.file-change__diff {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--bg-inset);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-secondary);
+}
+.file-changes { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px }
+.file-change {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--bg-card);
+}
+.file-change__line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px }
+.file-change__path { font-weight: 600; overflow-wrap: anywhere }
+.file-change__kind,
+.file-change__bytes { font-size: 11px; color: var(--fg-muted) }
+.file-change__diff { max-height: 180px }
+
 .conversation-approvals { display: grid; gap: 10px; padding: 0 20px 16px }
 .approval-card {
   display: grid;

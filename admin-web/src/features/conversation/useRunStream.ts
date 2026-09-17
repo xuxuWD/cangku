@@ -11,9 +11,11 @@ export interface RunStream {
   error: ConversationErrorShape | null
   /** 连续多轮重连都没有任何新帧（且未终态）⇒ 无可用过程数据（不无限挂长连接）。 */
   noData: boolean
+  /** 当前流所属运行号（P2c-2）：显式 `runId` 优先，否则取响应头 `X-Stream-Run-Id` / 帧内 `run_id`。 */
+  runId: string | null
 }
 
-const EMPTY: RunStream = { status: 'idle', frames: [], lastSeq: 0, error: null, noData: false }
+const EMPTY: RunStream = { status: 'idle', frames: [], lastSeq: 0, error: null, noData: false, runId: null }
 
 /** 帧入 state 的合批窗口（§2.13：流状态与主状态隔离 + ≤100ms 合批）。 */
 const FLUSH_INTERVAL_MS = 100
@@ -30,6 +32,8 @@ export interface UseRunStreamOptions {
   enabled: boolean
   /** 变化即重连（发送新消息时递增，用于重新发现新 run）。 */
   restartToken?: number
+  /** 本次连接是否在**等一个即将出现的 run**（发送进行中）：`true` 时缺 run 不关流，继续等（边执行边看）。 */
+  awaitRun?: boolean
   /** 收到终态帧（或服务端以终态关流）时回调一次。 */
   onTerminal?: () => void
 }
@@ -39,8 +43,10 @@ export interface UseRunStreamOptions {
  * 断线指数退避重连并携带 `Last-Event-ID` 真增量续播；终态关流；`401/403/404/422` 不重连。
  */
 export function useRunStream(options: UseRunStreamOptions): RunStream {
-  const { conversationId, runId, enabled, restartToken = 0, onTerminal } = options
+  const { conversationId, runId, enabled, restartToken = 0, awaitRun = false, onTerminal } = options
   const [state, setState] = useState<RunStream>(EMPTY)
+  // 运行号解析（P2c-2）：显式 `runId` 优先；否则从响应头 / 帧内 `run_id` 发现（历史会话据此加载概览与审批）。
+  const [resolvedRunId, setResolvedRunId] = useState<string | null>(null)
 
   const onTerminalRef = useRef(onTerminal)
   onTerminalRef.current = onTerminal
@@ -49,6 +55,7 @@ export function useRunStream(options: UseRunStreamOptions): RunStream {
     const active = Boolean(conversationId) && enabled
     if (!active) {
       setState(EMPTY)
+      setResolvedRunId(null)
       return
     }
 
@@ -59,6 +66,18 @@ export function useRunStream(options: UseRunStreamOptions): RunStream {
     let lastSeq = 0
     let terminal = false
     let flushTimer: ReturnType<typeof setTimeout> | null = null
+    let discoveredRunId: string | null = runId ?? null
+    const noteRunId = (value: string | null | undefined) => {
+      if (runId) return // 显式 run（本次发送）优先：不被响应头 / 帧内 `run_id` 覆盖
+      const next = value ?? null
+      if (!next || next === discoveredRunId) return
+      discoveredRunId = next
+      if (!cancelled) setResolvedRunId(next)
+    }
+    // 新连接即重置为「显式 runId 或未知」（会话切换 / 新一轮发送后不残留上一个 run）。
+    setResolvedRunId(runId ?? null)
+    // 发送进行中（`awaitRun`）⇒ 缺 run 时继续等（边执行边看）；否则缺 run 即关流如实告知。
+    const waitingForRun = Boolean(awaitRun)
 
     const flush = () => {
       flushTimer = null
@@ -75,7 +94,7 @@ export function useRunStream(options: UseRunStreamOptions): RunStream {
       if (flushTimer === null) flushTimer = setTimeout(flush, FLUSH_INTERVAL_MS)
     }
 
-    setState({ status: 'connecting', frames: [], lastSeq: 0, error: null, noData: false })
+    setState({ ...EMPTY, status: 'connecting' })
 
     const wait = (ms: number) =>
       new Promise<void>((resolve) => {
@@ -98,6 +117,7 @@ export function useRunStream(options: UseRunStreamOptions): RunStream {
         const parser = createFrameParser((frame) => {
           framesThisAttempt += 1
           lastSeq = Math.max(lastSeq, frame.seq)
+          noteRunId(frame.run_id) // P2c-2：帧内 `run_id`（只增）——覆盖「连接建立时无 run、稍后出现」
           queue.push(frame)
           if (frame.is_terminal) terminal = true
           scheduleFlush(frame.is_terminal)
@@ -117,6 +137,16 @@ export function useRunStream(options: UseRunStreamOptions): RunStream {
             if (mapped.retryable) retryable = true
             else fatal = mapped
           } else {
+            // P2c-2：读端响应头 `X-Stream-Run-Id`（连接建立时已解析到 run 才出现）——
+            // 历史会话（未发生本次发送）据此拿到 run，进而加载运行概览与审批。
+            const headerRunId = response.headers?.get?.('X-Stream-Run-Id') ?? null
+            noteRunId(headerRunId)
+            if (!discoveredRunId && !waitingForRun) {
+              // 连接建立时服务端**没有 run**（无响应头）且本次并非「发送进行中」⇒ 没有可回放的过程数据：
+              // 关流并如实告知，**不挂无限长连接空等**一个可能永远不出现的 run（发送 / 决议会重开读端）。
+              setState((old) => ({ ...old, status: 'closed', frames: [...frames], lastSeq, noData: true }))
+              return
+            }
             setState((old) => (old.status === 'streaming' ? old : { ...old, status: 'streaming' }))
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
@@ -175,5 +205,5 @@ export function useRunStream(options: UseRunStreamOptions): RunStream {
     }
   }, [conversationId, runId, enabled, restartToken])
 
-  return state
+  return { ...state, runId: resolvedRunId }
 }

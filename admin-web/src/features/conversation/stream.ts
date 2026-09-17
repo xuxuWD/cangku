@@ -16,7 +16,7 @@ export function frameFromData(data: string, fallbackKind?: string): StreamFrame 
     return null
   }
   if (typeof parsed !== 'object' || parsed === null) return null
-  const candidate = parsed as { seq?: unknown; kind?: unknown; payload?: unknown; is_terminal?: unknown }
+  const candidate = parsed as { seq?: unknown; kind?: unknown; payload?: unknown; is_terminal?: unknown; run_id?: unknown }
   const seq = typeof candidate.seq === 'number' ? candidate.seq : Number(candidate.seq)
   if (!Number.isFinite(seq)) return null
   const kind = typeof candidate.kind === 'string' && candidate.kind ? candidate.kind : (fallbackKind ?? '')
@@ -24,7 +24,14 @@ export function frameFromData(data: string, fallbackKind?: string): StreamFrame 
     typeof candidate.payload === 'object' && candidate.payload !== null
       ? (candidate.payload as Record<string, unknown>)
       : {}
-  return { seq: Math.trunc(seq), kind, payload, is_terminal: candidate.is_terminal === true }
+  const runId = typeof candidate.run_id === 'string' && candidate.run_id ? candidate.run_id : undefined
+  return {
+    seq: Math.trunc(seq),
+    kind,
+    payload,
+    is_terminal: candidate.is_terminal === true,
+    ...(runId ? { run_id: runId } : {}),
+  }
 }
 
 export interface FrameParser {

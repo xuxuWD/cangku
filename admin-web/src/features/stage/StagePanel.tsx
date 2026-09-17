@@ -4,6 +4,7 @@ import { finishReasonLabel, runStatusLabel } from '../runDetail/types'
 import { formatLocalTime } from '../../utils/time'
 import { ApprovalCard } from './ApprovalCard'
 import { ProcessTimeline } from './ProcessTimeline'
+import { FileDiffPanel, TerminalOutputPanel } from './ToolOutputPanels'
 import type { RunApprovalsState } from './useRunApprovals'
 import type { RunOverviewState } from './useRunOverview'
 
@@ -37,16 +38,17 @@ function WrapUpCheck({ metrics, approvals }: { metrics: NonNullable<RunOverviewS
             <span className="run-detail__value">{finishReasonLabel(metrics.finish_reason)}</span>
           </div>
         </div>
-        <p className="stage-hint">只做展示，不改变运行状态（自动判分属 P6，不在本期）。</p>
+        <p className="stage-hint">只做展示，不改变运行状态（结构判定与一键重做在 P2c-4 提供）。</p>
       </div>
     </section>
   )
 }
 
 /**
- * 右侧舞台（P2c-1 §2.2）：运行概览 / 收尾检查 / 过程时间线 / 审批。
- * 纯展示组件——数据由页面的 `useRunOverview` / `useRunApprovals` / `useRunStream` 提供（单一来源）。
- * 纪律：无数据即空态，**不摆假面板**；终端输出 / 文件 diff / 产物面板按批次（P2c-2/3）再出现。
+ * 右侧舞台（P2c-1 §2.2；P2c-2 增终端输出 / 文件改动）：运行概览 / 收尾检查 / 过程时间线 /
+ * 终端输出 / 文件改动 / 审批。纯展示组件——数据由页面的
+ * `useRunOverview` / `useRunApprovals` / `useRunStream` 提供（单一来源）。
+ * 纪律：无数据即空态，**不摆假面板**（终端 / diff 面板由帧数据驱动，无数据即不渲染）。
  */
 export function StagePanel({
   runId,
@@ -144,6 +146,9 @@ export function StagePanel({
         </div>
         <ProcessTimeline frames={stream.frames} status={stream.status} error={stream.error} noData={stream.noData} />
       </section>
+
+      <TerminalOutputPanel frames={stream.frames} />
+      <FileDiffPanel frames={stream.frames} />
 
       <section className="history-panel stage-panel" aria-label="审批">
         <div className="panel-header">

@@ -18,6 +18,13 @@ describe('frameFromData', () => {
     const frame = frameFromData('{"seq":1,"payload":{},"is_terminal":false}', 'run.completed')
     expect(frame?.kind).toBe('run.completed')
   })
+
+  it('parses the additive run_id field (absent when the server omits it)', () => {
+    const withRun = frameFromData('{"run_id":"run-1","seq":3,"kind":"tool.call","payload":{},"is_terminal":false}')
+    expect(withRun?.run_id).toBe('run-1')
+    const without = frameFromData('{"seq":3,"kind":"tool.call","payload":{},"is_terminal":false}')
+    expect(without && 'run_id' in without).toBe(false)
+  })
 })
 
 function collect(): { frames: StreamFrame[]; feed: (chunk: string) => void; discarded: string[] } {

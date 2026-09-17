@@ -7,6 +7,7 @@ import pytest
 from app.audit.models import AuditAction, build_record
 from app.conversation.stream import (
     MESSAGE_ASSISTANT_KIND,
+    REASON_BYTE_LIMIT,
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_UNAVAILABLE,
@@ -18,6 +19,7 @@ from app.conversation.stream_writer import StreamWriter
 TENANT = "t-stream"
 CONVERSATION = "conv-1"
 RUN = "run-1"
+TOOL_RESULT_KIND = "tool.result"
 
 
 class RecordingAudit:
@@ -85,6 +87,26 @@ def test_byte_limit_breaker_reason() -> None:
     writer.write(TENANT, CONVERSATION, RUN, kind=MESSAGE_ASSISTANT_KIND, payload={"pad": "x" * 64})  # 第一帧即超限
     records = [record for record in audit.records if record.action is AuditAction.CONVERSATION_STREAM_UNAVAILABLE]
     assert records and records[0].detail["reason"] in {"byte_limit", "frame_limit"}
+
+
+def test_byte_limit_applies_to_bounded_output_excerpt() -> None:
+    """P2c-2 §2.6⑤：**有界摘录同样受帧字节熔断约束**（大输出 ⇒ 告知帧 + 审计，不静默丢帧）。"""
+    writer, store, audit = _writer(max_bytes=256)
+    assert (
+        writer.write(
+            TENANT,
+            CONVERSATION,
+            RUN,
+            kind=TOOL_RESULT_KIND,
+            payload={"output_excerpt": "x" * 1024, "output_truncated": True, "output_bytes": 1024},
+        )
+        is None
+    )
+    frames = store.list_frames(TENANT, CONVERSATION, RUN)
+    assert [frame.kind for frame in frames] == [UNAVAILABLE_KIND]  # 显式告知帧（终态）
+    assert frames[0].is_terminal is True
+    records = [record for record in audit.records if record.action is AuditAction.CONVERSATION_STREAM_UNAVAILABLE]
+    assert records and records[0].detail["reason"] == REASON_BYTE_LIMIT
 
 
 def test_write_failure_does_not_propagate() -> None:
