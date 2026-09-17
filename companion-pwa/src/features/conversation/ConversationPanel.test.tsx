@@ -288,4 +288,38 @@ describe('ConversationPanel', () => {
     const streamCallsAfter = fetchMock.mock.calls.filter(([input]) => String(input).includes('/conversations/conv-1/stream')).length
     expect(streamCallsAfter).toBe(streamCallsBefore)
   })
+
+  it('协作会话：他人消息不得显示成「我」（P2c-6，按 sender_id 回溯发言者）', async () => {
+    const sharedDetail: ConversationDetail = {
+      ...filledDetail,
+      messages: [
+        { ...filledDetail.messages[0]!, message_id: 'msg-me', content: '我发的', sender_id: 'user-1' },
+        { ...filledDetail.messages[0]!, message_id: 'msg-other', content: '别人发的', sender_id: 'user-2' },
+        { ...filledDetail.messages[0]!, message_id: 'msg-legacy', content: '存量消息', sender_id: null },
+        filledDetail.messages[1]!,
+      ],
+      messages_total: 4,
+    }
+    const fetchMock = vi.fn<FetchMock>(async (input) => {
+      const url = String(input)
+      if (url.includes('/stream')) return sse([], { runId: null })
+      if (url.includes('/conversations/conv-1?')) return ok(sharedDetail)
+      if (url.includes('/conversations?')) return ok(listBody)
+      return ok({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+
+    render(<ConversationPanel />)
+
+    await user.click(await screen.findByRole('button', { name: /示例会话/ }))
+
+    const mine = await screen.findByText('我发的')
+    expect(within(mine.closest('article') as HTMLElement).getByText('我')).toBeInTheDocument()
+    const other = screen.getByText('别人发的')
+    expect(within(other.closest('article') as HTMLElement).getByText('成员')).toBeInTheDocument()
+    // 存量行（`sender_id=NULL`）⇒ 展示回退为「发起人」，不冒充当前用户。
+    const legacy = screen.getByText('存量消息')
+    expect(within(legacy.closest('article') as HTMLElement).getByText('发起人')).toBeInTheDocument()
+  })
 })

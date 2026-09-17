@@ -35,6 +35,8 @@ export interface ConversationMessage {
   tool_name: string | null
   tool_call_id: string | null
   created_at: string | null
+  /** P2c-6 只增字段：发言账号 id；助手 / 工具 / 系统恒 `null`，存量行 `null` ⇒ 展示回退「发起人」。 */
+  sender_id?: string | null
 }
 
 export interface ConversationDetail extends Conversation {
@@ -79,6 +81,12 @@ export interface ConversationState {
   streamNotice: string | null
   archiving: boolean
   toast: string | null
+  // P2c-6 会话协作：参与者名单（发言人回溯与分享区块共用同一份数据；不猜、不本地造名单）。
+  participants: ConversationMember[]
+  participantsLoading: boolean
+  participantsError: ConversationErrorShape | null
+  sharing: boolean
+  shareError: ConversationErrorShape | null
 }
 
 // 分页口径与服务端一致：limit 1–200、offset ≥ 0，响应回报命中总数。
@@ -212,3 +220,70 @@ export interface ConversationDeletionResult {
 // 与服务端一致：每页 500 会话；客户端最多合并 100 页（= 服务端 5 万条上限口径）。
 export const EXPORT_PAGE_SIZE = 500
 export const EXPORT_MAX_PAGES = 100
+
+// ---------------------------------------------------------------- P2c-6 会话协作（分享与多端协同）
+
+/** 成员授权档（与后端受控枚举逐字一致：`read` / `write`）。 */
+export type MemberPermission = 'read' | 'write'
+
+/**
+ * 参与者条目（`GET .../members` 的 `items[]`）：发起人列首位（`permission="owner"` / `is_owner`）。
+ * `display_name` / `role` 由服务端按账号解析（账号缺失 ⇒ 回退 `member_id` / `null`，不编造）。
+ */
+export interface ConversationMember {
+  member_id: string
+  display_name: string
+  role: string | null
+  permission: MemberPermission | 'owner'
+  is_owner: boolean
+  added_by: string | null
+  created_at: string | null
+}
+
+export interface ConversationMemberList {
+  items: ConversationMember[]
+  total: number
+}
+
+export interface ConversationMemberGrant {
+  conversation_id: string
+  member_id: string
+  permission: MemberPermission
+}
+
+export const MEMBER_PERMISSION_LABELS: Record<string, string> = {
+  owner: '发起人',
+  read: '仅查看',
+  write: '可发言',
+}
+
+export function memberPermissionLabel(permission: string): string {
+  return MEMBER_PERMISSION_LABELS[permission] ?? permission
+}
+
+/** 当前登录账号 id（与 `api.ts` 的请求头同源：`VITE_USER_ID`，缺省 `admin`）。 */
+export const CURRENT_USER_ID = import.meta.env.VITE_USER_ID || 'admin'
+
+/**
+ * 消息气泡的发言者标签：**按 `sender_id` 回溯**，查不到就如实回落，绝不冒充当前用户。
+ *
+ *  * 非 `user` 消息（助手 / 工具 / 系统）仍按角色显示；
+ *  * `sender_id == 我` ⇒「我」；命中参与者名单 ⇒ 其 `display_name`；
+ *  * `sender_id` 为空（**存量行 `NULL`**）⇒「发起人」（零破坏的回退口径）；
+ *  * 有 `sender_id` 但不在本页名单内（如已被撤销）⇒「会话成员」（不编造姓名）。
+ */
+export function speakerLabel(message: ConversationMessage, participants: ConversationMember[]): string {
+  if (message.role !== 'user') return roleLabel(message.role)
+  const sender = message.sender_id ?? null
+  if (!sender) return '发起人'
+  if (sender === CURRENT_USER_ID) return '我'
+  const hit = participants.find((item) => item.member_id === sender)
+  const name = hit?.display_name?.trim()
+  if (name) return name
+  return '会话成员'
+}
+
+/** 当前用户是否为该会话发起人（用于决定是否展示分享管理控件；成员只读）。 */
+export function isConversationOwner(participants: ConversationMember[]): boolean {
+  return participants.some((item) => item.is_owner && item.member_id === CURRENT_USER_ID)
+}

@@ -5,7 +5,10 @@ import type {
   ConversationDetail,
   ConversationExportPage,
   ConversationList,
+  ConversationMemberGrant,
+  ConversationMemberList,
   ConversationMode,
+  MemberPermission,
   MessageCreateResponse,
   RunAcceptance,
 } from './types'
@@ -187,4 +190,42 @@ export async function exportMyConversations(): Promise<ConversationExportBundle>
 /** 运行结构判定（纯读；服务端不调模型、不改运行状态）。 */
 export function getRunAcceptance(runId: string): Promise<RunAcceptance> {
   return request<RunAcceptance>(`/runs/${encodeURIComponent(runId)}/acceptance`)
+}
+
+// ---------------------------------------------------------------- P2c-6 会话协作（分享与多端协同）
+
+/** 参与者名单（本人或成员可见；他人 / 跨租户 404）。 */
+export function listConversationMembers(conversationId: string): Promise<ConversationMemberList> {
+  return request<ConversationMemberList>(`/conversations/${encodeURIComponent(conversationId)}/members`)
+}
+
+/** 添加 / 覆盖成员（仅会话本人）：非法成员 / 非法权限档 422、归档 409、非本人 404。 */
+export function addConversationMember(
+  conversationId: string,
+  memberId: string,
+  permission: MemberPermission,
+): Promise<ConversationMemberGrant> {
+  return request<ConversationMemberGrant>(`/conversations/${encodeURIComponent(conversationId)}/members`, {
+    method: 'POST',
+    // 与后端受控枚举逐字一致（只发这两个键，未知字段会被 422 拒绝）。
+    body: JSON.stringify({ member_id: memberId, permission }),
+  })
+}
+
+/**
+ * 撤销成员（仅会话本人）：成功 `204` **无响应体**；复删 / 目标不是成员同样 `204`（幂等）。
+ * **已读内容不可撤回**——这里不做「收回」语义，撤销只影响对方**新**的读取 / 发言请求。
+ */
+export async function removeConversationMember(conversationId: string, memberId: string): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(
+      `${apiBase}/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(memberId)}`,
+      { method: 'DELETE', headers: headers() },
+    )
+  } catch {
+    throw conversationErrorFromStatus(0)
+  }
+  if (!response.ok) throw conversationErrorFromStatus(response.status, await detailFrom(response))
+  // 204 无响应体：刻意不解析 JSON（解析会抛错，把成功当失败）。
 }

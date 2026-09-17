@@ -67,6 +67,11 @@
 > **走查（PWA 浏览器，2 轮）**：首轮暴露「给他人会话发送 ⇒ 404」——经查为**后端既有设计**（`ensure_can_modify` 仅本人）+ 走查数据属主构造不当（**非缺陷**；改用本人会话复走）。**第二轮全通过**：登录态复用 → 待办 / 对话标签切换 → 列表（中文正常）→ 进入详情（共 2 条：用户脱敏摘要 + 桩回复）→ **纯文本发送**（`POST /messages` **不带**幂等键；共 4 条、输入框清空、无错误条）→ **结构化发送**（提示文案「结构化调用：fs.read（按真实执行路径发送）」；共 6 条；**如期出现「本次没有过程流」如实告知**）→ 返回列表；控制台唯一红字为主动 `abort` 读端的 `net::ERR_ABORTED`（「切走即断」的设计行为，与返回动作对应）。**接口层交叉核对**：`messages_total=6`，用户消息为 `[消息·脱敏]` / `[工具调用·脱敏 tool_key=fs.read params=[path]]` 摘要、助手为桩回复，与界面一致。
 > **未验证（登记，见 §6）**：真实帧流在 PWA 的端到端（本机 dev 未装配真实执行 ⇒ 无运行、无帧）；真机安装性与移动端手势（承接既有 PWA 未验收项）；反代 CSP 覆盖 `file://` 场景与跨源边界（staging 核对项）。
 > **CI 销账（2026-09-17）**：提交 `373faab` 推送后（`2678843..373faab main -> main`）run **`35240139247` ⇒ 六 job 全绿**（后端 pytest + compileall、后端真库（Postgres service + `*_postgres.py`）、**沙箱加固与真容器回归**、网页管理台 vitest + build、**手机伴侣端 vitest + build**、桌面端 node --test）。
+>
+> **交付记录（P2c-6，2026-09-17 本机）**：① **契约与规格先行**——契约新增「会话协作：分享与多端协同（P2c-6 · 2026-09-17）」整节（三条成员端点 + `sender_id` 只增 + 可见性口径「本人 ∪ 成员」/ 发言「本人 ∪ `write` 成员」+ **实现期裁定 ①–④**：归档加/撤成员 `409`、`GET .../members` 含发起人且列首位、最近活动 = 会话 `updated_at`、`read` 成员发言 `403` 而非 `404`）；P1 章节 656 / 662 / 663 行加 P2c-6 回改留痕（读路径扩为「本人 ∪ 成员」、发言扩为「本人 ∪ `write` 成员」、`read` 成员 403 属**刻意例外**）；规格 §2.16 补「P2c-6 开工落定 = 迁移实号 `039_conversation_members`」与**实现期裁定 ①–⑤**（⑤ = 运行级读路径 `/runs/{id}/metrics`、`/events`、`/acceptance`、`/artifacts`、`/approvals` 对成员可见；**控制类 pause / resume / cancel / 决议不放松**）；§1.4 迁移行落定 `039`。② **后端**：迁移 `039_conversation_members`（成员表 `PK(tenant_id, conversation_id, member_id)` + `permission` 表级 CHECK 两档 + 复合外键 `ON DELETE CASCADE` + `(tenant_id, member_id)` 索引；`workbench_conversation_messages` 增 `sender_id` 可空列）；新增 `app/conversation/members.py`（`ConversationMember` + Protocol + 内存 / PG 实现 + `build_conversation_member_store`）；`models` 增授权档常量与 `ensure_can_speak`、`ensure_can_view(**membership=)`；两个对话仓储接入成员判定（`membership_for` / 列表 SQL 子查询 / 发言）与 `sender_id` 落库；`ConversationService` 注入 `members` / `accounts` 并新增 `add_member`（幂等：同档不重复写审计）/ `remove_member`（复删 `204` 幂等）/ `list_participants`（发起人列首位；账号缺失回退 `member_id` / `None`，**不编造**）；执行入口在**幂等查表之前**判写权限（`read` 成员 `403` 且零落库）；3 个新端点 + 2 个审计动作码（`conversation.member.added` / `.removed`）与 3 个明细键；`RuntimeService.adapter_for_task(*, member_reader=)` + 装配期注入的成员可见性回调 `_member_can_read_run`（**只放松读路径**，fail-closed）⇒ 5 个运行级读端点接入，**控制类不放松**。③ **前端**：`admin-web` 新增 `speakerLabel`（按 `sender_id` 回溯：我 / 名单命中姓名 / `NULL` ⇒「发起人」/ 查不到 ⇒「会话成员」，**不编造**）+ `ParticipantPanel`（舞台「参与者与分享」：名单 + 最近活动（会话 `updated_at`，**非实时在线态**）+ 发起人限定增删控件 + 「已读内容不可撤回」如实告知）+ 3 个 API 函数（删除走 `204` 无响应体路径）；`companion-pwa` 消息头改用 `speakerLabel`（他人消息**不得**显示成「我」）。
+> **验证**：后端 **2417 passed**（新增 22 条：`tests/test_conversation_members_api.py` 16 条 + 真库 `tests/test_conversation_members_postgres.py` 6 条）+ `py -m compileall -q app tests` exit 0；**迁移 `039` 从干净态重放**（本机测试库 drop 表 + 删登记行 → `apply_migrations` 重新应用）并与相邻真库模块（`test_conversation_lifecycle_postgres.py` / `test_conversation_stream_postgres.py` / `test_dsh_execution_postgres.py`）**同批 46 passed**；前端 `admin-web` **266 passed（37 文件）** + `tsc -b && vite build` 通过；`companion-pwa` **57 passed（10 文件）** + build 通过；`desktop` **19 passed**；同步 `ci.yml`（postgres job 清单 + 注释）/ `tests/test_ci_assets.py`（补钉）/ `.env.staging.example`（迁移清单 `039`）/ `tests/test_audit_models.py`（动作码 88 → **90**）/ 前端审计标签守护（`auditLog/types.ts` 补两动作）。**反假⑥ 已实测变红（已复原）**：把后端 `ensure_can_speak` 置为放行（＝成员判定只写前端）⇒ P2c-6 用例 ③ 红（`read` 成员发言返回 `201` 而非 `403`）。
+> **浏览器走查（两段，1 轮）**：**Part A 管理台（发起人视角）**——新建会话 → 舞台「参与者」区块（`最近活动：` + 非实时快照告知）→ 按账号 ID 添加成员（`acct-db1b22a75558`，权限「仅查看（read）」）⇒ toast「已添加成员 …（权限：仅查看）」+ 名单出现「协作成员甲 · 仅查看」+ 「已读内容不可撤回」提示在位 → 发送消息 ⇒ 自己的气泡头显示「**我**」（全文无「发起人」/「会话成员」误标，另一条为「数字员工 · 桩回复」）。**Part B 手机伴侣端（被分享成员视角，`13900000008` 登录）**——共享会话出现在其列表并可打开 → 发起人的消息气泡显示「**成员**」（**不得**显示成「我」）→ 该 `read` 成员发送消息 ⇒ 界面原样显示服务端受控文案「**当前身份对该会话只有查看权限，不能发言**」，消息数不变。**接口层交叉取证**：同一成员令牌 `GET /conversations` `200`（列表含共享会话）、`GET .../members` `200`（`admin` / `owner` / `admin` 与 `acct-…` / `read` / `协作成员甲`）、`POST .../messages` ⇒ **`403`** 且 `detail` 与界面文案逐字一致。
+> **未验证（登记，见 §6）**：成员并发发言 / 并发执行的资源画像未压测（承接 §6-11）；`sender_id` **存量 `NULL`** 的展示回退只有组件级取证（本机 dev 为内存库、会话全新建 ⇒ 无存量行）；撤销成员后「成员端已打开页面」的下一次读取错误呈现未在浏览器取证（接口层 `404` 已覆盖）；≥1281px 宽视口三列常驻仍未实测（承接既有同项）；`/events` 对非成员沿用 P2b 既有 `403`（其余四个运行级读端点 `404`）的**口径差异**如实登记。
 
 ***
 
@@ -127,7 +132,7 @@
 
 | 层            | 影响                                                                                                                    |
 | ------------ | --------------------------------------------------------------------------------------------------------------------- |
-| 迁移           | 实号开工取（按批切分；**2026-09-17 落定**）：② 产物登记表 = `037_run_artifacts`（P2c-3 已交付）；① 会话 `mode` 列（含 CHECK 默认 `craft`）+ ③ 会话 `deleted_at` 软删列（**无墓碑列**：消息走真删）= **`038_conversation_mode_and_soft_delete`**（P2c-4）；④ 会话成员表（`read` / `write`）+ ⑤ 消息 `sender_id` 列（可空，存量 `NULL` ⇒ 归属发起人）留 P2c-6 取 `039+` |
+| 迁移           | 实号开工取（按批切分；**2026-09-17 落定**）：② 产物登记表 = `037_run_artifacts`（P2c-3 已交付）；① 会话 `mode` 列（含 CHECK 默认 `craft`）+ ③ 会话 `deleted_at` 软删列（**无墓碑列**：消息走真删）= **`038_conversation_mode_and_soft_delete`**（P2c-4）；④ 会话成员表（`read` / `write`）+ ⑤ 消息 `sender_id` 列（可空，存量 `NULL` ⇒ 归属发起人）= **`039_conversation_members`**（P2c-6） |
 | 后端           | `app/conversation/*`（模式判定、**真删清理（引用图级联）**、导出、**成员与可见性判定**、**验收结构判定**）、`app/tool_execution/executor.py`（输出有界读取、`fs.*` 入口、变更记录）、`app/conversation/stream_writer.py`（payload 扩展）、resume 路径接帧、产物登记存储、两个只读候选端点、导出/删除端点、**成员端点** |
 | 契约           | `api-contract.md`：**修订** P2b 章节（帧 payload 扩展 + resume 写帧 + Q9 边界修订）、P1 章节（模式 / 导出 / **物理删除语义** / **成员与协作**）、工具执行章节（Y1 推翻 + 目录端点）、新增产物端点、**新增成员端点**；`P2b 规格` §1.3/§6 回改留痕           |
 | 前端 `admin-web` | `app/*`（分组、路由默认值）、`features/conversation/*`（三区 + 流 + 路由 + 审批卡 + 收尾检查与重做 + **分享 / 成员**）、新增 `features/stage/*`、`features/workforceSettings/*`（选择器）、样式                |
@@ -374,7 +379,8 @@
 
 ### 2.16 会话协作：分享与多端协同（事项 R / S · P2c-6 · 二次裁决新增）
 
-* **成员表**（迁移 `037+`）：`workbench_conversation_members`（`tenant_id` / `conversation_id` / `member_id` / `permission`（`read` / `write`）/ `added_by` / `created_at`；主键 `(tenant_id, conversation_id, member_id)`；复合外键引用会话表）；成员必须**同租户、已审批、非 `customer_admin`**（对话入口本就是 `403`）。
+* **成员表**（迁移 `037+`）：`workbench_conversation_members`（`tenant_id` / `conversation_id` / `member_id` / `permission`（`read` / `write`）/ `added_by` / `created_at`；主键 `(tenant_id, conversation_id, member_id)`；复合外键引用会话表）；成员必须**同租户、已审批、非 `customer_admin`**（对话入口本就是 `403`）。**P2c-6 开工落定**：实号 = **`039_conversation_members`**（含成员表 + 消息 `sender_id` 可空列；`permission` 表级 CHECK）。
+* **P2c-6 实现期裁定（2026-09-17，已写入契约「会话协作」节）**：① 归档会话加 / 撤成员 ⇒ `409`（与「改模式」同口径）；② `GET .../members` 的 `items` **含发起人**（`is_owner: true` / `permission: "owner"`，列首位、不可撤销）——参与者列表与消息发言者归属统一由此解析；③ 「最近活动时间」= 会话 `updated_at`（成员表**不**建活动时间列，不做在线态）；④ `read` 成员发言 ⇒ `403`（可读即不隐藏存在性），非成员且非本人仍 `404`；⑤ 运行级读路径（`/runs/{id}/metrics`、`/events`、`/acceptance`、`/artifacts`、`/approvals`）成员可见——经「运行 → 会话（幂等行反查）→ 成员判定」的**同一读可见性辅助**放行，**控制类动作（pause / resume / cancel / 决议）不放松**。
 * **可见性判定（唯一新增授权轴）**：会话列表 / 详情 / 消息 / 帧流 / 运行概览 / 审批的**读路径统一为「本人 ∪ 成员」**；`ceo` / `super_admin` 既有只读口径不变（**未被点名就不是成员**，不因角色自动可见他人会话）。
 * **端点**（仅会话本人可增删；成员可读列表；**复用既有 `current_user` / 归属判定 / 审计**）：
   * `POST /api/v1/conversations/{id}/members`（`permission` 缺省 `read`）——`201`；非本人 `404`（与「修改他人会话 `404`」一致）；成员不合法（跨租户 / 未审批 / `customer_admin`）`422`；重复添加幂等；
@@ -450,7 +456,7 @@
 
 ## 6. 未验证登记（如实）
 
-1. **P2c-1 / P2c-2 / P2c-3 / P2c-4 / P2c-5 已交付**（见 §0 交付记录）；**P2c-6（会话协作）尚未实现**（未验证）。
+1. **P2c-1 / P2c-2 / P2c-3 / P2c-4 / P2c-5 / P2c-6 已交付**（见 §0 交付记录）；**P2c 六批全部交付完毕**（收尾欠账见 §7 末行，由 feature-inventory §2 / §5 与 change-record 承接）。
 2. **反代下 SSE 缓冲**未实测（P2b §6-2 同项）；**长连接资源画像**未压测。
 3. **Electron（桌面端）下 `fetch` 流式读与 CSP：已实测取证**（P2c-5，`desktop/scripts/desktop-stream-check.cjs`）——Electron `44.3.0` / Chromium `152.0.7977.78` 下，**远程模式**（`http://localhost:5173/`）与**内置模式**（`file://` 加载 `desktop/web` 产物）**都实测到两段增量到达**（间隔 ≈300ms，非整体缓冲）；CSP 全链路为空（页面 meta / 导航响应头 / 本地 SSE / 后端列表与读端响应**均无 CSP**）⇒ 不存在 CSP 拦截。**新增登记**：① 生产若由反代加 CSP，需 `connect-src` 允许后端源（SSE 属 `connect-src` 范畴），**属 staging 核对项**；② 内置模式实测**可跨源读取后端响应**（`Origin: null`；同一后端用 `curl` 发 `Origin: null` 时预检被拒、无 CORS 头 ⇒ 说明 Electron 渲染层未对 `file://` 页面施加 CORS 限制）——部署侧的安全边界须在此基础上另行评估（**未擅自改动**）。
 4. **`container.logs()` 有界读取在超长输出下的行为**（内存 / 截断点）：**常规输出已由真容器用例覆盖**（P2c-3）；
@@ -462,7 +468,9 @@
 9. **一键重做的可用边界**：原始参数不落库（`redact_message_content` 只落摘要）⇒ **跨页 / 刷新后不可重建**（已定为产品口径，非缺陷）；「页面内持有原件」的前端判定与降级提示**已实现并组件级取证**（`unmet` + 无原件 ⇒ 降级提示；有原件 ⇒ 新幂等键重发），**真实运行数据下的端到端留 staging**。
 10. **物理删除的引用图**：静态核对（[013](file:///d:/徐徐AI学习/公司工作台/migrations/013_run_records.sql#L1) / [023](file:///d:/徐徐AI学习/公司工作台/migrations/023_conversational_agent.sql#L30-L45) / [027](file:///d:/徐徐AI学习/公司工作台/migrations/027_dsh_tool_execution.sql#L107-L133) / [036](file:///d:/徐徐AI学习/公司工作台/migrations/036_conversation_stream.sql#L17-L55)）**已在真库跑通**（P2c-4：`tests/test_conversation_lifecycle_postgres.py` ⇒ 删除 → 各表计数 → 复删幂等 → 保留项仍在）；**「幂等行引用消息行」的复合外键正是「先删幂等行」的实测依据**。
 11. **成员并发发言 / 并发执行**的资源画像未压测（P2c-6 开工前登记）。
-12. **消息 `sender_id` 存量为 `NULL` 的展示回退**未实测（P2c-6）。
+12. **消息 `sender_id` 存量为 `NULL` 的展示回退**：**已组件级取证**（P2c-6；`admin-web` 与 PWA 用例覆盖三档回退：`NULL` ⇒「发起人」/ 本人 ⇒「我」/ 其他 ⇒ 姓名或「成员」）；**真实存量行（迁移 `039` 之前写入的数据）在浏览器端未取证**——本机 dev 为内存库、会话全新建，不存在存量行（迁移只加可空列、不回填，故存量行读回 `None` 的行为由真库用例 `tests/test_conversation_members_postgres.py` 覆盖）。
+13. **运行级读端点的非成员口径差异**（P2c-6）：`/runs/{id}/events` 对「非发起人且非成员」沿用 P2b 既有的 **`403`**（「当前员工无权操作此运行」），其余四个读端点（`metrics` / `acceptance` / `artifacts` / `approvals`）为 **`404`**（不泄露存在性）；契约「会话协作」节只统一了**可见性轴**、未逐端点约定非成员的码值 ⇒ **如实登记，本批不改既有 `403` 语义**。
+14. **撤销成员后的「已打开页面」错误呈现**（P2c-6）：接口层已取证（撤销后新读 `404`），但**成员端已打开页面**在被撤销后下一次读取时的界面呈现（错误条文案与操作收口）未在浏览器取证。
 
 ***
 
@@ -475,5 +483,5 @@
 | **P2c-3** | ① `fs.*` 容器执行补完（先只读取证实现形态）→ ② 变更记录入帧 → ③ 产物登记表 + 端点 + 清理任务 → ④ 前端产物面板与 chip                                  | P2c-2 验收 |
 | **P2c-4** | ① 迁移（`mode` 列 / 会话 `deleted_at` 软删列）→ ② 模式判定与合成（发起 + 推进）→ ③ 候选端点 + 选择器 UI → ④ 导出 / **物理删除**端点与 UI（引用图级联 + 审计 + 复删幂等）→ ⑤ 收尾检查接产物与模式 + **结构判定「达标 / 未达标」与一键重做** | P2c-3 验收 |
 | **P2c-5** | ① PWA 对话面板 + 简化流 → ② 桌面端核对（流式读 / CSP）→ ③ 全量走查（**已交付**，见 §0）                                                             | P2c-4 验收 |
-| **P2c-6** | ① 迁移（成员表 + 消息 `sender_id`）→ ② 成员端点与可见性判定（读路径统一「本人 ∪ 成员」）→ ③ 成员发言与发件人呈现（执行按本人身份）→ ④ 参与者列表 + 分享 UI → ⑤ 全量走查 | P2c-5 验收 |
+| **P2c-6** | ① 迁移（成员表 + 消息 `sender_id`）→ ② 成员端点与可见性判定（读路径统一「本人 ∪ 成员」）→ ③ 成员发言与发件人呈现（执行按本人身份）→ ④ 参与者列表 + 分享 UI → ⑤ 全量走查（**已交付**，见 §0） | P2c-5 验收 |
 | **收尾**    | `feature-inventory`（§2 P2c 行 / §3 六要素 / §5 欠账）+ `change-record` + 契约回改核对 + 一键全量 + CI 6/6 全绿 + §0 回归记录；**交用户确认后推送**                    | 全部批次     |

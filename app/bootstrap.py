@@ -643,6 +643,7 @@ def build_runtime_service(
     run_metrics=None,
     tool_actions=None,
     usage_ledger=None,
+    member_run_reader=None,
 ):
     """从裸名配置装配 Runtime 服务；未配置任何地址时只保留 Mock。
 
@@ -676,6 +677,7 @@ def build_runtime_service(
         run_metrics=run_metrics,
         tool_actions=tool_actions,
         usage_ledger=usage_ledger,
+        member_run_reader=member_run_reader,
     )
 
 
@@ -974,16 +976,20 @@ def build_login_rate_limiter(settings: Settings, *, connection=None, migrate: bo
     )
 
 
-def build_conversation_store(settings: Settings, *, connection=None, migrate: bool = True):
+def build_conversation_store(settings: Settings, *, members=None, connection=None, migrate: bool = True):
     """按存储模式装配对话仓储（表 `workbench_conversations` /
-    `workbench_conversation_messages`，迁移 023）。"""
+    `workbench_conversation_messages`，迁移 023）。
+
+    `members`（P2c-6 成员表仓储，迁移 039）**可选注入**：注入后读路径 = 「本人 ∪ 成员」、
+    发言 = 「本人 ∪ `write` 成员」；未注入 ⇒ 行为与改造前完全一致（零破坏）。
+    """
     validate_runtime_settings(settings)
     from .conversation.store import InMemoryConversationStore, PostgresConversationStore
 
     if settings.storage_backend == "memory":
         if settings.env != "development":
             raise ValueError("生产环境禁止使用内存对话仓储")
-        return InMemoryConversationStore()
+        return InMemoryConversationStore(members=members)
     if settings.storage_backend == "postgres":
         if connection is None:
             from psycopg_pool import ConnectionPool
@@ -992,15 +998,50 @@ def build_conversation_store(settings: Settings, *, connection=None, migrate: bo
             connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
         if migrate:
             apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
-        return PostgresConversationStore(connection)
+        return PostgresConversationStore(connection, members=members)
     raise ValueError("不支持的对话存储类型")
 
 
-def build_conversation_service(settings: Settings, *, store, audit=None, stream_store=None, idempotency_store=None):
+def build_conversation_member_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """按存储模式装配会话**成员表**仓储（P2c-6，表 `workbench_conversation_members`，迁移 039）。
+
+    必须与 `build_conversation_store(members=...)` / `ConversationService(members=...)`
+    共用**同一实例**（否则列表过滤与服务层成员判定会各查各的）。
+    """
+    validate_runtime_settings(settings)
+    from .conversation.members import (
+        InMemoryConversationMemberStore,
+        PostgresConversationMemberStore,
+    )
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存会话成员仓储")
+        return InMemoryConversationMemberStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresConversationMemberStore(connection)
+    raise ValueError("不支持的会话成员存储类型")
+
+
+def build_conversation_service(
+    settings: Settings, *, store, audit=None, stream_store=None, idempotency_store=None,
+    members=None, accounts=None,
+):
     """装配对话服务（P1 使用确定性桩回复，不接真实模型，D7）。
 
     P2c-4 §2.11：物理删除需按序跨仓储清理（幂等行 → 帧 / 流状态 → 消息 + 会话软删），
     故把**流仓储**与**执行幂等仓储**注入服务；两者缺任一即删除路径 fail-closed 拒绝。
+
+    P2c-6 §2.16：会话协作（成员增删 / 参与者列表）注入**成员表**与**账号仓储**
+    （校验成员同租户 / 已审批 / 非 `customer_admin`，并解析 `display_name`）；
+    两者缺任一即分享路径 fail-closed 拒绝。
     """
     validate_runtime_settings(settings)
     from .conversation.service import ConversationService
@@ -1010,6 +1051,8 @@ def build_conversation_service(settings: Settings, *, store, audit=None, stream_
         audit=audit,
         stream_store=stream_store,
         idempotency_store=idempotency_store,
+        members=members,
+        accounts=accounts,
     )
 
 

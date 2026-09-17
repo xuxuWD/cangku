@@ -4,9 +4,19 @@
 P1 使用确定性桩回复，不接真实模型、不执行任何工具（D7）。
 """
 
+from .members import (
+    ConversationMember,
+    ConversationMemberStore,
+    InMemoryConversationMemberStore,
+    PostgresConversationMemberStore,
+)
 from .models import (
     CONVERSING_ROLES,
     DEFAULT_MODE,
+    PERMISSION_OWNER,
+    PERMISSION_READ,
+    PERMISSION_WRITE,
+    PERMISSIONS,
     VIEW_ANY_ROLES,
     Conversation,
     ConversationError,
@@ -20,8 +30,11 @@ from .models import (
     can_view_any,
     ensure_can_converse,
     ensure_can_modify,
+    ensure_can_speak,
     ensure_can_view,
+    normalize_member_id,
     normalize_mode,
+    normalize_permission,
 )
 from .service import STUB_REPLY_TEXT, ConversationService, build_stub_reply
 from .store import (
@@ -35,11 +48,17 @@ from .store import (
 __all__ = [
     "CONVERSING_ROLES",
     "DEFAULT_MODE",
+    "PERMISSION_OWNER",
+    "PERMISSION_READ",
+    "PERMISSION_WRITE",
+    "PERMISSIONS",
     "VIEW_ANY_ROLES",
     "Conversation",
     "ConversationDeletion",
     "ConversationError",
     "ConversationExportPage",
+    "ConversationMember",
+    "ConversationMemberStore",
     "ConversationMessage",
     "ConversationMode",
     "ConversationNotFound",
@@ -47,15 +66,20 @@ __all__ = [
     "ConversationStateConflict",
     "ConversationStatus",
     "ConversationStore",
+    "InMemoryConversationMemberStore",
     "InMemoryConversationStore",
     "InvalidConversation",
     "MessageRole",
+    "PostgresConversationMemberStore",
     "PostgresConversationStore",
     "STUB_REPLY_TEXT",
     "build_stub_reply",
     "can_view_any",
     "ensure_can_converse",
     "ensure_can_modify",
+    "ensure_can_speak",
     "ensure_can_view",
+    "normalize_member_id",
     "normalize_mode",
+    "normalize_permission",
 ]

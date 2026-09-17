@@ -98,7 +98,10 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.CONVERSATION_EXPORTED.value == "conversation.exported"
     assert AuditAction.CONVERSATION_DELETED.value == "conversation.deleted"
     assert AuditAction.CONVERSATION_EXECUTION_REJECTED.value == "conversation.execution.rejected"
-    assert len(set(AuditAction)) == 88
+    # P2c-6（2026-09-17）：两个动作码（会话成员添加 / 撤销）。
+    assert AuditAction.CONVERSATION_MEMBER_ADDED.value == "conversation.member.added"
+    assert AuditAction.CONVERSATION_MEMBER_REMOVED.value == "conversation.member.removed"
+    assert len(set(AuditAction)) == 90
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

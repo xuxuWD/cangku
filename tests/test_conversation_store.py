@@ -242,7 +242,8 @@ class RecordingConnection:
 CONVERSATION_ROW = (
     "t-1", "conv-1", "content-writer", "u-1", "咨询", "active", None, None, None, "craft", None,
 )
-MESSAGE_ROW = ("t-1", "msg-1", "conv-1", "user", "你好", None, None, None)
+# 表列口径与迁移 039 一致：`..., created_at, sender_id`（P2c-6 只增；存量行为 `None`）。
+MESSAGE_ROW = ("t-1", "msg-1", "conv-1", "user", "你好", None, None, None, "u-1")
 
 
 def test_postgres_create_conversation_inserts_scoped_row() -> None:
@@ -299,3 +300,5 @@ def test_postgres_append_message_checks_conversation_then_inserts() -> None:
     assert "INSERT INTO workbench_conversation_messages" in statements[1][0]
     assert "updated_at = now()" in statements[2][0]
     assert message.message_id == "msg-1"
+    # P2c-6：`user` 消息的 `sender_id` 就是发言者本人（助手 / 工具 / 系统恒 `NULL`）。
+    assert message.sender_id == "u-1"

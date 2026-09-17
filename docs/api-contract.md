@@ -653,14 +653,14 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 
 ## 对话式 AI 员工平台（P1）
 
-口径：`docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md`。租户语义 100% 落在本项目的 `workbench_conversations`（迁移 `023_conversational_agent`）；会话消息表 **append-only**（不提供编辑接口；**2026-09-17 修订（P2c-4）**：本人可发起**受控物理删除**——见「P2c 对话模式 · 导出与物理删除 · 候选端点 · 结构判定（P2c-4）」；会话分享与多员工协同属 **P2c-6**，仍未交付）。
+口径：`docs/superpowers/specs/2026-09-12-conversational-agent-platform-design.md`。租户语义 100% 落在本项目的 `workbench_conversations`（迁移 `023_conversational_agent`）；会话消息表 **append-only**（不提供编辑接口；**2026-09-17 修订（P2c-4）**：本人可发起**受控物理删除**——见「P2c 对话模式 · 导出与物理删除 · 候选端点 · 结构判定（P2c-4）」；**2026-09-17 修订（P2c-6）**：会话分享与多端协同**已交付**——见「会话协作：分享与多端协同（P2c-6）」，消息 `sender_id` 只增、读路径为「本人 ∪ 成员」）。
 
 **P1 的对话语义**：Harness 使用 `MockRuntime`，**不做任何真实工具调用、不接真实模型**。助手回复是**确定性桩**，并在响应体显式标注 `stub: true`，绝不伪装成真实模型输出。会话与消息的数据模型、权限、审计、分页都是真实的。第一期**不开通文件读写与命令执行**（那是 P2 的能力，D8），配置里的 `tool_allowlist` 只存不用。
 
 **权限与隔离**（与 §8 一致）：
 - 可用对话入口的岗位：`employee` / `department_lead` / `ceo` / `super_admin`；`customer_admin` 返回 `403`。
-- 普通岗位只能读写**自己发起**的会话；`ceo` / `super_admin` 可读本租户内他人会话。
-- **跨租户**访问、以及**修改他人会话**（发消息 / 归档）一律返回 `404`（而非 `403`，避免探测存在性）。
+- 普通岗位只能读写**自己发起**的会话；`ceo` / `super_admin` 可读本租户内他人会话。**2026-09-17（P2c-6）**：读路径扩为「**本人 ∪ 成员**」（成员见「会话协作」节）；发言扩为「本人 ∪ `write` 成员」；管理动作（归档 / 改模式 / 删除 / 增删成员）**仍仅本人**。
+- **跨租户**访问、以及**修改他人会话**（发消息 / 归档）一律返回 `404`（而非 `403`，避免探测存在性）。**例外（P2c-6）**：可读的 `read` 成员发言 ⇒ `403`（存在性已对成员可见，不再以 404 隐藏）。
 - 全部接口：未认证 `401`；越权 `403`；只返回本租户数据；响应不含账号 PII（会话视图不含 `operator_id` 与 `dsh_session_id`）。
 - **权限收敛**：对话入口与表单入口对同一动作共用同一套 `ensure_can_create` / `ensure_can_approve` 判定，对话路径不复制判定逻辑。**自治等级只决定「是否需要人批」，不决定「是否绕开权限判定」**：`full_auto` 的员工仍不能做其操作者无权做的事。
 
@@ -1099,5 +1099,24 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
 - **结构判定**（三条件**全满足** ⇒ `met`）：① 步骤全部完成（`completed_step_count >= step_count`；`step_count = 0` 视为满足）② 无未决审批（运行审批状态无 `pending`）③ `finish_reason` 为**正常终态**（`run_completed`；`cancelled_by_user` / `step_failed` / `approval_rejected` 均**不算**）。
 - 响应 `{"run_id", "verdict": "met"|"unmet", "checks": {"steps_complete", "no_pending_approvals", "finish_reason_ok"}, "steps": {"completed", "total"}, "pending_approvals", "finish_reason", "status"}`；**非终态运行 ⇒ `unmet`**（如实，不谎报）。
 - **一键重做属前端行为**：未达标时，**仅当页面仍持有原结构化调用**时以**新幂等键**重发（＝一次新的正常调用、新 run，与原运行**无状态耦合**）；跨页 / 刷新后按既有安全口径**不重放原参数**（界面如实告知「原始参数未留存，请重新输入」）。**不做自动重跑、不做 LLM 判分**。
+
+## 会话协作：分享与多端协同（P2c-6 · 2026-09-17）
+
+> 口径源：`docs/superpowers/specs/2026-09-17-frontend-interaction-p2c-design.md` §2.16（已评审 2026-09-17）。本批**推翻** P1 / P2b §1.3-8 的「不做会话分享与多端协同」；**保留**「不做实时在线态 / 不做协同编辑」（无 WebSocket 底座，消息 append-only）、「不做部门级 / 全租户 / 跨租户分享与公开链接」。
+> **实现期裁定（2026-09-17，写入规格 §2.16）**：① 归档会话加 / 撤成员 ⇒ `409`（与「改模式」同口径：归档不可再写管理动作）；② `GET .../members` 的 `items` **含发起人**（`is_owner: true` / `permission: "owner"`，列首位、不可撤销）——参与者列表与消息发言者归属由此统一解析；③ 「最近活动时间」= 会话 `updated_at`（成员表**不**建活动时间列，不做在线态）；④ `read` 成员发言 ⇒ `403`（可读即不隐藏存在性），**非成员且非本人** 仍 `404`。
+
+**成员表（迁移 `039_conversation_members`）**：`workbench_conversation_members(tenant_id, conversation_id, member_id, permission, added_by, created_at)`；主键 `(tenant_id, conversation_id, member_id)`；复合外键引用 `workbench_conversations(tenant_id, conversation_id)`；`permission` 受控枚举 `read` / `write`（表级 CHECK）。成员必须**同租户、已审批、非 `customer_admin`**。
+
+**可见性（唯一新增授权轴）**：
+- **读路径统一为「本人 ∪ 成员」**：会话列表 / 详情 / 消息 / 帧流 / **运行概览**（`/runs/{id}/metrics`、`/events`、`/acceptance`、`/artifacts`）/ **审批**（`/runs/{id}/approvals`）；`ceo` / `super_admin` 既有只读口径**不变**（**未被点名就不是成员**，不因角色自动可见他人会话）。
+- **写路径**：发言（含结构化调用与 `messages:stream`）＝**本人 ∪ `write` 成员**；归档 / 改模式 / 物理删除 / 增删成员**仍仅本人**（被分享者的管理动作一律拒绝）。
+
+**消息 `sender_id`（**只增**，可空）**：`messages[]` 只增 `sender_id`（发言账号 id；**助手 / 工具 / 系统消息恒 `null`**）；**存量行 `NULL` ⇒ 展示回退为「发起人」，零破坏**。发言审计 `conversation.message.sent` 的 `actor_id`/`sender_id` 均为**发言者本人**。
+
+- `POST /api/v1/conversations/{conversation_id}/members`：添加成员。**仅会话本人**（他人 / 跨租户 `404`；未认证 `401`；`customer_admin` `403`）。请求体 `{"member_id": string, "permission"?: "read"|"write"}`（`permission` 缺省 `read`；未知字段 `422`）。**成员不合法**（未知账号 / 跨租户 / 未审批 / `customer_admin`）⇒ `422`。**幂等**：已存在且权限相同 ⇒ `201` 且**不重复写审计**；权限不同 ⇒ 以新权限覆盖并写审计。归档会话 `409`。成功 `201` 返回 `{"conversation_id","member_id","permission"}`。审计动作 `conversation.member.added`（明细：`conversation_id` / `member_id` / `permission`，**不含正文 / 姓名 / 手机号**）。
+- `GET /api/v1/conversations/{conversation_id}/members`：**本人或成员可见**（他人 / 跨租户 `404`）。返回 `{"items":[{"member_id","display_name","role","permission","is_owner","added_by","created_at"}...],"total"}`——发起人为首项（`is_owner: true` / `permission: "owner"`）；`display_name` 由账号解析（账号缺失 ⇒ 回退 `member_id`，**不编造**）；`role` 取账号当前角色（缺失 ⇒ `null`）。
+- `DELETE /api/v1/conversations/{conversation_id}/members/{member_id}`：撤销成员。**仅会话本人**（他人 / 跨租户 `404`）。成功 `204`；**复删 / 目标不是成员（含发起人）一律 `204`（幂等 no-op，不重复写审计）**。审计动作 `conversation.member.removed`（同受控键）。**已读内容不可撤回**（如实告知，不做「收回」语义）。
+- **发言与执行（`write` 成员）**：可发言（含结构化调用）并触发执行——**一律以其本人身份**走既有全部闸门（工具白名单 / 自治三档 / 审批 / `critical` 仅 CEO·超管 / **发起人不得自审**）；`read` 成员发言 ⇒ `403`（不做任何落库 / 执行 / 幂等写入）。
+- **边界**：跨租户 / 部门级 / 全租户 / 公开链接**均不做**；成员**不得**归档、改模式、删会话、增删成员；**不做实时在线态**（参与者列表 + 最近活动时间为**非实时**呈现）。
 
 

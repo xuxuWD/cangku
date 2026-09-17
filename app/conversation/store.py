@@ -24,6 +24,7 @@ from .models import (
     can_view_any,
     ensure_can_converse,
     ensure_can_modify,
+    ensure_can_speak,
     ensure_can_view,
     new_conversation_id,
     new_message_id,
@@ -75,9 +76,17 @@ class ConversationExportPage:
 
 
 class ConversationStore(Protocol):
-    """会话与消息读写；所有方法都严格限定本租户并做归属校验。"""
+    """会话与消息读写；所有方法都严格限定本租户并做归属校验。`members` 未装配 ⇒ 既有行为（零破坏）。
+
+    P2c-6：读路径 = 「本人 ∪ 成员」（含 CEO / 超管既有口径）；发言 = 「本人 ∪ `write` 成员」。
+    成员判定**只在仓储层执行一次**（`ensure_can_view` / `ensure_can_speak`），服务层与接口层不重复判定。
+    """
 
     def create_conversation(self, context: UserContext, *, agent_key: str | None = None, title: str = "") -> Conversation: ...
+
+    def membership_for(self, context: UserContext, conversation_id: str) -> str | None:
+        """当前用户对该会话的成员授权档（`read` / `write`）；非成员 / 未装配成员表 ⇒ `None`。"""
+        ...
 
     def get_conversation(self, context: UserContext, conversation_id: str) -> Conversation: ...
 
@@ -101,12 +110,23 @@ class ConversationStore(Protocol):
 
 
 class InMemoryConversationStore:
-    """开发期内存实现（`memory` 存储模式，仅限 development）。"""
+    """开发期内存实现（`memory` 存储模式，仅限 development）。
 
-    def __init__(self) -> None:
+    `members`（P2c-6 成员表仓储）**可选注入**：未注入 ⇒ 行为与改造前完全一致（零破坏）。
+    """
+
+    def __init__(self, *, members=None) -> None:
         self._conversations: dict[tuple[str, str], Conversation] = {}
         self._messages: dict[tuple[str, str], list[ConversationMessage]] = {}
+        self.members = members
         self._lock = RLock()
+
+    # ------------------------------------------------------------ 成员（P2c-6）
+
+    def membership_for(self, context: UserContext, conversation_id: str) -> str | None:
+        if self.members is None:
+            return None
+        return self.members.permission_for(context.tenant_id, str(conversation_id), context.user_id)
 
     # ------------------------------------------------------------ 会话
 
@@ -130,7 +150,7 @@ class InMemoryConversationStore:
         # 软删行按「不存在」处理（与不存在不可区分）。
         if conversation is None or conversation.deleted_at is not None:
             raise ConversationNotFound(conversation_id)
-        ensure_can_view(context, conversation)
+        ensure_can_view(context, conversation, membership=self.membership_for(context, conversation_id))
         return conversation
 
     def get_conversation_including_deleted(self, context: UserContext, conversation_id: str) -> Conversation:
@@ -152,11 +172,17 @@ class InMemoryConversationStore:
                 for (tenant_id, _key), conversation in self._conversations.items()
                 if tenant_id == context.tenant_id
                 and conversation.deleted_at is None
-                and (can_view_any(context) or conversation.operator_id == context.user_id)
+                and (can_view_any(context) or self._is_readable_scope(context, conversation))
                 and (wanted is None or conversation.status == wanted)
             ]
         matched.sort(key=lambda item: _sort_key(item.created_at, item.conversation_id), reverse=True)
         return matched[offset : offset + _clamp(limit)], len(matched)
+
+    def _is_readable_scope(self, context: UserContext, conversation: Conversation) -> bool:
+        """非 CEO / 超管时的列表范围：本人 ∪ 被点名分享的成员（P2c-6）。"""
+        if conversation.operator_id == context.user_id:
+            return True
+        return self.membership_for(context, conversation.conversation_id) is not None
 
     def archive_conversation(self, context: UserContext, conversation_id: str) -> Conversation:
         ensure_can_converse(context)
@@ -248,7 +274,8 @@ class InMemoryConversationStore:
             conversation = self._conversations.get((context.tenant_id, str(conversation_id)))
             if conversation is None or conversation.deleted_at is not None:
                 raise ConversationNotFound(conversation_id)
-            ensure_can_modify(context, conversation)
+            # P2c-6 发言写权限：本人 ∪ `write` 成员（`read` 成员 ⇒ 403；非成员 ⇒ 404）。
+            ensure_can_speak(context, conversation, membership=self.membership_for(context, conversation_id))
             if conversation.status != ConversationStatus.ACTIVE:
                 raise ConversationStateConflict("会话已归档，不能再追加消息")
             message = ConversationMessage(
@@ -259,6 +286,8 @@ class InMemoryConversationStore:
                 content=clean_content,
                 tool_name=tool_name,
                 tool_call_id=tool_call_id,
+                # P2c-6：`user` 消息落发言者本人；助手 / 工具 / 系统恒 `None`。
+                sender_id=context.user_id if clean_role is MessageRole.USER else None,
             )
             self._messages.setdefault((context.tenant_id, conversation.conversation_id), []).append(message)
             self._conversations[(context.tenant_id, conversation.conversation_id)] = replace(
@@ -284,13 +313,22 @@ class InMemoryConversationStore:
 
 
 class PostgresConversationStore:
-    """对话持久化（表 `workbench_conversations` / `workbench_conversation_messages`，迁移 023）。"""
+    """对话持久化（表 `workbench_conversations` / `workbench_conversation_messages`，迁移 023）。
+
+    `members`（P2c-6 成员表仓储，迁移 039）**可选注入**：未注入 ⇒ 行为与改造前完全一致（零破坏）。
+    """
 
     _CONVERSATION_COLUMNS = "tenant_id, conversation_id, agent_key, operator_id, title, status, dsh_session_id, created_at, updated_at, mode, deleted_at"
-    _MESSAGE_COLUMNS = "tenant_id, message_id, conversation_id, role, content, tool_name, tool_call_id, created_at"
+    _MESSAGE_COLUMNS = "tenant_id, message_id, conversation_id, role, content, tool_name, tool_call_id, created_at, sender_id"
 
-    def __init__(self, connection_or_pool) -> None:
+    def __init__(self, connection_or_pool, *, members=None) -> None:
         self.connection = connection_or_pool
+        self.members = members
+
+    def membership_for(self, context: UserContext, conversation_id: str) -> str | None:
+        if self.members is None:
+            return None
+        return self.members.permission_for(context.tenant_id, str(conversation_id), context.user_id)
 
     @contextmanager
     def _connection(self):
@@ -328,6 +366,8 @@ class PostgresConversationStore:
             tool_name=None if row[5] is None else str(row[5]),
             tool_call_id=None if row[6] is None else str(row[6]),
             created_at=row[7],
+            # P2c-6（**只增**）：存量行 `NULL` ⇒ `None`（展示回退为「发起人」）。
+            sender_id=None if row[8] is None else str(row[8]),
         )
 
     # ------------------------------------------------------------ 会话
@@ -382,7 +422,7 @@ class PostgresConversationStore:
         if row is None or row[10] is not None:
             raise ConversationNotFound(conversation_id)
         conversation = self._hydrate_conversation(row)
-        ensure_can_view(context, conversation)
+        ensure_can_view(context, conversation, membership=self.membership_for(context, conversation_id))
         return conversation
 
     def get_conversation_including_deleted(self, context: UserContext, conversation_id: str) -> Conversation:
@@ -412,8 +452,17 @@ class PostgresConversationStore:
             clauses.append("status = %s")
             params.append(ConversationStatus(status).value)
         if not can_view_any(context):
-            clauses.append("operator_id = %s")
-            params.append(context.user_id)
+            # P2c-6：非 CEO / 超管的列表范围 = 本人 ∪ 被点名分享的成员（`members` 未装配 ⇒ 仅本人）。
+            if self.members is None:
+                clauses.append("operator_id = %s")
+                params.append(context.user_id)
+            else:
+                clauses.append(
+                    "(operator_id = %s OR conversation_id IN ("
+                    " SELECT conversation_id FROM workbench_conversation_members"
+                    " WHERE tenant_id = %s AND member_id = %s))"
+                )
+                params.extend([context.user_id, context.tenant_id, context.user_id])
         where = " AND ".join(clauses)
         with self._connection() as connection:
             with connection.cursor() as cursor:
@@ -601,15 +650,18 @@ class PostgresConversationStore:
                     if row is None or row[10] is not None:
                         raise ConversationNotFound(conversation_id)
                     conversation = self._hydrate_conversation(row)
-                    ensure_can_modify(context, conversation)
+                    # P2c-6 发言写权限：本人 ∪ `write` 成员（`read` 成员 ⇒ 403；非成员 ⇒ 404）。
+                    ensure_can_speak(context, conversation, membership=self.membership_for(context, conversation_id))
                     if conversation.status != ConversationStatus.ACTIVE:
                         raise ConversationStateConflict("会话已归档，不能再追加消息")
                     message_id = new_message_id()
+                    # P2c-6：`user` 消息落发言者本人；助手 / 工具 / 系统恒 `NULL`。
+                    sender_id = context.user_id if clean_role is MessageRole.USER else None
                     cursor.execute(
                         f"""
                         INSERT INTO workbench_conversation_messages
-                            (tenant_id, message_id, conversation_id, role, content, tool_name, tool_call_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            (tenant_id, message_id, conversation_id, role, content, tool_name, tool_call_id, sender_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING {self._MESSAGE_COLUMNS}
                         """,
                         (
@@ -620,6 +672,7 @@ class PostgresConversationStore:
                             clean_content,
                             tool_name,
                             tool_call_id,
+                            sender_id,
                         ),
                     )
                     message_row = cursor.fetchone()

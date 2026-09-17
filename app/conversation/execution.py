@@ -56,6 +56,7 @@ from .models import (
     ConversationNotFound,
     InvalidConversation,
     MessageRole,
+    ensure_can_speak,
     normalize_content,
 )
 from .redaction import redact_message_content
@@ -239,6 +240,9 @@ class ConversationExecutionService:
         normalize_content(content)
         # 归属 / 跨租户 / 归档：仓储层与模型层统一判定（404 / 409）。
         conversation = self.conversation_store.get_conversation(context, conversation_id)
+        # P2c-6 发言写权限：读路径对成员放行 ⇒ **执行入口必须单独判写**（fail-closed）：
+        # `read` 成员 ⇒ 403，且不做任何落库 / 执行 / 幂等写入；非成员早已被上面按 404 拦掉。
+        self._ensure_can_speak(context, conversation)
 
         existing = self.idempotency.get(
             context.tenant_id, context.user_id, conversation_id, idempotency_key
@@ -491,6 +495,27 @@ class ConversationExecutionService:
             message_id=None, run_id=run_id, approval_id=None,
         )
         raise ConversationExecutionError(str(exc) or "执行被拒绝", http_status=exc.http_status) from exc
+
+    # ------------------------------------------------------------------ P2c-6 发言写权限（发起处）
+
+    def _ensure_can_speak(self, context: UserContext, conversation) -> None:
+        """`read` 成员 ⇒ `403`；非成员 ⇒ `404`（与仓储层同一判定函数，不复制规则）。
+
+        **必须在幂等查表之前**：读成员的重放请求同样拒绝，且不产生任何副作用
+        （stub 路径由 `store.append_message` 内的同一判定拦截）。
+        """
+        try:
+            ensure_can_speak(
+                context,
+                conversation,
+                membership=self.conversation_store.membership_for(
+                    context, conversation.conversation_id
+                ),
+            )
+        except ConversationNotFound as exc:
+            raise ConversationExecutionError("会话不存在，或不属于当前账号", http_status=404) from exc
+        except PolicyError as exc:
+            raise ConversationExecutionError(str(exc), http_status=403) from exc
 
     # ------------------------------------------------------------------ P2c-4 模式判定（推进处）
 
@@ -916,6 +941,8 @@ def _message_view(message: ConversationMessage, *, stub: bool) -> dict[str, obje
         "tool_name": message.tool_name,
         "tool_call_id": message.tool_call_id,
         "created_at": message.created_at,
+        # P2c-6（**只增**）：发言账号 id（助手 / 工具 / 系统恒 `None`）。
+        "sender_id": message.sender_id,
     }
 
 

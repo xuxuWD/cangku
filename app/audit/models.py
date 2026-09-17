@@ -117,6 +117,9 @@ class AuditAction(StrEnum):
     CONVERSATION_EXPORTED = "conversation.exported"
     CONVERSATION_DELETED = "conversation.deleted"
     CONVERSATION_EXECUTION_REJECTED = "conversation.execution.rejected"
+    # P2c-6 会话协作：成员增删（只记标识与授权档，**不记**正文 / 姓名 / 手机号）
+    CONVERSATION_MEMBER_ADDED = "conversation.member.added"
+    CONVERSATION_MEMBER_REMOVED = "conversation.member.removed"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -214,6 +217,10 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "stream_state_count",
         "idempotency_count",
         "truncated",
+        # P2c-6 会话协作：成员标识 / 授权档 / 是否发起人（均为服务端声明的受控值，不含姓名与手机号）
+        "member_id",
+        "permission",
+        "is_owner",
     }
 )
 

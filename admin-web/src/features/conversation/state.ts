@@ -18,6 +18,12 @@ export const initialConversationState: ConversationState = {
   streamNotice: null,
   archiving: false,
   toast: null,
+  // P2c-6 会话协作：参与者名单初始为空（未选中会话 / 未加载完成都不得凭空造名单）。
+  participants: [],
+  participantsLoading: false,
+  participantsError: null,
+  sharing: false,
+  shareError: null,
 }
 
 // 按 HTTP 状态码映射为固定中文提示，不把堆栈、URL 或原始异常文本透到界面。

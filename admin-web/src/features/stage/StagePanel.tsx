@@ -5,6 +5,7 @@ import { finishReasonLabel, runStatusLabel } from '../runDetail/types'
 import { formatLocalTime } from '../../utils/time'
 import { ApprovalCard } from './ApprovalCard'
 import { ArtifactPanel } from './ArtifactPanel'
+import { ParticipantPanel, type CollaborationPanelState } from './ParticipantPanel'
 import { ProcessTimeline } from './ProcessTimeline'
 import { FileDiffPanel, TerminalOutputPanel } from './ToolOutputPanels'
 import type { RunAcceptanceState } from './useRunAcceptance'
@@ -143,6 +144,7 @@ export function StagePanel({
   canDecide,
   expanded = false,
   onOpenRunDetail,
+  collaboration,
 }: {
   runId?: string
   stream: RunStream
@@ -161,6 +163,11 @@ export function StagePanel({
   /** 窄屏抽屉是否展开（宽屏由 CSS 强制展示该面板）。 */
   expanded?: boolean
   onOpenRunDetail?: (runId: string) => void
+  /**
+   * 参与者与分享（P2c-6；由页面提供数据与增删回调，本组件只呈现）。
+   * 未传入（如运行详情页复用舞台）⇒ 不渲染该区块（零破坏）。
+   */
+  collaboration?: CollaborationPanelState
 }) {
   const { metrics, loading, error } = overview
   const pendingCount = approvals.items.filter((item) => item.status === 'pending').length
@@ -254,6 +261,8 @@ export function StagePanel({
       <TerminalOutputPanel frames={stream.frames} />
       <FileDiffPanel frames={stream.frames} />
       <ArtifactPanel runId={runId} artifacts={artifacts} onOpenRunDetail={onOpenRunDetail} />
+
+      {collaboration && <ParticipantPanel collaboration={collaboration} />}
 
       <section className="history-panel stage-panel" aria-label="审批">
         <div className="panel-header">

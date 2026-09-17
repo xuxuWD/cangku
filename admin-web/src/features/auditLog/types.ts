@@ -135,6 +135,9 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'conversation.exported': '个人会话数据已导出',
   'conversation.deleted': '会话已被本人物理删除',
   'conversation.execution.rejected': '会话模式拒绝执行',
+  // P2c-6（2026-09-17）：会话协作——成员添加 / 撤销（只记标识与授权档，不含姓名与手机号）。
+  'conversation.member.added': '会话成员已添加',
+  'conversation.member.removed': '会话成员已撤销',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。

@@ -6,6 +6,7 @@ import {
   sendMessageStream,
 } from './api'
 import { parseToolInvocation } from './invocation'
+import { loadSession } from '../../app/session'
 import { ProcessBar } from './ProcessBar'
 import { useConversationDetail } from './useConversationDetail'
 import { useConversations } from './useConversations'
@@ -16,7 +17,7 @@ import {
   conversationStatusLabel,
   conversationTitle,
   formatMessageTime,
-  roleLabel,
+  speakerLabel,
 } from './types'
 
 // 每条消息生成一个新幂等键：同一键重放由服务端返回既有结果，重试 / 双击不会产生第二次真实执行。
@@ -35,6 +36,8 @@ export function ConversationPanel({ onSessionExpired }: { onSessionExpired?: () 
   const list = useConversations(onSessionExpired)
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined)
   const detailState = useConversationDetail(selectedId, onSessionExpired)
+  // P2c-6：协作会话里他人消息不得显示成「我」——按 `sender_id` 与当前登录账号比对。
+  const currentUserId = loadSession()?.userId ?? ''
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<ConversationApiError | null>(null)
@@ -181,7 +184,7 @@ export function ConversationPanel({ onSessionExpired }: { onSessionExpired?: () 
                   {detail.messages.map((message) => (
                     <article className={`conversation-message conversation-message--${message.role}`} key={message.message_id}>
                       <div className="conversation-message__head">
-                        <strong>{roleLabel(message.role)}</strong>
+                        <strong>{speakerLabel(message, currentUserId)}</strong>
                         {message.role === 'assistant' && message.stub && <span className="conversation-badge">桩回复</span>}
                         {message.tool_name && <span className="conversation-message__tool">{message.tool_name}</span>}
                         <span>{formatMessageTime(message.created_at)}</span>

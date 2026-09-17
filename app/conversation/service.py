@@ -10,16 +10,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from ..accounts.models import AccountStatus
 from ..audit.models import AuditAction
 from ..domain import RiskLevel, UserContext, ensure_can_approve, ensure_can_create
+from .members import ConversationMember
 from .models import (
+    PERMISSION_OWNER,
     Conversation,
     ConversationMessage,
     ConversationMode,
+    ConversationNotFound,
     ConversationStateConflict,
+    ConversationStatus,
+    InvalidConversation,
     MessageRole,
     normalize_content,
+    normalize_member_id,
     normalize_mode,
+    normalize_permission,
 )
 from .redaction import redact_message_content
 from .store import (
@@ -69,12 +77,18 @@ class ConversationService:
         stream_store=None,
         idempotency_store=None,
         max_export_items: int = MAX_EXPORT_ITEMS,
+        # P2c-6 §2.16：会话协作（成员增删 / 参与者列表）需要**成员表**与**账号仓储**（校验成员合法性）；
+        # 缺任一即「分享链路未装配」⇒ 管理动作 fail-closed 拒绝（不猜测、不放行）。
+        members=None,
+        accounts=None,
     ) -> None:
         self.store = store
         self.audit = audit
         self.stream_store = stream_store
         self.idempotency_store = idempotency_store
         self.max_export_items = max(1, int(max_export_items))
+        self.members = members
+        self.accounts = accounts
 
     # ------------------------------------------------------------ 权限收敛（与表单入口共用同一函数）
 
@@ -237,6 +251,137 @@ class ConversationService:
 
     def list_messages(self, context: UserContext, conversation_id: str, *, limit: int = 50, offset: int = 0) -> tuple[list[ConversationMessage], int]:
         return self.store.list_messages(context, conversation_id, limit=limit, offset=offset)
+
+    # ------------------------------------------------------------ 会话协作：成员（P2c-6 §2.16）
+
+    def add_member(
+        self, context: UserContext, conversation_id: str, *, member_id: str, permission: str | None = None
+    ) -> ConversationMember:
+        """添加 / 覆盖成员（**仅会话本人**）：他人 / 跨租户 `404`；归档 `409`；非法成员 / 权限档 `422`。
+
+        幂等：**已存在且权限档相同 ⇒ 不重复写审计**；权限档不同 ⇒ 覆盖并写审计（受控键）。
+        """
+        clean_member_id = normalize_member_id(member_id)
+        clean_permission = normalize_permission(permission)
+        conversation = self._require_shareable_conversation(context, conversation_id)
+        self._ensure_shareable_member(context, clean_member_id)
+        existing = self.members.permission_for(
+            context.tenant_id, conversation.conversation_id, clean_member_id
+        )
+        stored = self.members.upsert(
+            tenant_id=context.tenant_id,
+            conversation_id=conversation.conversation_id,
+            member_id=clean_member_id,
+            permission=clean_permission,
+            added_by=context.user_id,
+        )
+        if existing != clean_permission:
+            self._record(
+                context,
+                AuditAction.CONVERSATION_MEMBER_ADDED,
+                conversation.conversation_id,
+                {
+                    "conversation_id": conversation.conversation_id,
+                    "member_id": clean_member_id,
+                    "permission": clean_permission,
+                },
+            )
+        return stored
+
+    def remove_member(self, context: UserContext, conversation_id: str, member_id: str) -> bool:
+        """撤销成员（**仅会话本人**）：成功 `True`；**幂等**：本就不是成员（含发起人）⇒ `False`（不写审计）。
+
+        口径：撤销后对方**新**的读取 / 发言请求一律 `404`；**已读内容不可撤回**（不做「收回」语义）。
+        """
+        clean_member_id = normalize_member_id(member_id)
+        conversation = self._require_shareable_conversation(context, conversation_id)
+        previous = self.members.permission_for(
+            context.tenant_id, conversation.conversation_id, clean_member_id
+        )
+        if not self.members.delete(context.tenant_id, conversation.conversation_id, clean_member_id):
+            return False
+        self._record(
+            context,
+            AuditAction.CONVERSATION_MEMBER_REMOVED,
+            conversation.conversation_id,
+            {
+                "conversation_id": conversation.conversation_id,
+                "member_id": clean_member_id,
+                "permission": previous or "",
+            },
+        )
+        return True
+
+    def list_participants(self, context: UserContext, conversation_id: str) -> list[dict[str, object]]:
+        """参与者列表（**本人或成员可见**）：发起人列首位（`is_owner` / `permission="owner"`）+ 成员。
+
+        `display_name` / `role` 由账号仓储解析；账号缺失 ⇒ 回退 `member_id` / `None`（**不编造**）。
+        「最近活动时间」不在这里——取会话 `updated_at`（不做实时在线态）。
+        """
+        conversation = self.store.get_conversation(context, conversation_id)
+        owner = self._resolve_account(conversation.operator_id)
+        items: list[dict[str, object]] = [
+            {
+                "member_id": conversation.operator_id,
+                "display_name": owner.full_name if owner is not None else conversation.operator_id,
+                "role": owner.role if owner is not None else None,
+                "permission": PERMISSION_OWNER,
+                "is_owner": True,
+                "added_by": None,
+                "created_at": conversation.created_at,
+            }
+        ]
+        if self.members is None:
+            return items
+        for member in self.members.list_for_conversation(context.tenant_id, conversation.conversation_id):
+            account = self._resolve_account(member.member_id)
+            items.append(
+                {
+                    "member_id": member.member_id,
+                    "display_name": account.full_name if account is not None else member.member_id,
+                    "role": account.role if account is not None else None,
+                    "permission": member.permission,
+                    "is_owner": False,
+                    "added_by": member.added_by,
+                    "created_at": member.created_at,
+                }
+            )
+        return items
+
+    def _require_shareable_conversation(self, context: UserContext, conversation_id: str) -> Conversation:
+        """成员管理的前置：**仅会话本人**（他人 / 跨租户 `404`）、未软删、且**未归档**（归档 `409`）。"""
+        if self.members is None:
+            raise ConversationStateConflict("成员表未装配，已拒绝分享（fail-closed）")
+        conversation = self.store.get_conversation_including_deleted(context, conversation_id)
+        if conversation.deleted_at is not None:
+            raise ConversationNotFound(conversation_id)
+        if conversation.status != ConversationStatus.ACTIVE:
+            raise ConversationStateConflict("会话已归档，不能再修改成员")
+        return conversation
+
+    def _ensure_shareable_member(self, context: UserContext, member_id: str) -> None:
+        """成员合法性：**同租户、已审批、非 `customer_admin`**；不满足一律 `422`（不枚举存在性）。"""
+        if self.accounts is None:
+            raise ConversationStateConflict("账号仓储未装配，已拒绝分享（fail-closed）")
+        try:
+            account = self.accounts.get(member_id)
+        except Exception as exc:  # noqa: BLE001 - 未知账号与仓储异常同口径（不泄露是否存在）
+            raise InvalidConversation("成员账号不可用于分享（需为本租户已审批账号，且非客户管理员）") from exc
+        if (
+            account.status is not AccountStatus.APPROVED
+            or account.tenant_id != context.tenant_id
+            or account.role == "customer_admin"
+        ):
+            raise InvalidConversation("成员账号不可用于分享（需为本租户已审批账号，且非客户管理员）")
+
+    def _resolve_account(self, account_id: str):
+        """按账号号解析账号；账号仓储未装配 / 查不到一律 `None`（调用方按「不编造」回退）。"""
+        if self.accounts is None:
+            return None
+        try:
+            return self.accounts.get(account_id)
+        except Exception:  # noqa: BLE001 - 账号缺失只影响展示回落，不影响读取
+            return None
 
     # ------------------------------------------------------------ 消息
 

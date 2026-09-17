@@ -63,7 +63,7 @@ class PendingRunApproval:
 
 
 class RuntimeService:
-    def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None, run_metrics: Any = None, tool_actions: Any = None, usage_ledger: Any = None) -> None:
+    def __init__(self, task_store: Any, *, registry: RuntimeRegistry | None = None, state_store: RuntimeStateStore | None = None, policy: RuntimePolicy | None = None, run_metrics: Any = None, tool_actions: Any = None, usage_ledger: Any = None, member_run_reader: Any = None) -> None:
         self.task_store = task_store
         self.state_store = state_store or RuntimeStateStore()
         self.registry = registry or RuntimeRegistry()
@@ -78,6 +78,9 @@ class RuntimeService:
         # 027 待批动作仓储（可选）：仅用于 ⑦ 的「待判动作序列」投影与「是否需审批路径」判定。
         # 未装配（段一路径）→ 保持既有行为（仅比对运行级摘要）。
         self.tool_actions = tool_actions
+        # P2c-6（可选）：会话成员对**运行级读路径**的可见性回调 `(actor, run_id) -> bool`。
+        # 未注入 ⇒ 不放松（与改造前完全一致）；**只影响读路径**，控制类动作绝不使用它。
+        self.member_run_reader = member_run_reader
         if 'mock' not in self.registry.keys():
             self.registry.register('mock', MockRuntime(self.state_store))
 
@@ -407,7 +410,13 @@ class RuntimeService:
                 return key, adapter
         raise RunAccessDenied('运行不存在')
 
-    def adapter_for_task(self, actor: UserContext, run_id: str):
+    def adapter_for_task(self, actor: UserContext, run_id: str, *, member_reader: bool = False):
+        """按运行号取适配器 + 权威状态；跨租户 / 未知运行 / 非本人一律拒绝。
+
+        `member_reader=True`（**仅运行级读端点显式传入**，P2c-6）：当 actor 不是发起人也不是
+        CEO / 超管时，再问一次注入的 `member_run_reader(actor, run_id)`；回调恒 fail-closed
+        （异常 / 未注入 ⇒ 不放松）。**控制类动作绝不传该开关**。
+        """
         key, adapter = self.adapter_for(actor, run_id)
         try:
             state = self.state_store.get(run_id)
@@ -416,8 +425,19 @@ class RuntimeService:
         if state.context.tenant_id != actor.tenant_id:
             raise RunAccessDenied('运行不存在')
         if actor.user_id != state.context.user_id and actor.role not in {'ceo', 'super_admin'}:
-            raise RunAccessDenied('当前员工无权操作此运行')
+            if not (member_reader and self._is_member_reader(actor, run_id)):
+                raise RunAccessDenied('当前员工无权操作此运行')
         return key, adapter, state
+
+    def _is_member_reader(self, actor: UserContext, run_id: str) -> bool:
+        """会话成员的读可见性回调；未注入 / 任何异常一律 `False`（fail-closed，不猜测）。"""
+        reader = self.member_run_reader
+        if reader is None:
+            return False
+        try:
+            return bool(reader(actor, run_id))
+        except Exception:  # noqa: BLE001 - 判定不可用 ⇒ 不放松
+            return False
 
     def snapshot(self, actor: UserContext, run_id: str):
         """只读运行快照；租户与归属校验与适配器选择一致。"""

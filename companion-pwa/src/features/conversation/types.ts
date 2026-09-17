@@ -32,6 +32,8 @@ export interface ConversationMessage {
   tool_name: string | null
   tool_call_id: string | null
   created_at: string | null
+  /** P2c-6 只增字段：发言账号 id；助手 / 工具 / 系统恒 `null`，存量行 `null` ⇒ 展示回退「发起人」。 */
+  sender_id?: string | null
 }
 
 export interface ConversationDetail extends Conversation {
@@ -98,6 +100,20 @@ const ROLE_LABELS: Record<string, string> = {
 
 export function roleLabel(role: string): string {
   return ROLE_LABELS[role] ?? role
+}
+
+/**
+ * P2c-6 协作会话下的发言者标签：**按 `sender_id` 回溯**，绝不把他人消息显示成「我」。
+ *
+ *  * 非 `user` 消息（助手 / 工具 / 系统）仍按角色显示；
+ *  * `sender_id` 为空（**存量行 `NULL`**）⇒「发起人」（零破坏的回退口径）；
+ *  * 等于当前登录账号 ⇒「我」；否则 ⇒「成员」（PWA 不拉参与者名单，**不做无据的姓名猜测**）。
+ */
+export function speakerLabel(message: ConversationMessage, currentUserId: string): string {
+  if (message.role !== 'user') return roleLabel(message.role)
+  const sender = message.sender_id ?? null
+  if (!sender) return '发起人'
+  return sender === currentUserId ? '我' : '成员'
 }
 
 const STATUS_LABELS: Record<string, string> = {

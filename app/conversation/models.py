@@ -19,6 +19,7 @@ from ..domain import PolicyError, UserContext
 MAX_TITLE_LENGTH = 120
 MAX_MESSAGE_LENGTH = 8000
 MAX_AGENT_KEY_LENGTH = 64
+MAX_MEMBER_ID_LENGTH = 128
 
 _AGENT_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
@@ -26,6 +27,14 @@ _AGENT_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 CONVERSING_ROLES = frozenset({"employee", "department_lead", "ceo", "super_admin"})
 # 可查看本租户内他人会话的岗位（§8：仅 CEO / 超级管理员）
 VIEW_ANY_ROLES = frozenset({"ceo", "super_admin"})
+
+# ------------------------------------------------------------ 会话协作的授权档（P2c-6）
+# 受控两档（与迁移 `039` 的 `permission_check` 逐值照抄）；`owner` 是**展示值**：发起人不入库，
+# 由会话行 `operator_id` 解析（`GET .../members` 列首位且不可撤销）。
+PERMISSION_READ = "read"
+PERMISSION_WRITE = "write"
+PERMISSIONS = (PERMISSION_READ, PERMISSION_WRITE)
+PERMISSION_OWNER = "owner"
 
 
 class ConversationStatus(StrEnum):
@@ -120,6 +129,9 @@ class ConversationMessage:
     tool_name: str | None = None
     tool_call_id: str | None = None
     created_at: datetime | None = field(default_factory=now)
+    # P2c-6（**只增**，可空）：发言账号 id；助手 / 工具 / 系统消息恒 `None`，
+    # 存量行 `None` ⇒ 展示回退为「发起人」（零破坏，不回填）。
+    sender_id: str | None = None
 
 
 # ------------------------------------------------------------ 访问权限（跨层共用）
@@ -136,12 +148,34 @@ def can_view_any(context: UserContext) -> bool:
     return context.role in VIEW_ANY_ROLES
 
 
-def ensure_can_view(context: UserContext, conversation: Conversation) -> None:
-    """读取会话：本人可读；CEO / 超级管理员可读本租户内他人会话；其余按「未找到」处理。"""
+def ensure_can_view(context: UserContext, conversation: Conversation, *, membership: str | None = None) -> None:
+    """读取会话：本人可读；CEO / 超级管理员可读本租户内他人会话；**P2c-6**：被点名分享的成员可读。
+
+    `membership` 为该用户在本会话的成员授权档（`read` / `write`；非成员 `None`）——
+    **不自查成员表**，由仓储层查好后传入，避免在模型层引入仓储依赖。
+    其余一律「未找到」（不区分「权限不足」，避免探测存在性）。
+    """
     if conversation.operator_id == context.user_id:
         return
     if can_view_any(context):
         return
+    if membership:
+        return
+    raise ConversationNotFound(conversation.conversation_id)
+
+
+def ensure_can_speak(context: UserContext, conversation: Conversation, *, membership: str | None = None) -> None:
+    """**发言**写权限（P2c-6）：本人；`write` 成员放行；`read` 成员 ⇒ `PolicyError`（403）；其余 ⇒ 404。
+
+    `read` 成员**刻意**返回 403 而非 404：存在性已对可读成员可见（契约裁定 ④），
+    这里要如实告知「看得到、但说不了」，而不是假装会话不存在。
+    """
+    if conversation.operator_id == context.user_id:
+        return
+    if membership == PERMISSION_WRITE:
+        return
+    if membership:
+        raise PolicyError("当前身份对该会话只有查看权限，不能发言")
     raise ConversationNotFound(conversation.conversation_id)
 
 
@@ -208,3 +242,27 @@ def normalize_role(value: str | MessageRole) -> MessageRole:
         return MessageRole(value)
     except ValueError as exc:
         raise InvalidConversation("消息角色只能是 user / assistant / tool / system") from exc
+
+
+def normalize_member_id(value: str) -> str:
+    """归一成员账号 id（P2c-6）；空值 / 超长一律 `422`（不猜测、不回落）。"""
+    if not isinstance(value, str):
+        raise InvalidConversation("成员账号必须是字符串")
+    normalized = value.strip()
+    if not normalized:
+        raise InvalidConversation("成员账号不能为空")
+    if len(normalized) > MAX_MEMBER_ID_LENGTH:
+        raise InvalidConversation(f"成员账号最长 {MAX_MEMBER_ID_LENGTH} 个字符")
+    return normalized
+
+
+def normalize_permission(value: str | None) -> str:
+    """归一成员授权档（P2c-6）：缺省 `read`；受控两档之外一律 `422`。"""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return PERMISSION_READ
+    if not isinstance(value, str):
+        raise InvalidConversation("成员权限必须是字符串")
+    normalized = value.strip().lower()
+    if normalized not in PERMISSIONS:
+        raise InvalidConversation("成员权限只能是 read 或 write")
+    return normalized

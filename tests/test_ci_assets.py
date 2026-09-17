@@ -179,6 +179,8 @@ def test_postgres_job_runs_only_the_real_db_modules() -> None:
     assert "tests/test_run_artifacts_postgres.py" in command
     # 2026-09-17 补钉：P2c-4 会话模式 / 导出 / 物理删除真库回归（迁移 038，级联真删 / 保留 / 复删幂等）
     assert "tests/test_conversation_lifecycle_postgres.py" in command
+    # 2026-09-17 补钉：P2c-6 会话协作真库回归（迁移 039，成员表约束 / 消息 sender_id / 成员读路径）
+    assert "tests/test_conversation_members_postgres.py" in command
 
 
 def test_postgres_job_requires_zero_skipped() -> None:

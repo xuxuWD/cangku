@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import allowed_tool_names, build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store, registered_model_keys
+from .bootstrap import allowed_tool_names, build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_member_store, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store, registered_model_keys
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 # P5a CRM（真源 specs/2026-09-17-crm-p5a-design.md §2.12）：路由层只做校验 / 视图 / 异常映射。
@@ -205,7 +205,10 @@ workforce_directory_service = WorkforceDirectoryService(
     knowledge_registry=knowledge_access_registry,
     task_store=store,
 )
-conversation_store = build_conversation_store(settings)
+# P2c-6 会话协作：成员表仓储（迁移 039）与对话仓储**共用同一实例**——
+# 读路径「本人 ∪ 成员」在仓储层生效，服务层的成员增删与参与者列表也读同一份数据。
+conversation_member_store = build_conversation_member_store(settings)
+conversation_store = build_conversation_store(settings, members=conversation_member_store)
 # P3 记忆层（规格 docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md §2.5/§2.8）：
 # 嵌入式服务开发环境缺 default 时由装配层回退到 FakeEmbeddingAdapter（仅验证链路）。
 memory_service = build_memory_service(settings, audit=audit_service)
@@ -235,6 +238,34 @@ tool_action_store = build_tool_action_store(settings)
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(
     settings, audit=audit_service, memory_store=memory_service.store
 )
+# 段二-4 对话入口路由（§3.7 Y2 / §3.2 第四条）：幂等行落 027 的 `workbench_execution_idempotency`。
+# P2c-6：提前装配——运行级读路径的成员可见性（`_member_can_read_run`）需要「运行 → 会话」反查，
+# 而该回调要注入下面的 `runtime_service`（**只放松读路径**，控制类动作不使用）。
+execution_idempotency_store = build_execution_idempotency_store(settings)
+
+
+def _member_can_read_run(context: UserContext, run_id: str) -> bool:
+    """**会话成员**能否读该运行（P2c-6 裁定 ⑤：仅运行级读端点使用）。
+
+    链路：`run_id` → 幂等行反查 `conversation_id` → 成员表 `permission_for` 非空 ⇒ `True`；
+    非对话触发的运行（无幂等行）/ 非成员 / **任何异常**一律 `False`（fail-closed，不猜测、不放松）。
+    控制类动作（pause / resume / cancel / 决议）**绝不**走这里。
+    """
+    try:
+        record = execution_idempotency_store.find_by_run(context.tenant_id, run_id)
+        conversation_id = getattr(record, "conversation_id", None)
+        if not conversation_id:
+            return False
+        return (
+            conversation_member_store.permission_for(
+                context.tenant_id, str(conversation_id), context.user_id
+            )
+            is not None
+        )
+    except Exception:  # noqa: BLE001 - 判定不可用 ⇒ 不放松
+        return False
+
+
 runtime_service = build_runtime_service(
     settings,
     store=store,
@@ -242,6 +273,7 @@ runtime_service = build_runtime_service(
     state_store=runtime_state_store,
     tool_actions=tool_action_store,
     usage_ledger=commercial_usage,
+    member_run_reader=_member_can_read_run,
 )
 # ②④ 的权威状态（§3.5 P1 第 3 条 / §8 U24）：**装配期单例**，`build_tool_execution`
 # （mint 侧写：`TokenBindingStore.record` + `ActiveExecutionRegistry.register`）与
@@ -273,8 +305,7 @@ body_cleanup_task = build_body_cleanup_task(settings, tool_execution_service, au
 if body_cleanup_task is not None:
     app.add_event_handler("startup", body_cleanup_task.start)
     app.add_event_handler("shutdown", body_cleanup_task.stop)
-# 段二-4 对话入口路由（§3.7 Y2 / §3.2 第四条）：幂等行落 027 的 `workbench_execution_idempotency`。
-execution_idempotency_store = build_execution_idempotency_store(settings)
+# 段二-4 对话入口路由的幂等仓储已在上方（`runtime_service` 之前）装配 —— 见 `_member_can_read_run`。
 # P2b 实时流（规格 §2.2/§2.3/§2.4）：流仓储 + 写入网关。**只有 `messages:stream` 路径写帧**；
 # 旧 `POST /messages` 走 `handle_message(stream=False)` ⇒ 零帧（零破坏哨兵）。
 conversation_stream_store = build_conversation_stream_store(settings)
@@ -282,12 +313,19 @@ conversation_stream_writer = build_conversation_stream_writer(
     settings, store=conversation_stream_store, audit=audit_service
 )
 # P2c-4 §2.11：会话服务需要流 / 幂等仓储（物理删除的按序跨仓储清理）⇒ 在两者装配之后构造。
+# P2c-6：账号仓储提前装配（会话协作要按账号 id 校验成员合法性并解析 display_name）——
+# 与 `ApprovalsService` 复用**同一实例**，不建第二个。
+account_service, account_repository = build_account_service(
+    settings, audit=audit_service, login_limiter=login_rate_limiter
+)
 conversation_service = build_conversation_service(
     settings,
     store=conversation_store,
     audit=audit_service,
     stream_store=conversation_stream_store,
     idempotency_store=execution_idempotency_store,
+    members=conversation_member_store,
+    accounts=account_repository,
 )
 conversation_execution_service = build_conversation_execution_service(
     settings,
@@ -336,9 +374,7 @@ planner_service, planner_store = build_planner_service(
 orchestration_service = build_orchestration_proposal_service(
     settings, metrics=run_metrics_service, audit=audit_service
 )
-account_service, _ = build_account_service(
-    settings, audit=audit_service, login_limiter=login_rate_limiter
-)
+# `account_service` / `account_repository` 已在会话服务装配处提前构建（P2c-6 复用同一实例）。
 approvals_service = ApprovalsService(
     task_store=store,
     proposal_store=planner_store,
@@ -1492,6 +1528,9 @@ class MessageView(BaseModel):
     tool_name: str | None = None
     tool_call_id: str | None = None
     created_at: datetime | None = None
+    # P2c-6（**只增**，可空）：发言账号 id；助手 / 工具 / 系统恒 `null`，
+    # 存量行 `null` ⇒ 前端展示回退为「发起人」（零破坏）。
+    sender_id: str | None = None
 
 
 class ConversationDetailView(ConversationView):
@@ -1577,6 +1616,7 @@ def _message_view(message: ConversationMessage) -> MessageView:
         tool_name=message.tool_name,
         tool_call_id=message.tool_call_id,
         created_at=message.created_at,
+        sender_id=message.sender_id,
     )
 
 
@@ -2083,7 +2123,108 @@ def _export_message_view(message: ConversationMessage) -> dict[str, object]:
         "tool_name": message.tool_name,
         "tool_call_id": message.tool_call_id,
         "created_at": message.created_at,
+        # P2c-6（**只增**）：导出的也是库里实际存在的字段——发言者原样带出，便于协作会话溯源。
+        "sender_id": message.sender_id,
     }
+
+
+# ------------------------------------------------------------ P2c-6 会话协作：分享与多端协同
+
+
+class ConversationMemberCreateRequest(BaseModel):
+    """添加成员请求体（`extra=forbid`：未知字段 `422`；`permission` 缺省 `read`）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    member_id: str = Field(min_length=1, max_length=128)
+    permission: str | None = Field(default=None, max_length=16)
+
+
+class ConversationMemberGrantView(BaseModel):
+    conversation_id: str
+    member_id: str
+    permission: str
+
+
+class ConversationMemberView(BaseModel):
+    """参与者条目：`display_name` / `role` 由账号解析（账号缺失 ⇒ 回退 `member_id` / `null`，不编造）。"""
+
+    member_id: str
+    display_name: str
+    role: str | None = None
+    # `read` / `write`；发起人为展示值 `owner`（不入库、不可撤销）。
+    permission: str
+    is_owner: bool = False
+    added_by: str | None = None
+    created_at: datetime | None = None
+
+
+class ConversationMemberListView(BaseModel):
+    items: list[ConversationMemberView]
+    total: int
+
+
+@app.post(
+    "/api/v1/conversations/{conversation_id}/members",
+    response_model=ConversationMemberGrantView,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_conversation_member(
+    conversation_id: str,
+    payload: ConversationMemberCreateRequest,
+    context: UserContext = Depends(current_user),
+) -> ConversationMemberGrantView:
+    """添加 / 覆盖会话成员（P2c-6 §2.16）：**仅会话本人**。
+
+    他人 / 跨租户 `404`；归档 `409`；非法成员（未知 / 跨租户 / 未审批 / `customer_admin`）或非法权限档 `422`；
+    **幂等**：权限档未变 ⇒ `201` 且不重复写审计。审计 `conversation.member.added`（受控键，不落姓名 / 手机号）。
+    """
+    try:
+        ensure_can_converse(context)
+        member = conversation_service.add_member(
+            context, conversation_id, member_id=payload.member_id, permission=payload.permission
+        )
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return ConversationMemberGrantView(
+        conversation_id=member.conversation_id, member_id=member.member_id, permission=member.permission
+    )
+
+
+@app.get(
+    "/api/v1/conversations/{conversation_id}/members", response_model=ConversationMemberListView
+)
+def list_conversation_members(
+    conversation_id: str, context: UserContext = Depends(current_user)
+) -> ConversationMemberListView:
+    """参与者列表（P2c-6 §2.16）：**本人或成员可见**（他人 / 跨租户 `404`）。
+
+    发起人列首位（`is_owner=true` / `permission="owner"`，不可撤销）；「最近活动时间」取会话 `updated_at`
+    （成员表不建活动时间列，**不做实时在线态**）。
+    """
+    try:
+        ensure_can_converse(context)
+        items = conversation_service.list_participants(context, conversation_id)
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    views = [ConversationMemberView(**item) for item in items]
+    return ConversationMemberListView(items=views, total=len(views))
+
+
+@app.delete("/api/v1/conversations/{conversation_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_conversation_member(
+    conversation_id: str, member_id: str, context: UserContext = Depends(current_user)
+) -> Response:
+    """撤销成员（P2c-6 §2.16）：**仅会话本人**；成功 `204`。
+
+    **幂等**：复删 / 目标不是成员（含发起人）一律 `204`（no-op，不重复写审计）；归档会话 `409`。
+    **已读内容不可撤回**（撤销只影响**新**的读取 / 发言请求 ⇒ `404`，不做「收回」语义）。
+    """
+    try:
+        ensure_can_converse(context)
+        conversation_service.remove_member(context, conversation_id, member_id)
+    except (ConversationStateConflict, InvalidConversation, ConversationNotFound, PolicyError) as exc:
+        _raise_conversation_http(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ------------------------------------------------------------ P3 记忆层（规格 2026-09-15-memory-layer-p3-design.md §2）
@@ -3603,8 +3744,9 @@ def start_runtime_run(task_id: str, payload: RuntimeRunCreate, context: UserCont
 
 @app.get("/api/v1/runs/{run_id}/events")
 def stream_runtime_events(run_id: str, cursor: str | None = None, context: UserContext = Depends(current_user)) -> list[dict[str, object]]:
+    """运行事件（**只读**）。P2c-6 裁定 ⑤：会话成员可见（`member_reader=True`，仅此读路径放松）。"""
     try:
-        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id)
+        _key, adapter, _state = runtime_service.adapter_for_task(context, run_id, member_reader=True)
         events = adapter.stream_events(run_id, cursor)
     except RunAccessDenied as exc:
         detail = str(exc)
@@ -3622,6 +3764,7 @@ def list_run_artifacts(
       跨租户 / 不可见 / 未知运行一律 `404`（不泄露存在性）；
     - **只返回元数据**（虚拟路径 / 变更类型 / 字节 / sha256 / 时间）——**不含** `tenant_id`、宿主真实路径与内容；
     - 保留期已到（`expires_at <= now`、尚未被周期任务清理）的条目**不再返回**（保留期外如实降级）。
+    - P2c-6 裁定 ⑤：**会话成员可见**——承载任务不可见时用成员判定兜底（`_member_can_read_run`）。
     """
     try:
         record = run_metrics_service.store.get(context.tenant_id, run_id)
@@ -3630,7 +3773,8 @@ def list_run_artifacts(
     try:
         store.get(context, record.task_id)
     except TaskNotFound as exc:
-        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+        if not _member_can_read_run(context, run_id):
+            raise HTTPException(status_code=404, detail="运行记录不存在") from exc
     items = run_artifact_store.list_for_run(context.tenant_id, run_id)
     return {
         "run_id": run_id,
@@ -3645,6 +3789,7 @@ def get_run_acceptance(run_id: str, context: UserContext = Depends(current_user)
 
     **纯读**：不调模型、不写库、不改运行状态。归属判定同运行接口（跨租户 / 不可见 / 未知运行 `404`）。
     三条件：① 步骤全部完成 ② 无未决审批 ③ `finish_reason` 为正常终态（`run_completed`）。
+    P2c-6 裁定 ⑤：**会话成员可见**（承载任务不可见时用成员判定兜底 + `member_reader=True`）。
     """
     try:
         record = run_metrics_service.store.get(context.tenant_id, run_id)
@@ -3653,9 +3798,10 @@ def get_run_acceptance(run_id: str, context: UserContext = Depends(current_user)
     try:
         store.get(context, record.task_id)
     except TaskNotFound as exc:
-        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+        if not _member_can_read_run(context, run_id):
+            raise HTTPException(status_code=404, detail="运行记录不存在") from exc
     try:
-        _key, _adapter, state = runtime_service.adapter_for_task(context, run_id)
+        _key, _adapter, state = runtime_service.adapter_for_task(context, run_id, member_reader=True)
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
     result = evaluate_acceptance(
@@ -3682,6 +3828,7 @@ def get_run_acceptance(run_id: str, context: UserContext = Depends(current_user)
 
 @app.get("/api/v1/runs/{run_id}/metrics", response_model=RunMetricsView)
 def get_run_metrics(run_id: str, context: UserContext = Depends(current_user)) -> RunMetricsView:
+    """运行概览（**只读**）。P2c-6 裁定 ⑤：会话成员可见（承载任务不可见时用成员判定兜底）。"""
     try:
         record = run_metrics_service.store.get(context.tenant_id, run_id)
     except RunRecordNotFound as exc:
@@ -3689,7 +3836,8 @@ def get_run_metrics(run_id: str, context: UserContext = Depends(current_user)) -
     try:
         store.get(context, record.task_id)
     except TaskNotFound as exc:
-        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+        if not _member_can_read_run(context, run_id):
+            raise HTTPException(status_code=404, detail="运行记录不存在") from exc
     return RunMetricsView(
         run_id=record.run_id,
         task_id=record.task_id,
@@ -3780,9 +3928,12 @@ class RunApprovalListView(BaseModel):
 
 @app.get("/api/v1/runs/{run_id}/approvals", response_model=RunApprovalListView)
 def list_run_approvals(run_id: str, context: UserContext = Depends(current_user)) -> RunApprovalListView:
-    """列出该运行的审批项（含已决议），供审批人查看待办与结果。"""
+    """列出该运行的审批项（含已决议），供审批人查看待办与结果。
+
+    P2c-6 裁定 ⑤：**只读列表**对会话成员可见；**决议端点不放松**（决议仍仅 CEO / 超管且不得自审）。
+    """
     try:
-        _key, _adapter, state = runtime_service.adapter_for_task(context, run_id)
+        _key, _adapter, state = runtime_service.adapter_for_task(context, run_id, member_reader=True)
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
     tools = {step.step_id: step.tool for step in state.plan.steps}

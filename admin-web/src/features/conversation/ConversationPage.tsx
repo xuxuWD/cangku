@@ -10,12 +10,15 @@ import { useRunArtifacts } from '../stage/useRunArtifacts'
 import { useRunApprovals } from '../stage/useRunApprovals'
 import { useRunOverview } from '../stage/useRunOverview'
 import {
+  addConversationMember,
   archiveConversation,
   createConversation,
   deleteConversation,
   exportMyConversations,
   getConversation,
+  listConversationMembers,
   listConversations,
+  removeConversationMember,
   sendConversationMessage,
   sendConversationMessageStream,
   setConversationMode,
@@ -36,10 +39,11 @@ import {
   conversationStatusLabel,
   conversationTitle,
   formatMessageTime,
-  roleLabel,
+  speakerLabel,
   type ConversationMode,
   type ConversationState,
   type ConversationStatus,
+  type MemberPermission,
 } from './types'
 
 const STATUS_FILTERS: Array<{ value: ConversationStatus | 'all'; label: string }> = [
@@ -129,6 +133,28 @@ export function ConversationPage({
     }
   }, [])
 
+  // P2c-6：参与者名单独立加载（发言人回溯与分享区块共用同一份数据）。
+  // 名单失败**不阻断**会话读取，也不编造姓名：界面按「会话成员 / 发起人」如实回落。
+  const loadParticipants = useCallback(async (id: string) => {
+    setState((old) => ({ ...old, participantsLoading: true, participantsError: null }))
+    try {
+      const data = await listConversationMembers(id)
+      setState((old) => ({
+        ...old,
+        participants: Array.isArray(data.items) ? data.items : [],
+        participantsLoading: false,
+        participantsError: null,
+      }))
+    } catch (error) {
+      setState((old) => ({
+        ...old,
+        participants: [],
+        participantsLoading: false,
+        participantsError: asConversationError(error),
+      }))
+    }
+  }, [])
+
   useEffect(() => { void loadList('all', 0) }, [loadList])
 
   // URL 里带 conversation 时直接打开该会话；切换会话时清空残留详情、草稿与流状态。
@@ -144,8 +170,13 @@ export function ConversationPage({
     setRestartToken((value) => value + 1)
     messageFrameSeqRef.current = 0
     setState((old) => ({ ...old, detail: null, detailError: null, sendError: null, streamNotice: null }))
-    if (conversationId) void loadDetail(conversationId, MESSAGE_PAGE_SIZE)
-  }, [conversationId, loadDetail])
+    // P2c-6：跨会话不沿用上一份参与者名单（名单只作展示，不本地造）。
+    setState((old) => ({ ...old, participants: [], participantsError: null, shareError: null }))
+    if (conversationId) {
+      void loadDetail(conversationId, MESSAGE_PAGE_SIZE)
+      void loadParticipants(conversationId)
+    }
+  }, [conversationId, loadDetail, loadParticipants])
 
   // 终态帧 ⇒ 关流后重取「消息 + 列表 + 运行概览」（消息权威仍在消息表）。
   const handleTerminal = () => {
@@ -289,6 +320,42 @@ export function ConversationPage({
       setState((old) => ({ ...old, detailError: asConversationError(error) }))
     } finally {
       setModeSaving(false)
+    }
+  }
+
+  // P2c-6 会话协作：添加成员（仅发起人；服务端权威回流，不做乐观更新）。
+  const shareMember = async (memberId: string, permission: MemberPermission) => {
+    if (!conversationId || state.sharing) return
+    setState((old) => ({ ...old, sharing: true, shareError: null }))
+    try {
+      const grant = await addConversationMember(conversationId, memberId, permission)
+      setState((old) => ({
+        ...old,
+        sharing: false,
+        shareError: null,
+        toast: `已添加成员 ${grant.member_id}（权限：${grant.permission === 'write' ? '可发言' : '仅查看'}）`,
+      }))
+      await loadParticipants(conversationId)
+    } catch (error) {
+      setState((old) => ({ ...old, sharing: false, shareError: asConversationError(error) }))
+    }
+  }
+
+  // P2c-6 会话协作：撤销成员（仅发起人）。**已读内容不可撤回**——只影响对方新的读取 / 发言。
+  const revokeMember = async (memberId: string) => {
+    if (!conversationId || state.sharing) return
+    setState((old) => ({ ...old, sharing: true, shareError: null }))
+    try {
+      await removeConversationMember(conversationId, memberId)
+      setState((old) => ({
+        ...old,
+        sharing: false,
+        shareError: null,
+        toast: `已撤销成员 ${memberId}（对方新的读取会被拒绝；已读内容不可撤回）`,
+      }))
+      await loadParticipants(conversationId)
+    } catch (error) {
+      setState((old) => ({ ...old, sharing: false, shareError: asConversationError(error) }))
     }
   }
 
@@ -562,7 +629,7 @@ export function ConversationPage({
                       {detail.messages.map((message) => (
                         <article className={`conversation-message conversation-message--${message.role}`} key={message.message_id}>
                           <div className="conversation-message__head">
-                            <strong>{roleLabel(message.role)}</strong>
+                            <strong>{speakerLabel(message, state.participants)}</strong>
                             {message.role === 'assistant' && message.stub && <span className="status-badge status-reviewing">桩回复</span>}
                             {message.tool_name && <span className="ws-code">{message.tool_name}</span>}
                             <span>{formatMessageTime(message.created_at)}</span>
@@ -675,6 +742,16 @@ export function ConversationPage({
               canDecide={canDecide}
               expanded={stageOpen}
               onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}
+              // P2c-6：参与者与分享（舞台呈现；数据与增删回调都由本页提供，舞台只渲染）。
+              collaboration={{
+                items: state.participants,
+                lastActivityAt: detail?.updated_at ?? null,
+                loading: state.participantsLoading,
+                error: state.shareError?.message ?? state.participantsError?.message ?? null,
+                sharing: state.sharing,
+                onAdd: (memberId, permission) => void shareMember(memberId, permission),
+                onRemove: (memberId) => void revokeMember(memberId),
+              }}
             />
             </div>
           </>
