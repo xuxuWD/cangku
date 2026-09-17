@@ -69,3 +69,59 @@ export function sendConversationMessage(conversationId: string, content: string,
 export function archiveConversation(conversationId: string): Promise<Conversation> {
   return request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/archive`, { method: 'POST' })
 }
+
+// ---------------------------------------------------------------- P2c-1 实时流（P2b 契约消费）
+
+/**
+ * 打开 SSE 读端（`GET .../stream`）。**不用 `EventSource`**：认证与租户态走自定义请求头，
+ * 且续播需要自定义 `Last-Event-ID`，只有 `fetch` + 读流能同时满足。
+ *
+ * 起点：服务端取 `max(Last-Event-ID, after_seq)`，缺省 0（从第一帧补发）；
+ * 这里只在续播（`since > 0`）时发头，首连不带头（即 after_seq 缺省 = 0）。
+ */
+export async function openConversationStream(params: {
+  conversationId: string
+  runId?: string
+  since: number
+  signal: AbortSignal
+}): Promise<Response> {
+  const query = new URLSearchParams()
+  if (params.runId) query.set('run_id', params.runId)
+  const search = query.toString()
+  const extra: HeadersInit = params.since > 0 ? { 'Last-Event-ID': String(params.since) } : {}
+  return await fetch(
+    `${apiBase}/conversations/${encodeURIComponent(params.conversationId)}/stream${search ? `?${search}` : ''}`,
+    { headers: headers({ Accept: 'text/event-stream', ...extra }), signal: params.signal },
+  )
+}
+
+export interface StreamSendResult {
+  body: MessageCreateResponse
+  /** 本次运行 id（响应头 `X-Stream-Run-Id`；无运行时为 null）——舞台据此加载概览与审批。 */
+  runId: string | null
+}
+
+/**
+ * 发送一条用户消息（**实时流路径**）：请求体 / 头 / 响应体与旧端点逐字一致，
+ * 唯一新增是响应头 `X-Stream-Run-Id`（P2b 契约）。带幂等键 ⇒ 真实执行并写帧。
+ */
+export async function sendConversationMessageStream(
+  conversationId: string,
+  content: string,
+  idempotencyKey: string,
+): Promise<StreamSendResult> {
+  let response: Response
+  try {
+    response = await fetch(`${apiBase}/conversations/${encodeURIComponent(conversationId)}/messages:stream`, {
+      method: 'POST',
+      headers: headers({ 'Idempotency-Key': idempotencyKey }),
+      body: JSON.stringify({ content }),
+    })
+  } catch {
+    throw conversationErrorFromStatus(0)
+  }
+  if (!response.ok) throw conversationErrorFromStatus(response.status, await detailFrom(response))
+  const body = await response.json() as MessageCreateResponse
+  const runId = response.headers?.get?.('X-Stream-Run-Id') ?? body.run_id ?? null
+  return { body, runId }
+}

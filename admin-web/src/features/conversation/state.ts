@@ -15,6 +15,7 @@ export const initialConversationState: ConversationState = {
   createError: null,
   sending: false,
   sendError: null,
+  streamNotice: null,
   archiving: false,
   toast: null,
 }

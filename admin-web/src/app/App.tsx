@@ -18,9 +18,10 @@ import { CrmProgressPage } from '../features/crm/CrmProgressPage'
 import { AppShell, type AppView } from './AppShell'
 import { useEffect, useState } from 'react'
 
-// 除运行详情（需 run 参数）外，其余视图都能用一个查询串表达；首页是默认视图，查询串留空。
+// 除运行详情（需 run 参数）外，其余视图都能用一个查询串表达。
+// P2c-1 起默认视图 = 对话（主轴）；空查询串与未知 ?view= 一并回落对话，「概览」（原首页）保留显式入口 ?view=home。
 const VIEW_QUERY: Record<Exclude<AppView, 'run'>, string> = {
-  home: '',
+  home: '?view=home',
   workbench: '?view=workbench',
   conversation: '?view=conversation',
   history: '?view=history',
@@ -81,7 +82,8 @@ function routeFromLocation(): Route {
   if (view && DIRECT_VIEWS.includes(view as AppView)) return { view: view as AppView, taskId }
   // 只带 task 参数时归到内容工作台（历史草稿与通知的跳转都走这条）。
   if (taskId) return { view: 'workbench', taskId }
-  return { view: 'home' }
+  // 默认视图 = 对话（P2c-1 主轴）；未知 ?view= 与空查询串一并回落对话。
+  return { view: 'conversation' }
 }
 
 export default function App() {

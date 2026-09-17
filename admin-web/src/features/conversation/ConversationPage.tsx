@@ -1,15 +1,24 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppView } from '../../app/AppShell'
 import { Icon } from '../../components/Icon'
 import { Toast } from '../../components/Toast'
+import { ApprovalCard } from '../stage/ApprovalCard'
+import { StagePanel } from '../stage/StagePanel'
+import { useRunApprovals } from '../stage/useRunApprovals'
+import { useRunOverview } from '../stage/useRunOverview'
 import {
   archiveConversation,
   createConversation,
   getConversation,
   listConversations,
   sendConversationMessage,
+  sendConversationMessageStream,
 } from './api'
+import { parseToolInvocation } from './invocation'
+import { ProcessBar } from './ProcessBar'
 import { asConversationError, initialConversationState } from './state'
+import { useRunStream } from './useRunStream'
+import { useSlotVisible } from './useSlotVisible'
 import {
   CONVERSATION_PAGE_SIZE,
   MAX_MESSAGE_LENGTH,
@@ -43,13 +52,30 @@ export function ConversationPage({
   onSelectConversation,
 }: {
   conversationId?: string
-  onNavigate?: (view: AppView) => void
+  onNavigate?: (view: AppView, taskId?: string, runId?: string) => void
   onSelectConversation: (conversationId: string | undefined) => void
 }) {
   const [state, setState] = useState<ConversationState>(initialConversationState)
   const [draft, setDraft] = useState('')
   const [messagesLimit, setMessagesLimit] = useState(MESSAGE_PAGE_SIZE)
   const [creating, setCreating] = useState(false)
+  // P2c-1：本次会话的「当前 run」由发送响应（`X-Stream-Run-Id`）给出；舞台与审批据此加载。
+  const [streamRunId, setStreamRunId] = useState<string | undefined>(undefined)
+  const [streamActive, setStreamActive] = useState(false)
+  const [restartToken, setRestartToken] = useState(0)
+  const [terminalToken, setTerminalToken] = useState(0)
+  // 窄屏时舞台折叠为抽屉（默认收起）；宽屏由 CSS 强制展示，按钮不可见。
+  const [stageOpen, setStageOpen] = useState(false)
+
+  const rootRef = useRef<HTMLElement | null>(null)
+  const messagesLimitRef = useRef(messagesLimit)
+  messagesLimitRef.current = messagesLimit
+  const stateRef = useRef(state)
+  stateRef.current = state
+  const messageFrameSeqRef = useRef(0)
+
+  // 切走即断开（§2.3）：视图槽 hidden / 标签页不可见时不保持长连接。
+  const visible = useSlotVisible(rootRef)
 
   const loadList = useCallback(async (status: ConversationStatus | 'all', offset: number) => {
     setState((old) => ({ ...old, conversationsLoading: true, conversationsError: null }))
@@ -87,17 +113,55 @@ export function ConversationPage({
 
   useEffect(() => { void loadList('all', 0) }, [loadList])
 
-  // URL 里带 conversation 时直接打开该会话；切换会话时清空残留详情与草稿。
+  // URL 里带 conversation 时直接打开该会话；切换会话时清空残留详情、草稿与流状态。
   useEffect(() => {
     setDraft('')
     setMessagesLimit(MESSAGE_PAGE_SIZE)
-    setState((old) => ({ ...old, detail: null, detailError: null, sendError: null }))
+    setStreamRunId(undefined)
+    setStreamActive(false)
+    setRestartToken((value) => value + 1)
+    messageFrameSeqRef.current = 0
+    setState((old) => ({ ...old, detail: null, detailError: null, sendError: null, streamNotice: null }))
     if (conversationId) void loadDetail(conversationId, MESSAGE_PAGE_SIZE)
   }, [conversationId, loadDetail])
+
+  // 终态帧 ⇒ 关流后重取「消息 + 列表 + 运行概览」（消息权威仍在消息表）。
+  const handleTerminal = () => {
+    setTerminalToken((value) => value + 1)
+    const id = conversationId
+    if (!id) return
+    void loadDetail(id, messagesLimitRef.current)
+    void loadList(stateRef.current.statusFilter, stateRef.current.listOffset)
+  }
+
+  const stream = useRunStream({
+    conversationId,
+    runId: streamRunId,
+    enabled: visible && streamActive,
+    restartToken,
+    onTerminal: handleTerminal,
+  })
+
+  // `message.*` 帧只作「已落定」信号：触发一次详情重取（正文由消息表权威提供，帧不落正文）。
+  useEffect(() => {
+    const latest = stream.frames
+      .filter((frame) => frame.kind === 'message.user' || frame.kind === 'message.assistant')
+      .reduce((max, frame) => Math.max(max, frame.seq), 0)
+    if (latest <= messageFrameSeqRef.current) return
+    messageFrameSeqRef.current = latest
+    if (conversationId) void loadDetail(conversationId, messagesLimitRef.current)
+  }, [stream.frames, conversationId, loadDetail])
+
+  const overview = useRunOverview(streamRunId, terminalToken)
+  const approvals = useRunApprovals(streamRunId)
+  const role = import.meta.env.VITE_USER_ROLE || 'super_admin'
+  const canDecide = (role === 'ceo' || role === 'super_admin') && !overview.isInitiator
+  const pendingApprovals = approvals.items.filter((item) => item.status === 'pending')
 
   const forbidden = state.conversationsError?.status === 403
   const archived = state.detail?.status !== 'active'
   const canSend = draft.trim().length > 0 && !state.sending && !archived
+  const draftInvocation = parseToolInvocation(draft)
 
   const startConversation = async () => {
     setCreating(true)
@@ -117,9 +181,37 @@ export function ConversationPage({
   const send = async () => {
     const content = draft.trim()
     if (!conversationId || !canSend || !content) return
-    setState((old) => ({ ...old, sending: true, sendError: null }))
+    setState((old) => ({ ...old, sending: true, sendError: null, streamNotice: null }))
     try {
-      await sendConversationMessage(conversationId, content, newIdempotencyKey())
+      const invocation = parseToolInvocation(content)
+      if (invocation) {
+        // 实时流路径（§2.4）：先重开读端（缺省 run 解析会自动发现新 run，保证「边执行边看」），
+        // 响应带回 `X-Stream-Run-Id` 后锁定该 run（读端按显式 run 重连并续播）。
+        setStreamRunId(undefined)
+        setStreamActive(true)
+        setRestartToken((value) => value + 1)
+        const result = await sendConversationMessageStream(conversationId, content, newIdempotencyKey())
+        if (result.runId) {
+          setStreamRunId(result.runId)
+          setRestartToken((value) => value + 1)
+        } else {
+          // 没有运行 ⇒ 后端未装配真实执行（回落桩路径）：**如实告知并关流**，
+          // 不留下一个永远「执行中」的假过程条（不谎报）。
+          setStreamActive(false)
+          setState((old) => ({
+            ...old,
+            streamNotice: '未产生运行：后端未装配真实执行，本次按桩回复处理（没有过程流）。',
+          }))
+        }
+        if (result.body.status === 'pending_approval') {
+          // 待批后不再写帧（P2b 已知限制）⇒ 主动关流，避免挂着等 6h 悬挂兜底。
+          setStreamActive(false)
+          setState((old) => ({ ...old, toast: '已提交审批，决议后以运行详情为准' }))
+        }
+      } else {
+        // 纯文本 ⇒ 不带键（桩路径：不写帧、无流、无副作用）。
+        await sendConversationMessage(conversationId, content)
+      }
       setDraft('')
       // 服务端已确认落库；重取详情拿到真实顺序与最新总数，不做乐观拼接。
       const nextLimit = Math.max(messagesLimit, (state.detail?.messages_total ?? 0) + 2)
@@ -160,7 +252,7 @@ export function ConversationPage({
 
   return (
     <>
-      <main className="main-content content-history conversation">
+      <main className="main-content content-history conversation" ref={rootRef}>
         <div className="page-head">
           <div>
             <h1 className="page-title">对话</h1>
@@ -188,7 +280,16 @@ export function ConversationPage({
             <div><strong>无法使用对话</strong><p>{state.conversationsError?.message}</p></div>
           </div>
         ) : (
-          <div className="conversation-layout">
+          <>
+            <button
+              className="stage-toggle"
+              type="button"
+              aria-expanded={stageOpen}
+              onClick={() => setStageOpen((value) => !value)}
+            >
+              {stageOpen ? '收起过程与运行' : '展开过程与运行'}
+            </button>
+            <div className="conversation-layout conversation-layout--stage">
             <section className="history-panel" aria-label="会话列表">
               <div className="panel-header">
                 <h2>会话</h2>
@@ -221,7 +322,7 @@ export function ConversationPage({
               )}
 
               {!state.conversationsLoading && !state.conversationsError && state.conversations.length === 0 && (
-                <div className="empty-state"><strong>还没有会话</strong><span>点击「新建会话」，或回首页直接说第一句话。</span></div>
+                <div className="empty-state"><strong>还没有会话</strong><span>点击「新建会话」开始，或在输入框里直接发第一条消息。</span></div>
               )}
 
               {!state.conversationsLoading && !state.conversationsError && state.conversations.map((item) => (
@@ -315,6 +416,22 @@ export function ConversationPage({
                     </div>
                   )}
 
+                  <ProcessBar frames={stream.frames} status={stream.status} error={stream.error} noData={stream.noData} />
+
+                  {pendingApprovals.length > 0 && (
+                    <div className="conversation-approvals" aria-label="待审批">
+                      {pendingApprovals.map((approval) => (
+                        <ApprovalCard
+                          key={approval.approval_id}
+                          approval={approval}
+                          canDecide={canDecide}
+                          deciding={approvals.decidingId === approval.approval_id}
+                          onDecide={(approved) => void approvals.decide(approval.approval_id, approved)}
+                        />
+                      ))}
+                    </div>
+                  )}
+
                   {detail.messages.length < detail.messages_total && (
                     <div className="history-pagination">
                       <button className="button" type="button" disabled={state.detailLoading} onClick={loadMoreMessages}>加载更多消息</button>
@@ -341,7 +458,13 @@ export function ConversationPage({
                         onChange={(event) => setDraft(event.target.value)}
                       />
                       <div className="composer-bar">
-                        <span className="composer-field">{archived ? '会话已归档，不能发送' : `最长 ${MAX_MESSAGE_LENGTH} 字符`}</span>
+                        <span className="composer-field">
+                          {archived
+                            ? '会话已归档，不能发送'
+                            : draftInvocation
+                              ? `结构化调用：${draftInvocation.tool_key}（按真实执行路径发送）`
+                              : `最长 ${MAX_MESSAGE_LENGTH} 字符 · 纯文本不触发真实执行`}
+                        </span>
                         <button className="composer-send" type="submit" disabled={!canSend} aria-label="发送消息">
                           <Icon name="send" size={18} />
                         </button>
@@ -359,11 +482,28 @@ export function ConversationPage({
                         <div><strong>消息发送失败</strong><p>{state.sendError.message}</p></div>
                       </div>
                     )}
+
+                    {state.streamNotice && (
+                      <div className="notice" role="status">
+                        <div><strong>本次没有过程流</strong><p>{state.streamNotice}</p></div>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
             </section>
-          </div>
+
+            <StagePanel
+              runId={streamRunId}
+              stream={stream}
+              overview={overview}
+              approvals={approvals}
+              canDecide={canDecide}
+              expanded={stageOpen}
+              onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}
+            />
+            </div>
+          </>
         )}
       </main>
       <Toast message={state.toast} />

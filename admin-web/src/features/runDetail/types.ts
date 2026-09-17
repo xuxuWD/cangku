@@ -140,9 +140,11 @@ export const APPROVAL_STATUS_LABELS: Record<string, string> = {
 }
 
 // 事件 payload 只允许渲染这些字段，避免把适配器带出的意外内容透到界面。
+// `tool_key` 为 P2c-1 新增的受控展示字段（工具键本身非敏感；参数值 / digest 仍不渲染）。
 export const RUN_EVENT_PAYLOAD_FIELDS: Array<{ key: string; label: string }> = [
   { key: 'step_id', label: '步骤' },
   { key: 'tool', label: '工具' },
+  { key: 'tool_key', label: '工具键' },
   { key: 'status', label: '状态' },
   { key: 'reason', label: '原因' },
   { key: 'approval_id', label: '审批' },

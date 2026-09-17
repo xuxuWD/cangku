@@ -1241,7 +1241,7 @@ button, select, input, textarea { font: inherit }
 
 /* ------------------------------------------------------------ 对话 */
 
-.conversation { max-width: 1180px }
+.conversation { max-width: 1440px }
 
 .conversation-layout {
   display: grid;
@@ -1300,6 +1300,101 @@ button, select, input, textarea { font: inherit }
 
 .conversation-composer { padding: 0 20px 20px }
 .conversation-composer .notice { margin-top: 12px }
+
+/* ------------------------------------------- P2c-1：三区布局与右侧舞台 */
+
+.conversation-layout--stage {
+  grid-template-columns: minmax(230px, 290px) minmax(0, 1fr) minmax(280px, 380px);
+}
+
+.stage-toggle { display: none }
+
+.conversation-stage {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.stage-panel { display: grid }
+.stage-panel .empty-state,
+.stage-panel .loading-state { padding: 14px 16px }
+.stage-hint { margin: 0; padding: 10px 20px 16px; font-size: 11px; color: var(--fg-muted) }
+
+.process-bar { padding: 0 20px 12px }
+.process-bar__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--bg-inset);
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+.process-bar__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-muted); flex: none }
+.process-bar__dot.active { background: var(--accent); animation: process-pulse 1.2s ease-in-out infinite }
+@keyframes process-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
+.process-bar .process-timeline { padding: 10px 0 0 }
+
+.process-timeline { padding: 12px 16px }
+.process-timeline__status { margin: 0 0 8px; font-size: 11px; color: var(--fg-muted) }
+.process-timeline__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.process-row {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--bg-card);
+}
+.process-row__line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--fg-primary) }
+.process-row__seq { color: var(--fg-muted); font-variant-numeric: tabular-nums }
+.process-row__kind { font-weight: 600 }
+.process-row__reason { color: var(--warning) }
+.process-row__payload {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-inset);
+}
+.process-row__field { display: flex; gap: 8px; font-size: 11px }
+.process-row__field dt { margin: 0; min-width: 56px; color: var(--fg-muted) }
+.process-row__field dd { margin: 0; color: var(--fg-secondary); overflow-wrap: anywhere }
+
+.conversation-approvals { display: grid; gap: 10px; padding: 0 20px 16px }
+.approval-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-control);
+  background: var(--warning-soft);
+}
+.approval-card__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px }
+.approval-card__meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--fg-muted) }
+.approval-card__actions { display: flex; gap: 8px }
+.approval-card__hint { margin: 0; font-size: 11px; color: var(--fg-muted) }
+
+/* 窄屏：舞台折叠为抽屉（默认收起，按钮开合）——只影响布局，不影响数据与权限语义。 */
+@media (max-width: 1280px) {
+  .conversation-layout--stage { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) }
+  .stage-toggle { display: inline-flex; margin: 0 0 12px }
+  .conversation-stage { display: none }
+  .conversation-stage--open { display: grid; grid-column: 1 / -1 }
+}
 
 /* -------------------------------------------------- 首页：次要入口 */
 

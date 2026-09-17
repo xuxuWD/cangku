@@ -27,17 +27,23 @@ describe('App', () => {
   })
   afterEach(() => vi.unstubAllGlobals())
 
-  it('shows the home entry point by default', async () => {
+  it('opens the conversation page by default and renders the grouped sidebar', async () => {
     render(<App />)
 
-    expect(await screen.findByRole('heading', { name: '数字员工，我帮你' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '开始对话' })).toBeInTheDocument()
+    // P2c-1：对话是主轴（默认视图）
+    expect(await screen.findByRole('heading', { name: '对话' })).toBeInTheDocument()
+    // 侧栏按 Q10 落地为 6 组（「资产」组因对应前端页面未落地而不建空入口）
+    for (const label of ['对话', '任务与项目', '员工', '知识', '治理', '客户与商务']) {
+      expect(screen.getByText(label, { selector: '.side-label' })).toBeInTheDocument()
+    }
+    // 原「首页」归档为「概览」，入口保留且可用
+    expect(screen.getByText('概览', { selector: '.nav-item' })).toBeInTheDocument()
   })
 
   it('navigates to the content workbench from the sidebar', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     await user.click(screen.getByText('内容工作台', { selector: '.nav-item' }))
 
@@ -59,7 +65,7 @@ describe('App', () => {
   it('navigates to the knowledge access page from the sidebar', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     await user.click(screen.getByText('知识权限管理', { selector: '.nav-item' }))
 
@@ -87,7 +93,7 @@ describe('App', () => {
   it('navigates to the workforce roster page from the sidebar', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     await user.click(screen.getByText('员工与岗位', { selector: '.nav-item' }))
 
@@ -98,7 +104,7 @@ describe('App', () => {
   it('navigates to the workforce settings page from the sidebar', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     await user.click(screen.getByText('数字员工设置', { selector: '.nav-item' }))
 
@@ -109,7 +115,7 @@ describe('App', () => {
   it('navigates to the usage and billing page from the sidebar', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     await user.click(screen.getByText('用量与费用', { selector: '.nav-item' }))
 
@@ -120,7 +126,7 @@ describe('App', () => {
   it('navigates to the CRM accounts page from the sidebar', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -139,7 +145,7 @@ describe('App', () => {
   it('navigates to the conversation page from the sidebar', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     await user.click(screen.getByText('对话', { selector: '.nav-item' }))
 
@@ -167,12 +173,12 @@ describe('App', () => {
     expect(screen.getByText('桩回复', { selector: '.status-badge' })).toBeInTheDocument()
   })
 
-  it('falls back to the home page for an unknown view', async () => {
+  it('falls back to the conversation page for an unknown view', async () => {
     window.history.replaceState({}, '', '/?view=unknown')
 
     render(<App />)
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: '数字员工，我帮你' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('heading', { name: '对话' })).toBeInTheDocument())
   })
 
   it('opens the content workbench when only a task id is present', async () => {
@@ -185,21 +191,27 @@ describe('App', () => {
 
   it('updates the rendered view when the browser history changes', async () => {
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     window.history.pushState({}, '', '/?view=knowledge')
     window.dispatchEvent(new PopStateEvent('popstate'))
     await waitFor(() => expect(screen.getByRole('heading', { name: '知识权限管理' })).toBeInTheDocument())
 
-    window.history.pushState({}, '', '/')
+    // 「概览」有显式入口（?view=home），不再依赖空查询串
+    window.history.pushState({}, '', '/?view=home')
     window.dispatchEvent(new PopStateEvent('popstate'))
     await waitFor(() => expect(screen.getByRole('heading', { name: '数字员工，我帮你' })).toBeInTheDocument())
+
+    // 空查询串 = 默认视图（对话）
+    window.history.pushState({}, '', '/')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await waitFor(() => expect(screen.getByRole('heading', { name: '对话' })).toBeInTheDocument())
   })
 
   it('switches the theme from the sidebar and persists the choice', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     expect(screen.getByRole('button', { name: '跟随系统' })).toHaveAttribute('aria-pressed', 'true')
 
@@ -238,31 +250,35 @@ describe('App', () => {
   it('keeps the home draft after navigating away and back', async () => {
     const user = userEvent.setup()
     render(<App />)
+    await screen.findByRole('heading', { name: '对话' })
+
+    // 「概览」（原首页）不再是默认视图，先进去再输入
+    await user.click(screen.getByText('概览', { selector: '.nav-item' }))
     await screen.findByRole('heading', { name: '数字员工，我帮你' })
 
     await user.type(screen.getByLabelText('想对数字员工说的话'), '整理本周客户反馈')
     await user.click(screen.getByText('内容工作台', { selector: '.nav-item' }))
     await waitFor(() => expect(screen.getByRole('heading', { name: '内容工作台' })).toBeInTheDocument())
 
-    await user.click(screen.getByText('首页', { selector: '.nav-item' }))
+    await user.click(screen.getByText('概览', { selector: '.nav-item' }))
 
-    // 切页不再卸载首页 → 草稿必须还在（这正是 D19 的目的）
+    // 切页不再卸载已访问视图 → 草稿必须还在（这正是 D19 的目的）
     expect(await screen.findByLabelText('想对数字员工说的话')).toHaveValue('整理本周客户反馈')
   })
 
   it('keeps visited views mounted and only toggles visibility', async () => {
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     await user.click(screen.getByText('内容工作台', { selector: '.nav-item' }))
     await waitFor(() => expect(screen.getByRole('heading', { name: '内容工作台' })).toBeInTheDocument())
-    await user.click(screen.getByText('首页', { selector: '.nav-item' }))
+    await user.click(screen.getByText('概览', { selector: '.nav-item' }))
     await screen.findByRole('heading', { name: '数字员工，我帮你' })
 
     // 访问过的视图仍在 DOM 里（只是 hidden），当前视图不隐藏
-    const hiddenSlot = document.querySelector('.view-slot[hidden]')
-    expect(hiddenSlot?.textContent).toContain('内容工作台')
+    const hiddenTexts = Array.from(document.querySelectorAll('.view-slot[hidden]')).map((node) => node.textContent ?? '')
+    expect(hiddenTexts.some((text) => text.includes('内容工作台'))).toBe(true)
     expect(document.querySelectorAll('.view-slot:not([hidden])')).toHaveLength(1)
   })
 
@@ -275,7 +291,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
     render(<App />)
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: '对话' })
 
     const requested = () => fetchMock.mock.calls.map(([input]) => String(input))
     // 未访问过的视图不挂载、也就不发请求（否则启动瞬间会打出十几个页面的并发请求）

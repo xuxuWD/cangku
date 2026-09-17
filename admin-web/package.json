@@ -2,10 +2,18 @@
   "name": "company-workbench-admin-web",
   "private": true,
   "version": "0.1.0",
-  "engines": {"node": ">=22"},
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
-  "scripts": {"dev":"vite","build":"tsc -b && vite build","test":"vitest","test:watch":"vitest"},
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "test": "vitest",
+    "test:watch": "vitest"
+  },
   "dependencies": {
+    "eventsource-parser": "4.1.1",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

@@ -23,29 +23,55 @@ export type AppView =
   | 'crmContracts'
   | 'crmProgress'
 
-const navigation: Array<{ icon: IconName; label: string; view: AppView }> = [
-  { icon: 'home', label: '首页', view: 'home' },
-  { icon: 'chat', label: '对话', view: 'conversation' },
-  { icon: 'sparkle', label: '内容工作台', view: 'workbench' },
-  { icon: 'bell', label: '通知', view: 'inbox' },
-  { icon: 'history', label: '历史草稿', view: 'history' },
-  { icon: 'project', label: '协同动态', view: 'dynamics' },
-  { icon: 'user', label: '员工与岗位', view: 'workforce' },
-  { icon: 'access', label: '知识权限管理', view: 'knowledge' },
-  { icon: 'agent', label: '数字员工设置', view: 'workforceSettings' },
-  { icon: 'model', label: '用量与费用', view: 'billing' },
-  { icon: 'check', label: '安全与审计', view: 'audit' },
-  { icon: 'user', label: '客户', view: 'crmAccounts' },
-  { icon: 'project', label: '商机', view: 'crmOpportunities' },
-  { icon: 'document', label: '报价', view: 'crmQuotes' },
-  { icon: 'content', label: '合同', view: 'crmContracts' },
-  { icon: 'model', label: '进度概览', view: 'crmProgress' },
-]
+interface NavItem {
+  icon: IconName
+  label: string
+  view: AppView
+}
 
-/** 侧栏分组标签：只是把入口归类，不引入任何统计数字。 */
-const SECTIONS: Array<{ label: string; from: number; to: number }> = [
-  { label: '工作台', from: 0, to: 6 },
-  { label: '管理', from: 6, to: navigation.length },
+/**
+ * 侧栏分组（P2c-1 / 立项 §17.2 Q10 落地）：
+ * 「对话」是主轴（默认视图）；其余入口按能力归档。
+ * 纪律：**每条入口必须指向已交付且可用的页面**，不摆空入口——
+ * 「资产」（记忆与画像 / 技能与工具）与「数字员工工作看板」的前端页面尚未落地，故本期不建。
+ */
+const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
+  { label: '对话', items: [{ icon: 'chat', label: '对话', view: 'conversation' }] },
+  {
+    label: '任务与项目',
+    items: [
+      { icon: 'home', label: '概览', view: 'home' },
+      { icon: 'sparkle', label: '内容工作台', view: 'workbench' },
+      { icon: 'history', label: '历史草稿', view: 'history' },
+      { icon: 'project', label: '协同动态', view: 'dynamics' },
+    ],
+  },
+  {
+    label: '员工',
+    items: [
+      { icon: 'user', label: '员工与岗位', view: 'workforce' },
+      { icon: 'agent', label: '数字员工设置', view: 'workforceSettings' },
+    ],
+  },
+  { label: '知识', items: [{ icon: 'access', label: '知识权限管理', view: 'knowledge' }] },
+  {
+    label: '治理',
+    items: [
+      { icon: 'check', label: '安全与审计', view: 'audit' },
+      { icon: 'bell', label: '通知', view: 'inbox' },
+      { icon: 'model', label: '用量与费用', view: 'billing' },
+    ],
+  },
+  {
+    label: '客户与商务',
+    items: [
+      { icon: 'user', label: '客户', view: 'crmAccounts' },
+      { icon: 'project', label: '商机', view: 'crmOpportunities' },
+      { icon: 'document', label: '报价', view: 'crmQuotes' },
+      { icon: 'content', label: '合同', view: 'crmContracts' },
+      { icon: 'model', label: '进度概览', view: 'crmProgress' },
+    ],
+  },
 ]
 
 const ROLE_LABELS: Record<string, string> = {
@@ -117,8 +143,7 @@ export function AppShell({
         </div>
 
         <nav className="sidebar-nav" aria-label="主导航">
-          {SECTIONS.map((section) => {
-            const items = navigation.slice(section.from, section.to)
+          {NAV_GROUPS.map((section) => {
             const isCollapsed = collapsed.has(section.label)
             return (
               <div className="side-section" key={section.label}>
@@ -132,7 +157,7 @@ export function AppShell({
                   <Icon name="chevron" size={12} className={isCollapsed ? 'flip' : ''} />
                 </button>
                 {!isCollapsed &&
-                  items.map((item) => (
+                  section.items.map((item) => (
                     <div
                       className={`nav-item ${item.view === activeView ? 'active' : ''}`}
                       role={onNavigate ? 'button' : undefined}
