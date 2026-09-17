@@ -747,7 +747,7 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 
 ### 已知限制
 
-- **非流式**：⑧ 步执行期间无过程反馈，用户可能面对「等一会儿才出结果」（过程事件属 P2b）。
+- **非流式**：⑧ 步执行期间无过程反馈，用户可能面对「等一会儿才出结果」。**2026-09-17 更新（P2b）**：过程反馈经**独立通道**提供——`POST .../messages:stream` + `GET .../stream`（SSE，见「实时流与过程事件（P2b）」章节）；**本端点的同步语义与全部分支保持不变**（流是伴随通道，不是本端点的行为变更）。
 - **终止只能由容器层实现**：dsh 无 `cancel`、无 `session-close`、无版本协商；超时与终止一律由容器层承担。
 - **黑名单是兜底**：看不到脚本内部；本段按 §3.2.1 的 Q1 锁定值**禁止脚本执行**、只读集仅 `ls/cat/head/tail/wc/stat/file`、禁止管道与 `xargs`。放宽属规格变更。
 - **执行闸门此前拦不到真实副作用**（段一无真实工具）；本段接入后该闸门才真正生效。
@@ -846,5 +846,138 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 - `POST /api/v1/evolution/cases/{case_id}/supersede`：替代用例，请求体 `{"input_snapshot"?, "expectation"?}`（**至少一项**，否则 `422`）；成功返回**新条目**（草稿，继承套件与来源），旧条目 `archived` 且链到新条目。
 - `GET /api/v1/evolution/eval-runs?suite_key=&limit=&offset=`：评测运行列表（离线运行器产出；只读）。
 - `GET /api/v1/evolution/eval-runs/{eval_run_id}`：运行详情，含 `results`（逐例 `{case_id, passed, detail}`；明细不含正文）。
+
+## CRM（P5a：客户主数据 + 商务主线 + 智能化打底）
+
+> 口径：`docs/superpowers/specs/2026-09-17-crm-p5a-design.md`（已评审 2026-09-17；迁移 `035_crm_core`，12 表）。
+> **状态 2026-09-17：已实现（P5a）**；**发票 / 电子签章 / 工单门户 / 营销自动化 / 触达渠道为二期**（规格 §1.5），本节**不承诺**任何二期能力。
+> **权限**：读 / 写 = 本人负责对象（`owner_id`）；`department_lead` / `ceo` / `super_admin` 可全量；`customer_admin` 不进本模块（`403`）。跨租户与「他人负责对象」（非特权岗位）一律 `404`（不泄露存在性）。
+> **字段级密级**：联系人 / 线索的 `phone`、`email` 在**列表与详情响应中一律为掩码**（`138****1234` / `a***@example.com`）；明文**只**经 `POST .../reveal` 专用端点返回（响应 `Cache-Control: no-store`），并落审计 `crm.sensitive.revealed`（**明细不落字段值**）；敏感字段**不进** LLM 输入、**不经**数字员工工具输出。
+> **状态机（单向推进，非法迁移一律 `409`）**：商机 `qualification → proposal → negotiation → won|lost`（终态不可回迁）；报价 `draft → confirmed → converted|voided`（**confirmed 冻结**：禁改行 / 禁改金额）；合同 `draft → pending_sign → signed → voided|expired`；联动（转合同）均**人工触发**。
+> **金额**：一律整数分（`amount_cents`，禁用浮点）；报价行金额 / 税额由**服务端**重算（`Decimal` + `ROUND_HALF_UP`；税率万分比整数 `tax_rate_bp`，13% = 1300）。
+> **签署与回款（本段口径）**：合同 `signed` = **线下签署结果的人工登记**（`register-signature`），**系统不承诺法律效力**；回款为人工登记（`register-payment`，原子增量，超合同金额 `409`）。**本段不写任何 provider 代码**。
+> **智能化**：`followup-plan` 为**人工触发**；输出固定 Schema（`actions[].{action_type,target_ref,reason,evidence_refs,confidence}` + `summary`），服务端逐条校验**证据引用真实性**（存在 + 同租户 + 归属链），无效引用丢弃并记 `dropped_refs`；全部无效或网关未接 ⇒ `insufficient_evidence=true` 且 `summary` 为**服务端固定文案**「依据不足，无法给出建议」；网关失败 ⇒ `502`（**不降级、不落库**）；**建议永不直接执行**。`progress/summary` **分母为零一律 `null`**（含 `no_target` 标注）。
+> **审计**：`crm.*` 最小集 17 个动作码（`crm.account.created` / `contact.created` / `lead.converted` / `opportunity.created` / `opportunity.stage_changed` / `activity.logged` / `quote.created|confirmed|converted|voided` / `contract.created|signed|voided|payment_registered` / `insight.generated` / `sensitive.revealed` / `health.recomputed`）；明细只含标识与受控枚举（**不落正文 / PII / 敏感字段值**）。
+> **周期任务**（worker，未接线返回零值）：`crm-health-recompute`（逐租户重算；审计为每租户一行汇总）、`crm-activity-reminder`（**同日幂等**）、`crm-renewal-window`（窗口内提醒；到期未续 ⇒ `expired` 翻转）。
+> **错误语义**：未认证 `401`；角色不许可（`customer_admin` / `scope=all` 非管理角色 / 目标写入非管理角色）`403`；跨租户 / 他人对象 / 不存在 `404`；状态冲突（非法迁移 / 冻结改单 / 重复转化 / 回款超限）`409`；未知字段（`extra=forbid`）与非法取值 `422`；模型网关失败 `502`。
+
+- `GET /api/v1/crm/accounts?owner_id=&status=&limit=&offset=`：客户列表（**必须分页**，`limit` 1–200 默认 50；employee 仅本人负责，显式请求他人 `owner_id` ⇒ `404`）。
+- `POST /api/v1/crm/accounts`：建客户，请求体 `{"name", "industry"?, "owner_id"?, "custom_fields"?}`（未知字段 `422`；`owner_id` 缺省 = 操作者本人；自定义字段按 `field-defs` 白名单校验）。成功 `201`。
+- `GET /api/v1/crm/accounts/{account_id}`：客户详情（含健康度 `health_score` / `health_band` / `health_computed_at`；**未计算 = `null`**）。
+- `PATCH /api/v1/crm/accounts/{account_id}`：受控更新 `{"name"?, "industry"?, "status"?, "custom_fields"?}`。
+- `POST /api/v1/crm/accounts/{account_id}/followup-plan`：生成跟进计划（见上「智能化」口径）；成功返回洞察记录（`content` / `evidence_refs` / `dropped_refs` / `model_key`）。
+- `GET /api/v1/crm/accounts/{account_id}/insights?limit=&offset=`：历史生成记录（append-only；分页）。
+- `GET /api/v1/crm/accounts/{account_id}/contacts?limit=&offset=`：联系人列表（**掩码**）。
+- `POST /api/v1/crm/accounts/{account_id}/contacts`：建联系人 `{"name", "title"?, "phone"?, "email"?, "is_primary"?, "birthday"?, "custom_fields"?}`。成功 `201`。
+- `GET /api/v1/crm/contacts/{contact_id}`：联系人详情（**掩码**）。
+- `PATCH /api/v1/crm/contacts/{contact_id}`：受控更新（同上字段）。
+- `POST /api/v1/crm/contacts/{contact_id}/reveal`：**敏感字段揭示**，请求体 `{"field": "phone"|"email"}`（其余字段 `422`）；成功返回单字段明文 + `Cache-Control: no-store`；落审计（明细 `{contact_id, field_name}`，**不含值**）。
+- `GET /api/v1/crm/leads?owner_id=&status=&limit=&offset=`：线索列表（**掩码**）。
+- `POST /api/v1/crm/leads`：建线索 `{"name", "company"?, "phone"?, "email"?, "source"?, "custom_fields"?}`。成功 `201`。
+- `POST /api/v1/crm/leads/{lead_id}/convert`：线索转化（**单事务**），请求体 `{"create_opportunity"?, "opportunity_name"?, "account_name"?}`；成功 `201` 返回 `{account, contact, opportunity|null}`；**重复转化 `409`**。
+- `POST /api/v1/crm/leads/{lead_id}/reveal`：线索敏感字段揭示（同联系人口径）。
+- `GET /api/v1/crm/opportunities?owner_id=&account_id=&stage=&limit=&offset=`：商机列表（分页；`stage` 取值见状态机）。
+- `POST /api/v1/crm/opportunities`：建商机 `{"account_id", "name", "amount_cents"?, "expected_close"?, "custom_fields"?}`（`amount_cents` 整数分且 ≥ 0）。成功 `201`。
+- `GET /api/v1/crm/opportunities/{opportunity_id}`：商机详情 + **阶段事件时间线**（`stage_events`，append-only）。
+- `POST /api/v1/crm/opportunities/{opportunity_id}/stage`：阶段迁移 `{"to_stage"}`（白名单；非法 / 并发先写 ⇒ `409`；每次迁移 append 阶段事件，终态置 `closed_at`）。
+- `GET /api/v1/crm/activities?account_id=&contact_id=&opportunity_id=&limit=&offset=`：跟进活动列表（时间线倒序）。
+- `POST /api/v1/crm/activities`：登记活动 `{"kind", "subject"?, "content"?, "account_id"?, "contact_id"?, "opportunity_id"?, "status"?, "due_at"?}`（`task` 类默认 `planned` 且必须带 `due_at`；`kind` 五类受控）。成功 `201`。
+- `GET /api/v1/crm/quotes?account_id=&status=&limit=&offset=`：报价列表。
+- `POST /api/v1/crm/quotes`：建报价 `{"account_id", "lines": [{"description", "qty", "unit_price_cents", "tax_rate_bp"?}], "opportunity_id"?, "valid_until"?}`（行数 1–200；金额服务端重算）。成功 `201`，返回 `{quote, lines}`。
+- `GET /api/v1/crm/quotes/{quote_id}`：报价详情，返回 `{quote, lines}`。
+- `PUT /api/v1/crm/quotes/{quote_id}/lines`：行**全量替换** `{"lines": [...]}`（仅 `draft`；confirmed 冻结 ⇒ `409`；服务端重算金额）。
+- `POST /api/v1/crm/quotes/{quote_id}/confirm`：确认报价（要求 ≥ 1 行且金额 > 0，否则 `422`；仅 `draft`）。
+- `POST /api/v1/crm/quotes/{quote_id}/void`：作废报价（`draft` / `confirmed` 可作废）。
+- `POST /api/v1/crm/quotes/{quote_id}/convert-to-contract`：报价转合同（**单事务**；仅 `confirmed`；金额取报价合计；quote 置 `converted`）。成功 `201`。
+- `GET /api/v1/crm/contracts?account_id=&status=&limit=&offset=`：合同列表。
+- `POST /api/v1/crm/contracts`：建合同 `{"account_id", "title", "amount_cents"?, "opportunity_id"?, "starts_on"?, "ends_on"?, "document_object_key"?}`（附件走对象存储引用，不入库）。成功 `201`。
+- `GET /api/v1/crm/contracts/{contract_id}`：合同详情（含 `paid_cents` 回款进度）。
+- `POST /api/v1/crm/contracts/{contract_id}/submit-for-sign`：提交待签（`draft → pending_sign`）。
+- `POST /api/v1/crm/contracts/{contract_id}/register-signature`：**人工登记**签署结果 `{"signed_at", "document_object_key"?}`（`pending_sign → signed`；系统只做台账，**不承诺法律效力**）。
+- `POST /api/v1/crm/contracts/{contract_id}/register-payment`：**人工登记**回款 `{"amount_cents"}`（原子增量；超合同金额 ⇒ `409`；`paid_cents` 受库级 CHECK 兜底）。
+- `POST /api/v1/crm/contracts/{contract_id}/void`：作废合同（`draft` / `pending_sign` / `signed` 可作废）。
+- `GET /api/v1/crm/targets?period_month=&limit=&offset=`：目标列表（employee 仅自己；管理角色全量）。
+- `PUT /api/v1/crm/targets`：目标写入（UPSERT，月粒度归一为月首日）`{"owner_id", "period_month", "amount_target_cents"?, "count_target"?}`；**限 `ceo` / `super_admin`**（否则 `403`）。
+- `GET /api/v1/crm/field-defs?object_key=`：自定义字段定义列表（前端渲染用；`object_key ∈ {account, contact, lead, opportunity, activity}`）。
+- `PUT /api/v1/crm/field-defs`：字段定义写入 `{"object_key", "field_key", "label", "field_type", "required"?, "options"?}`（`select` 必须给受控选项）；**限 `ceo` / `super_admin`**。
+- `GET /api/v1/crm/progress/summary?scope=me|all`：多维度进度指标（管线覆盖率 / 赢率 / 销售周期 / 阶段转化率 / 管线账龄 / 创建速率 / 健康分档分布 / 续约窗口 / 回款进度 / 目标达成度；**分母为零一律 `null`**）；`scope=all` 需 `department_lead` / `ceo` / `super_admin`，否则 `403`。
+
+## 实时流与过程事件（P2b）
+
+> 口径：`docs/superpowers/specs/2026-09-17-realtime-stream-p2b-design.md`（**已评审 2026-09-17**；迁移 `036_conversation_stream`，两表）。
+> **状态 2026-09-17：已实现（后端）**；**前端消费属 P2c**（本期不动 `admin-web` / `companion-pwa`）。
+> **推送底座**：PG 表 + 短轮询（**不引入** Redis Pub/Sub / WebSocket / 消息队列）。**先落库，再推送**。
+> **零破坏声明（可验证）**：既有 `POST /api/v1/conversations/{conversation_id}/messages` **行为逐字节不变且不写任何流帧**
+> （哨兵断言：走旧端点后帧表计数为 `0`）；`GET /api/v1/runs/{run_id}/events` 与消息表 / 审计 / 运行事件表**结构零变化**。
+> **帧只作视图**：权威结果仍在消息表 / 运行记录 / 审计——**流写入失败绝不阻断或改变执行结果**。
+
+### `POST /api/v1/conversations/{conversation_id}/messages:stream`
+
+发送一条用户消息（**实时流路径**）。请求体（`{"content": string}`，`extra=forbid`）/ 请求头（`Idempotency-Key` 语义）/
+响应体的字段与取值 / **全部状态码分支**（`201` 已执行 / `202` 待批 / 拒绝码 / `422` / `403` / `409` / `504`）
+与旧 `POST .../messages` **逐字一致**（复用同一执行服务与同一幂等口径）。**唯一差异**：
+
+- **响应头新增 `X-Stream-Run-Id: <run_id>`**（**有运行时**才出现；缺键桩路径为 `null` ⇒ 不写该头）；
+- 执行过程写**流帧**（供 SSE 端点增量读取）；不带 `Idempotency-Key`（桩回复）时**不写帧**；
+- **消息追加被拒**（如向归档会话发消息 ⇒ `409`）时：既有异常语义**不变**，但流以**终态帧**（`run.failed`，`reason=message_rejected`）收口——读端不会留下悬挂流。
+
+**帧写入触发面**：**仅本端点**（旧 `POST .../messages` 零帧）。**幂等重放**：同键重放**不重复执行、不重复写帧**，
+返回既有结果 + 既有 `X-Stream-Run-Id`（客户端打开流时按已落帧补发至终态后关流）。
+**审批分支**：`202` 返回时流**不写终态帧**（保持 `streaming`；「待审批」展示由既有审批聚合承担）——
+**本期流只覆盖「发起执行 → 首次结果」**，审批决议后的推进**不新增帧**（已知限制）。
+
+### `GET /api/v1/conversations/{conversation_id}/stream?run_id=&after_seq=`
+
+**SSE 增量读取**（`Content-Type: text/event-stream`）。响应头含 `Cache-Control: no-cache`、`X-Accel-Buffering: no`
+（反代不缓冲）。响应**不设 Content-Length**（长连接），由服务端在终态主动关流。
+
+- **run 解析**：`?run_id=` 显式指定（**必须属于该会话与租户**，否则 `404`）；缺省 = 该会话**最新 run**（活跃优先，否则最新历史）；
+  该会话一次都没有 run ⇒ **挂起**（仅心跳），轮询中发现新 run 后自动开始补发。
+- **起点解析**：请求头 `Last-Event-ID` 与 `?after_seq=` **都解析，取 `max`**（防降级重放导致重复投递）；
+  非法值 `422`；起点**大于** `last_seq` **不报错**（只等新帧）；重连且起点已覆盖终态 ⇒ **立即关流**（无新帧）。
+- **SSE 帧格式**（每个事件四行，末尾一个空行）：
+
+```
+id: <seq>
+event: <kind>
+data: {"seq":<n>,"is_terminal":<bool>,"kind":"<kind>","payload":{...}}
+
+```
+
+- **心跳**：每 15 秒发一行注释 `: hb`（注释不产生事件、不干扰 `Last-Event-ID`）。
+- **关流**：读到并发出 `is_terminal=true` 的帧后**主动关流**；单连接超 `WORKBENCH_STREAM_MAX_CONNECTION_SECONDS`（默认 1800）⇒ 关流（客户端自动重连续播）。
+  读端读库失败 ⇒ 关流（**不谎报**为正常结束）。
+- **状态 `unavailable` 的告知**：熔断时**已落的告知帧优先**；悬挂兜底（不补写帧）则由读端**补发一帧** `stream.unavailable`（`is_terminal=true`）后关流。
+- **错误语义**：未认证 `401`；`customer_admin`（非对话岗位）`403`；会话不存在 / 跨租户 / 他人会话 / 未知 run `404`；非法 `run_id` / `after_seq` / `Last-Event-ID` `422`；读端自身不可用 `503`。
+  **归档会话可开流**（读语义同 `GET /conversations/{id}`）；向归档会话发消息仍 `409`。
+
+### 帧 `kind` 取值域（冻结）与脱敏
+
+| 类别 | 取值 | 说明 |
+| --- | --- | --- |
+| 消息 | `message.user` / `message.assistant` | 消息**落库后**写帧；payload 只含 `message_id` 与 `stub`，**不含正文** |
+| 过程 | `plan.created` / `step.started` / `tool.call` / `tool.result` / `approval.requested` / `approval.decided` / `checkpoint.saved` / `run.paused` / `run.failed` / `run.completed` | 复用既有 `RuntimeEventType` **十种原值**（不另起一套） |
+| 系统 | `stream.unavailable` | 熔断 / 写失败 / 悬挂兜底的**显式告知**帧（`is_terminal=true`；payload `reason` 为受控枚举 `frame_limit` / `byte_limit` / `write_failed` / `stalled`） |
+
+**脱敏硬要求**：一切帧 `payload` **写入前**过 `redact_payload`（同一函数同一规则；掩码幂等）；
+`tool.result` 帧只含 `status` + 摘要 + `args_digest` + `sha256`（与 `027` 落库口径一致），
+**不含** stdout 全文、文件正文、宿主真实路径、凭据 / 认证头 / Cookie；`message.*` 帧**不落正文**。
+
+### 保留期 · 熔断 · 悬挂 · 清理
+
+- **保留期**：`WORKBENCH_STREAM_RETENTION_DAYS`（默认 **7 天**，范围 1–90）；**终态**时置 `expires_at = now() + 保留期`
+  （**比运行事件的 30 天短**：流是体感数据、帧量大）。
+- **双上限熔断**（每 run）：`WORKBENCH_STREAM_MAX_FRAMES`（默认 2000）/ `WORKBENCH_STREAM_MAX_BYTES`（默认 4 MiB）。
+  超限 ⇒ **停止写后续帧** + 状态置 `unavailable` + **追加一帧显式告知**（`stream.unavailable`，终态）
+  + 审计 `conversation.stream.unavailable`（明细 `{reason, run_id}`，**受控枚举，不落正文**）；**执行继续**（流是视图）。
+  **不静默丢帧**。
+- **写失败**：帧写入异常 ⇒ 尽力置 `unavailable('write_failed')` + 审计；**不得**阻断或改变执行结果。
+- **悬挂兜底**：`status='streaming'` 且 `updated_at < now - WORKBENCH_STREAM_STALLED_HOURS`（默认 6h）⇒ 置 `unavailable('stalled')` + `expires_at`（**不补写帧**，由读端按状态告知）。
+- **清理任务**（worker 周期 `conversation-stream-purge`，间隔 `WORKBENCH_STREAM_PURGE_INTERVAL_SECONDS` 默认 3600s）：
+  先做悬挂兜底，再删除 `expires_at < now` 的 run 的**全部帧行 + 状态行**；**逐租户**执行（带 `tenant_id`）；
+  **只清流帧**——消息表 / 审计 / 运行事件**不受影响**；清理**不写审计**（例行维护，与运行事件清理同口径）。
+  序号**不复用**（清理后该 run 不再追加）。
+- **已知限制**：审批决议后的推进过程事件**本期不做**（流只覆盖「发起 → 首次结果」）；
+  反代缓冲行为与长连接资源画像**未在 staging 实测**（`X-Accel-Buffering: no` 已预置）；多副本下的 SSE 路由语义属部署配置范畴。
 
 
