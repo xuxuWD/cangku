@@ -4,6 +4,7 @@
 > **执行方式（红线）**：**AI 不连 staging**。你在这台台式机上按本文照做、把**每步自查命令的输出**回传给我，由我判读并给下一步；本文所有命令按 **PowerShell 5.1**（Win10 默认）与 **PS 语法（用 `;` 不用 `&&`）** 写成。
 > **真源关系**：本文是**执行层**方案（怎么做）；判据归 [`docs/staging-acceptance-checklist.md`](staging-acceptance-checklist.md)、输入账归 [`docs/infra-input-request.md`](infra-input-request.md)、只读命令归 [`docs/readonly-verification-runbook.md`](readonly-verification-runbook.md)。三者冲突时以真源为准并回写。
 > **状态**：**未执行**（本方案 2026-09-16 产出，等待按步执行；任何步骤均以「已回传输出 + 判读通过」才算完成）。
+> **2026-09-18 更新（执行前校准）**：仓库迁移已由 34 增至 **39**（新增 `035_crm_core` / `036_conversation_stream` / `037_run_artifacts` / `038_conversation_mode_and_soft_delete` / `039_conversation_members`）⇒ 本文原先写死的「迁移 34 项」期望已改为**「与仓库 `migrations/*.sql` 数量一致（当前 39）」**（涉及 Step 5 ② 与 Step 7 ① 两处判据，另 §1.4 总览一格）；`WORKBENCH_APPLIED_MIGRATIONS` 仍由 Step 5 从库内实际读数回填（不手写），故其余步骤无需改动。
 
 ---
 
@@ -45,7 +46,7 @@
 | Step 2 | 取材料（clone + 钉 SHA + venv + httpx + **embedding 模型预下载**） | 否 | SHA、版本与模型目录 |
 | Step 3 | 密钥与 `staging.env`（7 把密钥 + 载入器） | 否 | 长度/唯一性核对 |
 | Step 4 | 起基础设施（pg/redis/objects/**embedding**）+ 防火墙 | 是（起容器） | `ps` + 五项探活 |
-| Step 5 | **【授权点】**构建镜像 + 起应用栈 + 回填两变量 | 是（迁移） | health/迁移 34 项/worker/beat |
+| Step 5 | **【授权点】**构建镜像 + 起应用栈 + 回填两变量 | 是（迁移） | health/迁移全量（**与仓库 `migrations/*.sql` 数量一致，2026-09-18 现为 39**）/worker/beat |
 | Step 6 | **【授权点】**账号（超管/只读/探针） | 是（写库） | 登录与属性读数 |
 | Step 7 | 预检四连 + 只读核验（1.3–1.5） | 否 | 四份报告 + SQL 输出 |
 | Step 8 | **【授权点 · 待前置】**备份/恢复演练（1.6） | 是 | drill 四阶段输出 |
@@ -491,11 +492,11 @@ docker compose --env-file D:\workbench-secrets\staging.env `
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/health | ConvertTo-Json -Compress
 Invoke-RestMethod "http://$($env:WORKBENCH_STAGING_BIND_IP):8000/api/v1/health" | ConvertTo-Json -Compress
 
-# ② 迁移是否 34 项全部落地（I6 读数）：
+# ② 迁移是否全部落地（I6 读数；2026-09-18 校准：以仓库 migrations/*.sql 数量为准，现为 39）：
 $env:PGPASSWORD = $env:WORKBENCH_DB_PASSWORD
 psql "postgresql://workbench@$($env:WORKBENCH_STAGING_BIND_IP):5432/workbench" `
   -c "SELECT count(*) FROM workbench_schema_migrations;"
-# 期望：34
+# 期望：与仓库 migrations/*.sql 文件数一致（当前 39）
 
 # ③ pgvector 扩展是否已启用（I4 复查；与 7.3 ② 的"可安装"不同，这里要「有一行」）：
 psql "postgresql://workbench@$($env:WORKBENCH_STAGING_BIND_IP):5432/workbench" `
@@ -681,7 +682,7 @@ $env:WORKBENCH_APPLIED_MIGRATIONS = $env:WORKBENCH_APPLIED_MIGRATIONS   # 已回
 
 # ① 清单核对（dry-run，先跑）
 .\.venv-accept\Scripts\python.exe scripts\migration_backup_drill.py --phase list
-# 期望：[pass] 迁移清单一致（34 项）
+# 期望：[pass] 迁移清单一致（与仓库 migrations/*.sql 数量一致，2026-09-18 现为 39 项）
 
 # ② 备份命令预演（默认 dry-run，只打印不执行；观察脱敏后的命令）
 .\.venv-accept\Scripts\python.exe scripts\migration_backup_drill.py --phase backup --backup-dir D:\workbench-backups
