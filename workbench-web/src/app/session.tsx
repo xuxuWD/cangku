@@ -109,6 +109,7 @@ export function clearSession(): void {
 export type Capability =
   | 'agent.manage'
   | 'permission.manage'
+  | 'knowledge.manage'
   | 'skill.manage'
   | 'audit.view'
   | 'data.export'
@@ -118,6 +119,7 @@ export type Capability =
 export const CAPABILITY_LABEL: Record<Capability, string> = {
   'agent.manage': '数字员工管理',
   'permission.manage': '权限配置',
+  'knowledge.manage': '知识库管理',
   'skill.manage': 'Skill & MCP 管理',
   'audit.view': '审计日志查看',
   'data.export': '数据导出',
@@ -132,7 +134,7 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
  * `customer_admin` 是受限客户角色（多处显式排除，如 `app/bootstrap.py:1093`）⇒ 不授予管理能力。
  */
 const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
-  super_admin: ['agent.manage', 'permission.manage', 'skill.manage', 'audit.view', 'data.export', 'data.delete'],
+  super_admin: ['agent.manage', 'permission.manage', 'knowledge.manage', 'skill.manage', 'audit.view', 'data.export', 'data.delete'],
   ceo: ['audit.view', 'data.export'],
   department_lead: ['data.export'],
   employee: [],

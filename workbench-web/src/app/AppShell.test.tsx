@@ -103,8 +103,10 @@ describe('AppShell（第 1 轮应用壳）', () => {
     renderWithProviders(<AppShell />)
     await userEvent.click(screen.getByRole('menuitem', { name: /知识库/ }))
     expect(pageTitle()).toHaveTextContent('知识库')
-    // 占位页如实说明"未接入"，不假装有数据。
-    expect(screen.getByText('「知识库」尚未接入（第 4 轮实现）。')).toBeInTheDocument()
+    // 第 7 轮起「知识库」是真实页面（占位页已被替换）：员工没有该能力 ⇒ 呈现无权限态、不请求数据。
+    expect(await screen.findByRole('heading', { level: 2, name: '知识库' })).toBeInTheDocument()
+    expect(await screen.findByText('无访问权限')).toBeInTheDocument()
+    expect(screen.queryByText('「知识库」尚未接入（第 4 轮实现）。')).not.toBeInTheDocument()
   })
 
   it('切回员工角色后，管理员专有页面自动回落到可见页面', async () => {

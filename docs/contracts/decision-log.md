@@ -30,12 +30,24 @@
 
 | D-020 | 2026-09-19 | **前端第 6 轮「权限配置」已交付**（三块：角色知识范围 / 数字员工知识范围 / 最近变更；四态齐备 + 员工⇒整页无权限且不渲染编辑控件；写失败就地呈现不关抽屉）。**同轮三项决策**：① **候选知识库标识采用方案 A** —— 候选 = **现有绑定（两块）∪ 变更记录 old/new 的并集** + **手动录入**，前端只校验非空/去重/**≤100**（服务端仍是唯一权威）；② **不做只读权限矩阵页签**（矩阵唯一权威是 `permission-matrix.md`，界面另绘必然漂移）；③ **不做文档级四级 ACL**（`knowledge-acl.md` 字段未落库，属 Schema 线） | 用户 2026-09-19 批准方案与缺口处置；本轮真机取证 5 项（`403`/`409` 零写入/纳管后 `200`+查库/审计可读/清理）；契约 `docs/contracts/permissions-api.md`（新增 §8/§9）、`permission-matrix.md` §10 | ✅ 已交付（自跑复核：tsc 退出码 0、vitest **231/231**、build 成功、产物样例字样 0 命中） |
 
+| D-021 | 2026-09-19 | **前端第 7 轮「知识库」已交付**（一页四块：治理指标 / 文档列表 + 登记 / 可检索文档 + 到期扫描 / 知识检索；四态齐备 + 员工⇒整页无权限且不请求数据；写失败就地呈现不关抽屉，成功只用服务端回读值）。**同轮三处口径决定**：① **无权限判定用新能力 `knowledge.manage`（仅 `super_admin` 映射）**，因其为界面呈现层能力、与后端实测门禁一致；② **检索块的空结果按 `reason` 三分呈现**（`empty_whitelist` 给"先登记并发布"指引、`no_binding` 提示先配范围、`no_hits` 只换关键词），`503` 单列「服务未接入」；③ **界面按契约 §2 保守执行状态机**——`draft` 的复核按钮**禁用**，即使真机实测后端允许 `draft + review?approved=true ⇒ 200 → published`（见下"缺口"），**不通过界面放大后端行为** | 用户 2026-09-19 批准契约；本轮真机取证（员工 9 端点全 `403` / 超管列表·指标·清单·扫描 / 发布 `422` owner 闸门 / 归档发布 `409` / 检索 `200 reason=null`）；契约 `docs/contracts/knowledge-api.md`（新增 §2.1 / §2.2 / §9）、`permission-matrix.md` §11 | ✅ 已交付（自跑复核：tsc 退出码 0、vitest **262/262**（原 232 + 新增 30，无删改跳过）、build 成功、产物样例标识 0 命中） |
+
+| D-022 | 2026-09-19 | **第 7 轮发现两项须修缺口（本轮只登记、不改）**：① **知识端点对 `employee` 全量 `403`**（含登记）⇒ `permission-matrix.md` §3「知识：上传/登记 = employee ✅」与实现不符，**KB-02 维持不达标（P0）**；② **`draft` + `review?approved=true` 实测 `200 → published`**，`review_document` 只查状态边不查 owner 闸门 ⇒ **复核通道可代替发布并跳过「发布必须指定负责人」**（P1，建议后端在复核通过路径补 owner 校验或收窄 `draft→published` 边） | 本轮真机实测 + 只读 `app/knowledge_governance/{models,service}.py`；证据见 `knowledge-api.md` §2.1 与交付报告 | ✅ 已登记（待专项裁决） |
+
+| D-023 | 2026-09-19 | **第 7 轮收口验收完成（收口人独立复核，非交付自验）**：门禁重跑（tsc 退出码 0 / vitest **262/262** / build 成功）+ **独立反假 2 组**（状态机 `publish` 闸门改坏 ⇒ 2 条指定用例红；`toReason` 恒 `null` ⇒ `empty_whitelist` 用例红；均还原复绿）+ 真机交叉验证 6 项（**逐字复刻界面登记载荷** `201` + 查库逐字段核对；登记→发布→复核退回全流程；员工 `403` 抽查；检索 1 条真引用）+ **浏览器走查 33/33**（0 控制台错误 / 0 页面异常 / 0 个 4xx5xx，截图 5 张）。**契约补正**：`review?approved=false` 在任意非终态 ⇒ **`200 → archived`**（`published` 行真机实测；`draft` 同机制按代码判定）⇒ `knowledge-api.md` §2 表 `draft`/`published` 两行的「复核退回」格 `409` 不成立（§2.1 已更正）。**新观察**：检索冷启动首次可能 `504`（上游 12.7s > 适配层超时；复测 0.2–0.7s；本机 CPU 环境特性）。**遗留（非本轮引入）**：第 6 轮 `permissions.SAMPLE_DESCRIPTION` 与 `myWorkbench` 的「标记已读…」说明未做 DEV 门控 ⇒ 字符串留在生产产物（`http` 模式不渲染，惰性残留，待整改） | 收口证据见 `knowledge-api.md` §10；走查脚本 `tmp/r7-knowledge-walkthrough.mjs`、截图 `docs/screenshots/ui-v2-r7-knowledge/` | ✅ 验收通过（待用户确认提交） |
+
+> **⚠️ 本轮取证副作用（如实登记）**：执行 `review?approved=true` 探针时，`probe-admin-1` 由 `draft` **被置为 `published`**
+> （`owner_id` 仍为空），真库指标随之变为 `published=2 / archived=1 / total=3 / freshness_ratio≈0.667`。
+> 后端**无"取消发布/回到草稿"接口**（`archived` 为终态），本轮**未做**任何补偿性写入；处置待你裁决（保留现状 / 归档该行 / DB 重置由你在服务器执行）。
+
 ## 待你确认的清理项（按清理纪律：清单须经确认后才删）
 
 - ~~`workbench-web/src/features/agentAdmin/AgentAdminPage.tsx` —— 第 1 轮占位页，已被 `features/agentRegistry` 取代成为**孤儿**~~ ⇒ **已删除（用户裁决 2026-09-19）**：随接线轮提交 `ba993f0` 移除（删除前已用 grep 确认全仓零引用）。
 - `workbench-web/src/features/myAgents` 的 `ROLE_TEMPLATES` / `CapabilityPack` / `MOCK_WRITE_NOTE` 被注册中心**跨模块复用**（未复制第二份）⇒ 建议后续提升为共享模块（`src/shared/` 或 `src/domain/`），但属**改稳定模块**，需你确认后再动。
 - ~~**统一请求层未开放 `PUT`**~~ ⇒ **已修复（2026-09-19 第 6 轮收口，由我执行）**：`src/api/client.ts` 的 `RequestOptions.method` 补入 `PUT`；权限配置 service 里的显式收窄（`as unknown as`）已移除；新增请求层用例「PUT：方法透传」锁定。**反假已做**：把 `PUT` 从枚举里去掉 ⇒ `tsc` 报出两处调用点（`client.test.ts:83`、`permissionsService.ts:133`）变红，还原后 `tsc` 退出 0、全量 **232 用例**绿。
 - **真库残留行（第 6 轮真机取证产生，后端无删除接口，本轮未物理删除）**：`workbench_job_roles` 1 行（`role_key=evidence-ops`，已 `disabled`）、`workbench_knowledge_access_audits` 2 行（该标识的绑定 / 解绑各一条）。清单与依据见 `docs/contracts/permissions-api.md` §9。
+- **真库残留行（第 7 轮取证产生，后端无删除接口；**处置待你裁决**：保留现状 / 归档 / 由你在服务器执行 DB 重置）**：`workbench_knowledge_documents` 3 行 —— `probe-admin-1`（交付探针，被复核探针置为 `published`、`owner_id` 空）、`r7-reviewer-a`（收口登记探针，`draft`、`owner_id` 空）、`r7-reviewer-b`（收口全流程探针，`archived`、`owner=acct-reviewer-probe`）；另有 WeKnora 侧 2 篇取证文档与 5 个 `wk-*` 容器随实例一并清理（清单见 `knowledge-module-plan.md` §8.4）。
+- **第 7 轮临时物（建议保留为走查证据）**：`tmp/r7-knowledge-walkthrough.mjs`（凭据只走环境变量）、`docs/screenshots/ui-v2-r7-knowledge/`（5 张）；系统临时目录内的探针请求 / 响应文件（`%TEMP%\r7-*`、`kb-probe-*`）不入库，随系统清理。
 
 ## 测试等待上限（两处，均只放宽等待、不放宽断言）
 
