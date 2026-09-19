@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from threading import RLock
 from uuid import uuid4
@@ -64,12 +65,35 @@ class Task:
     employee_key: str
     title: str
     risk_level: RiskLevel
-    budget: float
+    budget: float | None
     idempotency_key: str
     request_fingerprint: str
     status: TaskStatus
     id: str = field(default_factory=lambda: f"task-{uuid4().hex[:12]}")
     audits: list[AuditEvent] = field(default_factory=list)
+    # 组 10.5（迁移 044，用户裁决 2026-09-19 选项 A）：**权威金额 = 整数分**。
+    # `budget`（元 / 浮点）保留为兼容列：历史行只有它，新行只有 `budget_cents`，两者**恰好一个有值**。
+    budget_cents: int | None = None
+
+    def budget_in_cents(self) -> int:
+        """任务金额（整数分）：新行为 `budget_cents`；历史行（只有 `budget`）按「元 → 分」换算。
+
+        换算用 `Decimal`（宪法 §3 金额红线）：`float` 直接乘 100 会有尾差（如 0.29 * 100 = 28.999…），
+        `Decimal(str(value))` 走「十进制定点 → 四舍五入到分」路径，结果与迁移 044 的回填逐分一致。
+        """
+        if self.budget_cents is not None:
+            return int(self.budget_cents)
+        if self.budget is None:
+            return 0
+        return yuan_to_cents(self.budget)
+
+
+def yuan_to_cents(value: float | int | str) -> int:
+    """元 → 整数分（四舍五入到分，拒绝 NaN / 无穷）。**金额一律经此换算，不直接乘 100**。"""
+    amount = Decimal(str(value))
+    if not amount.is_finite():
+        raise PolicyError("预算不是有效金额")
+    return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 class PolicyError(ValueError):
@@ -197,16 +221,20 @@ class TaskStore:
         return items[:limit]
 
 
-def ensure_can_create(context: UserContext, risk_level: RiskLevel, budget: float) -> None:
+def ensure_can_create(context: UserContext, risk_level: RiskLevel, budget_cents: int) -> None:
+    """创建任务闸门。**金额参数一律是整数分**（组 10.5，迁移 044）：调用方不得再传「元」浮点。
+
+    阈值口径与 10.5 之前**逐字等价**：原判据是「元 > 1000」⇒ 现在「分 > 100000」。
+    """
     if context.role not in {"employee", "department_lead", "ceo", "super_admin"}:
         raise PolicyError("当前岗位不能创建任务")
-    if budget < 0:
+    if budget_cents < 0:
         raise PolicyError("预算不能小于 0")
     # `critical` 是最高风险档：仅负责人可发起（段一规格 X3）；创建后仍一律走人工审批。
     if risk_level is RiskLevel.CRITICAL and context.role not in {"ceo", "super_admin"}:
         raise PolicyError("critical 风险任务只能由 CEO 或超级管理员发起")
     # 「不低于 high」而不是「等于 high」：否则 critical 反而绕过这条预算闸门（fail-open）。
-    if risk_at_least(risk_level, RiskLevel.HIGH) and context.role == "employee" and budget > 1000:
+    if risk_at_least(risk_level, RiskLevel.HIGH) and context.role == "employee" and budget_cents > 100_000:
         raise PolicyError("普通员工的高风险任务预算不能超过 1000")
 
 

@@ -93,12 +93,13 @@ class ConversationService:
 
     # ------------------------------------------------------------ 权限收敛（与表单入口共用同一函数）
 
-    def ensure_can_create_task(self, context: UserContext, *, risk_level: RiskLevel, budget: float, autonomy_level: str | None = None) -> None:
+    def ensure_can_create_task(self, context: UserContext, *, risk_level: RiskLevel, budget_cents: int, autonomy_level: str | None = None) -> None:
         """对话入口创建任务类动作的前置判定：与表单入口共用 `domain.ensure_can_create`。
 
         `autonomy_level` 只用于说明「是否需要人批」，**刻意不参与**这里的权限判定。
+        金额参数为**整数分**（组 10.5，迁移 044）——与表单入口同一口径。
         """
-        ensure_can_create(context, risk_level, budget)
+        ensure_can_create(context, risk_level, budget_cents)
 
     def ensure_can_approve_request(self, context: UserContext) -> None:
         """对话入口审批类动作的前置判定：与表单入口共用 `domain.ensure_can_approve`。"""

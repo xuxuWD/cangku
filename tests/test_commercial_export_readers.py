@@ -365,7 +365,17 @@ def test_unknown_reader_category_is_ignored():
 # B-2b（2026-09-19）：tasks / users / usage 三类接线
 # ---------------------------------------------------------------------------
 
-TASK_FIELDS = {"task_id", "project_id", "created_by", "employee_key", "title", "risk_level", "budget", "status"}
+TASK_FIELDS = {
+    "task_id",
+    "project_id",
+    "created_by",
+    "employee_key",
+    "title",
+    "risk_level",
+    # 组 10.5（迁移 044）：金额一律出**整数分**（不再出元-浮点；历史行经 `budget_in_cents()` 归一）。
+    "budget_cents",
+    "status",
+}
 USER_FIELDS = {
     "account_id",
     "phone_masked",
@@ -433,7 +443,8 @@ def _task(task_id: str, *, tenant_id: str) -> Task:
         employee_key="content-writer",
         title="周报整理",
         risk_level=RiskLevel.LOW,
-        budget=5.0,
+        budget=None,
+        budget_cents=500,  # 组 10.5：新行走整数分（导出断言 `budget_cents == 500`）
         idempotency_key=f"idem-{task_id}",
         request_fingerprint="fingerprint",
         status=TaskStatus.QUEUED,
@@ -471,7 +482,8 @@ def test_task_reader_scopes_tenant_and_never_exports_internal_keys():
     assert total == 2  # 计数按租户（他租户不计）
     assert len(rows) == 1
     assert set(rows[0]) == TASK_FIELDS
-    for forbidden in ("idempotency_key", "request_fingerprint", "tenant_id"):
+    assert rows[0]["budget_cents"] == 500  # 组 10.5：金额出整数分
+    for forbidden in ("idempotency_key", "request_fingerprint", "tenant_id", "budget"):
         assert forbidden not in rows[0]
 
 

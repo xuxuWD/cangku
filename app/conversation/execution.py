@@ -3,7 +3,8 @@
 口径来源（真源）：
     - §3.7 Y2：复用既有 `/tasks/{task_id}/runs` 与 `/runs/{run_id}/approvals/*` 的**服务层**
       （`TaskStore.create` / `RuntimeService.start`），**不另造一套**；`workbench_run_records.task_id`
-      保持 `NOT NULL`；承载任务字段口径按 Y2 表（`created_by` = 触发者、`budget=0`、
+      保持 `NOT NULL`；承载任务字段口径按 Y2 表（`created_by` = 触发者、金额 `0` 分
+      〔组 10.5 起写 `budget_cents=0`，`budget` 列为 NULL〕、
       `idempotency_key = conv-{conversation_id}-{key}`、`risk_level` = 该次工具风险档、
       建时 `status=queued`）。
     - §3.2 第四条：**幂等键 = 请求头 `Idempotency-Key`**；带键 ⇒ 真实执行 + 幂等；
@@ -66,8 +67,8 @@ from .stream import MESSAGE_ASSISTANT_KIND, MESSAGE_USER_KIND
 INVOCATION_TOOL_KEY_FIELD = "tool_key"
 INVOCATION_PARAMS_FIELD = "params"
 
-# 承载任务口径（§3.7 Y2 表）。
-CONVERSATION_TASK_BUDGET = 0.0
+# 承载任务口径（§3.7 Y2 表）。组 10.5（迁移 044）：金额口径统一为**整数分**。
+CONVERSATION_TASK_BUDGET_CENTS = 0
 
 _logger = logging.getLogger(__name__)
 
@@ -279,7 +280,7 @@ class ConversationExecutionService:
 
         # `critical` 承载任务：非 CEO / 超管必须在 ① 之前以 403 拒绝（§3.7 Y2 末行）。
         try:
-            ensure_can_create(context, spec.risk_level, CONVERSATION_TASK_BUDGET)
+            ensure_can_create(context, spec.risk_level, CONVERSATION_TASK_BUDGET_CENTS)
         except PolicyError as exc:
             raise ConversationExecutionError(str(exc), http_status=403) from exc
 
@@ -731,7 +732,8 @@ class ConversationExecutionService:
             employee_key=conversation.agent_key,
             title=title[:200],
             risk_level=spec.risk_level,
-            budget=CONVERSATION_TASK_BUDGET,
+            budget=None,
+            budget_cents=CONVERSATION_TASK_BUDGET_CENTS,
             idempotency_key=f"conv-{conversation.conversation_id}-{idempotency_key}",
             request_fingerprint=fingerprint,
             status=TaskStatus.QUEUED,

@@ -438,7 +438,13 @@ describe('RunDetailPage', () => {
     const delivery = await screen.findByRole('region', { name: '交付' })
     // 标题默认填来源承载任务标题（服务端数据），用户可改。
     const title = await within(delivery).findByLabelText('任务标题')
-    expect((title as HTMLInputElement).value).toBe('整理本周选题')
+    // ⚠️ 必须 `waitFor` 等**回填完成**再断言：输入框随面板立即渲染，而默认值是
+    // 来源承载任务（`/tasks/{id}`）返回后才由 effect 写入（`AcceptanceDecisionPanel.tsx:71-73`）
+    // ⇒ 直接断言 `.value` 会在负载高时读到初始空串（2026-09-19 本机全量跑到的偶发红；
+    // 单文件跑因加载快而不复现）。改成等待后，断言与「按钮在标题为空时禁用」的行为也不再竞态。
+    await waitFor(() => {
+      expect((title as HTMLInputElement).value).toBe('整理本周选题')
+    })
 
     await userEvent.click(within(delivery).getByRole('button', { name: '存成任务' }))
 

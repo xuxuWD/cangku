@@ -339,7 +339,9 @@ def task_export_reader(repository) -> ExportReader:
                     "employee_key": task.employee_key,
                     "title": task.title,
                     "risk_level": _as_text(task.risk_level),
-                    "budget": task.budget,
+                    # 组 10.5（迁移 044）：金额一律出**整数分**（不导元-浮点；历史行经
+                    # `Task.budget_in_cents()` 归一，结果与迁移回填逐分一致）。
+                    "budget_cents": task.budget_in_cents(),
                     "status": _as_text(task.status),
                 }
                 for task in tasks

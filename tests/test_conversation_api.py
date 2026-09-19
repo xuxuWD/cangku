@@ -216,16 +216,16 @@ def test_conversation_path_reuses_form_permission_gate() -> None:
     service = main.conversation_service
     employee = UserContext("t-1", "u-1", "employee")
 
-    # 表单入口拒绝：高风险 + 预算 > 1000
+    # 表单入口拒绝：高风险 + 预算 > 1000 元（组 10.5：金额参数为整数分 ⇒ 5000 元 = 500000 分）
     with pytest.raises(PolicyError):
-        ensure_can_create(employee, RiskLevel.HIGH, 5000)
+        ensure_can_create(employee, RiskLevel.HIGH, 500_000)
     # 对话入口对同一动作同样拒绝
     with pytest.raises(PolicyError):
-        service.ensure_can_create_task(employee, risk_level=RiskLevel.HIGH, budget=5000)
+        service.ensure_can_create_task(employee, risk_level=RiskLevel.HIGH, budget_cents=500_000)
 
-    # 允许的动作两边都放行
-    ensure_can_create(employee, RiskLevel.LOW, 10)
-    service.ensure_can_create_task(employee, risk_level=RiskLevel.LOW, budget=10)
+    # 允许的动作两边都放行（10 元 = 1000 分）
+    ensure_can_create(employee, RiskLevel.LOW, 1_000)
+    service.ensure_can_create_task(employee, risk_level=RiskLevel.LOW, budget_cents=1_000)
 
 
 def test_full_auto_autonomy_does_not_bypass_permission_gate() -> None:
@@ -235,5 +235,5 @@ def test_full_auto_autonomy_does_not_bypass_permission_gate() -> None:
 
     with pytest.raises(PolicyError):
         service.ensure_can_create_task(
-            employee, risk_level=RiskLevel.HIGH, budget=9999, autonomy_level="full_auto"
+            employee, risk_level=RiskLevel.HIGH, budget_cents=999_900, autonomy_level="full_auto"
         )

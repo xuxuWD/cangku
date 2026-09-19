@@ -191,18 +191,19 @@ def test_read_agent_governance_is_tenant_scoped_and_returns_none_when_unusable(d
 
 
 @pytest.mark.parametrize(
-    ("role", "risk_level", "budget"),
+    ("role", "risk_level", "budget_cents"),
     [
         ("employee", RiskLevel.CRITICAL, 0),  # X3：员工不得发起 critical
-        ("department_lead", RiskLevel.CRITICAL, 10_000),
-        ("employee", RiskLevel.HIGH, 1001),  # 既有的预算闸门仍然生效
+        ("department_lead", RiskLevel.CRITICAL, 1_000_000),
+        ("employee", RiskLevel.HIGH, 100_100),  # 既有的预算闸门仍然生效（1001 元 > 1000 元）
     ],
 )
-def test_ensure_can_create_rejects(role: str, risk_level: RiskLevel, budget: float) -> None:
+def test_ensure_can_create_rejects(role: str, risk_level: RiskLevel, budget_cents: int) -> None:
+    """组 10.5（迁移 044）：闸门金额参数 = **整数分**（1000 元 = 100000 分）。"""
     with pytest.raises(PolicyError):
-        ensure_can_create(UserContext("t-1", "u-1", role), risk_level, budget)
+        ensure_can_create(UserContext("t-1", "u-1", role), risk_level, budget_cents)
 
 
 def test_ensure_can_create_allows() -> None:
-    ensure_can_create(UserContext("t-1", "u-1", "employee"), RiskLevel.HIGH, 1000)
-    ensure_can_create(UserContext("t-1", "u-1", "ceo"), RiskLevel.CRITICAL, 10_000)
+    ensure_can_create(UserContext("t-1", "u-1", "employee"), RiskLevel.HIGH, 100_000)  # 恰好 1000 元
+    ensure_can_create(UserContext("t-1", "u-1", "ceo"), RiskLevel.CRITICAL, 1_000_000)

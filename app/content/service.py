@@ -154,7 +154,7 @@ class ContentService:
             return existing
         task = Task(
             tenant_id=actor.tenant_id, project_id=None, created_by=actor.user_id, employee_key="content-writer",
-            title=normalized.topic, risk_level=RiskLevel.LOW, budget=0, idempotency_key=idempotency_key,
+            title=normalized.topic, risk_level=RiskLevel.LOW, budget=None, budget_cents=0, idempotency_key=idempotency_key,
             request_fingerprint=fingerprint, status=__import__("app.domain", fromlist=["TaskStatus"]).TaskStatus.QUEUED,
         )
         task.audits.append(AuditEvent(action="task.created", actor_id=actor.user_id, actor_role=actor.role))

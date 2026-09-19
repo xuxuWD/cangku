@@ -18,6 +18,15 @@ class TaskRepository(Protocol):
     def delete(self, tenant_id: str, task_id: str) -> None: ...
 
 
+# 任务表的列清单（**唯一定义**）：`_row_to_task` 按下标水合，六处 SELECT/RETURNING 共用本常量，
+# 避免「加一列要改六处、漏一处就下标错位」。`budget_cents` 追加在**末尾**（组 10.5，迁移 044）：
+# 既有下标（0..10）不变，新列读 `row[11]`。
+_TASK_COLUMNS = (
+    "id, tenant_id, project_id, created_by, employee_key, title, "
+    "risk_level, budget, idempotency_key, request_fingerprint, status, budget_cents"
+)
+
+
 class PostgresTaskRepository:
     """PostgreSQL adapter using a per-operation connection or pool lease."""
 
@@ -71,25 +80,24 @@ class PostgresTaskRepository:
             with connection.transaction():
                 with connection.cursor() as cursor:
                     cursor.execute(
-                        """
+                        f"""
                         INSERT INTO workbench_tasks
                             (id, tenant_id, project_id, created_by, employee_key, title,
-                             risk_level, budget, idempotency_key, request_fingerprint, status)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             risk_level, budget, idempotency_key, request_fingerprint, status,
+                             budget_cents)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (tenant_id, created_by, idempotency_key) DO NOTHING
-                        RETURNING id, tenant_id, project_id, created_by, employee_key, title,
-                                  risk_level, budget, idempotency_key, request_fingerprint, status
+                        RETURNING {_TASK_COLUMNS}
                         """,
                         (task.id, task.tenant_id, task.project_id, task.created_by, task.employee_key,
                          task.title, task.risk_level.value, task.budget, task.idempotency_key,
-                         task.request_fingerprint, task.status.value),
+                         task.request_fingerprint, task.status.value, task.budget_cents),
                     )
                     row = cursor.fetchone()
                     if row is None:
                         cursor.execute(
-                            """
-                            SELECT id, tenant_id, project_id, created_by, employee_key, title,
-                                   risk_level, budget, idempotency_key, request_fingerprint, status
+                            f"""
+                            SELECT {_TASK_COLUMNS}
                             FROM workbench_tasks
                             WHERE tenant_id = %s AND created_by = %s AND idempotency_key = %s
                             """,
@@ -119,9 +127,8 @@ class PostgresTaskRepository:
             with connection.transaction():
                 with connection.cursor() as cursor:
                     cursor.execute(
-                        """
-                        SELECT id, tenant_id, project_id, created_by, employee_key, title,
-                               risk_level, budget, idempotency_key, request_fingerprint, status
+                        f"""
+                        SELECT {_TASK_COLUMNS}
                         FROM workbench_tasks
                         WHERE id = %s AND tenant_id = %s
                           AND (%s IN ('department_lead', 'ceo', 'super_admin') OR created_by = %s)
@@ -149,9 +156,8 @@ class PostgresTaskRepository:
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """
-                    SELECT id, tenant_id, project_id, created_by, employee_key, title,
-                           risk_level, budget, idempotency_key, request_fingerprint, status
+                    f"""
+                    SELECT {_TASK_COLUMNS}
                     FROM workbench_tasks
                     WHERE tenant_id = %s AND status = 'pending_approval'
                     ORDER BY id
@@ -225,9 +231,8 @@ class PostgresTaskRepository:
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """
-                    SELECT id, tenant_id, project_id, created_by, employee_key, title,
-                           risk_level, budget, idempotency_key, request_fingerprint, status
+                    f"""
+                    SELECT {_TASK_COLUMNS}
                     FROM workbench_tasks
                     WHERE tenant_id = %s
                     ORDER BY id
@@ -242,11 +247,15 @@ class PostgresTaskRepository:
 
     @staticmethod
     def _row_to_task(row: tuple) -> Task:
+        # `budget` 与 `budget_cents` **恰好一列有值**（迁移 044 的互斥约束）：历史行只有前者、新行只有后者。
+        # 两列都按「可空」水合，`Task.budget_in_cents()` 负责归一（历史行用 Decimal 换算，不直接乘 100）。
         return Task(
             id=str(row[0]), tenant_id=str(row[1]), project_id=row[2], created_by=str(row[3]),
             employee_key=str(row[4]), title=str(row[5]), risk_level=RiskLevel(str(row[6])),
-            budget=float(row[7]), idempotency_key=str(row[8]), request_fingerprint=str(row[9]),
+            budget=float(row[7]) if row[7] is not None else None,
+            idempotency_key=str(row[8]), request_fingerprint=str(row[9]),
             status=TaskStatus(str(row[10])), audits=[],
+            budget_cents=int(row[11]) if len(row) > 11 and row[11] is not None else None,
         )
 
     @staticmethod

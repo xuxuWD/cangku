@@ -38,6 +38,7 @@ from .domain import (
     UserContext,
     ensure_can_approve,
     ensure_can_create,
+    yuan_to_cents,
 )
 from .accounts.models import (
     AccountConflict,
@@ -453,9 +454,38 @@ class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     employee_key: str = Field(min_length=1, max_length=100)
     risk_level: RiskLevel = RiskLevel.LOW
-    budget: float = Field(default=0, ge=0)
+    # 组 10.5（迁移 044）：**权威金额 = `budget_cents`（整数分）**；`budget`（元 / 浮点）保留为兼容入参。
+    # 两者**互斥**：同时显式提交 ⇒ `422`（不静默取其一）；都不提交 ⇒ 0 分。服务端一律落整数分。
+    budget: float = Field(default=0, ge=0, description="（兼容字段，单位：元）建议改用 budget_cents")
+    budget_cents: int | None = Field(default=None, ge=0, le=10**12, description="金额（整数分，权威字段）")
     idempotency_key: str = Field(min_length=1, max_length=200)
     project_id: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def _reject_both_budget_fields(self) -> "TaskCreate":
+        if self.budget_cents is not None and "budget" in self.model_fields_set:
+            raise ValueError("budget 与 budget_cents 只能二选一（金额请用整数分 budget_cents）")
+        return self
+
+    def budget_in_cents(self) -> int:
+        """本次请求的金额（整数分）：`budget_cents` 优先；只给「元」时按 Decimal 四舍五入到分。"""
+        if self.budget_cents is not None:
+            return int(self.budget_cents)
+        return yuan_to_cents(self.budget)
+
+    def fingerprint_source(self) -> dict[str, object]:
+        """幂等指纹的输入（**与 10.5 之前逐字兼容**）。
+
+        历史请求的指纹来自 `model_dump(mode="json")` 的**原样键集**，其中 `budget` 是元-浮点。
+        本方法只在「客户端用了哪个字段」上加回该字段本身：用 `budget` 的请求指纹**逐字不变**
+        （老客户端重放仍返回原任务），用 `budget_cents` 的请求指纹则只带 `budget_cents`（新形状确定）。
+        """
+        source = self.model_dump(mode="json")
+        if self.budget_cents is None:
+            source.pop("budget_cents", None)
+        else:
+            source.pop("budget", None)
+        return source
 
 
 class TaskView(BaseModel):
@@ -466,7 +496,10 @@ class TaskView(BaseModel):
     employee_key: str
     title: str
     risk_level: RiskLevel
+    # 组 10.5：`budget_cents` 为**权威金额（整数分）**；`budget`（元 / 浮点）保留为兼容字段
+    # （由分值换算 = cents / 100，老客户端与既有页面不改也能用；新代码请读 `budget_cents`）。
     budget: float
+    budget_cents: int
     idempotency_key: str
     status: TaskStatus
     audit_count: int
@@ -747,7 +780,9 @@ def to_view(task: Task) -> TaskView:
         employee_key=task.employee_key,
         title=task.title,
         risk_level=task.risk_level,
-        budget=task.budget,
+        # 权威金额与兼容字段同源：都由 `budget_in_cents()` 归一（历史行按元换算，不直接乘 100）。
+        budget=task.budget_in_cents() / 100,
+        budget_cents=task.budget_in_cents(),
         idempotency_key=task.idempotency_key,
         status=task.status,
         audit_count=len(task.audits),
@@ -3765,7 +3800,8 @@ def create_task(
     context: UserContext = Depends(current_user),
 ) -> TaskView:
     try:
-        ensure_can_create(context, payload.risk_level, payload.budget)
+        # 闸门与落库都只看整数分（组 10.5）：`budget`（元）在模型层已归一到分，不再有第二处换算。
+        ensure_can_create(context, payload.risk_level, payload.budget_in_cents())
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
@@ -3775,10 +3811,10 @@ def create_task(
             title=payload.title,
             employee_key=payload.employee_key,
             risk_level=payload.risk_level,
-            budget=payload.budget,
+            budget_cents=payload.budget_in_cents(),
             project_id=payload.project_id,
             idempotency_key=payload.idempotency_key,
-            fingerprint_source=payload.model_dump(mode="json"),
+            fingerprint_source=payload.fingerprint_source(),
         )
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -3793,7 +3829,7 @@ def _store_new_task(
     title: str,
     employee_key: str,
     risk_level: RiskLevel,
-    budget: int,
+    budget_cents: int,
     project_id: str | None,
     idempotency_key: str,
     fingerprint_source: dict | None = None,
@@ -3813,7 +3849,9 @@ def _store_new_task(
         "title": title,
         "employee_key": employee_key,
         "risk_level": str(risk_level),
-        "budget": budget,
+        # 组 10.5：指纹里放**整数分**（不再放元-浮点）。注：`POST /tasks` 走 `fingerprint_source` 显式传入
+        # （保持与 10.5 之前逐字兼容），本分支只服务未传指纹的调用方（如 S2 沉淀）。
+        "budget_cents": budget_cents,
         "project_id": project_id,
     }
     identity = {"id": task_id} if task_id else {}
@@ -3824,7 +3862,9 @@ def _store_new_task(
         employee_key=employee_key,
         title=title,
         risk_level=risk_level,
-        budget=budget,
+        # 新写入**只写整数分**（`budget` 保持 NULL —— 迁移 044 的互斥约束要求恰好一列有值）。
+        budget=None,
+        budget_cents=budget_cents,
         idempotency_key=idempotency_key,
         request_fingerprint=hashlib.sha256(
             json.dumps(source, sort_keys=True, separators=(",", ":"), default=str).encode()
@@ -4241,13 +4281,13 @@ def promote_run_to_task(
 
     # 预算 / 风险闸门：与 `POST /tasks` 同一函数（同一口径，不因「沉淀」而放松）。
     try:
-        ensure_can_create(context, source_task.risk_level, source_task.budget)
+        ensure_can_create(context, source_task.risk_level, source_task.budget_in_cents())
         stored, task_created = _store_new_task(
             context,
             title=title,
             employee_key=source_task.employee_key,
             risk_level=source_task.risk_level,
-            budget=source_task.budget,
+            budget_cents=source_task.budget_in_cents(),
             project_id=source_task.project_id,
             # 服务端派生的幂等键：同一运行的任务在任务侧也天然幂等（用户重试不会再建一条）。
             idempotency_key=f"promote:{run_id}",
