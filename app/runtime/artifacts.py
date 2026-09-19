@@ -138,6 +138,26 @@ class InMemoryRunArtifactStore:
             and (row.expires_at is None or row.expires_at > reference)
         ]
 
+    def list_for_tenant(
+        self, tenant_id: str, *, limit: int, offset: int, now: datetime | None = None
+    ) -> tuple[list[RunArtifact], int]:
+        """按租户列出产物登记（B-2c 导出读取通道）。
+
+        **过期口径与 `list_for_run` 逐字一致**（`expires_at is None or expires_at > now`）：
+        保留期外的登记不再视为可读数据（清理任务随后物理删除）⇒ 不入包、也不计入总数。
+        排序 `(created_at, artifact_id)` 与 PG 实现同口径，顺序确定。
+        """
+        reference = now or _now()
+        rows = sorted(
+            (
+                row
+                for row in self._rows
+                if row.tenant_id == tenant_id and (row.expires_at is None or row.expires_at > reference)
+            ),
+            key=lambda row: (row.created_at, row.artifact_id),
+        )
+        return rows[offset : offset + limit], len(rows)
+
     def purge_expired(self, *, cutoff: datetime) -> int:
         kept = [
             row
@@ -251,6 +271,52 @@ class PostgresRunArtifactStore:
             )
             for row in rows
         ]
+
+    def list_for_tenant(
+        self, tenant_id: str, *, limit: int, offset: int, now: datetime | None = None
+    ) -> tuple[list[RunArtifact], int]:
+        """按租户列出产物登记（B-2c 导出读取通道；口径同内存实现）。
+
+        过期条件和 `list_for_run` 一致（`expires_at IS NULL OR expires_at > now`）——
+        保留期外的登记不入包；`COUNT(*)` 与 `LIMIT/OFFSET` **同条件**（总数不虚高）。
+        """
+        reference = now or _now()
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT tenant_id, run_id, artifact_id, virtual_path, change_kind,
+                           bytes, sha256, created_at, expires_at
+                    FROM workbench_run_artifacts
+                    WHERE tenant_id = %s AND (expires_at IS NULL OR expires_at > %s)
+                    ORDER BY created_at, artifact_id
+                    LIMIT %s OFFSET %s
+                    """,
+                    (tenant_id, reference, limit, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM workbench_run_artifacts
+                    WHERE tenant_id = %s AND (expires_at IS NULL OR expires_at > %s)
+                    """,
+                    (tenant_id, reference),
+                )
+                total = cursor.fetchone()
+        return [
+            RunArtifact(
+                tenant_id=str(row[0]),
+                run_id=str(row[1]),
+                artifact_id=str(row[2]),
+                virtual_path=str(row[3]),
+                change_kind=str(row[4]),
+                bytes=int(row[5]),
+                sha256=str(row[6]),
+                created_at=row[7],
+                expires_at=row[8],
+            )
+            for row in rows
+        ], int(total[0]) if total is not None else 0
 
     def purge_expired(self, *, cutoff: datetime) -> int:
         """**逐租户**删除到期行（带 `tenant_id`）；返回删除行数。"""

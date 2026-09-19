@@ -165,3 +165,34 @@ def test_lifecycle_list_and_delete_for_tenant(service) -> None:
     deleted = svc.store.delete_all_for_tenant(TENANT)
     assert deleted >= 1
     assert svc.store.list_all_for_tenant(TENANT) == []
+
+
+def test_lifecycle_delete_clears_bindings_too(service) -> None:
+    """租户整体删除必须清**两张技能表**（技能包 + 数字员工绑定）—— 2026-09-19 真机验证抓到的真缺陷。
+
+    为什么单列这条：`list_all_for_tenant` **只读技能包表** ⇒ 绑定表是否被清，用既有断言看不见。
+    真机实测（测试库 + 真实 worker）：租户已 `deleted`、审计 `cleared_categories` 含 `skills`，
+    但 `workbench_skill_bindings` 行数原样不动（悬挂绑定指向已消失的技能）。**本用例逐表查库**。
+    """
+    svc, connection = service
+    svc.submit_skill(
+        _alice(), skill_key="lc-whole", version="1.0.0", name="整层清场",
+        description="整层清场", license="MIT", allowed_tools=["fs.list"],
+        source_key="first-party", content_body="# 整层清场正文",
+    )
+    svc.review_skill(_admin(), "lc-whole", "1.0.0", approved=True)
+    svc.enable_skill(_admin(), "lc-whole", "1.0.0")
+    svc.bind_skill(_admin(), "agent-lc", "lc-whole")
+
+    svc.store.delete_all_for_tenant(TENANT)
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM workbench_skills WHERE tenant_id = %s", (TENANT,))
+        skills = int(cursor.fetchone()[0])
+        cursor.execute(
+            "SELECT count(*) FROM workbench_skill_bindings WHERE tenant_id = %s", (TENANT,)
+        )
+        bindings = int(cursor.fetchone()[0])
+    assert (skills, bindings) == (0, 0), (
+        f"技能层必须整体清空（技能包 + 绑定逐表查库），实测 skills={skills} bindings={bindings}"
+    )

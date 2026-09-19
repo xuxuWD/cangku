@@ -1,6 +1,6 @@
 import type { DirectoryErrorShape, DirectoryState } from './types'
 
-const DEFAULT_DIRECTORY_ERROR = '目录服务暂时不可用，请检查网络后重新尝试。'
+const DEFAULT_DIRECTORY_ERROR = '名单暂时读不出来，请检查网络后重新尝试。'
 const INVALID_INPUT = '提交的内容不符合要求：标识只能是小写字母、数字、点、下划线与短横线，中文名不能为空。'
 
 export const initialDirectoryState: DirectoryState = {

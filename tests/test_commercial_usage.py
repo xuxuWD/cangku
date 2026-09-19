@@ -1,5 +1,7 @@
 import pytest
 
+from datetime import UTC, datetime
+
 from app.commercial.plan import PlanVersion, QuotaService
 from app.commercial.usage import InMemoryUsageLedger, UsageEntry, UsageLedgerError
 
@@ -32,3 +34,41 @@ def test_plan_version_is_immutable_after_creation():
     plan = PlanVersion("internal", limits=limits)
     limits["task_runs"] = 999
     assert plan.limits["task_runs"] == 2
+
+
+# ---------------------------------------------------------------------------
+# B-2b（2026-09-19）：用量账本按租户列出（导出包 `usage` 类别的读取通道）
+# ---------------------------------------------------------------------------
+
+
+def test_in_memory_ledger_list_for_tenant_scopes_orders_and_counts():
+    ledger = InMemoryUsageLedger()
+    ledger.append(
+        UsageEntry(
+            idempotency_key="old", tenant_id="t1", units=1, cost_cents=10,
+            occurred_at=datetime(2026, 9, 1, tzinfo=UTC),
+        )
+    )
+    ledger.append(
+        UsageEntry(
+            idempotency_key="new", tenant_id="t1", units=2, cost_cents=20,
+            occurred_at=datetime(2026, 9, 2, tzinfo=UTC),
+        )
+    )
+    ledger.append(
+        UsageEntry(
+            idempotency_key="other", tenant_id="t2", units=5, cost_cents=50,
+            occurred_at=datetime(2026, 9, 3, tzinfo=UTC),
+        )
+    )
+
+    rows, total = ledger.list_for_tenant("t1", limit=10, offset=0)
+
+    assert total == 2  # 计数按租户过滤，不含他租户
+    assert [row.idempotency_key for row in rows] == ["old", "new"]  # 按发生时间升序
+    assert all(row.tenant_id == "t1" for row in rows)
+
+    page, same_total = ledger.list_for_tenant("t1", limit=1, offset=1)
+
+    assert same_total == 2
+    assert [row.idempotency_key for row in page] == ["new"]

@@ -42,6 +42,10 @@ class AuditAction(StrEnum):
     INBOX_WRITE_FAILED = "inbox.write_failed"
     RUN_NOTIFY_SKIPPED = "run.notify_skipped"
     RUN_APPROVAL_DECIDED = "run.approval_decided"
+    # S2 人工验收：只记结论与当时的结构判定，**不落理由正文**（正文只进决议表）。
+    RUN_ACCEPTANCE_DECIDED = "run.acceptance_decided"
+    # S2 沉淀入口（存成任务，迁移 042）：审计只记 task_id，标题正文不落审计。
+    RUN_PROMOTED_TO_TASK = "run.promoted_to_task"
     WORKFORCE_ROLE_CREATED = "workforce.role.created"
     WORKFORCE_ROLE_UPDATED = "workforce.role.updated"
     WORKFORCE_ROLE_DISABLED = "workforce.role.disabled"
@@ -61,6 +65,9 @@ class AuditAction(StrEnum):
     COMMERCIAL_RETENTION_UPDATED = "commercial.retention.updated"
     # 租户删除执行（真源 commercial-g0-design.md:114/:174「删除流程包含……审计记录」）
     COMMERCIAL_DELETION_EXECUTED = "commercial.deletion.executed"
+    # 租户删除确认（B-3 补丁，真源「删除前必须生成最终导出包并记录确认人」：
+    # 确认人是一次**显式确认动作**，独立于「申请」，消除「确认人 = 发起人」的默认假设）
+    COMMERCIAL_DELETION_CONFIRMED = "commercial.deletion.confirmed"
     # P3 记忆层（真源 specs/2026-09-15-memory-layer-p3-design.md §2.7）：
     # 只记标识与受控枚举（scope / owner_kind / rule_key / version），**不记记忆正文**。
     MEMORY_FACT_CREATED = "memory.fact.created"
@@ -162,6 +169,8 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "rejected_fields",
         # 运行审批的授权来源（服务端判定的受控枚举，非自由文本）
         "authorized_by_source",
+        # 服务端生成的任务标识（S2 沉淀入口：只记标识，不记用户填写的标题正文）
+        "task_id",
         # 工具执行（Y3 最小集：工具标识与风险档，均为服务端声明的受控值）
         "tool_key",
         "risk_level",
@@ -205,6 +214,9 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "amount_cents",
         "field_name",
         "recomputed_count",
+        # 租户删除（B-3）：确认人标识与「按策略清场了哪些面」——均为服务端声明值，不含自由文本
+        "confirmed_by",
+        "cleared_categories",
         "create_opportunity",
         "model_key",
         # P2c-4（会话模式 / 导出 / 物理删除）：模式为受控枚举、计数为整数，**均不含正文**。
@@ -221,6 +233,10 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "member_id",
         "permission",
         "is_owner",
+        # S2 人工验收（只记结论文本与「是否写了理由」的布尔，**不落理由正文**）
+        "decision",
+        "structural_verdict",
+        "reason_present",
     }
 )
 

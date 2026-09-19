@@ -298,7 +298,7 @@ export const DROPPED_REF_LABELS: Record<string, string> = {
   invalid_target_ref: '目标引用无效或不属于本客户',
   invalid_evidence_ref: '证据引用无效或不属于本客户',
   too_many_actions: '动作条数超上限',
-  missing_actions: '缺少 actions 字段',
+  missing_actions: '缺少后续动作',
 }
 
 // 标签缺失时回落显示原值，避免出现空白。

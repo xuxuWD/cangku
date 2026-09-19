@@ -214,6 +214,71 @@ def test_antifake_idempotency_without_dedup_would_duplicate() -> None:
     assert again.memory_id == first.memory_id
 
 
+# ------------------------------------------------------------ 生命周期（租户整体删除）
+
+def test_delete_all_for_tenant_clears_whole_memory_layer_not_just_facts() -> None:
+    """租户整体删除必须清**整个记忆层**（事实 / 规则 / 身份类画像三张表），不是只清事实表。
+
+    为什么单列这条（2026-09-19 真机验证抓到的真缺陷）：`029` 迁移把「记忆层」落成**三张表**
+    （`workbench_memory_facts` / `workbench_memory_rules` / `workbench_memory_profile_keys`），
+    而 `delete_all_for_tenant` 原先只删事实 ⇒ **规则与身份类画像整租户残留**。
+    真机实测：租户已 `deleted`、审计 `cleared_categories` 报 `memories`，但两张表行数原样不动
+    ⇒ 「审计面名齐全」与「每面只清一张表」不一致（数据残留，合规问题）。
+    """
+    service = MemoryService(
+        InMemoryMemoryStore(), FakeEmbeddingAdapter(),
+        audit=AuditService(InMemoryAuditStore()),
+    )
+    actor = _actor(role="super_admin")
+    service.create_fact(
+        actor, content="待清场事实", scope="user",
+        owner_kind="user", owner_id=ALICE, idempotency_key="lc-fact-1",
+    )
+    service.create_rule(
+        actor, rule_key="lc.rule", content="待清场规则",
+        scope="user", owner_kind="user", owner_id=ALICE,
+    )
+    service.set_profile_key(
+        actor, key="lc-profile", value="待清场画像", owner_kind="user", owner_id=ALICE,
+    )
+
+    deleted = service.store.delete_all_for_tenant(TENANT)
+
+    assert deleted >= 1
+    assert service.store.list_all_for_tenant(TENANT) == []  # 事实面
+    assert [r for r in service.store._rules.values() if r.tenant_id == TENANT] == []  # 规则面
+    assert service.get_profile(actor, owner_kind="user", owner_id=ALICE) == {}  # 身份类画像面
+
+
+def test_lifecycle_reads_cover_rules_and_profiles_for_tenant() -> None:
+    """导出面（真源 §6.1「记忆」）需要**三类记忆的按租户读取**：规则与身份类画像也要能整租户读出。
+
+    2026-09-19：此前只有 `list_all_for_tenant`（**只读事实**）⇒ 导出包里的 `memories` 只有事实，
+    规则与画像拿不到（删除面已改为整层三张表，两面口径必须一致）。口径同事实类：
+    **只出 `active`**（`superseded` 历史版本不入包）、排序确定。
+    """
+    service = MemoryService(
+        InMemoryMemoryStore(), FakeEmbeddingAdapter(),
+        audit=AuditService(InMemoryAuditStore()),
+    )
+    actor = _actor(role="super_admin")
+    service.create_rule(actor, rule_key="lc.read", content="第一版规则",
+                        scope="user", owner_kind="user", owner_id=ALICE)
+    service.create_rule(actor, rule_key="lc.read", content="第二版规则",
+                        scope="user", owner_kind="user", owner_id=ALICE)  # 旧版转 superseded
+    service.set_profile_key(actor, key="language", value="中文", owner_kind="user", owner_id=ALICE)
+    service.set_profile_key(actor, key="timezone", value="UTC+8", owner_kind="user", owner_id=ALICE)
+
+    rules = service.store.list_rules_for_tenant(TENANT)
+    profiles = service.store.list_profiles_for_tenant(TENANT)
+
+    # 只出 active：两条里只有第二版（第一版已 superseded）。
+    assert [r.content for r in rules] == ["第二版规则"]
+    assert rules[0].version == 2 and rules[0].rule_key == "lc.read"
+    assert [(p.profile_key, p.value) for p in profiles] == [("language", "中文"), ("timezone", "UTC+8")]
+    assert all(p.owner_kind == "user" and p.owner_id == ALICE for p in profiles)
+
+
 # ------------------------------------------------------------ 审计
 
 def test_audit_actions_registered(service: MemoryService) -> None:

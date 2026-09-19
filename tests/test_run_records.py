@@ -99,6 +99,19 @@ def test_in_memory_list_recent_is_newest_first_and_respects_limit() -> None:
     assert [item.run_id for item in recent] == ["run-3", "run-2"]
 
 
+def test_in_memory_count_for_tenant_is_tenant_scoped() -> None:
+    """B-2（2026-09-19）：导出包要声明「取了多少 / 共多少」⇒ 计数必须按租户且不含他租户。"""
+    store = InMemoryRunRecordStore()
+    base = datetime(2026, 9, 11, tzinfo=UTC)
+    store.upsert(record("run-1", started_at=base))
+    store.upsert(record("run-2", started_at=base + timedelta(minutes=1)))
+    store.upsert(record("run-other", tenant_id="t-2", started_at=base))
+
+    assert store.count_for_tenant("t-1") == 2
+    assert store.count_for_tenant("t-2") == 1
+    assert store.count_for_tenant("t-none") == 0
+
+
 class RecordingCursor:
     def __init__(self, rows: list[object]) -> None:
         self.rows = rows
@@ -228,6 +241,18 @@ def test_postgres_list_recent_orders_and_limits() -> None:
     assert "ORDER BY started_at DESC" in statement
     assert "LIMIT %s" in statement
     assert params == ("t-1", 5)
+
+
+def test_postgres_count_for_tenant_is_tenant_scoped() -> None:
+    connection = RecordingConnection([(7,)])
+    store = PostgresRunRecordStore(connection)
+
+    assert store.count_for_tenant("t-1") == 7
+
+    statement, params = connection.cursor_instance.statements[0]
+    assert "COUNT(*)" in statement
+    assert "WHERE tenant_id = %s" in statement
+    assert params == ("t-1",)
 
 
 def test_build_run_metrics_uses_memory_store_in_development() -> None:

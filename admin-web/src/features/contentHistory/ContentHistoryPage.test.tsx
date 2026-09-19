@@ -25,7 +25,7 @@ describe('ContentHistoryPage', () => {
 
     render(<ContentHistoryPage onOpenTask={vi.fn()} />)
 
-    expect(await screen.findByRole('heading', { name: '历史草稿' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('状态筛选')).toBeInTheDocument()
     expect(screen.getByText('企业知识库')).toBeInTheDocument()
     expect(screen.getByText('待自检', { selector: 'span.status-badge' })).toBeInTheDocument()
     expect(screen.getByText('共 1 条')).toBeInTheDocument()

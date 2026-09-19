@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AuditLogPage } from './AuditLogPage'
 import type { AuditRecord } from './types'
@@ -80,7 +80,42 @@ describe('AuditLogPage', () => {
 
     render(<AuditLogPage />)
 
-    expect(await screen.findByText('没有匹配的审计记录')).toBeInTheDocument()
+    // 未带筛选条件的空：还没有审计记录（区别于「没有符合条件的记录」）。
+    expect(await screen.findByText('还没有审计记录')).toBeInTheDocument()
+  })
+
+  // 带筛选条件查询无结果时，空态给出「清除筛选条件」这一真实动作。
+  it('distinguishes a filtered empty result and clears the filters', async () => {
+    const fetchMock = makeFetch(() => json({ items: [], total: 0, limit: 50, offset: 0 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const auditUrls = () => fetchMock.mock.calls.map((call) => String(call[0])).filter((url) => url.includes('/audits?'))
+    const lastAuditUrl = () => auditUrls()[auditUrls().length - 1] ?? ''
+
+    render(<AuditLogPage />)
+    await screen.findByText('还没有审计记录')
+
+    await userEvent.type(screen.getByLabelText('操作者'), 'someone')
+    await userEvent.click(screen.getByRole('button', { name: '查询' }))
+
+    expect(await screen.findByText('没有符合条件的记录')).toBeInTheDocument()
+    expect(lastAuditUrl()).toContain('actor_id=someone')
+
+    await userEvent.click(screen.getByRole('button', { name: '清除筛选条件' }))
+
+    expect(await screen.findByText('还没有审计记录')).toBeInTheDocument()
+    expect(lastAuditUrl()).not.toContain('actor_id=someone')
+  })
+
+  // 403 = 无权限：固定文案，不给重试。
+  it('shows a permission message for 403 without offering a retry', async () => {
+    vi.stubGlobal('fetch', makeFetch(() => json({ detail: '只有 CEO 或超级管理员可以查看审计日志' }, 403)))
+
+    render(<AuditLogPage />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('暂时无法查看审计日志')
+    expect(alert).toHaveTextContent('当前账号没有查看审计日志的权限。')
+    expect(within(alert).queryByRole('button')).toBeNull()
   })
 
   it('shows an error and retries the same query', async () => {

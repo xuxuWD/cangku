@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
+import { EmptyState } from '../../components/ui/EmptyState'
 import { formatLocalTime } from '../../utils/time'
 import { changeOpportunityStage, getOpportunity, listOpportunities } from './api'
 import { CrmNotice, Pagination, AccountName, useAccountNames, type AccountNames } from './CrmShared'
 import { asCrmError, CRM_LIMIT_OPTIONS, daysSince, formatCents, formatDays } from './state'
-import { crmLabel, OPPORTUNITY_STAGE_LABELS, OPPORTUNITY_STAGE_TRANSITIONS, type CrmErrorShape, type CrmOpportunity, type CrmPage, type CrmStageEvent } from './types'
+import { ACTIVE_OPPORTUNITY_STAGES, crmLabel, OPPORTUNITY_STAGE_LABELS, OPPORTUNITY_STAGE_TRANSITIONS, type CrmErrorShape, type CrmOpportunity, type CrmPage, type CrmStageEvent } from './types'
 
 const STAGE_OPTIONS = ['qualification', 'proposal', 'negotiation', 'won', 'lost']
 
@@ -73,13 +74,39 @@ function OpportunityList({ accountNames, onOpen }: { accountNames: AccountNames;
     }
   }
 
-  return <main className="main-content content-history crm">
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">商机</h1>
-        <p className="page-desc">商机阶段单向推进（资格确认 → 方案报价 → 商务谈判 → 赢单 / 输单），终态不可回迁；服务端按白名单校验，非法迁移返回 409。</p>
+  // 统计条数字来源：命中总数取服务端 total；其余按本页已加载列表现算。
+  const activeOnPage = state.items.filter((item) => ACTIVE_OPPORTUNITY_STAGES.includes(item.stage)).length
+  const wonOnPage = state.items.filter((item) => item.stage === 'won').length
+
+  return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">商机阶段单向推进（资格确认 → 方案报价 → 商务谈判 → 赢单 / 输单），终态不可回迁；系统按既定阶段顺序校验，不符合的迁移会被拒绝。</p>
+      <div className="t3__actions">
+        <button className="btn btn--secondary" type="button" disabled={state.loading} onClick={() => void load()}>刷新</button>
       </div>
-      <div className="actions"><button className="button" type="button" onClick={() => void load()}>刷新</button></div>
+    </div>
+
+    <div className="metrics">
+      <div className="metric">
+        <div className="metric__label">命中总数</div>
+        <div className="metric__value">{state.loading ? '—' : state.total}</div>
+        <div className="metric__hint">当前阶段筛选下服务端返回的总条数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页商机</div>
+        <div className="metric__value">{state.loading ? '—' : state.items.length}</div>
+        <div className="metric__hint">按本页统计：当前页展示的商机数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页进行中</div>
+        <div className="metric__value">{state.loading ? '—' : activeOnPage}</div>
+        <div className="metric__hint">按本页统计：尚未进入赢单 / 输单终态的商机数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页赢单</div>
+        <div className="metric__value">{state.loading ? '—' : wonOnPage}</div>
+        <div className="metric__hint">按本页统计：阶段为赢单的商机数</div>
+      </div>
     </div>
 
     <div className="toolbar">
@@ -97,19 +124,26 @@ function OpportunityList({ accountNames, onOpen }: { accountNames: AccountNames;
       <span className="history-count">共 {state.total} 条</span>
     </div>
 
-    {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载商机列表…</div>}
-    {!state.loading && state.error && <CrmNotice
-      tone="error"
-      title="商机列表加载失败"
-      action={state.error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
-    >
-      <p>{state.error.message}</p>
-    </CrmNotice>}
-    {!state.loading && !state.error && <section className="history-panel crm__panel" aria-label="商机列表">
-      <div className="panel-header"><h2>商机列表</h2><span>{state.total} 条</span></div>
-      {state.items.length === 0
-        ? <div className="empty-state"><strong>暂无商机</strong><span>调整阶段筛选，或从线索转化 / 接口建商机。</span></div>
-        : <div className="panel-body"><table className="workforce__table">
+    <section className="card" aria-label="商机列表">
+      <div className="card__head"><h2>商机列表</h2><span className="badge">{state.total} 条</span></div>
+
+      {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载商机列表…</div>}
+
+      {!state.loading && state.error && <div className="card__body">
+        <CrmNotice
+          tone="error"
+          title={state.error.status === 403 ? '当前账号无权查看商机列表' : '商机列表加载失败'}
+          action={state.error.status !== 403 && state.error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+        >
+          <p>{state.error.message}</p>
+        </CrmNotice>
+      </div>}
+
+      {!state.loading && !state.error && (state.items.length === 0
+        ? <EmptyState illustration="list" title="暂无商机" text="调整阶段筛选，或从线索转化建立商机。">
+            <button className="btn btn--secondary btn--sm" type="button" onClick={() => void load()}>刷新</button>
+          </EmptyState>
+        : <div className="card__body"><table className="workforce__table">
           <thead><tr><th>名称</th><th>客户</th><th>阶段</th><th>金额</th><th>进入阶段时间</th><th>预计成交</th><th>阶段推进</th><th>操作</th></tr></thead>
           <tbody>{state.items.map((item) => <tr key={item.opportunity_id} onClick={() => onOpen(item.opportunity_id)} title="点击行查看商机详情">
             <td><span className="workforce__key">{item.name}</span></td>
@@ -122,7 +156,7 @@ function OpportunityList({ accountNames, onOpen }: { accountNames: AccountNames;
             <td><div className="crm-stage-actions" onClick={(event) => event.stopPropagation()}>{(OPPORTUNITY_STAGE_TRANSITIONS[item.stage] ?? []).length === 0
               ? <span className="workforce__none">终态，不可回迁</span>
               : (OPPORTUNITY_STAGE_TRANSITIONS[item.stage] ?? []).map((to) => <button
-                className="button"
+                className="btn btn--secondary btn--sm"
                 type="button"
                 key={to}
                 disabled={busyId === item.opportunity_id}
@@ -131,9 +165,10 @@ function OpportunityList({ accountNames, onOpen }: { accountNames: AccountNames;
               >→ {crmLabel(OPPORTUNITY_STAGE_LABELS, to)}</button>)}</div></td>
             <td><button className="text-action" type="button" aria-label={`查看「${item.name}」商机详情`} onClick={(event) => { event.stopPropagation(); onOpen(item.opportunity_id) }}>查看详情</button></td>
           </tr>)}</tbody>
-        </table></div>}
-      <Pagination total={state.total} limit={state.limit} offset={state.offset} loading={state.loading} onPrev={() => setOffset(Math.max(0, state.offset - state.limit))} onNext={() => setOffset(state.offset + state.limit)} />
-    </section>}
+        </table></div>)}
+
+      {!state.loading && !state.error && <Pagination total={state.total} limit={state.limit} offset={state.offset} loading={state.loading} onPrev={() => setOffset(Math.max(0, state.offset - state.limit))} onNext={() => setOffset(state.offset + state.limit)} />}
+    </section>
 
     <Toast message={toast} />
   </main>
@@ -188,13 +223,16 @@ function OpportunityDetail({ opportunityId, accountNames, onBack }: { opportunit
   }
 
   if (!opportunity) {
-    if (loading) return <main className="main-content content-history crm"><div className="loading-state" role="status"><span className="loading-dot" />正在加载商机详情…</div></main>
-    return <main className="main-content content-history crm">
-      <div className="page-head"><div><h1 className="page-title">商机详情</h1></div><div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div></div>
+    if (loading) return <main className="main-content t3 crm"><div className="loading-state" role="status"><span className="loading-dot" />正在加载商机详情…</div></main>
+    return <main className="main-content t3 crm">
+      <div className="t3__intro">
+        <p className="page-desc">商机详情：阶段机状态、金额、阶段停留天数与阶段事件时间线（追加式）。</p>
+        <div className="t3__actions"><button className="btn btn--secondary" type="button" onClick={onBack}>返回列表</button></div>
+      </div>
       <CrmNotice
         tone="error"
-        title="商机详情加载失败"
-        action={error?.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+        title={error?.status === 403 ? '当前账号无权查看该商机' : '商机详情加载失败'}
+        action={error?.status !== 403 && error?.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
       >
         <p>{error?.message ?? '没有找到该商机。'}</p>
       </CrmNotice>
@@ -203,26 +241,23 @@ function OpportunityDetail({ opportunityId, accountNames, onBack }: { opportunit
 
   const transitions = OPPORTUNITY_STAGE_TRANSITIONS[opportunity.stage] ?? []
 
-  return <main className="main-content content-history crm">
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">{opportunity.name}</h1>
-        <p className="page-desc">商机详情：阶段机状态、金额、阶段停留天数与阶段事件时间线（append-only）。</p>
-      </div>
-      <div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div>
+  return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">{opportunity.name}：阶段机状态、金额、阶段停留天数与阶段事件时间线（追加式）。</p>
+      <div className="t3__actions"><button className="btn btn--secondary" type="button" onClick={onBack}>返回列表</button></div>
     </div>
 
     {error && <CrmNotice
       tone="error"
       title="刷新失败，展示的是上一次加载的数据"
-      action={error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+      action={error.status !== 403 && error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
     >
       <p>{error.message}</p>
     </CrmNotice>}
 
-    <section className="history-panel crm__panel" aria-label="商机信息">
-      <div className="panel-header"><h2>基本信息</h2><span>{opportunity.opportunity_id}</span></div>
-      <div className="panel-body">
+    <section className="card" aria-label="商机信息">
+      <div className="card__head"><h2>基本信息</h2><span className="page-code">{opportunity.opportunity_id}</span></div>
+      <div className="card__body">
         <div className="run-detail__grid">
           <div className="run-detail__item"><span className="run-detail__label">客户</span><span className="run-detail__value"><AccountName accountId={opportunity.account_id} names={accountNames} /></span></div>
           <div className="run-detail__item"><span className="run-detail__label">阶段</span><span className="run-detail__value"><span className={`status-badge ${stageTone(opportunity.stage)}`}>{crmLabel(OPPORTUNITY_STAGE_LABELS, opportunity.stage)}</span></span></div>
@@ -235,12 +270,12 @@ function OpportunityDetail({ opportunityId, accountNames, onBack }: { opportunit
       </div>
     </section>
 
-    <section className="history-panel crm__panel" aria-label="阶段推进">
-      <div className="panel-header"><h2>阶段推进</h2><span>单向迁移；非法 / 并发先写由服务端返回 409</span></div>
-      <div className="panel-body"><div className="crm-stage-actions">{transitions.length === 0
+    <section className="card" aria-label="阶段推进">
+      <div className="card__head"><h2>阶段推进</h2><span className="page-meta">单向迁移 · 阶段顺序由服务端校验</span></div>
+      <div className="card__body"><div className="crm-stage-actions">{transitions.length === 0
         ? <span className="workforce__none">终态，不可回迁</span>
         : transitions.map((to) => <button
-          className="button"
+          className="btn btn--secondary btn--sm"
           type="button"
           key={to}
           disabled={busy}
@@ -249,11 +284,11 @@ function OpportunityDetail({ opportunityId, accountNames, onBack }: { opportunit
         >→ {crmLabel(OPPORTUNITY_STAGE_LABELS, to)}</button>)}</div></div>
     </section>
 
-    <section className="history-panel crm__panel" aria-label="阶段事件时间线">
-      <div className="panel-header"><h2>阶段事件时间线</h2><span>{events.length} 条（按发生时间正序）</span></div>
+    <section className="card" aria-label="阶段事件时间线">
+      <div className="card__head"><h2>阶段事件时间线</h2><span className="badge">{events.length} 条（按发生时间正序）</span></div>
       {events.length === 0
         ? <div className="empty-state"><strong>暂无阶段事件</strong><span>阶段事件为追加式记录：创建与每次迁移都会写入一条。</span></div>
-        : <div className="panel-body crm__timeline"><div className="timeline">{events.map((event, index) => <article className="audit-event" key={event.event_id || index}>
+        : <div className="card__body crm__timeline"><div className="timeline">{events.map((event, index) => <article className="audit-event" key={event.event_id || index}>
           <time>{formatLocalTime(event.occurred_at) || '—'}</time>
           <strong>{event.from_stage
             ? `${crmLabel(OPPORTUNITY_STAGE_LABELS, event.from_stage)} → ${crmLabel(OPPORTUNITY_STAGE_LABELS, event.to_stage)}`

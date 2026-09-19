@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
+import { EmptyState } from '../../components/ui/EmptyState'
 import { formatLocalTime } from '../../utils/time'
 import { getContract, listContracts, registerPayment, registerSignature, submitContractForSign, voidContract } from './api'
 import { CrmNotice, Pagination, AccountName, useAccountNames, type AccountNames } from './CrmShared'
@@ -48,13 +49,39 @@ function ContractList({ accountNames, onOpen }: { accountNames: AccountNames; on
 
   useEffect(() => { void load() }, [load])
 
-  return <main className="main-content content-history crm">
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">合同</h1>
-        <p className="page-desc">合同金额与回款一律整数分；签署结果与回款均为人工登记，系统只做台账，不承诺法律效力。</p>
+  // 统计条数字来源：命中总数取服务端 total；其余按本页已加载列表现算。
+  const signedOnPage = state.items.filter((item) => item.status === 'signed').length
+  const pendingOnPage = state.items.filter((item) => item.status === 'pending_sign').length
+
+  return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">合同金额与回款一律整数分；签署结果与回款均为人工登记，系统只做台账，不承诺法律效力。</p>
+      <div className="t3__actions">
+        <button className="btn btn--secondary" type="button" disabled={state.loading} onClick={() => void load()}>刷新</button>
       </div>
-      <div className="actions"><button className="button" type="button" onClick={() => void load()}>刷新</button></div>
+    </div>
+
+    <div className="metrics">
+      <div className="metric">
+        <div className="metric__label">命中总数</div>
+        <div className="metric__value">{state.loading ? '—' : state.total}</div>
+        <div className="metric__hint">当前状态筛选下服务端返回的总条数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页合同</div>
+        <div className="metric__value">{state.loading ? '—' : state.items.length}</div>
+        <div className="metric__hint">按本页统计：当前页展示的合同数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页已签署</div>
+        <div className="metric__value">{state.loading ? '—' : signedOnPage}</div>
+        <div className="metric__hint">按本页统计：已完成人工签署登记的合同数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页待签</div>
+        <div className="metric__value">{state.loading ? '—' : pendingOnPage}</div>
+        <div className="metric__hint">按本页统计：已提交、等待线下签署的合同数</div>
+      </div>
     </div>
 
     <div className="toolbar">
@@ -72,19 +99,26 @@ function ContractList({ accountNames, onOpen }: { accountNames: AccountNames; on
       <span className="history-count">共 {state.total} 条</span>
     </div>
 
-    {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载合同列表…</div>}
-    {!state.loading && state.error && <CrmNotice
-      tone="error"
-      title="合同列表加载失败"
-      action={state.error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
-    >
-      <p>{state.error.message}</p>
-    </CrmNotice>}
-    {!state.loading && !state.error && <section className="history-panel crm__panel" aria-label="合同列表">
-      <div className="panel-header"><h2>合同列表</h2><span>{state.total} 条</span></div>
-      {state.items.length === 0
-        ? <div className="empty-state"><strong>暂无合同</strong><span>调整状态筛选，或从已确认报价转合同。</span></div>
-        : <div className="panel-body"><table className="workforce__table">
+    <section className="card" aria-label="合同列表">
+      <div className="card__head"><h2>合同列表</h2><span className="badge">{state.total} 条</span></div>
+
+      {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载合同列表…</div>}
+
+      {!state.loading && state.error && <div className="card__body">
+        <CrmNotice
+          tone="error"
+          title={state.error.status === 403 ? '当前账号无权查看合同列表' : '合同列表加载失败'}
+          action={state.error.status !== 403 && state.error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+        >
+          <p>{state.error.message}</p>
+        </CrmNotice>
+      </div>}
+
+      {!state.loading && !state.error && (state.items.length === 0
+        ? <EmptyState illustration="list" title="暂无合同" text="调整状态筛选，或从已确认报价转合同。">
+            <button className="btn btn--secondary btn--sm" type="button" onClick={() => void load()}>刷新</button>
+          </EmptyState>
+        : <div className="card__body"><table className="workforce__table">
           <thead><tr><th>合同号</th><th>标题</th><th>客户</th><th>状态</th><th>合同金额</th><th>已回款</th><th>回款进度</th><th>到期日</th><th>操作</th></tr></thead>
           <tbody>{state.items.map((item) => <tr key={item.contract_id}>
             <td><span className="workforce__key">{item.contract_no}</span></td>
@@ -97,9 +131,10 @@ function ContractList({ accountNames, onOpen }: { accountNames: AccountNames; on
             <td>{item.ends_on || '—'}</td>
             <td><button className="text-action" type="button" onClick={() => onOpen(item.contract_id)}>查看详情</button></td>
           </tr>)}</tbody>
-        </table></div>}
-      <Pagination total={state.total} limit={state.limit} offset={state.offset} loading={state.loading} onPrev={() => setOffset(Math.max(0, state.offset - state.limit))} onNext={() => setOffset(state.offset + state.limit)} />
-    </section>}
+        </table></div>)}
+
+      {!state.loading && !state.error && <Pagination total={state.total} limit={state.limit} offset={state.offset} loading={state.loading} onPrev={() => setOffset(Math.max(0, state.offset - state.limit))} onNext={() => setOffset(state.offset + state.limit)} />}
+    </section>
   </main>
 }
 
@@ -179,34 +214,34 @@ function ContractDetail({ contractId, accountNames, onBack }: { contractId: stri
     }, '回款登记被拒绝：仅已签署合同可登记，且累计回款不能超过合同金额。')
   }
 
-  if (loading) return <main className="main-content content-history crm"><div className="loading-state" role="status"><span className="loading-dot" />正在加载合同详情…</div></main>
-  if (error || !contract) return <main className="main-content content-history crm">
-    <div className="page-head"><div><h1 className="page-title">合同详情</h1></div><div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div></div>
+  if (loading) return <main className="main-content t3 crm"><div className="loading-state" role="status"><span className="loading-dot" />正在加载合同详情…</div></main>
+  if (error || !contract) return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">合同要素、回款进度与人工登记的状态操作。</p>
+      <div className="t3__actions"><button className="btn btn--secondary" type="button" onClick={onBack}>返回列表</button></div>
+    </div>
     <CrmNotice
       tone="error"
-      title="合同详情加载失败"
-      action={error?.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+      title={error?.status === 403 ? '当前账号无权查看该合同' : '合同详情加载失败'}
+      action={error?.status !== 403 && error?.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
     >
       <p>{error?.message ?? '没有找到该合同。'}</p>
     </CrmNotice>
   </main>
 
-  return <main className="main-content content-history crm">
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">{contract.contract_no}</h1>
-        <p className="page-desc">{contract.title} · 客户 <AccountName accountId={contract.account_id} names={accountNames} /> · 状态 {crmLabel(CONTRACT_STATUS_LABELS, contract.status)}</p>
-      </div>
-      <div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div>
+  return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">合同 <span className="page-code">{contract.contract_no}</span> · {contract.title} · 客户 <AccountName accountId={contract.account_id} names={accountNames} /> · 状态 {crmLabel(CONTRACT_STATUS_LABELS, contract.status)}</p>
+      <div className="t3__actions"><button className="btn btn--secondary" type="button" onClick={onBack}>返回列表</button></div>
     </div>
 
     <CrmNotice tone="info" title="签署为人工登记，系统不承诺法律效力">
-      <p>本段没有电子签章 provider：签署时间与签署件由人工上传 / 输入后登记；后台只做台账，不对签署效力或存证效力作任何承诺。</p>
+      <p>签署时间与签署件由人工上传 / 输入后登记；后台只做台账，不对签署效力或存证效力作任何承诺。</p>
     </CrmNotice>
 
-    <section className="history-panel crm__panel" aria-label="合同要素">
-      <div className="panel-header"><h2>合同要素</h2><span>{contract.contract_id}</span></div>
-      <div className="panel-body">
+    <section className="card" aria-label="合同要素">
+      <div className="card__head"><h2>合同要素</h2><span className="page-code">{contract.contract_id}</span></div>
+      <div className="card__body">
         <div className="run-detail__grid">
           <div className="run-detail__item"><span className="run-detail__label">合同金额</span><span className="run-detail__value">{formatCents(contract.amount_cents)}</span></div>
           <div className="run-detail__item"><span className="run-detail__label">已回款</span><span className="run-detail__value">{formatCents(contract.paid_cents)}</span></div>
@@ -223,15 +258,15 @@ function ContractDetail({ contractId, accountNames, onBack }: { contractId: stri
       </div>
     </section>
 
-    <section className="history-panel crm__panel" aria-label="合同状态操作">
-      <div className="panel-header"><h2>状态操作</h2><span>单向推进 · 人工登记</span></div>
-      <div className="panel-body">
+    <section className="card" aria-label="合同状态操作">
+      <div className="card__head"><h2>状态操作</h2><span className="page-meta">单向推进 · 人工登记</span></div>
+      <div className="card__body">
         {contract.status === 'draft' && <div className="actions crm__actions">
-          <button className="button primary" type="button" disabled={busy} onClick={() => void run(async () => {
+          <button className="btn btn--primary" type="button" disabled={busy} onClick={() => void run(async () => {
             apply(await submitContractForSign(contractId))
             setToast('已提交待签（线下签署进行中）')
           })}>提交待签</button>
-          <button className="button danger" type="button" disabled={busy} onClick={() => void run(async () => {
+          <button className="btn btn--danger" type="button" disabled={busy} onClick={() => void run(async () => {
             apply(await voidContract(contractId))
             setToast('合同已作废')
           })}>作废合同</button>
@@ -245,8 +280,8 @@ function ContractDetail({ contractId, accountNames, onBack }: { contractId: stri
             <input aria-label="签署件对象键" type="text" value={documentKey} onChange={(event) => setDocumentKey(event.target.value)} placeholder="对象存储引用，人工上传后填写" />
           </label>
           <div className="actions crm__actions">
-            <button className="button primary" type="button" disabled={busy} onClick={() => void submitSignature()}>登记签署结果</button>
-            <button className="button danger" type="button" disabled={busy} onClick={() => void run(async () => {
+            <button className="btn btn--primary" type="button" disabled={busy} onClick={() => void submitSignature()}>登记签署结果</button>
+            <button className="btn btn--danger" type="button" disabled={busy} onClick={() => void run(async () => {
               apply(await voidContract(contractId))
               setToast('合同已作废')
             })}>作废合同</button>
@@ -258,8 +293,8 @@ function ContractDetail({ contractId, accountNames, onBack }: { contractId: stri
             <input aria-label="回款金额（元）" type="text" inputMode="decimal" value={paymentYuan} onChange={(event) => setPaymentYuan(event.target.value)} placeholder="例如 12000.00" />
           </label>
           <div className="actions crm__actions">
-            <button className="button primary" type="button" disabled={busy} onClick={() => void submitPayment()}>登记回款</button>
-            <button className="button danger" type="button" disabled={busy} onClick={() => void run(async () => {
+            <button className="btn btn--primary" type="button" disabled={busy} onClick={() => void submitPayment()}>登记回款</button>
+            <button className="btn btn--danger" type="button" disabled={busy} onClick={() => void run(async () => {
               apply(await voidContract(contractId))
               setToast('合同已作废（登记为终止 / 撤销，系统不解释法律后果）')
             })}>作废合同</button>

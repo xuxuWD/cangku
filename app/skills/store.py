@@ -77,7 +77,15 @@ class SkillStore(Protocol):
 
     def list_all_for_tenant(self, tenant_id, *, since=None) -> list[Skill]: ...
 
-    def delete_all_for_tenant(self, tenant_id) -> int: ...
+    def delete_all_for_tenant(self, tenant_id) -> int:
+        """租户**整层**物理清场：两张表（技能包 / 数字员工绑定）一起删，返回删除行数合计。
+
+        为什么不是「只删技能包」：技能层在 `030` 迁移里是两张表，租户整体删除的语义是
+        「该租户数据不留残留」。2026-09-19 真机验证实测到只删技能包的后果 —— 租户已 `deleted`、
+        审计 `cleared_categories` 报 `skills`，但 `workbench_skill_bindings` 行数原样不动
+        （悬挂绑定指向已消失的技能）。
+        """
+        ...
 
 
 class InMemorySkillStore:
@@ -209,7 +217,10 @@ class InMemorySkillStore:
                 and (agent_key is None or b.agent_key == agent_key)
                 and (skill_key is None or b.skill_key == skill_key)
             ]
-        matched.sort(key=lambda b: (b.created_at or parse_epoch(b), b.agent_key, b.skill_key))
+        # 2026-09-19 修复：此处原写作 `b.created_at or parse_epoch(b)`，而 `parse_epoch` 在本仓库
+        # **并不存在**（静态检查 F821；同文件另三处同类排序用的是 `_dt_or_min`）⇒ 一旦某行
+        # `created_at` 为空即抛 `NameError`。正常路径有默认值（`default_factory=now`）故一直潜伏。
+        matched.sort(key=lambda b: (_dt_or_min(b.created_at), b.agent_key, b.skill_key))
         return matched[offset : offset + _clamp(limit)], len(matched)
 
     def list_enabled_for_agent(self, context, agent_key) -> list[Skill]:
@@ -237,11 +248,18 @@ class InMemorySkillStore:
             ]
 
     def delete_all_for_tenant(self, tenant_id) -> int:
+        """租户整层清场（技能包 + 绑定两张表一起删）；返回删除行数合计。
+
+        2026-09-19 修复：原先只删技能包 ⇒ 绑定行整租户残留（真机验证实测到）。
+        """
         with self._lock:
-            keys = [key for key in list(self._skills.keys()) if key[0] == tenant_id]
-            for key in keys:
+            skill_keys = [key for key in list(self._skills.keys()) if key[0] == tenant_id]
+            for key in skill_keys:
                 del self._skills[key]
-            return len(keys)
+            binding_keys = [key for key in list(self._bindings.keys()) if key[0] == tenant_id]
+            for key in binding_keys:
+                del self._bindings[key]
+            return len(skill_keys) + len(binding_keys)
 
 
 def _dt_or_min(value):
@@ -594,11 +612,18 @@ class PostgresSkillStore:
         return [self._hydrate_skill(row) for row in rows]
 
     def delete_all_for_tenant(self, tenant_id) -> int:
+        """租户整层清场（技能包 + 绑定两张表一起删，同一事务）；返回删除行数合计。
+
+        2026-09-19 修复：原先只 `DELETE FROM workbench_skills` ⇒ `workbench_skill_bindings`
+        整租户残留（真机验证实测到：租户已 `deleted`，绑定行原样不动）。
+        """
         with self._connection() as connection:
             with connection.transaction():
                 with connection.cursor() as cursor:
-                    cursor.execute("DELETE FROM workbench_skills WHERE tenant_id = %s", (tenant_id,))
-                    deleted = cursor.rowcount
+                    deleted = 0
+                    for table in ("workbench_skills", "workbench_skill_bindings"):
+                        cursor.execute(f"DELETE FROM {table} WHERE tenant_id = %s", (tenant_id,))  # noqa: S608
+                        deleted += cursor.rowcount
         return int(deleted)
 
 

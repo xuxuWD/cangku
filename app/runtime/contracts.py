@@ -39,6 +39,14 @@ class RunNotDecidable(ValueError):
     """运行已进入终态，任何审批都不再可决议（接口层按 409 处理）。"""
 
 
+class RunNotActionable(ValueError):
+    """运行已进入终态，暂停 / 恢复 / 取消一律拒绝（接口层按 409 处理）。
+
+    「终态即终态」与 `RunNotDecidable` 同一原则：不允许用干预动作把已结束的运行复活
+    （把 `completed` 置回 `running`、或把 `cancelled` 再暂停，都会让指标与审计口径失真）。
+    """
+
+
 @dataclass(frozen=True)
 class KnowledgeCitation:
     document_id: str

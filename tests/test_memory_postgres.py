@@ -232,3 +232,83 @@ def test_lifecycle_list_and_delete_for_tenant(service) -> None:
     deleted = svc.store.delete_all_for_tenant(TENANT)
     assert deleted >= 2
     assert svc.store.list_all_for_tenant(TENANT) == []
+
+
+def test_lifecycle_delete_clears_whole_memory_layer(service) -> None:
+    """租户整体删除必须清**三张记忆表**（事实 / 规则 / 身份类画像）—— 2026-09-19 真机验证抓到的真缺陷。
+
+    为什么单列这条：上一条只用 `list_all_for_tenant` 断言「清空」，而**它只读事实表** ⇒
+    「面名清空」与「整层清空」之间的差值（规则表 / 画像表）在单测与真机验证里都看不见。
+    真机实测（测试库 + 真实 worker）：租户已 `deleted`、审计 `cleared_categories` 含 `memories`，
+    但 `workbench_memory_rules` 与 `workbench_memory_profile_keys` 行数原样不动。
+    **本用例按表逐张查库**（不复用任何只读一张表的读方法），三张表必须全为 0。
+    """
+    svc, connection = service
+    svc.create_fact(
+        _alice(), content="整层清场-事实", scope="user",
+        owner_kind="user", owner_id=ALICE, idempotency_key="pg-whole-1",
+    )
+    svc.create_rule(
+        _alice(), rule_key="pg.whole.rule", content="整层清场-规则",
+        scope="user", owner_kind="user", owner_id=ALICE,
+    )
+    svc.set_profile_key(
+        _alice(), key="pg-whole-key", value="整层清场-画像", owner_kind="user", owner_id=ALICE,
+    )
+
+    svc.store.delete_all_for_tenant(TENANT)
+
+    counts: dict[str, int] = {}
+    with connection.cursor() as cursor:
+        for table in (
+            "workbench_memory_facts",
+            "workbench_memory_rules",
+            "workbench_memory_profile_keys",
+        ):
+            cursor.execute(f"SELECT count(*) FROM {table} WHERE tenant_id = %s", (TENANT,))  # noqa: S608
+            counts[table] = int(cursor.fetchone()[0])
+    assert counts == {
+        "workbench_memory_facts": 0,
+        "workbench_memory_rules": 0,
+        "workbench_memory_profile_keys": 0,
+    }, f"记忆层必须整体清空（三张表逐张查库），实测 {counts}"
+
+
+def test_lifecycle_reads_cover_rules_and_profiles_for_tenant(service) -> None:
+    """真库：按租户读取必须覆盖**三类记忆**（规则与画像于 2026-09-19 补齐），只出 `active`、排序确定。
+
+    为什么单列这条：导出类别 `memories` 此前只读事实表（`list_all_for_tenant`）⇒ 真源 §6.1
+    「记忆」导出不完整，且与删除面（已按整层三张表清场）口径不一致。**本用例走真库**，
+    因为规则读取要 `_RULE_COLUMNS` + `version` 两段拼装、画像读取是新 SQL（假对象测不出）。
+    """
+    svc, connection = service
+    svc.create_fact(
+        _alice(), content="读取-事实", scope="user",
+        owner_kind="user", owner_id=ALICE, idempotency_key="pg-read-1",
+    )
+    svc.create_rule(
+        _alice(), rule_key="pg.read", content="读取-规则一",
+        scope="user", owner_kind="user", owner_id=ALICE,
+    )
+    svc.create_rule(
+        _alice(), rule_key="pg.read", content="读取-规则二",
+        scope="user", owner_kind="user", owner_id=ALICE,
+    )
+    svc.set_profile_key(
+        _alice(), key="language", value="中文", owner_kind="user", owner_id=ALICE,
+    )
+    svc.set_profile_key(
+        _alice(), key="timezone", value="UTC+8", owner_kind="user", owner_id=ALICE,
+    )
+
+    rules = svc.store.list_rules_for_tenant(TENANT)
+    profiles = svc.store.list_profiles_for_tenant(TENANT)
+
+    # 只出 active（第一版已 superseded，不入包），版本号随行带出。
+    assert [(rule.content, rule.version) for rule in rules] == [("读取-规则二", 2)]
+    assert rules[0].rule_key == "pg.read"
+    assert [(p.profile_key, p.value) for p in profiles] == [("language", "中文"), ("timezone", "UTC+8")]
+    assert all(p.owner_kind.value == "user" and p.owner_id == ALICE for p in profiles)
+    # 排序确定：两次读取逐字相同（PG 侧 ORDER BY 已补）。
+    assert svc.store.list_rules_for_tenant(TENANT) == rules
+    assert svc.store.list_profiles_for_tenant(TENANT) == profiles

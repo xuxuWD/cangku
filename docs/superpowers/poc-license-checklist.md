@@ -17,6 +17,26 @@
 
 > **口径**：本清单只登记**核对状态与来源**，**不构成任何代码复用决定**——任何复用须另过许可评审并产出 `THIRD-PARTY-NOTICES`（宪法 12.3）。每次升级都要重新生成 SBOM、扫描漏洞、核对许可证和回滚版本；任何无法完成审查的依赖不得进入生产路径。
 
+> ✅ **`THIRD-PARTY-NOTICES` 已产出（2026-09-19，C 项交付物）**：根目录
+> [`THIRD-PARTY-NOTICES.md`](../../THIRD-PARTY-NOTICES.md)，由
+> [`scripts/generate_third_party_notices.py`](../../scripts/generate_third_party_notices.py) **可重跑生成**
+> （守护：`tests/test_third_party_notices.py`，12 条）。**扫描 1152 个组件**，覆盖四类随交付物分发的产物：
+> 应用镜像（`requirements.lock` 53 项）、执行镜像（dsh npm 安装树）、管理台 / 伴侣端 / 桌面端（各自 lockfile）。
+>
+> **🔴 扫描查出一处此前未登记的 copyleft**：**`psycopg-binary@3.3.5` 与 `psycopg-pool@3.3.1` 为
+> LGPL-3.0-only**（在应用镜像内、随交付物分发）——此前只登记了 `sharp` 生态的 2 条 LGPL，
+> 真源 `docs/dsh-integration-preflight-checklist.md` §B13 / §F7.4 的「必须含 2 条 LGPL」口径**漏了这两条**。
+> 现清单共列 **4 条 LGPL**，并**逐族**写明「许可正文 + 可重链接 + 源码获取途径」三项义务（`sharp` 族与 `psycopg` 族）。
+>
+> 许可正文落在 [`licenses/`](../../licenses)：`LGPL-3.0` / `GPL-3.0` / `MPL-2.0` 为**预置权威原文**、
+> **缺失即 fail-closed**（这些上游往往不随带正文：`@img/sharp-libvips-*` 无 LICENSE 文件、`certifi` 的 MPL
+> 只有 989 字节的「指路说明」）；其余由脚本从安装树**按内容特征校验后**原文收集，
+> **拒绝把「指路说明」当正文**（实测反例：`cryptography` 的 `LICENSE` 仅 197 字节）。
+>
+> **未验证（不得读成已验）**：① 未逐包比对「声明值与许可证正文一致」；② **镜像内二次扫描未做**
+> （执行镜像尚未构建、`WORKBENCH_EXEC_IMAGE_DIGEST` 留空）；③ BlueOak-1.0.0 / CC0-1.0 / WTFPL 等正文未齐
+> —— 以上三项均在产物「未验证与边界」逐条登记。
+
 > **本清单曾要求、但长期未落地的两项**（「版本锁定归档」与「**退出方案**」）现由 [`docs/key-dependency-autonomy-plan.md`](../key-dependency-autonomy-plan.md) 承接——含四问退出方案模板、分层策略与 P0 执行项（归档 + **断网构建演练**）。**"退出方案"在本项目 4 处文档里被要求过，此前一次也没做**，该缺口由该方案收口。
 
 ---

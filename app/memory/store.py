@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from threading import RLock
 from typing import Protocol
 
@@ -106,7 +106,26 @@ class MemoryStore(Protocol):
 
     def list_all_for_tenant(self, tenant_id, *, since=None) -> list[MemoryFact]: ...
 
-    def delete_all_for_tenant(self, tenant_id) -> int: ...
+    def list_rules_for_tenant(self, tenant_id, *, since=None) -> list[MemoryRule]:
+        """规则类按租户读出（导出面用；**只出 `active`**，`superseded` 历史版本不入包）。
+
+        2026-09-19 补齐：真源 §6.1 的导出项「记忆」= 记忆层三类（029 自述「三类记忆」），
+        而此前只有事实类的按租户读取 ⇒ 导出包只能出事实（与删除面的整层口径不一致）。
+        """
+        ...
+
+    def list_profiles_for_tenant(self, tenant_id) -> list[MemoryProfileKey]:
+        """身份类画像（KV）按租户读出（导出面用）。KV 无状态列 ⇒ 全量出，排序确定。"""
+        ...
+
+    def delete_all_for_tenant(self, tenant_id) -> int:
+        """租户**整层**物理清场：三张表（事实 / 规则 / 身份类画像）一起删，返回删除行数合计。
+
+        为什么不是「只删事实」：`029` 迁移把记忆层落成三张表，而租户整体删除的语义是
+        「该租户数据不留残留」。2026-09-19 真机验证实测到只删事实的后果 —— 租户已 `deleted`、
+        审计 `cleared_categories` 报 `memories`，但规则表与画像表行数原样不动（数据残留）。
+        """
+        ...
 
 
 def _resolve_owner(context: UserContext, owner_kind, owner_id) -> tuple[MemoryOwnerKind, str]:
@@ -296,12 +315,41 @@ class InMemoryMemoryStore:
                 and (since is None or (fact.created_at and fact.created_at >= since))
             ]
 
-    def delete_all_for_tenant(self, tenant_id) -> int:
+    def list_rules_for_tenant(self, tenant_id, *, since=None) -> list[MemoryRule]:
+        """规则类按租户读出（只 `active`；排序 `(created_at, memory_id)` 确定）。"""
         with self._lock:
-            to_delete = [key for (tid, key) in self._facts if tid == tenant_id]
-            for key in to_delete:
+            rows = [
+                rule
+                for (tid, _key), rule in self._rules.items()
+                if tid == tenant_id and rule.status is MemoryStatus.ACTIVE
+                and (since is None or (rule.created_at and rule.created_at >= since))
+            ]
+        rows.sort(key=lambda rule: (rule.created_at or datetime.min.replace(tzinfo=UTC), rule.memory_id))
+        return rows
+
+    def list_profiles_for_tenant(self, tenant_id) -> list[MemoryProfileKey]:
+        """身份类画像按租户读出（排序 `(owner_kind, owner_id, profile_key)` 确定）。"""
+        with self._lock:
+            rows = [p for (tid, _k, _o, _pk), p in self._profiles.items() if tid == tenant_id]
+        rows.sort(key=lambda p: (p.owner_kind.value, p.owner_id, p.profile_key))
+        return rows
+
+    def delete_all_for_tenant(self, tenant_id) -> int:
+        """租户整层清场（三张表一起删）；返回删除行数合计。
+
+        2026-09-19 修复：原先只删 `_facts` ⇒ 规则与身份类画像整租户残留（真机验证实测到）。
+        """
+        with self._lock:
+            fact_keys = [key for (tid, key) in self._facts if tid == tenant_id]
+            for key in fact_keys:
                 del self._facts[(tenant_id, key)]
-            return len(to_delete)
+            rule_keys = [key for (tid, key) in self._rules if tid == tenant_id]
+            for key in rule_keys:
+                del self._rules[(tenant_id, key)]
+            profile_keys = [key for key in self._profiles if key[0] == tenant_id]
+            for key in profile_keys:
+                del self._profiles[key]
+            return len(fact_keys) + len(rule_keys) + len(profile_keys)
 
 
 class PostgresMemoryStore:
@@ -625,21 +673,64 @@ class PostgresMemoryStore:
         where = " AND ".join(clauses)
         with self._connection() as connection:
             with connection.cursor() as cursor:
+                # ORDER BY 补于 2026-09-19：导出包要求「顺序确定」（既有实现不排序 ⇒ 同一份数据
+                # 两次导出可能顺序不同）。与 `_RULE_COLUMNS` / 画像读取同一口径。
                 cursor.execute(
-                    f"SELECT {self._FACT_COLUMNS} FROM workbench_memory_facts WHERE {where}",
+                    f"SELECT {self._FACT_COLUMNS} FROM workbench_memory_facts WHERE {where}"
+                    " ORDER BY created_at, memory_id",
                     tuple(params),
                 )
                 rows = cursor.fetchall()
         return [self._hydrate_fact(row) for row in rows]
 
+    def list_rules_for_tenant(self, tenant_id, *, since=None) -> list[MemoryRule]:
+        """规则类按租户读出（只 `active`；排序 `(created_at, memory_id)` 确定）。"""
+        clauses = ["tenant_id = %s", "status = %s"]
+        params: list[object] = [tenant_id, MemoryStatus.ACTIVE.value]
+        if since is not None:
+            clauses.append("created_at >= %s")
+            params.append(since)
+        where = " AND ".join(clauses)
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    # `_RULE_COLUMNS`(11 列) 不含 `version` ⇒ 与 `create_rule` 同法补取（索引 11）。
+                    f"SELECT {self._RULE_COLUMNS}, version FROM workbench_memory_rules WHERE {where}"
+                    " ORDER BY created_at, memory_id",
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+        return [self._hydrate_rule_with_version(row) for row in rows]
+
+    def list_profiles_for_tenant(self, tenant_id) -> list[MemoryProfileKey]:
+        """身份类画像按租户读出（排序 `(owner_kind, owner_id, profile_key)` 确定）。"""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._PROFILE_COLUMNS} FROM workbench_memory_profile_keys"
+                    " WHERE tenant_id = %s ORDER BY owner_kind, owner_id, profile_key",
+                    (tenant_id,),
+                )
+                rows = cursor.fetchall()
+        return [self._hydrate_profile(row) for row in rows]
+
     def delete_all_for_tenant(self, tenant_id) -> int:
+        """租户整层清场（三张表一起删，同一事务）；返回删除行数合计。
+
+        2026-09-19 修复：原先只 `DELETE FROM workbench_memory_facts` ⇒ 规则表与身份类画像表
+        整租户残留（真机验证实测到：租户已 `deleted`，两张表行数原样不动）。
+        """
         with self._connection() as connection:
             with connection.transaction():
                 with connection.cursor() as cursor:
-                    cursor.execute(
-                        "DELETE FROM workbench_memory_facts WHERE tenant_id = %s", (tenant_id,)
-                    )
-                    deleted = cursor.rowcount
+                    deleted = 0
+                    for table in (
+                        "workbench_memory_facts",
+                        "workbench_memory_rules",
+                        "workbench_memory_profile_keys",
+                    ):
+                        cursor.execute(f"DELETE FROM {table} WHERE tenant_id = %s", (tenant_id,))  # noqa: S608
+                        deleted += cursor.rowcount
         return int(deleted)
 
 

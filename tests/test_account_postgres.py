@@ -183,6 +183,22 @@ def test_postgres_mark_approved_uses_pending_guard() -> None:
     assert "WHERE account_id = %s AND status = 'pending'" in statement
 
 
+def test_postgres_list_for_tenant_scopes_counts_and_pages() -> None:
+    """B-2b：导出读取通道——按 `tenant_id` 过滤 + 计数 + `requested_at, account_id` 稳定排序。"""
+    connection = RecordingConnection([[account_row("approved")], (2,)])
+    repository = PostgresAccountRepository(connection)
+
+    rows, total = repository.list_for_tenant("t-1", limit=10, offset=20)
+
+    assert total == 2 and len(rows) == 1
+    statements = connection.cursor_instance.statements
+    assert "WHERE tenant_id = %s" in statements[0][0]
+    assert statements[0][1] == ("t-1", 10, 20)
+    assert "ORDER BY requested_at, account_id" in statements[0][0]
+    assert "COUNT(*)" in statements[1][0]
+    assert statements[1][1] == ("t-1",)
+
+
 def test_postgres_mark_approved_conflicts_when_row_missing() -> None:
     connection = RecordingConnection([None, ("acct-1",)])
     repository = PostgresAccountRepository(connection)

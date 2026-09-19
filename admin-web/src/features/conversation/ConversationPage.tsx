@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppView } from '../../app/AppShell'
 import { Icon } from '../../components/Icon'
 import { Toast } from '../../components/Toast'
+import { EmptyState } from '../../components/ui/EmptyState'
+import { relativeTime } from '../../utils/time'
 import { ApprovalCard } from '../stage/ApprovalCard'
 import { StagePanel } from '../stage/StagePanel'
 import { ArtifactChips } from '../stage/ArtifactChips'
@@ -9,6 +11,7 @@ import { useRunAcceptance } from '../stage/useRunAcceptance'
 import { useRunArtifacts } from '../stage/useRunArtifacts'
 import { useRunApprovals } from '../stage/useRunApprovals'
 import { useRunOverview } from '../stage/useRunOverview'
+import { runStatusLabel } from '../runDetail/types'
 import {
   addConversationMember,
   archiveConversation,
@@ -17,13 +20,13 @@ import {
   exportMyConversations,
   getConversation,
   listConversationMembers,
-  listConversations,
   removeConversationMember,
   sendConversationMessage,
   sendConversationMessageStream,
   setConversationMode,
 } from './api'
 import { parseToolInvocation } from './invocation'
+import { useConversationList } from './listStore'
 import { ProcessBar } from './ProcessBar'
 import { asConversationError, initialConversationState } from './state'
 import { useRunStream } from './useRunStream'
@@ -31,10 +34,8 @@ import { useSlotVisible } from './useSlotVisible'
 import {
   CONVERSATION_MODE_HINTS,
   CONVERSATION_MODE_LABELS,
-  CONVERSATION_PAGE_SIZE,
   MAX_MESSAGE_LENGTH,
   MESSAGE_PAGE_SIZE,
-  STUB_NOTICE,
   conversationModeLabel,
   conversationStatusLabel,
   conversationTitle,
@@ -42,17 +43,21 @@ import {
   speakerLabel,
   type ConversationMode,
   type ConversationState,
-  type ConversationStatus,
   type MemberPermission,
 } from './types'
 
-const STATUS_FILTERS: Array<{ value: ConversationStatus | 'all'; label: string }> = [
-  { value: 'all', label: '全部' },
-  { value: 'active', label: '进行中' },
-  { value: 'archived', label: '已归档' },
+/** 模式顺序：由宽到严（完整执行 → 先计划后执行 → 目标驱动 → 只问答）。 */
+const MODE_OPTIONS: ConversationMode[] = ['craft', 'plan', 'goal', 'ask']
+
+/** 斜杠指令最小集（S6）：在输入框里以 `/` 开头即触发，不发送给服务端。 */
+const SLASH_COMMANDS: Array<{ key: string; what: string }> = [
+  { key: '/new', what: '新建一个对话并切过去（当前会话不丢）' },
+  { key: '/stop', what: '停止跟随本次执行过程（运行仍在后台继续，点「刷新」看最新进展）' },
+  { key: '/help', what: '打开指令说明（本面板）' },
+  { key: '/status', what: '看当前会话的状态（模式 / 消息数 / 运行 / 待批 / 参与者）' },
 ]
 
-const MODE_OPTIONS: ConversationMode[] = ['craft', 'goal', 'plan', 'ask']
+type ComposerPanel = 'none' | 'mode' | 'ability' | 'help' | 'status'
 
 // 每条消息生成一个新幂等键（§3.2 第四条）：同一键重放由服务端返回既有结果，
 // 因此重试/双击不会产生第二次真实执行。优先用 `crypto.randomUUID`，不可用时回落。
@@ -62,12 +67,23 @@ function newIdempotencyKey(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+/**
+ * 对话页（模板 T2）：消息流 + 右侧舞台 + 富控件输入卡。
+ *
+ * S6（模式与场景可见）：模式做成一等公民（输入栏可切换 + 文案解释）；斜杠指令最小集；
+ * 「本会话能力」可见（模式口径 / 结构化调用入口 / 本次运行出现过的工具——全部来自真实数据）。
+ *
+ * 纪律：一切状态以服务端为准（不做乐观更新）；失败如实提示，不假装成功。
+ */
 export function ConversationPage({
   conversationId,
+  focusApprovalId,
   onNavigate,
   onSelectConversation,
 }: {
   conversationId?: string
+  /** S1 第三款：通知点开时带上的审批标识 ⇒ 页内定位并高亮那张卡（数据仍全部来自服务端权威态）。 */
+  focusApprovalId?: string
   onNavigate?: (view: AppView, taskId?: string, runId?: string) => void
   onSelectConversation: (conversationId: string | undefined) => void
 }) {
@@ -82,6 +98,8 @@ export function ConversationPage({
   const [terminalToken, setTerminalToken] = useState(0)
   // 窄屏时舞台折叠为抽屉（默认收起）；宽屏由 CSS 强制展示，按钮不可见。
   const [stageOpen, setStageOpen] = useState(false)
+  // S6：输入栏上方的面板（模式 / 能力 / 指令 / 状态）。
+  const [panel, setPanel] = useState<ComposerPanel>('none')
   // P2c-4：模式切换 / 删除 / 导出各自独立忙碌位（互不阻塞；失败不改动已加载列表）。
   const [modeSaving, setModeSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -90,36 +108,17 @@ export function ConversationPage({
   const [lastInvocation, setLastInvocation] = useState<string | null>(null)
 
   const rootRef = useRef<HTMLElement | null>(null)
+  // S1 第三款：已经按哪个审批标识滚过（同一个标识只滚一次）。
+  const focusedRef = useRef<string | null>(null)
   const messagesLimitRef = useRef(messagesLimit)
   messagesLimitRef.current = messagesLimit
-  const stateRef = useRef(state)
-  stateRef.current = state
   const messageFrameSeqRef = useRef(0)
 
   // 切走即断开（§2.3）：视图槽 hidden / 标签页不可见时不保持长连接。
   const visible = useSlotVisible(rootRef)
 
-  const loadList = useCallback(async (status: ConversationStatus | 'all', offset: number) => {
-    setState((old) => ({ ...old, conversationsLoading: true, conversationsError: null }))
-    try {
-      const data = await listConversations({
-        status: status === 'all' ? undefined : status,
-        limit: CONVERSATION_PAGE_SIZE,
-        offset,
-      })
-      setState((old) => ({
-        ...old,
-        conversations: Array.isArray(data.items) ? data.items : [],
-        conversationsTotal: typeof data.total === 'number' ? data.total : 0,
-        statusFilter: status,
-        listOffset: offset,
-        conversationsLoading: false,
-        conversationsError: null,
-      }))
-    } catch (error) {
-      setState((old) => ({ ...old, conversationsLoading: false, conversationsError: asConversationError(error) }))
-    }
-  }, [])
+  // 左栏与会话页共用同一份列表状态（真源 §2.17.3），页面不再自己拉列表。
+  const list = useConversationList()
 
   const loadDetail = useCallback(async (id: string, limit: number) => {
     setState((old) => ({ ...old, detailLoading: true, detailError: null }))
@@ -159,15 +158,16 @@ export function ConversationPage({
     }
   }, [])
 
-  useEffect(() => { void loadList('all', 0) }, [loadList])
-
   // URL 里带 conversation 时直接打开该会话；切换会话时清空残留详情、草稿与流状态。
   useEffect(() => {
     setDraft('')
     setMessagesLimit(MESSAGE_PAGE_SIZE)
     setStreamRunId(undefined)
+    setPanel('none')
     // P2c-4 §2.5：跨会话不携带「原结构化调用」（一键重做只在**本页当次**持有原件时可用）。
     setLastInvocation(null)
+    // S1 第三款：换会话即忘掉上一次的聚焦（同一标识在新会话里应重新定位）。
+    focusedRef.current = null
     // P2c-2：进入会话即开启读端做**回放**（§2.3 打开（回放））——历史会话由此解析出
     // 「最新 run」（响应头 `X-Stream-Run-Id` / 帧内 `run_id`），运行概览与审批随之可用。
     setStreamActive(Boolean(conversationId))
@@ -188,7 +188,7 @@ export function ConversationPage({
     const id = conversationId
     if (!id) return
     void loadDetail(id, messagesLimitRef.current)
-    void loadList(stateRef.current.statusFilter, stateRef.current.listOffset)
+    void list.reload()
   }
 
   const stream = useRunStream({
@@ -223,6 +223,25 @@ export function ConversationPage({
   const role = import.meta.env.VITE_USER_ROLE || 'super_admin'
   const canDecide = (role === 'ceo' || role === 'super_admin') && !overview.isInitiator
   const pendingApprovals = approvals.items.filter((item) => item.status === 'pending')
+  // S1：已决议的审批也回到消息流（窄卡），与舞台 / 运行详情显示同一权威态。
+  const decidedApprovals = approvals.items.filter((item) => item.status !== 'pending')
+
+  // S1 第三款：通知带审批标识时**只做定位与高亮**——命中与否都以服务端返回的审批列表为准。
+  const focusTarget = focusApprovalId && approvals.items.some((item) => item.approval_id === focusApprovalId) ? focusApprovalId : undefined
+  useEffect(() => {
+    // 同一个标识只滚一次（审批列表每次重取都会重跑本效果，否则会一直把页面拽回去）。
+    if (!focusTarget || focusedRef.current === focusTarget) return
+    focusedRef.current = focusTarget
+    const node = rootRef.current?.querySelector<HTMLElement>(`[data-approval-id="${focusTarget}"]`)
+    if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [focusTarget])
+  // 带了标识却对不上：如实说明（本页只展示**最近一次运行**的审批），不留「跳过来什么都没有」的死角。
+  // 判定要等**运行解析完**：回放读端还在连接（streaming）时不下结论，避免误报「没找到」。
+  const focusMissing =
+    Boolean(focusApprovalId) &&
+    !focusTarget &&
+    !approvals.loading &&
+    (Boolean(effectiveRunId) || stream.status === 'closed' || stream.status === 'error')
 
   // 决议后**重开读端**尾随推进帧（P2c-2 §2.8：推进在同一 run 续写；成功后才有帧可看）。
   const handleDecide = async (approvalId: string, approved: boolean): Promise<string | null> => {
@@ -236,10 +255,20 @@ export function ConversationPage({
   // 舞台与对话流**共用同一决议入口**（两处同源；重开读端的副作用只在一处）。
   const approvalsView = { ...approvals, decide: handleDecide }
 
-  const forbidden = state.conversationsError?.status === 403
+  const forbidden = list.error?.status === 403
   const archived = state.detail?.status !== 'active'
   const canSend = draft.trim().length > 0 && !state.sending && !archived
   const draftInvocation = parseToolInvocation(draft)
+
+  // 「本会话能力」里的工具画像：从**本次运行的真实帧**里取出现过的工具键（不虚构清单）。
+  const seenTools = Array.from(
+    new Set(
+      stream.frames
+        .filter((frame) => frame.kind === 'tool.call')
+        .map((frame) => String(frame.payload.tool_key ?? frame.payload.tool ?? '').trim())
+        .filter(Boolean),
+    ),
+  )
 
   const startConversation = async () => {
     setCreating(true)
@@ -247,7 +276,7 @@ export function ConversationPage({
     try {
       // 新建会话不需要选入员工：agent_key 缺省即用默认员工。
       const created = await createConversation({})
-      await loadList(state.statusFilter, state.listOffset)
+      await list.reload()
       onSelectConversation(created.conversation_id)
     } catch (error) {
       setState((old) => ({ ...old, createError: asConversationError(error) }))
@@ -256,12 +285,52 @@ export function ConversationPage({
     }
   }
 
+  // S6 斜杠指令：只在**未发送**的输入上生效，命中即就地执行、不写消息表。
+  const runSlashCommand = (raw: string): void => {
+    const [command] = raw.split(/\s+/)
+    if (command === '/new') {
+      setPanel('none')
+      void startConversation()
+      setState((old) => ({ ...old, toast: '已新建对话（原来的会话还在左栏）' }))
+      return
+    }
+    if (command === '/stop') {
+      setPanel('none')
+      if (streamActive) {
+        // 只停**跟随**，不谎称取消了运行：运行仍在后台继续，刷新即可看最新进展。
+        setStreamActive(false)
+        setState((old) => ({ ...old, toast: '已停止跟随过程；运行仍在继续，点「刷新」可看最新进展' }))
+      } else {
+        setState((old) => ({ ...old, toast: '当前没有正在跟随的过程' }))
+      }
+      return
+    }
+    if (command === '/help') {
+      setPanel('help')
+      return
+    }
+    if (command === '/status') {
+      setPanel('status')
+      return
+    }
+    setState((old) => ({
+      ...old,
+      toast: `不认识的指令：${command}。可用：${SLASH_COMMANDS.map((item) => item.key).join(' ')}`,
+    }))
+  }
+
   const send = async (override?: string) => {
     // P2c-4 §2.5：`override` 只由**一键重做**传入（本页仍持有的原结构化调用原文）；
     // 重做走的是同一条正常发送路径 + **新幂等键** ⇒ 一次全新的调用（新 run），不改动原运行。
     const content = (override ?? draft).trim()
     if (!conversationId || !content) return
+    if (!override && content.startsWith('/')) {
+      setDraft('')
+      runSlashCommand(content)
+      return
+    }
     if (!override && !canSend) return
+    setPanel('none')
     setState((old) => ({ ...old, sending: true, sendError: null, streamNotice: null }))
     try {
       const invocation = parseToolInvocation(content)
@@ -283,7 +352,7 @@ export function ConversationPage({
           setStreamActive(false)
           setState((old) => ({
             ...old,
-            streamNotice: '未产生运行：后端未装配真实执行，本次按桩回复处理（没有过程流）。',
+            streamNotice: '这次没有产生执行过程，回复由系统占位内容生成（所以看不到过程流）。',
           }))
         }
         if (result.body.status === 'pending_approval') {
@@ -300,7 +369,7 @@ export function ConversationPage({
       const nextLimit = Math.max(messagesLimit, (state.detail?.messages_total ?? 0) + 2)
       setMessagesLimit(nextLimit)
       await loadDetail(conversationId, nextLimit)
-      await loadList(state.statusFilter, state.listOffset)
+      await list.reload()
       setState((old) => ({ ...old, sending: false, sendError: null }))
     } catch (error) {
       setState((old) => ({ ...old, sending: false, sendError: asConversationError(error) }))
@@ -310,7 +379,10 @@ export function ConversationPage({
   // P2c-4 §2.9：改模式（仅本人）。失败只提示，**不做本地乐观更新**（服务端权威态回流）。
   const changeMode = async (mode: ConversationMode) => {
     if (!conversationId || modeSaving) return
-    if (state.detail?.mode === mode) return
+    if (state.detail?.mode === mode) {
+      setPanel('none')
+      return
+    }
     setModeSaving(true)
     try {
       const updated = await setConversationMode(conversationId, mode)
@@ -319,7 +391,8 @@ export function ConversationPage({
         detail: old.detail ? { ...old.detail, mode: updated.mode, updated_at: updated.updated_at } : old.detail,
         toast: `已切换为「${conversationModeLabel(updated.mode)}」`,
       }))
-      await loadList(state.statusFilter, state.listOffset)
+      await list.reload()
+      setPanel('none')
     } catch (error) {
       setState((old) => ({ ...old, detailError: asConversationError(error) }))
     } finally {
@@ -367,7 +440,7 @@ export function ConversationPage({
   const remove = async () => {
     if (!conversationId || deleting) return
     const confirmed = globalThis.confirm?.(
-      '删除后：本会话的消息、过程帧、流状态与幂等记录会被物理删除（不可撤销，仅本人会话）；' +
+      '删除后：本会话的消息与执行过程会被彻底删除，无法恢复（仅限你自己的会话）；' +
         '会话标题会清空，运行记录与审计按合规口径保留。确认删除？',
     )
     if (confirmed === false) return
@@ -376,12 +449,12 @@ export function ConversationPage({
       const outcome = await deleteConversation(conversationId)
       setState((old) => ({
         ...old,
-        toast: `已删除（消息 ${outcome.message_count} / 帧 ${outcome.frame_count} / 流状态 ${outcome.stream_state_count} / 幂等 ${outcome.idempotency_count}）`,
+        toast: `已删除：消息 ${outcome.message_count} 条、执行过程记录 ${outcome.frame_count} 条`,
       }))
       setStreamActive(false)
       setLastInvocation(null)
       onSelectConversation(undefined)
-      await loadList(state.statusFilter, state.listOffset)
+      await list.reload()
     } catch (error) {
       setState((old) => ({ ...old, detailError: asConversationError(error) }))
     } finally {
@@ -393,6 +466,7 @@ export function ConversationPage({
   const exportMine = async () => {
     if (exporting) return
     setExporting(true)
+    setState((old) => ({ ...old, exportError: null }))
     try {
       const bundle = await exportMyConversations()
       const payload = {
@@ -418,11 +492,11 @@ export function ConversationPage({
       setState((old) => ({
         ...old,
         toast: bundle.truncated
-          ? `已导出 ${payload.conversation_count} 个会话（数据量超过服务端上限，未包含全部；已如实标注 truncated）`
+          ? `已导出 ${payload.conversation_count} 个会话（数据量超过服务端上限，未包含全部；已在文件里注明不完整）`
           : `已导出 ${payload.conversation_count} 个会话 / ${payload.message_count} 条消息`,
       }))
     } catch (error) {
-      setState((old) => ({ ...old, conversationsError: asConversationError(error) }))
+      setState((old) => ({ ...old, exportError: asConversationError(error) }))
     } finally {
       setExporting(false)
     }
@@ -439,7 +513,7 @@ export function ConversationPage({
         detail: old.detail ? { ...old.detail, status: updated.status, updated_at: updated.updated_at } : old.detail,
         toast: '会话已归档',
       }))
-      await loadList(state.statusFilter, state.listOffset)
+      await list.reload()
     } catch (error) {
       setState((old) => ({ ...old, archiving: false, detailError: asConversationError(error) }))
     }
@@ -453,194 +527,259 @@ export function ConversationPage({
   }
 
   const detail = state.detail
+  // 只有在**真的出现占位回复**时才提示（不常驻横幅）：与环境分支文案一致，开发术语不进生产产物。
+  const hasStubReply = Boolean(detail?.messages.some((message) => message.role === 'assistant' && message.stub))
+  const modeLabel = detail ? conversationModeLabel(detail.mode) : '—'
+
+  const panelBody = () => {
+    if (panel === 'mode') {
+      return (
+        <>
+          <h3>
+            本会话模式
+            <button className="icon-btn" type="button" aria-label="关闭" onClick={() => setPanel('none')}>
+              <Icon name="close" size={14} />
+            </button>
+          </h3>
+          <div className="rows">
+            {MODE_OPTIONS.map((mode) => (
+              <button
+                key={mode}
+                className={`row ${detail?.mode === mode ? 'is-active' : ''}`}
+                type="button"
+                disabled={archived || modeSaving}
+                aria-pressed={detail?.mode === mode}
+                onClick={() => void changeMode(mode)}
+              >
+                <span className="row__main">
+                  <span className="row__title">
+                    {CONVERSATION_MODE_LABELS[mode]}
+                    {detail?.mode === mode ? '（当前）' : ''}
+                  </span>
+                  <span className="row__sub">{CONVERSATION_MODE_HINTS[mode]}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <p className="form-field__hint">
+            模式只决定「怎么执行」（是否允许真实执行、是否一律先待批），与审批档（谁批、批几档）是两件事，互不替代。
+          </p>
+        </>
+      )
+    }
+    if (panel === 'ability') {
+      return (
+        <>
+          <h3>
+            本会话能力
+            <button className="icon-btn" type="button" aria-label="关闭" onClick={() => setPanel('none')}>
+              <Icon name="close" size={14} />
+            </button>
+          </h3>
+          <div className="cmd-panel__row">
+            <span className="cmd-panel__key">模式</span>
+            <span>{detail ? `${modeLabel}：${CONVERSATION_MODE_HINTS[detail.mode]}` : '打开一个会话后显示。'}</span>
+          </div>
+          <div className="cmd-panel__row">
+            <span className="cmd-panel__key">真实执行</span>
+            <span>
+              纯文本只当对话；要触发真实执行，需发送 <code>{'{"tool_key":"…","params":{…}}'}</code> 形式的结构化调用。
+              是否执行、是否需要审批一律由服务端判定。
+            </span>
+          </div>
+          <div className="cmd-panel__row">
+            <span className="cmd-panel__key">本次运行的工具</span>
+            <span>{seenTools.length > 0 ? seenTools.join('、') : '本次运行还没有工具调用记录（过程开始后会实时出现）。'}</span>
+          </div>
+          <p className="form-field__hint">
+            执行人：{detail?.agent_key || '默认员工'}；参与者 {state.participantsTotal} 人。
+          </p>
+        </>
+      )
+    }
+    if (panel === 'help') {
+      return (
+        <>
+          <h3>
+            指令说明
+            <button className="icon-btn" type="button" aria-label="关闭" onClick={() => setPanel('none')}>
+              <Icon name="close" size={14} />
+            </button>
+          </h3>
+          {SLASH_COMMANDS.map((item) => (
+            <div className="cmd-panel__row" key={item.key}>
+              <span className="cmd-panel__key">{item.key}</span>
+              <span>{item.what}</span>
+            </div>
+          ))}
+          <p className="form-field__hint">在下面的输入框里以「/」开头输入即可；指令不会发送给服务端。</p>
+        </>
+      )
+    }
+    if (panel === 'status') {
+      const rows: Array<{ label: string; value: string }> = [
+        { label: '会话模式', value: modeLabel },
+        { label: '消息', value: detail ? `${detail.messages.length} / ${detail.messages_total} 条` : '—' },
+        { label: '执行人', value: detail?.agent_key || '默认员工' },
+        {
+          label: '当前运行',
+          value: effectiveRunId
+            ? `${effectiveRunId}${overview.metrics ? ` · ${runStatusLabel(overview.metrics.status)}` : ''}`
+            : '暂无（还没跑过结构化调用）',
+        },
+        { label: '待你审批', value: `${pendingApprovals.length} 项` },
+        { label: '过程帧', value: `${stream.frames.length} 条 · ${stream.status === 'streaming' ? '跟随中' : stream.status === 'closed' ? '已结束' : stream.status === 'error' ? '连接出错' : '未开启'}` },
+        { label: '参与者', value: `${state.participantsTotal} 人` },
+        { label: '最近更新', value: detail ? relativeTime(detail.updated_at) : '—' },
+      ]
+      return (
+        <>
+          <h3>
+            当前会话状态
+            <button className="icon-btn" type="button" aria-label="关闭" onClick={() => setPanel('none')}>
+              <Icon name="close" size={14} />
+            </button>
+          </h3>
+          {rows.map((row) => (
+            <div className="cmd-panel__row" key={row.label}>
+              <span className="cmd-panel__key">{row.label}</span>
+              <span>{row.value}</span>
+            </div>
+          ))}
+        </>
+      )
+    }
+    return null
+  }
 
   return (
     <>
-      <main className="main-content content-history conversation" ref={rootRef}>
-        <div className="page-head">
-          <div>
-            <h1 className="page-title">对话</h1>
-            <p className="page-desc">与数字员工对话。会话与消息的数据模型、权限与审计都是真实的；助手回复是后端标注的桩回复。</p>
-          </div>
-          <div className="actions">
-            <button className="button primary" type="button" disabled={creating || forbidden} onClick={() => void startConversation()}>新建会话</button>
-            <button className="button" type="button" disabled={forbidden || exporting} onClick={() => void exportMine()}>
-              {exporting ? '正在导出…' : '导出我的数据'}
-            </button>
-            <button className="button" type="button" disabled={forbidden} onClick={() => void loadList(state.statusFilter, state.listOffset)}>刷新</button>
-          </div>
-        </div>
-
-        <div className="notice" role="note">
-          <div><strong>P1 桩回复</strong><p>{STUB_NOTICE}</p></div>
-        </div>
-
+      <main className="chat-page" ref={rootRef}>
         {state.createError && (
-          <div className="notice notice-error" role="alert">
-            <div><strong>新建会话失败</strong><p>{state.createError.message}</p></div>
-            {state.createError.retryable && <button className="text-action" type="button" onClick={() => void startConversation()}>重新尝试</button>}
+          <div className="chat__notices">
+            <div className="notice notice-error" role="alert">
+              <div><strong>新建对话失败</strong><p>{state.createError.message}</p></div>
+              {state.createError.retryable && <button className="text-action" type="button" onClick={() => void startConversation()}>重新尝试</button>}
+            </div>
+          </div>
+        )}
+
+        {state.exportError && (
+          <div className="chat__notices">
+            <div className="notice notice-error" role="alert">
+              <div><strong>导出没有完成</strong><p>{state.exportError.message}</p></div>
+              {state.exportError.retryable && <button className="text-action" type="button" onClick={() => void exportMine()}>重新尝试</button>}
+            </div>
           </div>
         )}
 
         {forbidden ? (
-          <div className="notice notice-error" role="alert">
-            <div><strong>无法使用对话</strong><p>{state.conversationsError?.message}</p></div>
+          <div className="chat__notices">
+            <div className="notice notice-error" role="alert">
+              <div><strong>无法使用对话</strong><p>{list.error?.message}</p></div>
+            </div>
+          </div>
+        ) : !conversationId ? (
+          <div className="chat__empty">
+            <EmptyState
+              illustration="chat"
+              title="选择一个会话查看消息"
+              text="在左栏的会话列表里点一个会话，就能看到消息记录并继续对话；也可以直接点左栏顶部的「新建对话」开始。"
+            >
+              <button className="btn btn--primary" type="button" disabled={creating} onClick={() => void startConversation()}>
+                {creating ? '正在新建…' : '新建对话'}
+              </button>
+            </EmptyState>
           </div>
         ) : (
           <>
-            <button
-              className="stage-toggle"
-              type="button"
-              aria-expanded={stageOpen}
-              onClick={() => setStageOpen((value) => !value)}
-            >
-              {stageOpen ? '收起过程与运行' : '展开过程与运行'}
-            </button>
-            <div className="conversation-layout conversation-layout--stage">
-            <section className="history-panel" aria-label="会话列表">
-              <div className="panel-header">
-                <h2>会话</h2>
-                <span>共 {state.conversationsTotal} 条</span>
-              </div>
-              <div className="panel-body">
-                <div className="segment" role="tablist" aria-label="会话筛选">
-                  {STATUS_FILTERS.map((option) => (
-                    <button
-                      key={option.value}
-                      role="tab"
-                      type="button"
-                      aria-selected={state.statusFilter === option.value}
-                      className={state.statusFilter === option.value ? 'active' : ''}
-                      onClick={() => void loadList(option.value, 0)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {state.conversationsLoading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载会话…</div>}
-
-              {!state.conversationsLoading && state.conversationsError && (
-                <div className="notice notice-error" role="alert">
-                  <div><strong>会话列表加载失败</strong><p>{state.conversationsError.message}</p></div>
-                  {state.conversationsError.retryable && <button className="text-action" type="button" onClick={() => void loadList(state.statusFilter, state.listOffset)}>重新尝试</button>}
-                </div>
-              )}
-
-              {!state.conversationsLoading && !state.conversationsError && state.conversations.length === 0 && (
-                <div className="empty-state"><strong>还没有会话</strong><span>点击「新建会话」开始，或在输入框里直接发第一条消息。</span></div>
-              )}
-
-              {!state.conversationsLoading && !state.conversationsError && state.conversations.map((item) => (
-                <div
-                  className={`history-row conversation-item ${item.conversation_id === conversationId ? 'active' : ''}`}
-                  role="button"
-                  tabIndex={0}
-                  aria-current={item.conversation_id === conversationId ? 'true' : undefined}
-                  key={item.conversation_id}
-                  onClick={() => onSelectConversation(item.conversation_id)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      onSelectConversation(item.conversation_id)
-                    }
-                  }}
-                >
-                  <div className="history-row-main">
-                    <strong>{conversationTitle(item.title)}</strong>
-                    <div className="history-meta">
-                      <span className={`status-badge status-${item.status}`}>{conversationStatusLabel(item.status)}</span>
-                      <span className="status-badge status-reviewing">{conversationModeLabel(item.mode)}</span>
-                      {item.agent_key && <span className="ws-code">{item.agent_key}</span>}
-                      <span>更新于 {formatMessageTime(item.updated_at)}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              {!state.conversationsLoading && !state.conversationsError && state.conversationsTotal > CONVERSATION_PAGE_SIZE && (
-                <div className="history-pagination">
-                  <button className="button" type="button" disabled={state.listOffset === 0} onClick={() => void loadList(state.statusFilter, Math.max(0, state.listOffset - CONVERSATION_PAGE_SIZE))}>上一页</button>
-                  <span>{state.listOffset + 1}–{Math.min(state.listOffset + CONVERSATION_PAGE_SIZE, state.conversationsTotal)} / {state.conversationsTotal}</span>
-                  <button className="button" type="button" disabled={state.listOffset + CONVERSATION_PAGE_SIZE >= state.conversationsTotal} onClick={() => void loadList(state.statusFilter, state.listOffset + CONVERSATION_PAGE_SIZE)}>下一页</button>
-                </div>
-              )}
-            </section>
-
-            <section className="history-panel" aria-label="会话内容">
-              {!conversationId && (
-                <div className="empty-state"><strong>选择一个会话查看消息</strong><span>左侧列表里点一个会话，就能看到消息记录并继续对话。</span></div>
-              )}
-
-              {conversationId && state.detailLoading && !detail && (
+            {state.detailLoading && !detail && (
+              <div className="chat__notices">
                 <div className="loading-state" role="status"><span className="loading-dot" />正在加载会话内容…</div>
-              )}
+              </div>
+            )}
 
-              {conversationId && !state.detailLoading && state.detailError && (
+            {!state.detailLoading && state.detailError && (
+              <div className="chat__notices">
                 <div className="notice notice-error" role="alert">
                   <div><strong>会话加载失败</strong><p>{state.detailError.message}</p></div>
                   {state.detailError.retryable && <button className="text-action" type="button" onClick={() => void loadDetail(conversationId, messagesLimit)}>重新尝试</button>}
                 </div>
-              )}
+              </div>
+            )}
 
-              {detail && (
-                <>
-                  <div className="panel-header">
-                    <div>
-                      <h2>{conversationTitle(detail.title)}</h2>
-                      <span className="page-code">{detail.conversation_id}</span>
-                    </div>
-                    <div className="history-actions">
-                      <span className={`status-badge status-${detail.status}`}>{conversationStatusLabel(detail.status)}</span>
-                      <button className="button" type="button" disabled={archived || state.archiving} onClick={() => void archive()}>归档</button>
-                      <button className="button" type="button" disabled={deleting} onClick={() => void remove()}>
-                        {deleting ? '正在删除…' : '删除会话'}
+            {detail && (
+              <div className="chat">
+                <div className="chat__main">
+                  <div className="chat-head">
+                    <span className="chat-head__title" title={conversationTitle(detail.title)}>{conversationTitle(detail.title)}</span>
+                    <span className={`badge ${detail.status === 'active' ? 'badge--accent' : ''}`}>{conversationStatusLabel(detail.status)}</span>
+                    <span className="chat-head__meta">共 {detail.messages_total} 条消息 · 更新于 {relativeTime(detail.updated_at)}</span>
+                    <div className="chat-head__actions">
+                      <button
+                        className="stage-toggle btn btn--secondary btn--sm"
+                        type="button"
+                        aria-expanded={stageOpen}
+                        onClick={() => setStageOpen((value) => !value)}
+                      >
+                        {stageOpen ? '收起过程与运行' : '展开过程与运行'}
+                      </button>
+                      <button className="btn btn--secondary btn--sm" type="button" disabled={archived || state.archiving} onClick={() => void archive()}>
+                        {state.archiving ? '归档中…' : '归档'}
+                      </button>
+                      <button className="btn btn--ghost btn--sm" type="button" disabled={forbidden || exporting} onClick={() => void exportMine()}>
+                        {exporting ? '正在导出…' : '导出'}
+                      </button>
+                      <button className="btn btn--danger btn--sm" type="button" disabled={deleting} onClick={() => void remove()}>
+                        {deleting ? '正在删除…' : '删除'}
                       </button>
                     </div>
                   </div>
 
-                  <div className="panel-body">
-                    <div className="history-meta">
-                      {detail.agent_key && <span>执行人：<span className="ws-code">{detail.agent_key}</span></span>}
-                      <span>共 {detail.messages_total} 条消息</span>
+                  {hasStubReply && (
+                    <div className="chat__notices">
+                      <div className="notice" role="note">
+                        <div>
+                          <strong>能力说明</strong>
+                          <p>
+                            {/* 开发态文案写成**内联字面量**：生产构建会把整个分支折叠掉，开发术语不会进产物（D-01）。 */}
+                            {import.meta.env.DEV
+                              ? '【开发态】助手回复是确定性桩回复，仅用于打通会话 / 权限 / 审计链路，请勿当作真实模型输出。' // ui-copy:dev-only
+                              : '数字员工尚未接入真实模型，当前回复由系统占位内容生成；开通后自动切换，无需重新配置。'}
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                    <label className="ws-field conversation-mode">
-                      会话模式
-                      <select
-                        aria-label="会话模式"
-                        value={detail.mode}
-                        disabled={archived || modeSaving}
-                        onChange={(event) => void changeMode(event.target.value as ConversationMode)}
-                      >
-                        {MODE_OPTIONS.map((mode) => (
-                          <option value={mode} key={mode}>{CONVERSATION_MODE_LABELS[mode]}（{mode}）</option>
-                        ))}
-                      </select>
-                      <small className="ws-field-hint">
-                        {CONVERSATION_MODE_HINTS[detail.mode] ?? '模式由服务端判定，只收紧、不放松既有权限。'}
-                        {archived && '（会话已归档，不能再修改模式）'}
-                      </small>
-                    </label>
-                  </div>
-
-                  {detail.messages.length === 0 && (
-                    <div className="empty-state"><strong>这个会话还没有消息</strong><span>在下方输入框发送第一条消息。</span></div>
                   )}
 
-                  {detail.messages.length > 0 && (
-                    <div className="conversation-messages">
-                      {detail.messages.map((message) => (
-                        <article className={`conversation-message conversation-message--${message.role}`} key={message.message_id}>
-                          <div className="conversation-message__head">
-                            <strong>{speakerLabel(message, state.participants)}</strong>
-                            {message.role === 'assistant' && message.stub && <span className="status-badge status-reviewing">桩回复</span>}
-                            {message.tool_name && <span className="ws-code">{message.tool_name}</span>}
-                            <span>{formatMessageTime(message.created_at)}</span>
-                          </div>
-                          <p className="conversation-message__body">{message.content}</p>
-                        </article>
-                      ))}
+                  {detail.messages.length === 0 ? (
+                    <div className="messages">
+                      <EmptyState
+                        illustration="chat"
+                        title="这个会话还没有消息"
+                        text="在下方输入框发送第一条消息；需要真实执行时，服务端会先请求你的审批。"
+                      />
+                    </div>
+                  ) : (
+                    <div className="messages" aria-label="会话消息">
+                      {detail.messages.map((message) => {
+                        const system = message.role === 'system'
+                        const mine = message.role === 'user'
+                        return (
+                          <article
+                            className={`msg ${system ? 'msg--system' : mine ? 'msg--me' : 'msg--them'}`}
+                            key={message.message_id}
+                          >
+                            <div className="bubble">{message.content}</div>
+                            <div className="msg__meta">
+                              <span>{speakerLabel(message, state.participants)}</span>
+                              {message.tool_name && <span className="kbd">{message.tool_name}</span>}
+                              {message.role === 'assistant' && message.stub && <span className="badge badge--warn">占位回复</span>}
+                              <span>{formatMessageTime(message.created_at)}</span>
+                            </div>
+                          </article>
+                        )
+                      })}
                     </div>
                   )}
 
@@ -652,66 +791,124 @@ export function ConversationPage({
                     onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}
                   />
 
+                  {focusMissing && (
+                    <div className="chat__block">
+                      <div className="notice" role="note">
+                        <div>
+                          <strong>没有定位到那条审批</strong>
+                          <p>
+                            这条通知指向的审批不在本会话当前展示的运行里（可能是更早的一次运行——这里只显示最近一次运行）；
+                            到运行详情里可以按运行号查看历史。
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {pendingApprovals.length > 0 && (
-                    <div className="conversation-approvals" aria-label="待审批">
+                    <div className="chat__block" aria-label="待审批">
                       {pendingApprovals.map((approval) => (
-                        <ApprovalCard
+                        <div
+                          className={`flow-card${focusTarget === approval.approval_id ? ' flow-card--focus' : ''}`}
                           key={approval.approval_id}
-                          approval={approval}
-                          canDecide={canDecide}
-                          deciding={approvals.decidingId === approval.approval_id}
-                          onDecide={(approved) => void handleDecide(approval.approval_id, approved)}
-                        />
+                          data-approval-id={approval.approval_id}
+                        >
+                          {focusTarget === approval.approval_id && (
+                            <p className="flow-card__focus-note" role="note">已按通知定位到这条审批</p>
+                          )}
+                          <ApprovalCard
+                            approval={approval}
+                            canDecide={canDecide}
+                            deciding={approvals.decidingId === approval.approval_id}
+                            onDecide={(approved) => void handleDecide(approval.approval_id, approved)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {decidedApprovals.length > 0 && (
+                    <div className="chat__block" aria-label="已处理的审批">
+                      {decidedApprovals.map((approval) => (
+                        <div
+                          className={`flow-card${focusTarget === approval.approval_id ? ' flow-card--focus' : ''}`}
+                          key={approval.approval_id}
+                          data-approval-id={approval.approval_id}
+                        >
+                          {focusTarget === approval.approval_id && (
+                            <p className="flow-card__focus-note" role="note">已按通知定位到这条审批</p>
+                          )}
+                          <ApprovalCard approval={approval} canDecide={false} deciding={false} onDecide={() => {}} compact />
+                        </div>
                       ))}
                     </div>
                   )}
 
                   {detail.messages.length < detail.messages_total && (
-                    <div className="history-pagination">
-                      <button className="button" type="button" disabled={state.detailLoading} onClick={loadMoreMessages}>加载更多消息</button>
+                    <div className="chat__pagination">
+                      <button className="btn btn--secondary btn--sm" type="button" disabled={state.detailLoading} onClick={loadMoreMessages}>
+                        加载更多消息
+                      </button>
                       <span>已显示 {detail.messages.length} / {detail.messages_total}</span>
                     </div>
                   )}
 
-                  <div className="conversation-composer">
-                    <form
-                      className="composer"
-                      onSubmit={(event) => {
-                        event.preventDefault()
-                        void send()
-                      }}
-                    >
-                      <textarea
-                        className="composer-input"
-                        aria-label="消息内容"
-                        placeholder={archived ? '会话已归档，不能发送新消息' : '给数字员工发一条消息…'}
-                        rows={3}
-                        maxLength={MAX_MESSAGE_LENGTH}
-                        value={draft}
-                        disabled={archived}
-                        onChange={(event) => setDraft(event.target.value)}
-                      />
-                      <div className="composer-bar">
-                        <span className="composer-field">
-                          {archived
-                            ? '会话已归档，不能发送'
-                            : draftInvocation
+                  <div className="chat__composer">
+                    <div className="composer-wrap">
+                      {panel !== 'none' && <div className="cmd-panel" role="dialog" aria-label="输入辅助面板">{panelBody()}</div>}
+                      <form
+                        className="composer"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          void send()
+                        }}
+                      >
+                        <textarea
+                          className="composer__input"
+                          aria-label="消息内容"
+                          placeholder={archived ? '会话已归档，不能发送新消息' : '接着说… 输入「/」可看指令（/new /stop /help /status）'}
+                          rows={2}
+                          maxLength={MAX_MESSAGE_LENGTH}
+                          value={draft}
+                          disabled={archived}
+                          onChange={(event) => setDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                              event.preventDefault()
+                              void send()
+                            }
+                            if (event.key === 'Escape' && panel !== 'none') setPanel('none')
+                          }}
+                        />
+                        <div className="composer__bar">
+                          <button className="composer__field" type="button" onClick={() => setPanel((value) => (value === 'mode' ? 'none' : 'mode'))}>
+                            模式：<strong>{modeLabel}</strong>
+                          </button>
+                          <button className="composer__field" type="button" onClick={() => setPanel((value) => (value === 'ability' ? 'none' : 'ability'))}>
+                            本会话能力
+                          </button>
+                          <button className="composer__field" type="button" onClick={() => setPanel((value) => (value === 'help' ? 'none' : 'help'))}>
+                            指令
+                          </button>
+                          <span className="composer__field">
+                            {draftInvocation
                               ? detail.mode === 'ask'
                                 ? `结构化调用：${draftInvocation.tool_key}（当前为「只问答」，服务端会拒绝执行）`
                                 : detail.mode === 'plan'
                                   ? `结构化调用：${draftInvocation.tool_key}（当前为「先计划后执行」，一律先落待批）`
                                   : `结构化调用：${draftInvocation.tool_key}（按真实执行路径发送）`
                               : `最长 ${MAX_MESSAGE_LENGTH} 字符 · 纯文本不触发真实执行`}
-                        </span>
-                        <button className="composer-send" type="submit" disabled={!canSend} aria-label="发送消息">
-                          <Icon name="send" size={18} />
-                        </button>
-                      </div>
-                    </form>
+                          </span>
+                          <button className="composer__send" type="submit" disabled={!canSend} aria-label="发送消息">
+                            <Icon name="send" size={17} />
+                          </button>
+                        </div>
+                      </form>
+                    </div>
 
                     {archived && (
                       <div className="notice" role="status">
-                        <div><strong>会话已归档</strong><p>归档后不能再发送新消息（后端会返回 409），历史消息仍可查看；如需继续对话，请新建会话。</p></div>
+                        <div><strong>会话已归档</strong><p>归档后不能再发送新消息，历史消息仍可查看；如需继续对话，请新建对话。</p></div>
                       </div>
                     )}
 
@@ -727,38 +924,40 @@ export function ConversationPage({
                       </div>
                     )}
                   </div>
-                </>
-              )}
-            </section>
+                </div>
 
-            <StagePanel
-              runId={effectiveRunId}
-              stream={stream}
-              overview={overview}
-              approvals={approvalsView}
-              artifacts={artifacts}
-              acceptance={acceptance}
-              mode={detail?.mode}
-              redoAvailable={Boolean(lastInvocation)}
-              onRedo={() => {
-                if (lastInvocation) void send(lastInvocation)
-              }}
-              canDecide={canDecide}
-              expanded={stageOpen}
-              onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}
-              // P2c-6：参与者与分享（舞台呈现；数据与增删回调都由本页提供，舞台只渲染）。
-              collaboration={{
-                items: state.participants,
-                total: state.participantsTotal,
-                lastActivityAt: detail?.updated_at ?? null,
-                loading: state.participantsLoading,
-                error: state.shareError?.message ?? state.participantsError?.message ?? null,
-                sharing: state.sharing,
-                onAdd: (memberId, permission) => void shareMember(memberId, permission),
-                onRemove: (memberId) => void revokeMember(memberId),
-              }}
-            />
-            </div>
+                <StagePanel
+                  runId={effectiveRunId}
+                  stream={stream}
+                  overview={overview}
+                  approvals={approvalsView}
+                  artifacts={artifacts}
+                  acceptance={acceptance}
+                  mode={detail.mode}
+                  redoAvailable={Boolean(lastInvocation)}
+                  onRedo={() => {
+                    if (lastInvocation) void send(lastInvocation)
+                  }}
+                  canDecide={canDecide}
+                  expanded={stageOpen}
+                  onOpenRunDetail={(runId) => onNavigate?.('run', undefined, runId)}
+                  // S4：干预动作（暂停 / 恢复 / 取消）——发起人本人或 CEO / 超管可操作，服务端仍是权威。
+                  canIntervene={overview.isInitiator || role === 'ceo' || role === 'super_admin'}
+                  onNotice={(message) => setState((old) => ({ ...old, toast: message }))}
+                  // P2c-6：参与者与分享（舞台呈现；数据与增删回调都由本页提供，舞台只渲染）。
+                  collaboration={{
+                    items: state.participants,
+                    total: state.participantsTotal,
+                    lastActivityAt: detail.updated_at,
+                    loading: state.participantsLoading,
+                    error: state.shareError?.message ?? state.participantsError?.message ?? null,
+                    sharing: state.sharing,
+                    onAdd: (memberId, permission) => void shareMember(memberId, permission),
+                    onRemove: (memberId) => void revokeMember(memberId),
+                  }}
+                />
+              </div>
+            )}
           </>
         )}
       </main>

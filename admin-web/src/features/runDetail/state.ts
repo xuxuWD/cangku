@@ -39,3 +39,18 @@ export function asRunError(error: unknown): RunErrorShape {
   }
   return { status: 0, message: DEFAULT_RUN_ERROR, retryable: true }
 }
+
+// 干预类操作（暂停 / 恢复 / 取消）与验收决议的状态码映射：与读取类不同——这里的 409 是「当前状态不允许」，
+// 服务端会带原因（如「运行已结束」「运行尚未结束，暂不能验收」），优先原样展示；
+// 422 是「入参语义不合法」（如打回未写原因），同样优先展示服务端的中文原因；
+// 401/403/404 用固定文案，不泄露内部细节。
+export function runActionErrorFromStatus(status: number, detail?: string | null): RunErrorShape {
+  const text = detail && detail.trim() ? detail.trim() : ''
+  if (status === 401) return { status, message: '登录状态已失效，请重新登录后再试。', retryable: false }
+  if (status === 403) return { status, message: text || '当前账号没有执行该操作的权限。', retryable: false }
+  if (status === 404) return { status, message: '运行不存在，或你没有权限操作。', retryable: false }
+  if (status === 409) return { status, message: text || '该运行当前的状态不允许此操作，正在刷新最新状态。', retryable: false }
+  if (status === 422) return { status, message: text || '提交的内容不符合要求，请检查后重试。', retryable: false }
+  if (status === 0 || status >= 500) return { status, message: DEFAULT_RUN_ERROR, retryable: true }
+  return { status, message: DEFAULT_RUN_ERROR, retryable: false }
+}

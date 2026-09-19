@@ -309,3 +309,35 @@ def test_run_artifacts_purge_delegates_with_now_cutoff(monkeypatch) -> None:
     assert worker.purge_run_artifacts() == 4
     assert len(seen) == 1
     assert abs((datetime.now(UTC) - seen[0]).total_seconds()) < 60  # 截止 = 执行时刻
+
+
+def test_production_runtime_injects_all_three_tenant_purge_channels() -> None:
+    """worker 装配**必须注入三面清场通道**（memory / skills / knowledge）—— 与 API 侧同源。
+
+    为什么单列这条（2026-09-19 真机验证抓到的真缺陷）：`build_commercial_components` 的
+    `memory_store` 此前**只传给了导出读取器、没传给生命周期服务** ⇒ 生产删除租户时
+    **记忆层完全不清场**（审计 `cleared_categories` 只列出 skills / knowledge_governance 两面）。
+    结果是「导出包能出 memories 数据、删除却不清它」的两面不一致 —— 属数据残留（合规问题）。
+    本用例**静态钉住** `configure_runtime` 的装配调用，漏任一参数即红。
+    """
+    import inspect
+    import re
+
+    source = inspect.getsource(worker.configure_runtime)
+    # 必须**限定在装配调用体内**：首版直接在整个函数源码上查 `memory_store=<非None>`，
+    # 结果被 `build_export_readers(memory_store=...)` 那一行蒙混过关（同一函数里有两处用到它）。
+    call = re.search(r"build_commercial_components\((.*?)\n    \)", source, re.DOTALL)
+    assert call, "未找到装配调用（缩进/结构变了？请同步本用例）"
+    body = call.group(1)
+
+    # 判据必须**同时**排除两种失效形态：
+    #   ① 漏参数（子串不存在）；② 传了个 `None` 假装注入。
+    for param in ("memory_store", "skills_store", "knowledge_store"):
+        assert re.search(rf"{param}\s*=\s*(?!None\b)\S", body), (
+            f"worker 装配的 {param} 缺失或传了 None ⇒ 生产删除租户时该面不会清场"
+            "（审计里会如实少列一面，但数据已经残留）"
+        )
+    # `memory_store` 必须复用同一个实例（导出读取器与清场看到同一仓储），而不是构造两次。
+    assert source.count("build_memory_store(") == 1, (
+        "记忆层仓储应只构造一次并两处复用（导出读取器 + 生命周期清场）"
+    )

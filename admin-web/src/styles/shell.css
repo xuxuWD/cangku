@@ -1,0 +1,516 @@
+/* 外壳层（UI v2 规格 §3.1）：三段式侧栏 + 顶栏 + 内容区。
+   结构：.app[grid] → .sidebar / .main(.topbar + .content > .view-slot) */
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  height: 100vh;
+  background: var(--bg-app);
+}
+
+/* ---------------------------------------------------------------- 侧栏 */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--space-4) var(--space-3) var(--space-3);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-soft);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2) var(--space-5);
+}
+
+.brand__mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: var(--text-aux);
+  font-weight: 700;
+}
+
+.brand__copy {
+  min-width: 0;
+  display: grid;
+}
+
+.brand__name {
+  font-size: var(--text-body);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand__sub {
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ① 主操作：每页常驻的「＋ 新建对话」（IA-01） */
+.primary-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 38px;
+  margin: 0 var(--space-1) var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: var(--text-body);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast), opacity var(--motion-fast);
+}
+
+.primary-action:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.primary-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 中段：导航 + 会话列表，整体滚动（底栏钉底，互不覆盖） */
+.sidebar__scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ② 主导航：扁平入口 + 「更多」可折叠子清单（任一入口 ≤1 次点击） */
+.nav {
+  display: grid;
+  gap: 1px;
+  flex: none;
+  padding: 0 var(--space-1);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  font-size: var(--text-body);
+  color: var(--fg-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.nav-item svg {
+  color: var(--fg-muted);
+  flex: none;
+}
+
+.nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--fg-primary);
+}
+
+.nav-item.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.nav-item.is-active svg {
+  color: var(--accent);
+}
+
+.nav-item__chev {
+  margin-left: auto;
+  transition: transform var(--motion-fast);
+}
+
+.nav-item.is-open .nav-item__chev {
+  transform: rotate(180deg);
+}
+
+.nav-count {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  color: #fff;
+  font-size: var(--text-micro);
+  font-weight: 650;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-item__chev + .nav-count {
+  margin-left: 0;
+}
+
+.nav-sub {
+  display: none;
+  gap: 1px;
+  padding: 2px 0 var(--space-2) 34px;
+}
+
+.nav-sub.is-open {
+  display: grid;
+}
+
+.nav-sub button {
+  padding: 6px var(--space-3);
+  border-radius: var(--radius-inset);
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.nav-sub button:hover {
+  background: var(--bg-hover);
+  color: var(--fg-primary);
+}
+
+.nav-sub button.is-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ③ 会话列表：常驻，数据与对话页同源（IA-02） */
+.conversations {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-soft);
+}
+
+.conversations__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.conversations__label {
+  font-size: var(--text-micro);
+  font-weight: 650;
+  color: var(--fg-secondary);
+}
+
+.conversations__count {
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+.conversations__head .icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.conversations__head .icon-btn:first-of-type {
+  margin-left: auto;
+}
+
+.conversations .segmented {
+  margin: 0 var(--space-2) var(--space-2);
+  background: var(--bg-hover);
+}
+
+.conversations .segmented button {
+  flex: 1;
+  padding: 4px 0;
+  font-size: var(--text-micro);
+}
+
+.conversations__list {
+  display: grid;
+  gap: 1px;
+  padding: 0 var(--space-1);
+}
+
+.conv {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+
+.conv:hover {
+  background: var(--bg-hover);
+}
+
+.conv.is-active {
+  background: var(--bg-hover);
+}
+
+.conv__title {
+  font-size: var(--text-aux);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.conv__meta .badge {
+  height: 18px;
+  padding: 0 6px;
+}
+
+.conversations__state {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-micro);
+  color: var(--fg-secondary);
+}
+
+.conversations__state--error {
+  color: var(--danger);
+}
+
+.conversations__state-hint {
+  color: var(--fg-muted);
+}
+
+.conversations__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: var(--space-2) var(--space-2) 0;
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+.conversations__pagination .btn {
+  height: 24px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-micro);
+}
+
+/* 底部：身份 · 外观 · 设置 */
+.sidebar-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-soft);
+}
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+
+.user-chip:hover {
+  background: var(--bg-hover);
+}
+
+.user-chip__meta {
+  min-width: 0;
+  display: grid;
+}
+
+.user-chip__name {
+  font-size: var(--text-aux);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-chip__sub {
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ 主区与顶栏 */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-app);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--topbar-h);
+  flex: none;
+  padding: 0 var(--space-5);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.topbar__title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  /* 内容变高才出现滚动条时不再让内容列左右跳动（切页签 / 展开配置面板时最明显）。 */
+  scrollbar-gutter: stable;
+}
+
+/* 常驻视图槽（D19）：访问过的视图留在 DOM 里，只切显隐。
+   与旧口径一致（flex 行 + align-items: flex-start），页面内部布局无需改动。 */
+.view-slot {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+}
+
+.view-slot[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------ 折叠形态 */
+
+/* 图标栏（≤1024px 自动进入；宽屏由 ☰ 手动开合） */
+.app.is-rail {
+  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
+}
+
+.app.is-rail .brand {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.app.is-rail .brand__copy,
+.app.is-rail .primary-action span,
+.app.is-rail .nav-item > span:not(.nav-count),
+.app.is-rail .nav-sub,
+.app.is-rail .conversations,
+.app.is-rail .user-chip__meta {
+  display: none;
+}
+
+.app.is-rail .primary-action {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.app.is-rail .nav-item {
+  justify-content: center;
+  padding: var(--space-2);
+}
+
+.app.is-rail .nav-item__chev {
+  display: none;
+}
+
+.app.is-rail .nav-count {
+  position: absolute;
+  transform: translate(14px, -12px);
+}
+
+.app.is-rail .nav-item {
+  position: relative;
+}
+
+.app.is-rail .user-chip {
+  justify-content: center;
+}
+
+/* 窄屏（≤720px）：侧栏收进抽屉，由 ☰ 开合 */
+.sidebar-mask {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--fg-primary) 32%, transparent);
+  z-index: 65;
+}
+
+@media (max-width: 720px) {
+  .app,
+  .app.is-rail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(280px, 84vw);
+    z-index: 70;
+    transform: translateX(-100%);
+    transition: transform var(--motion-normal);
+    box-shadow: var(--shadow-modal);
+  }
+
+  .app.is-drawer-open .sidebar {
+    transform: none;
+  }
+
+  .topbar {
+    padding: 0 var(--space-4);
+  }
+}

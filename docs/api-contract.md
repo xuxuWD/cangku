@@ -143,13 +143,29 @@
 
 客户管理员或超级管理员申请租户数据导出，接口只创建异步作业并返回 `202`。导出内容经过脱敏，不包含密码、Cookie、验证码、令牌、原始 API 密钥或客户原文。导出由 worker 周期任务异步生成（不在请求线程完成），导出包过期时间为 **7 天**（`expires_at = created_at + 7 天`，2026-09-14 裁决）。
 
+`GET /api/v1/commercial/exports`
+
+列出本租户**已生成**的导出包元数据（`package_id` / `job_id` / `created_at` / `expires_at`），按生成时间倒序（同一时刻按包号倒序，顺序确定），`limit` 1–200（默认 50）+ `offset` ≥ 0 分页（非法值 `422`）；响应 `{"items", "total", "limit", "offset"}`。**列表不返回载荷 `payload`**（载荷按 `package_id` 单独取回，避免列表携带大体积数据）；列表**如实包含已过期但尚未被 worker 清理的包**——客户端按 `expires_at` 自行标注「已过期」，取回这类包仍返回 `404`「导出包已过期」（清理后与「从未存在」不可区分）。权限与租户口径同取回端点：仅 `customer_admin` / `super_admin` 可列出，租户由服务端从登录上下文解析，**永不列出他租户的导出包**（查询以 `tenant_id` 限定）。设计原因：取回端点需要 `package_id`，而作业视图与申请响应都不携带它；没有本列表时客户端**无法发现包号**，取回能力实际不可用（2026-09-19 补链）。
+
 `GET /api/v1/commercial/exports/{package_id}`
 
 取回本租户已生成的导出包：返回 `package_id`、`tenant_id`、`job_id`、`created_at`、`expires_at` 与脱敏载荷 `payload`。租户由服务端从登录上下文解析（客户端不能指定租户），仅 `customer_admin` / `super_admin` 可取回，普通员工 `403`。**跨租户的导出包与不存在的导出包统一返回 `404`「导出包不存在」**（不泄露他租户资源是否存在）；`expires_at <= 当前时刻` 的过期包返回 `404`「导出包已过期」。**过期包由 worker 周期任务 `export-packages-purge` 按 `expires_at` 物理清理**（`DELETE FROM workbench_export_packages WHERE expires_at <= now`，beat 间隔 `WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS`，默认 3600 秒），清理后与「从未存在」不可区分。
 
 `POST /api/v1/commercial/deletion-requests`
 
-客户管理员或超级管理员申请删除当前租户，接口返回带冷静期（默认 7 天）的异步生命周期作业。删除前必须完成**最终导出**：**删除申请之后首次完成的导出即「最终导出」**（据此置 `final_exported` 并与该删除作业关联）。冷静期结束且已完成最终导出后，由 worker 周期任务执行删除并推进租户到 `deleted`，**删除执行不在请求线程完成**；删除执行写入审计 `commercial.deletion.executed`。
+客户管理员或超级管理员申请删除当前租户，接口返回带冷静期（默认 7 天）的异步生命周期作业。删除前必须完成**最终导出**：**删除申请之后首次完成的导出即「最终导出」**（据此置 `final_exported` 并与该删除作业关联）。删除前还必须**记录确认人**（见下条确认端点）；两项前置缺一，删除执行一律拒绝（`确认人` 未记录时拒绝执行，**不静默跳过**）。冷静期结束、已完成最终导出且已记录确认人后，由 worker 周期任务执行删除并推进租户到 `deleted`，**删除执行不在请求线程完成**；删除执行写入审计 `commercial.deletion.executed`，明细含 `confirmed_by` 与 `cleared_categories`（本次**实际**清到哪些面，未注入的面不列）。
+
+**删除清场口径（B-3，2026-09-19）**：租户删除是**物理清场**（软删语义只留给正常业务）。当前清场面为记忆层、技能层、知识治理层三处，逐面调用各层 `delete_all_for_tenant`，并在审计 `cleared_categories` 里如实记录真正清到的面；**未注入的面不参与清场、也不出现在该列表**（不假装清过）。**「整层」= 该层在迁移里的全部租户级表**，不是只清主表：记忆层 = 事实 / 规则 / 身份类画像三张（`029`），技能层 = 技能包 / 数字员工绑定两张（`030`），知识治理层 = 知识文档一张（`032`）——2026-09-19 修复前两处只清主表，导致 `cleared_categories` 面名齐全却仍有整租户行残留（规则 / 画像 / 绑定），现已按整层清场并落守护用例。**清场未覆盖的租户级表**（知识访问授权绑定、会话与消息、任务与运行、CRM 等）与对象存储文件 / 向量索引 / 缓存一并登记为后续专项。worker 到期执行时若管理员尚未显式确认，则**按申请自动确认**（确认人 = 请求人，写同一审计动作 `commercial.deletion.confirmed`），避免冷静期长达数十天导致删除静默卡死。
+
+`POST /api/v1/commercial/deletion-requests/{job_id}/confirm`
+
+记录当前租户删除申请的**确认人**（真源 `commercial-g0-design.md:114`「删除前必须生成最终导出包**并记录确认人**」）。这是一次**显式确认动作**，与「申请删除」分开，消除「确认人 = 发起人」的默认假设。成功返回该生命周期作业视图（含 `confirmed_by` / `confirmed_at`）。
+
+- **前置**：作业须处于冷静期内（`cooling_down`）**且已完成最终导出**（`final_exported`）；确认**不改作业状态**，执行仍由冷静期闸门与 worker 排程决定。
+- **权限**：仅 `customer_admin` / `super_admin`；普通员工 `403`。
+- **`409` 语义**：尚未完成最终导出返回 `409`「删除前必须完成最终导出，再记录确认人」；作业不在冷静期内（已取消 / 已完成）返回 `409`「没有处于冷静期内、可确认的删除申请」。
+- **`404` 语义**：跨租户与不存在的作业统一返回 `404`「生命周期任务不存在」。
+- **fail-closed**：确认必须写入审计（`commercial.deletion.confirmed`，明细只含 `kind` / `status` 两个受控值，确认人由 `actor_id` 承载）；**未配置审计通道时拒绝确认**（`403`），绝不留下不可追的确认人。
 
 `POST /api/v1/commercial/deletion-requests/cancel`
 
@@ -158,6 +174,21 @@
 `GET /api/v1/commercial/lifecycle/{job_id}`
 
 只允许查看当前租户的生命周期作业；跨租户或不存在的作业统一返回 `404`。普通员工不能查看或发起商业化管理操作。
+
+**导出包内容口径（B-2，2026-09-19）**
+
+导出载荷顶层为 `{"tenant_id", "resources", "unimplemented_categories", "unavailable_categories", "truncated_categories", "redaction"}`：
+
+- `resources`：真源 15 类（`users` / `roles` / `agents` / `tasks` / `runs` / `steps` / `artifacts` / `knowledge_documents` / `knowledge_versions` / `knowledge_references` / `memories` / `growth_proposals` / `approvals` / `usage` / `audits`）。**接了读取通道的类别填真实行，未接的一律空数组**并在 `unimplemented_categories` 里列出（**不臆造字段、不假装有数据**）。
+- **已接线的类别与字段口径**（B-2 首批·读取器见 `app/commercial/export_readers.py`；**各类行内一律不含租户列**——顶层 `tenant_id` 已给）：`roles`（`role_key` / `name` / `description` / `status` / `created_by` / `created_at` / `updated_at`）、`agents`（数字员工**目录**字段 = `agent_key` / `role_key` / `name` / `description` / `status` / `created_by` / `created_at` / `updated_at`；**不含**系统提示词 / 模型键 / 工具白名单 / 记忆策略 / 自治档 / 预算）、`knowledge_documents`（`KnowledgeDocView` 同字段，不含正文）、`audits`（`AuditRecordView` 同字段，手机号列本身已是掩码列）、`runs`（`RunMetricsView` 同字段，**不含**执行授权位）、`memories`（**三类记忆，行内以 `kind` 判别**；2026-09-19 起覆盖整层——此前只出事实类）。
+- **B-2b 追加三类（2026-09-19）**：`tasks`（`task_id` / `project_id` / `created_by` / `employee_key` / `title` / `risk_level` / `budget` / `status`；**不含** `idempotency_key` 与 `request_fingerprint`）、`users`（`account_id` / `phone_masked` / `position` / `full_name` / `email` / `role` / `status` / `requested_at` / `reviewed_at` / `reviewed_by`；**手机号只出掩码**，**不含**口令哈希 / TOTP 种子 / SSO 主体 / 驳回理由；**未审批（无租户）的申请账号不属于任何租户** ⇒ 不入包）、`usage`（账本明细 `id` / `units` / `cost_cents` / `reversal_of` / `occurred_at`；冲正为负值记录、`reversal_of` 指向原条目，累计口径与 `GET /api/v1/commercial/usage` 一致；**不含**内部幂等键）。各类排序确定：`tasks` / `users` 为 `id` / `requested_at, account_id`，`usage` 为 `occurred_at, id`。
+- **B-2c 追加两类（2026-09-19）**：`artifacts`（`run_id` / `artifact_id` / `virtual_path` / `change_kind` / `bytes` / `sha256` / `created_at` / `expires_at`；在运行级视图之上**补 `run_id`**（租户级快照必须能看出产物属于哪次运行）；**过期口径与运行产物端点一致**（`expires_at` 已过的登记不入包、不计入总数）、排序 `created_at, artifact_id`）、`steps`（**每个计划步骤一行**：`run_id` / `step_id` / `kind` / `tool` / `requires_approval` / `completed`；`completed` 由运行状态的 `completed_steps` 判定；**不含**步骤正文与执行输出——那些属运行事件明细）。**边界登记**：`steps` 上游 `list_for_tenant` 无分页（适配器一次取全量后切片与计数）；内存存储模式下运行时状态是**进程内状态**（重启 / 多进程看到的不完整），**PG 模式读的是持久化状态行**（`workbench_runtime_states`）。
+- **`memories` 整层口径（2026-09-19）**：真源 §6.1 的导出项「记忆」= 记忆层的**三类记忆**（`migrations/029_memory_layer.sql` 自述「三类记忆（身份 / 规则 / 事实）」）⇒ 该类别**三类都出**、行内以 `kind` 判别：`kind="fact"`（事实类，字段 = `memory_id` / `scope` / `status` / `content` / `created_at`，**与 2026-09-16 起既有字段逐字一致**）、`kind="rule"`（规则类，既有事实字段 + `rule_key` / `version`）、`kind="profile"`（身份类画像 KV：`owner_kind` / `owner_id` / `profile_key` / `value` / `updated_at`）。**排序确定**：按 `fact` → `rule` → `profile` 分组，组内为 `created_at, memory_id` / `owner_kind, owner_id, profile_key`。**只出 `active` 条目**（`superseded` 的历史版本不入包 —— 与既有事实类口径一致；「导出历史版本」属口径变更，需另议）。**边界登记**：三张表均以 `list_*_for_tenant` 全量读取（无分页）⇒ 适配器一次取全量后切片与计数（同 `knowledge_documents` 手法）。
+- **剩余 4 类（`knowledge_versions` / `knowledge_references` / `growth_proposals` / `approvals`）不接线**：系统内**没有对应实体或没有按租户读取通道**（版本只是文档上的单值列、引用关系只存在于内容任务 brief、成长提案无租户字段且仅内存实现、审批只有「待审批聚合」无历史表）⇒ 一律空数组 + 留在 `unimplemented_categories`，**不造数据、不假装有**（真源要求的三类如实标注之一）。
+- `truncated_categories`：每类**行数上限**为 `5000`（`EXPORT_CATEGORY_MAX_ROWS`），超出的类别给出 `{"exported": 行数, "total": 该类总数}` —— **不静默截断**；总数取自存储计数（SQL `COUNT(*)`），**不拿返回条数冒充总数**。
+- `unavailable_categories`：**读取通道已接但本次读取失败**的类别（读取器抛错）。这类类别**不写入 `resources`**（与「读了但是空」区分开），其余类别照常导出；失败原因只进服务端日志，不进载荷。
+- **脱敏**：凭据类列按类别**硬排除**（口令哈希、TOTP 种子、SSO 主体、系统提示词、任务幂等键与请求指纹、运行执行授权位等），且全部行统一过既有脱敏器（敏感键名 + 值内凭据形态，产物 `[已隐藏]`）。
+- ⚠️ **部署口径**：导出作业由 **worker 周期任务**执行 ⇒ 生产环境**API 与 worker 两个进程都必须注入同一套读取器**（`build_export_readers`）；只注入一侧时，未注入的那一侧生成的包会是「所有类别皆空」的假包。
 
 ## 任务
 
@@ -450,8 +481,12 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 | `title` | string | 服务端固定文案 |
 | `target_type` | string \| null | 关联对象类型，可为空 |
 | `target_id` | string \| null | 关联对象 ID（任务号、提案号等），可为空 |
+| `target_conversation_id` | string \| null | **S1 第三款**：该结果所属会话 ID（服务端反查），可为空 |
+| `target_approval_id` | string \| null | **S1 第三款**：被驳回的那条审批 ID（仅 `run.approval_rejected`），可为空 |
 | `created_at` | string | 创建时间（ISO 8601） |
 | `read_at` | string \| null | 已读时间，未读为 `null` |
+
+- `target_conversation_id` / `target_approval_id` 是**可空的上文标识**（迁移 `041_inbox_target_context`，纯增列）：运行类通知由服务端沿 `run_id → 幂等行 → conversation_id` 反查补齐；反查不到（非对话触发的运行、存量行）一律为 `null`。客户端据此可直达「该会话的该条卡」，缺省时回落 `target_type`/`target_id` 的既有落点——**服务端只给权威值，不猜测会话或审批**。
 
 - `kind` 固定十取值：`task.approved`、`plan.approved`、`plan.rejected`、`orchestration.approved`、`orchestration.rejected`、`publication.manual_takeover`、`run.failed`、`run.cancelled`、`run.approval_rejected`、`account.registration.approved`。
 
@@ -942,6 +977,9 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
   该会话一次都没有 run ⇒ **挂起**（仅心跳），轮询中发现新 run 后自动开始补发。
 - **起点解析**：请求头 `Last-Event-ID` 与 `?after_seq=` **都解析，取 `max`**（防降级重放导致重复投递）；
   非法值 `422`；起点**大于** `last_seq` **不报错**（只等新帧）；重连且起点已覆盖终态 ⇒ **立即关流**（无新帧）。
+- **跨源读取（2026-09-18 补正）**：`X-Stream-Run-Id` 已加入 CORS **响应头**白名单（`expose_headers`）。
+  浏览器同源不受影响；**跨源时不 expose 则 JS 读该头恒为 `null`**，客户端会据此误判「服务端没有 run」并提前关流
+  （表现为历史会话解析不到运行与审批）。客户端仍应把**帧内 `run_id`** 作为第二来源（连接建立时无 run、稍后出现的场景只有帧内才有）。
 - **SSE 帧格式**（每个事件四行，末尾一个空行；**2026-09-17 只增 `run_id`**——覆盖「连接建立时无 run、稍后新 run 出现」与多客户端场景，客户端据此归组并解析「当前 run」）：
 
 ```
@@ -1102,6 +1140,60 @@ data: {"run_id":"<run_id>","seq":<n>,"is_terminal":<bool>,"kind":"<kind>","paylo
 - **结构判定**（三条件**全满足** ⇒ `met`）：① 步骤全部完成（`completed_step_count >= step_count`；`step_count = 0` 视为满足）② 无未决审批（运行审批状态无 `pending`）③ `finish_reason` 为**正常终态**（`run_completed`；`cancelled_by_user` / `step_failed` / `approval_rejected` 均**不算**）。
 - 响应 `{"run_id", "verdict": "met"|"unmet", "checks": {"steps_complete", "no_pending_approvals", "finish_reason_ok"}, "steps": {"completed", "total"}, "pending_approvals", "finish_reason", "status"}`；**非终态运行 ⇒ `unmet`**（如实，不谎报）。
 - **一键重做属前端行为**：未达标时，**仅当页面仍持有原结构化调用**时以**新幂等键**重发（＝一次新的正常调用、新 run，与原运行**无状态耦合**）；跨页 / 刷新后按既有安全口径**不重放原参数**（界面如实告知「原始参数未留存，请重新输入」）。**不做自动重跑、不做 LLM 判分**。
+
+### 干预动作的终态口径（2026-09-18 收紧 · M3/S4 收口）
+
+`POST /runs/{run_id}/pause` · `POST /runs/{run_id}/resume` · `POST /runs/{run_id}/cancel`
+
+- **仅非终态运行可干预**：`completed` / `failed` / `cancelled` **一律 `409`**（`运行已结束，无法暂停 / 恢复 / 取消`）。
+  理由与审批侧 `RunNotDecidable` 同一原则——**终态即终态**：把已完成置回「运行中」、把已取消再暂停，
+  都会让指标与审计口径失真（此前三条动作在终态上会被静默接受并改写状态，属**存量缺陷**，本批修掉）。
+- **权限与可见性不变**：任务创建人 / `ceo` / `super_admin`；越权与跨租户一律 `404`（不泄露存在性）。
+- `POST /runs/{run_id}/resume` 另外把授权闸门的拒绝（`ExecutionNotAuthorized`）映射为 **`409`**（原来会外抛 `500`）。
+- **已知限制（如实登记）**：`dsh` 适配器的 `pause_run` / `resume_run` 目前是**空操作**（无外部暂停契约），
+  即在这条真实执行路径上「暂停 / 恢复」不会改变运行状态；界面按服务端回流展示，不会假装成功。
+
+### 运行验收决议（S2 · 人工验收 · 2026-09-18）
+
+> 口径源：`docs/superpowers/specs/2026-09-18-workbench-closed-loop-design.md` §3 接缝 **S2**（「确认完成 / 打回重做（带原因）」）与 `docs/superpowers/specs/2026-09-18-workbench-ui-v2-design.md` §6（M3 范围）。**结构判定是机器结论，验收决议是人的结论**：本组端点只记录「人怎么判的」，**不改运行状态、不触发重跑、不发通知**。
+
+**迁移**：`040_run_acceptance_decisions`，表 `workbench_run_acceptance_decisions(tenant_id, run_id, decision_id, decision, reason, idempotency_key, decided_by, decided_by_role, structural_verdict, created_at)`；主键 `(tenant_id, run_id, decision_id)`；**复合外键** `(tenant_id, run_id) → workbench_run_records`（跨租户写直接拒）；唯一 `(tenant_id, idempotency_key)`；表级 CHECK：`decision ∈ {confirmed, rejected}` 且 `rejected ⇒ length(reason) > 0`。**append-only**（历史保留：打回 → 重做 → 再确认的序列可追溯）；**不设保留期**（验收是合规记录，与运行记录同寿命）。
+
+`POST /api/v1/runs/{run_id}/acceptance/decisions`
+
+- 请求体（`extra=forbid`）：`{"decision": "confirmed"|"rejected", "reason": string, "idempotency_key": string}`。`reason`：`rejected` **必填**（1–500 字），`confirmed` 可省（缺省 `""`，≤500）；`idempotency_key` 必填（1–200）。
+- **权限**：承载任务的**创建人**或 `ceo` / `super_admin`；其余身份（含**非成员**、跨租户、未知运行）一律 **`404`**（与运行控制类端点同一收敛口径：不区分「无权限」与「不存在」，避免探测）。**按钮隐藏不算权限**——服务端独立判定。
+- **前置**：仅**终态运行**（`completed` / `failed` / `cancelled`）可决议；非终态 ⇒ **`409`**（如实拒绝，不排队等待）。
+- **幂等**：同租户同 `idempotency_key` 重复提交 ⇒ **返回既有决议**（`200`，`created: false`，**不重复写审计**）。
+- 响应：`{"run_id", "decision_id", "decision", "reason", "decided_by", "decided_at", "structural_verdict": "met"|"unmet", "created": bool}`。
+- **达标与否都可决议**：`structural_verdict` 只是记录当时的机器结论（**供追溯**），不作为放行条件——人可以在未达标时确认完成（例如「我知道差一步，就这样吧」），也会在达标时打回（例如「结果不对」）。
+- **审计**：动作 `run.acceptance_decided`（受控键），明细只记 `decision` / `structural_verdict` / `reason_present`（**不落理由正文**；正文只进本表并由有权读者读取）。
+- **不做**：不改运行状态、不自动重跑（「一键重做」仍属前端行为，见上）、不发通知（下游「待确认」看板属 C2，未立项）、不做批量决议。
+
+`GET /api/v1/runs/{run_id}/acceptance/decisions`
+
+- 决议历史（**最新在前**）：`{"run_id", "items": [{"decision_id","decision","reason","decided_by","decided_at","structural_verdict"}], "latest": {...}|null, "promotion": {...}|null}`；`items` **不含** `tenant_id` / `idempotency_key`。
+- 归属同运行级**读**路径（含会话成员可见口径，与 `/acceptance` 一致）。
+- **`promotion`（2026-09-19 只增）**：该运行的沉淀状态（见下节）；未沉淀为 `null`，已沉淀为 `{"task_id","title","promoted_by","promoted_at"}`（**不含** `tenant_id`）。
+
+### 运行沉淀（S2 · 存成任务 · 2026-09-19）
+
+> 口径源：`docs/superpowers/specs/2026-09-18-workbench-closed-loop-design.md` §3 接缝 **S2**——「确认后出现「**存成任务 / 设为自动化**」（B5 的轻量入口，完整画布见 C3）」。本节交付**「存成任务」**；**「设为自动化」不在此列**（自动化调度属能力项 C2/C3，未立项，界面只给行内说明、不摆按钮）。
+
+**迁移**：`042_run_promotions`，表 `workbench_run_promotions(tenant_id, run_id, task_id, title, promoted_by, created_at)`；**主键 `(tenant_id, run_id)`**（一个运行只能沉淀一次）；**复合外键** `(tenant_id, run_id) → workbench_run_records`（跨租户写直接拒）且 **`ON DELETE CASCADE`**（运行记录被删只解除链接，**任务不随之消失**）；**不设保留期**。
+
+**语义**：沉淀是**链接**，任务是**产物**——新任务落既有任务仓储，字段从**这次运行的承载任务**复刻（执行员工 / 风险档 / 预算 / 项目），并由服务端**再走一次同款治理闸门**（`ensure_can_create` 与 `task_requires_approval`），因此「沉淀」不是绕过审批或预算的旁路。
+
+`POST /api/v1/runs/{run_id}/acceptance/tasks`
+
+- 请求体（`extra=forbid`）：`{"title": string}`（1–120 字，去首尾空白；**只有标题可由客户端给**）。
+- **权限与验收决议同一判定**（承载任务创建人 / `ceo` / `super_admin`）：他人 / 跨租户 / 未知运行一律 **`404`**。
+- **前置（fail-closed）**：① 仅**终态运行**（非终态 ⇒ **`409`**「运行尚未结束，暂不能沉淀成任务」）；② 最新验收决议必须是 **`confirmed`**（未决议 / 已打回 ⇒ **`409`**「先确认完成，再沉淀成任务」）。
+- **幂等**：同一运行**只能沉淀一次**——服务端先占位（主键）再建任务；重复提交返回**既有任务**（`200`，`created: false`），**不建第二条任务、不重复写审计**；并发提交由主键拒绝，只有一个能占到。
+- **闸门**：`ensure_can_create` 被挡 ⇒ **`403`**（原样返回策略文案）；任务侧幂等冲突 ⇒ **`409`**；两种失败都会**归还占位**（不留下悬挂链接）。
+- 响应：`201`（首次）/ `200`（重复）`{"run_id", "task_id", "created": bool, "promotion": {...}, "task": <TaskView>|null, "task_created"?: bool}`——`task` 在承载任务对调用者**不可见**时为 `null`（界面只给标识，**不编造内容**）。
+- **审计**：动作 `run.promoted_to_task`（受控键），明细**只记 `task_id`**（**不落标题正文**；标题只进本表作快照）。
+- **不做**：不自动运行该任务、不建调度（自动化）、不改原运行状态、不发通知；删除任务仓储中的任务**不会**回写本表（沉淀是历史事实）。**平任务的列表 / 详情页属任务中心（C2）未立项** ⇒ 界面只给任务编号与如实说明，**不摆「打开任务」按钮**（点了只会落到空页面）。
 
 ## 会话协作：分享与多端协同（P2c-6 · 2026-09-17）
 

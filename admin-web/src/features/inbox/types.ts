@@ -22,6 +22,10 @@ export interface InboxItem {
   title: string
   target_type: InboxTargetType | null
   target_id: string | null
+  // S1 第三款：服务端反查出的**上文标识**（可空）——有会话就能直达「该会话（的该条卡）」，
+  // 为空时按 target_type / target_id 的既有落点打开（存量通知即此形态）。
+  target_conversation_id: string | null
+  target_approval_id: string | null
   created_at: string
   read_at: string | null
 }

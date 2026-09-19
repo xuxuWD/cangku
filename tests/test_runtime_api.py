@@ -23,9 +23,27 @@ def test_run_api_creates_streams_and_controls_runtime():
     body=created.json(); assert body['runtime_key']=='mock'; assert body['status']=='completed'; run_id=body['run_id']
     events=client.get(f'/api/v1/runs/{run_id}/events', headers=h()); assert events.status_code == 200; assert events.json()[0]['event_type']=='plan.created'
     cursor=events.json()[-1]['cursor']; assert client.get(f'/api/v1/runs/{run_id}/events?cursor={cursor}', headers=h()).json()==[]
+    # 终态即终态：已完成运行上的暂停 / 恢复 / 取消一律 409（不允许把已结束的运行复活）。
+    assert client.post(f'/api/v1/runs/{run_id}/pause', headers=h(), json={'reason':'等待确认'}).status_code==409
+    assert client.post(f'/api/v1/runs/{run_id}/resume', headers=h()).status_code==409
+    assert client.post(f'/api/v1/runs/{run_id}/cancel', headers=h(), json={'reason':'测试取消'}).status_code==409
+
+
+def test_interventions_work_on_a_non_terminal_run():
+    """干预闭环只能在**非终态**运行上走通：待审批运行停在「运行中」，可暂停 / 恢复 / 取消。"""
+    task_id=make_task()
+    created=client.post(
+        f'/api/v1/tasks/{task_id}/runs',
+        headers=h(),
+        json={'runtime_key':'mock','steps':[{'step_id':'s1','kind':'write','tool':'fs.write','requires_approval':True}]},
+    )
+    assert created.status_code==201 and created.json()['status']=='running'
+    run_id=created.json()['run_id']
     paused=client.post(f'/api/v1/runs/{run_id}/pause', headers=h(), json={'reason':'等待确认'}); assert paused.status_code==200
+    assert client.get(f'/api/v1/runs/{run_id}/metrics', headers=h()).json()['status']=='paused'
     resumed=client.post(f'/api/v1/runs/{run_id}/resume', headers=h()); assert resumed.status_code==200
     cancelled=client.post(f'/api/v1/runs/{run_id}/cancel', headers=h(), json={'reason':'测试取消'}); assert cancelled.status_code==200
+    assert client.get(f'/api/v1/runs/{run_id}/metrics', headers=h()).json()['status']=='cancelled'
 
 
 def test_run_api_requires_owner_or_admin_and_hides_other_tenants():

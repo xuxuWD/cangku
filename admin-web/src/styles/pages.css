@@ -1,0 +1,687 @@
+/* 页面层：UI v2 新页面样式（T1 工作台首页 / T2 对话 / T5 设置）。
+   旧页面样式仍在 legacy.css（随 M2/M3 逐页重绘迁移）。 */
+
+/* ======================================================== T1 · 工作台首页 */
+
+.home {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-7);
+  display: grid;
+  gap: var(--space-7);
+  align-content: start;
+}
+
+.hero {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-5);
+}
+
+.hero h1 {
+  font-size: var(--text-hero);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+
+.hero__hint {
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+  text-align: center;
+  max-width: 560px;
+  margin-top: calc(var(--space-3) * -1);
+}
+
+.hero .composer-wrap {
+  width: 100%;
+}
+
+.hero .chips {
+  justify-content: center;
+  max-width: 720px;
+}
+
+.home__secondary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.home__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.home .card__more {
+  cursor: pointer;
+}
+
+@media (max-width: 900px) {
+  .home {
+    padding: var(--space-6) var(--space-4);
+  }
+
+  .home__cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 统计条在中等宽度下两列，避免一列大卡把列表压到很下面 */
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .metric {
+    padding: var(--space-3) var(--space-4);
+  }
+}
+
+/* ============================================================ T2 · 对话 */
+
+.chat-page {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: calc(100vh - var(--topbar-h));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chat {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--stage-width);
+}
+
+.chat__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 会话头：标题 + 状态 + 会话级动作（归档 / 导出 / 删除） */
+.chat-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  padding: var(--space-3) var(--space-7);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.chat-head__title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-head__meta {
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.chat-head__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  flex: none;
+}
+
+.chat__notices {
+  display: grid;
+  gap: var(--space-2);
+  flex: none;
+  padding: var(--space-3) var(--space-7) 0;
+}
+
+.chat__empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: var(--space-7);
+}
+
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6) var(--space-7);
+  display: grid;
+  gap: var(--space-5);
+  align-content: start;
+}
+
+.msg {
+  display: grid;
+  gap: 6px;
+  max-width: 76%;
+}
+
+.msg--me {
+  justify-self: end;
+  justify-items: end;
+}
+
+.msg--them {
+  justify-self: start;
+}
+
+.msg--system {
+  justify-self: center;
+  justify-items: center;
+  max-width: 100%;
+}
+
+.bubble {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-card);
+  font-size: var(--text-body);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg--me .bubble {
+  background: var(--accent-soft);
+  color: var(--fg-primary);
+  border-bottom-right-radius: var(--radius-inset);
+}
+
+.msg--them .bubble {
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-bottom-left-radius: var(--radius-inset);
+}
+
+.msg--system .bubble {
+  background: var(--bg-subtle);
+  color: var(--fg-secondary);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-aux);
+  padding: 6px 14px;
+}
+
+.msg__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+/* 消息流里的整行卡片（审批 / 产物），不随气泡宽度收窄 */
+.flow-card {
+  width: 100%;
+  max-width: 680px;
+}
+
+/* S1 第三款：从通知跳转过来的那条审批——用焦点环标出位置，不改变卡片本身的语义 */
+.flow-card--focus {
+  border-radius: var(--radius-card);
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.flow-card__focus-note {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+/* 消息流下方的整行区块（待批 / 已处理），不随消息滚动 */
+.chat__block {
+  flex: none;
+  display: grid;
+  gap: var(--space-3);
+  padding: 0 var(--space-7) var(--space-3);
+}
+
+.chat__composer {
+  flex: none;
+  padding: 0 var(--space-7) var(--space-5);
+}
+
+.chat__pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-7) var(--space-3);
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+/* 右栏舞台：容器与窄屏开合（内层面板样式仍在 legacy.css） */
+.stage-toggle {
+  display: none;
+}
+
+.conversation-stage {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+  border-left: 1px solid var(--border-soft);
+  background: var(--bg-sidebar);
+}
+
+@media (max-width: 1280px) {
+  .chat {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stage-toggle {
+    display: inline-flex;
+    margin: 0 0 var(--space-3);
+  }
+
+  .conversation-stage {
+    display: none;
+  }
+
+  .conversation-stage--open {
+    display: grid;
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .chat-head,
+  .chat__notices,
+  .messages,
+  .chat__block {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  /* 窄屏：标题独占一行、操作换行到第二行，避免标题被截成省略号、徽标竖排 */
+  .chat-head {
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
+    padding-top: var(--space-3);
+    padding-bottom: var(--space-3);
+  }
+
+  .chat-head__title {
+    flex: 1 1 auto;
+  }
+
+  .chat-head__meta {
+    display: none;
+  }
+
+  .chat-head__actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .chat__composer {
+    padding: 0 var(--space-4) var(--space-4);
+  }
+}
+
+/* 极矮视口（不足 620px 高，低于目标下限 768）：对话页退回文档流，
+   消息区给最小可读高度，靠外层面板滚动看全——避免消息区被压到几十像素。 */
+@media (max-height: 620px) {
+  .chat-page {
+    height: auto;
+    min-height: calc(100vh - var(--topbar-h));
+  }
+
+  .messages {
+    flex: none;
+    min-height: 260px;
+  }
+}
+
+/* ============================================== T3 · 列表/看板（通用骨架） */
+/* 用法：<main className="main-content t3 …"> → .t3__intro（一句话 + 主操作）→ .metrics（统计条）
+   → .toolbar（筛选行）→ .card / .history-panel（列表）→ 四态（loading / error / EmptyState / 无权限）。 */
+
+.t3 {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.t3__intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.t3__intro .page-desc {
+  max-width: 720px;
+}
+
+.t3__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+
+/* 自带内边距的表单块放进 .card__body 时去掉叠加（否则左右/底部留白翻倍） */
+.card__body > .audit-log__filters,
+.card__body > .ws-form,
+.card__body > .stage-hint {
+  padding: 0;
+}
+
+/* ============================================== T4 · 详情页（通用骨架） */
+/* 用法：<main className="main-content t3 …"> → .crumbs（可选的返回行）→ .t3__intro（一句话 + 动作）
+   → .metrics（关键数字）→ .card（运行信息用 .kv 键值对；交付用 .check-list 分项）→ 四态齐备。
+   纪律：详情页不写 h1（顶栏标题由外壳提供）；同一份数据不给两套口径。 */
+
+.kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-4) var(--space-5);
+}
+
+.kv__item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  align-content: start;
+}
+
+.kv__label {
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+}
+
+.kv__value {
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--fg-primary);
+  overflow-wrap: anywhere;
+}
+
+.check-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 200px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-body);
+}
+
+/* 窄档：标签与说明折成两行（不硬挤成三列）。 */
+@media (max-width: 720px) {
+  .check-item {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+
+  .check-item__note {
+    grid-column: 2;
+  }
+}
+
+.check-item__mark {
+  flex: none;
+  font-weight: 700;
+}
+
+.check-item.is-ok .check-item__mark {
+  color: var(--success);
+}
+
+.check-item.is-bad .check-item__mark {
+  color: var(--danger);
+}
+
+.check-item__note {
+  font-size: var(--text-aux);
+  color: var(--fg-muted);
+}
+
+/* 数字员工设置：同一页里的表单列宽统一为 3 列（auto-fit 会随容器宽度给出 3 / 4 列两套，
+   视觉上像两套设计），窄档降到 2 列 / 1 列。 */
+.workforce-settings .ws-form {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* S2 人工验收决议（运行详情「交付」区块内）：当前结论 + 两个动作 + 打回原因 */
+.acceptance {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-soft);
+}
+
+.acceptance__state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-body);
+}
+
+.acceptance__meta {
+  font-size: var(--text-aux);
+  color: var(--fg-muted);
+}
+
+.acceptance__reason {
+  width: 100%;
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+  overflow-wrap: anywhere;
+}
+
+.acceptance__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* S2 沉淀入口（存成任务）：与决议动作同区块但视觉上分层，避免被当成同一步 */
+.acceptance__promote {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--border-soft);
+}
+
+.acceptance__reject {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-inset);
+  background: var(--bg-subtle);
+}
+
+.acceptance__reject .stage-hint {
+  padding: 0;
+}
+
+.acceptance__reject-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.acceptance .stage-hint {
+  padding: 0;
+}
+
+@media (max-width: 900px) {
+  .workforce-settings .ws-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .workforce-settings .ws-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 配置面板的表单不再自带左右内边距：外层行已有 20px 内边距，
+   两处表单才能拿到同一容器宽度（列宽与左缘一致）。 */
+.workforce-settings .ws-row--config .ws-form {
+  padding: 0;
+}
+
+/* ================================================================ T3 · 任务 */
+
+.tasks {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.tasks__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.tasks__body {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+}
+
+.tasks__intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+/* ============================================================ T5 · 设置 */
+
+.settings {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: var(--space-7) var(--space-7) var(--space-8);
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: var(--space-6);
+  align-content: start;
+}
+
+.settings__nav {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+}
+
+.settings__nav button {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  font-size: var(--text-body);
+  color: var(--fg-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.settings__nav button:hover {
+  background: var(--bg-hover);
+  color: var(--fg-primary);
+}
+
+.settings__nav button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.settings__content {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.settings__card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.settings__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border-soft);
+}
+
+.settings__row:first-of-type {
+  border-top: 0;
+}
+
+.settings__row-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings__row-main strong {
+  display: block;
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.settings__row-main span {
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+}
+
+.settings__hint {
+  padding: 0 var(--space-5) var(--space-4);
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+}
+
+@media (max-width: 860px) {
+  .settings {
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--space-5) var(--space-4) var(--space-7);
+  }
+
+  .settings__nav {
+    display: flex;
+    flex-wrap: wrap;
+  }
+}

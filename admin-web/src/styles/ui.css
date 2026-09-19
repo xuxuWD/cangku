@@ -1,0 +1,920 @@
+/* UI v2 组件层：外壳（shell.css）与页面（pages.css）取用这里的类。
+   纪律：只用 tokens.css 的语义变量；卡片不用阴影（1px 边框）；同类 UI 出现 >2 次即在此定义。 */
+
+/* ---------------------------------------------------------------- 按钮 */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 34px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-control);
+  font-size: var(--text-body);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn--secondary {
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card);
+}
+
+.btn--secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.btn--ghost {
+  color: var(--fg-secondary);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg-primary);
+}
+
+.btn--danger {
+  border: 1px solid var(--border-soft);
+  color: var(--danger);
+  background: var(--bg-card);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.btn--sm {
+  height: 30px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-aux);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 运行干预（S4）：动作行 + 就地失败提示（页面头部与对话右栏共用同一组件） */
+.run-actions {
+  display: grid;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.run-actions > .notice {
+  margin-top: 0;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: var(--radius-control);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg-primary);
+}
+
+.icon-btn.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------ 分段与 chip */
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-subtle);
+}
+
+.segmented button {
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.segmented button:hover {
+  color: var(--fg-primary);
+}
+
+.segmented button.is-active {
+  background: var(--fg-primary);
+  color: var(--bg-app);
+  font-weight: 600;
+}
+
+:root[data-theme='dark'] .segmented button.is-active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.segmented button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pill);
+  background: var(--bg-card);
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), color var(--motion-fast), background var(--motion-fast);
+}
+
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.chip svg {
+  color: var(--fg-muted);
+}
+
+.chip:hover svg {
+  color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- 卡片 */
+
+.card {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  background: var(--bg-card);
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5) var(--space-3);
+}
+
+.card__head h2 {
+  font-size: var(--text-title);
+  font-weight: 600;
+}
+
+.card__head .card__more {
+  margin-left: auto;
+  font-size: var(--text-aux);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.card__body {
+  padding: 0 var(--space-5) var(--space-5);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.section-title h2 {
+  font-size: var(--text-title);
+  font-weight: 600;
+}
+
+.section-title span {
+  font-size: var(--text-aux);
+  color: var(--fg-muted);
+}
+
+/* -------------------------------------------------------------- 指标卡 */
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.metric {
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  background: var(--bg-card);
+  text-align: left;
+}
+
+button.metric {
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+
+button.metric:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.metric__label {
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+}
+
+.metric__value {
+  margin-top: 2px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric__hint {
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+.metric--warn .metric__value {
+  color: var(--warning);
+}
+
+/* ---------------------------------------------------------- 状态与徽标 */
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  flex: none;
+}
+
+.dot--ok { background: var(--success); }
+.dot--warn { background: var(--warning); }
+.dot--err { background: var(--danger); }
+.dot--run { background: var(--info); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-inset);
+  font-size: var(--text-micro);
+  font-weight: 500;
+  background: var(--bg-subtle);
+  color: var(--fg-secondary);
+}
+
+.badge--ok { background: var(--success-soft); color: var(--success); }
+.badge--warn { background: var(--warning-soft); color: var(--warning); }
+.badge--err { background: var(--danger-soft); color: var(--danger); }
+.badge--info { background: var(--info-soft); color: var(--info); }
+.badge--accent { background: var(--accent-soft); color: var(--accent); }
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: var(--radius-inset);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-micro);
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------ 键位标记 */
+
+.kbd {
+  display: inline-block;
+  min-width: 26px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--text-micro);
+  color: var(--fg-primary);
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- 表单 */
+
+.form-field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.form-field > label {
+  font-size: var(--text-aux);
+  font-weight: 600;
+  color: var(--fg-secondary);
+}
+
+.form-field input,
+.form-field select,
+.form-field textarea {
+  width: 100%;
+  padding: 8px var(--space-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--bg-card);
+  color: var(--fg-primary);
+  font-size: var(--text-body);
+  outline: none;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+
+.form-field textarea {
+  min-height: 80px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.form-field input:disabled,
+.form-field select:disabled,
+.form-field textarea:disabled {
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+}
+
+.form-field__hint {
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+.form-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.form-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* -------------------------------------------------------------- 列表行 */
+
+.rows {
+  display: grid;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-soft);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+
+.rows > .row:first-child {
+  border-top: 0;
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+/* 非按钮的行（内含独立操作按钮）不给「整行可点」的指针手势 */
+div.row {
+  cursor: default;
+}
+
+.row__main {
+  min-width: 0;
+  flex: 1;
+}
+
+.row__title {
+  display: block;
+  font-size: var(--text-body);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row__sub {
+  display: block;
+  font-size: var(--text-aux);
+  color: var(--fg-muted);
+}
+
+.row__side {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.row__time {
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+/* 行内如实说明（例如「该类型的处理入口尚未交付」），比副标题更弱一档 */
+.row__note {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+/* 分组小标题（同一卡片内分区：待我审批 / 未读通知） */
+.rows-label {
+  padding: var(--space-3) var(--space-5) 0;
+  font-size: var(--text-micro);
+  font-weight: 650;
+  color: var(--fg-muted);
+}
+
+/* 面包屑 / 返回行（详情页顶部：回到来源页面） */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  font-size: var(--text-aux);
+  color: var(--fg-muted);
+}
+
+/* ---------------------------------------------------------------- 空态 */
+
+.empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-5);
+  text-align: center;
+}
+
+.empty h3 {
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.empty p {
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+  max-width: 320px;
+}
+
+.empty__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.empty svg {
+  margin-bottom: var(--space-1);
+}
+
+/* ---------------------------------------------------------------- Toast */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: var(--space-7);
+  transform: translate(-50%, 12px);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: min(560px, calc(100vw - 40px));
+  padding: var(--space-3) var(--space-5);
+  border-radius: var(--radius-pill);
+  background: var(--fg-primary);
+  color: var(--bg-app);
+  font-size: var(--text-aux);
+  box-shadow: var(--shadow-pop);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-normal), transform var(--motion-normal);
+  z-index: 60;
+}
+
+.toast.is-open {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+.toast-action {
+  flex: none;
+  color: inherit;
+  font-size: var(--text-micro);
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* -------------------------------------------------------- 使用指南抽屉
+   打开态才挂载（关闭即卸载）⇒ 这里直接写打开态样式，用入场动画代替过渡类。 */
+
+.drawer-mask {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--fg-primary) 32%, transparent);
+  z-index: 50;
+  animation: mask-in var(--motion-normal) ease-out;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(400px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-modal);
+  z-index: 51;
+  animation: drawer-in var(--motion-normal) ease-out;
+}
+
+@keyframes mask-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes drawer-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+
+.drawer__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.drawer__head h2 {
+  font-size: var(--text-title);
+  font-weight: 600;
+}
+
+.drawer__head .icon-btn {
+  margin-left: auto;
+}
+
+.drawer__body {
+  overflow-y: auto;
+  padding: var(--space-5);
+  display: grid;
+  gap: var(--space-5);
+}
+
+.guide-step {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.guide-step__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-aux);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.guide-step p {
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+}
+
+.guide-step .guide-exit {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-inset);
+  background: var(--bg-subtle);
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+}
+
+/* ------------------------------------------------------------ 输入卡 */
+
+.composer-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.composer {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-pop);
+  transition: border-color var(--motion-fast);
+}
+
+.composer:focus-within {
+  border-color: var(--accent);
+}
+
+.composer__input {
+  display: block;
+  width: 100%;
+  min-height: 76px;
+  padding: var(--space-4) var(--space-5) 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font-size: var(--text-body);
+  line-height: 1.6;
+}
+
+.composer__input::placeholder {
+  color: var(--fg-muted);
+}
+
+.composer__input:disabled {
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+.composer__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+}
+
+.composer__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.composer__field:hover {
+  background: var(--bg-hover);
+  color: var(--fg-primary);
+}
+
+.composer__field strong {
+  font-weight: 600;
+  color: var(--fg-primary);
+}
+
+.composer__field select {
+  height: 28px;
+  max-width: 180px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-inset);
+  background: transparent;
+  color: var(--fg-primary);
+  font-size: var(--text-aux);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer__field select:disabled {
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+.composer__send {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+  transition: background var(--motion-fast), opacity var(--motion-fast);
+}
+
+.composer__send:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.composer__send:disabled {
+  /* 禁用态用「灰底 + 灰字」，与启用态（实心主色）一眼可分，不靠透明度区分 */
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+/* 指令 / 能力提示面板（S6：斜杠最小集与「本会话能力」共用） */
+.cmd-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + var(--space-2));
+  z-index: 30;
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-pop);
+}
+
+.cmd-panel h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-aux);
+  font-weight: 600;
+}
+
+.cmd-panel h3 .icon-btn {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+}
+
+.cmd-panel__row {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--text-aux);
+  color: var(--fg-secondary);
+}
+
+.cmd-panel__key {
+  flex: none;
+  min-width: 72px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  color: var(--fg-primary);
+}
+
+.cmd-panel code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--text-micro);
+}
+
+/* 面板里的可选项列表（模式选择）：行样式收窄，边距与面板对齐 */
+.cmd-panel .rows {
+  margin: 0 calc(var(--space-2) * -1);
+}
+
+.cmd-panel .row {
+  padding: var(--space-2);
+  border-top: 0;
+  border-radius: var(--radius-control);
+}
+
+.cmd-panel .row .row__title {
+  font-size: var(--text-aux);
+}
+
+.cmd-panel .row.is-active {
+  background: var(--accent-soft);
+}
+
+/* ------------------------------------------------------ 审批卡（三处共用） */
+
+.approval-card {
+  display: grid;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.approval-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: var(--text-aux);
+  font-weight: 600;
+}
+
+.approval-card--done .approval-card__head {
+  background: var(--bg-subtle);
+  color: var(--fg-secondary);
+  font-weight: 500;
+}
+
+.approval-card__head .badge {
+  margin-left: auto;
+}
+
+.approval-card__body {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+}
+
+.approval-card__line {
+  display: flex;
+  gap: var(--space-3);
+  margin: 0;
+  font-size: var(--text-aux);
+}
+
+.approval-card__line dt {
+  width: 76px;
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.approval-card__line dd {
+  margin: 0;
+  color: var(--fg-primary);
+  overflow-wrap: anywhere;
+}
+
+.approval-card__meta {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: 0 var(--space-4) var(--space-4);
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+.approval-card__actions {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-4) var(--space-4);
+}
+
+.approval-card__hint {
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-4);
+  font-size: var(--text-micro);
+  color: var(--fg-muted);
+}
+
+/* 审批卡堆叠（运行详情的「审批」区块 / 消息流里的审批块） */
+.approvals-stack {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}

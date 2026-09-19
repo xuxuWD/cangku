@@ -3,7 +3,7 @@ import type { InboxItem } from './types'
 
 type FetchMock = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-const readItem: InboxItem = { inbox_id: 'i-1', kind: 'task.approved', title: '任务已通过', target_type: 'task', target_id: 'task-1', created_at: '2026-09-11T02:00:00Z', read_at: '2026-09-11T03:00:00Z' }
+const readItem: InboxItem = { inbox_id: 'i-1', kind: 'task.approved', title: '任务已通过', target_type: 'task', target_id: 'task-1', target_conversation_id: null, target_approval_id: null, created_at: '2026-09-11T02:00:00Z', read_at: '2026-09-11T03:00:00Z' }
 
 describe('inbox api', () => {
   afterEach(() => vi.unstubAllGlobals())

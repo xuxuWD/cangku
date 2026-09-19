@@ -201,3 +201,29 @@ def test_expired_rows_are_not_returned_and_purge_only_clears_artifacts(env) -> N
     assert remaining == 1
     assert runs_after == runs_before  # **只清登记表**：运行记录不受影响
     assert len(store.list_for_run(TENANT, RUN)) == 1
+
+
+# ------------------------------------------------------------ B-2c：按租户列出（导出读取通道）
+
+
+def test_list_for_tenant_scopes_counts_and_hides_expired(env) -> None:
+    """导出读取通道：按租户过滤 + **过期行不入包**（口径与 `list_for_run` 一致）+ 计数与分页。"""
+    store, _connection = env
+    store.register(TENANT, RUN, [_change(0), _change(1)])
+    store.register(TENANT_OTHER, RUN_OTHER, [_change(2)])
+    # 造一行已过期：以「保留期为负」登记 ⇒ `expires_at` 落在过去（等价于已过保留期）。
+    store.register(TENANT, RUN, [_change(3)], now=datetime.now(UTC) - timedelta(days=40))
+
+    rows, total = store.list_for_tenant(TENANT, limit=10, offset=0)
+
+    assert total == 2  # 过期行不计入总数
+    assert {row.virtual_path for row in rows} == {"/workspace/0.txt", "/workspace/1.txt"}
+    assert all(row.tenant_id == TENANT for row in rows)
+
+    page, same_total = store.list_for_tenant(TENANT, limit=1, offset=1)
+
+    assert same_total == 2 and len(page) == 1
+
+    # 到期边界与 `list_for_run` 同口径：`expires_at` 到了就不返回（保留期内才可见）。
+    future = datetime.now(UTC) + timedelta(days=40)
+    assert store.list_for_tenant(TENANT, limit=10, offset=0, now=future)[0] == []

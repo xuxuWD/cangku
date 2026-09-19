@@ -7,6 +7,7 @@ from .contracts import (
     AgentRuntimeAdapter,
     ApprovalAlreadyDecided,
     ApprovalNotFound,
+    RunNotActionable,
     RunNotDecidable,
     RuntimeContext,
     RuntimeEvent,
@@ -82,19 +83,24 @@ class MockRuntime(AgentRuntimeAdapter):
 
     def pause_run(self, run_id: str, reason: str) -> None:
         state = self.store.get(run_id)
+        if state.status in _TERMINAL_STATUSES:
+            # 终态即终态：不允许用暂停把已结束的运行复活（与 RunNotDecidable 同一原则）。
+            raise RunNotActionable(run_id)
         state.status = "paused"
         self._emit(state, RuntimeEventType.RUN_PAUSED, {"reason": reason})
         self.store.save_checkpoint(state)
 
     def resume_run(self, run_id: str) -> None:
         state = self.store.get(run_id)
-        if state.status == "cancelled":
-            return
+        if state.status in _TERMINAL_STATUSES:
+            raise RunNotActionable(run_id)
         state.status = "running"
         self.store.save_checkpoint(state)
 
     def cancel_run(self, run_id: str, reason: str) -> None:
         state = self.store.get(run_id)
+        if state.status in _TERMINAL_STATUSES:
+            raise RunNotActionable(run_id)
         state.status = "cancelled"
         self._emit(state, RuntimeEventType.RUN_FAILED, {"reason": reason, "cancelled": True})
         self.store.save_checkpoint(state)

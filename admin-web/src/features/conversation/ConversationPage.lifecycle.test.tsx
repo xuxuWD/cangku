@@ -66,16 +66,18 @@ describe('ConversationPage（P2c-4 模式 / 删除）', () => {
 
     render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
     await screen.findByText('整理一下客户反馈')
-    const select = await screen.findByLabelText('会话模式')
-    expect((select as HTMLSelectElement).value).toBe('craft')
+    // UI v2：模式入口是输入栏的「模式：{label}」按钮，点开 .cmd-panel 后按模式行切换。
+    expect(screen.getByRole('button', { name: '模式：完整执行' })).toBeInTheDocument()
 
-    await userEvent.selectOptions(select, 'plan')
+    await userEvent.click(screen.getByRole('button', { name: '模式：完整执行' }))
+    await userEvent.click(await screen.findByRole('button', { name: /先计划后执行/ }))
 
     await waitFor(() => expect(calls.some((call) => call.url.includes('/conversations/conv-1/mode'))).toBe(true))
     const modeCall = calls.find((call) => call.url.includes('/conversations/conv-1/mode'))
     expect(modeCall?.method).toBe('POST')
     expect(JSON.parse(modeCall?.body ?? '{}')).toEqual({ mode: 'plan' })
-    await waitFor(() => expect((screen.getByLabelText('会话模式') as HTMLSelectElement).value).toBe('plan'))
+    // 界面按**服务端回流**更新（不回显请求值）；入口文案随之改变。
+    await waitFor(() => expect(screen.getByRole('button', { name: '模式：先计划后执行' })).toBeInTheDocument())
     expect(await screen.findByText(/已切换为「先计划后执行」/)).toBeInTheDocument()
   })
 
@@ -85,13 +87,13 @@ describe('ConversationPage（P2c-4 模式 / 删除）', () => {
 
     render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
     await screen.findByText('整理一下客户反馈')
-    const select = await screen.findByLabelText('会话模式')
 
-    await userEvent.selectOptions(select, 'ask')
+    await userEvent.click(screen.getByRole('button', { name: '模式：完整执行' }))
+    await userEvent.click(await screen.findByRole('button', { name: /只问答/ }))
 
     expect(await screen.findByText('会话已归档，不能再修改模式')).toBeInTheDocument()
-    // 未做乐观更新：选择框仍显示服务端权威态。
-    expect((screen.getByLabelText('会话模式') as HTMLSelectElement).value).toBe('craft')
+    // 未做乐观更新：入口仍显示服务端权威态。
+    expect(screen.getByRole('button', { name: '模式：完整执行' })).toBeInTheDocument()
   })
 
   it('删除会话：二次确认后才真删，成功后清空选择、刷新列表并显示删除计数', async () => {
@@ -104,12 +106,12 @@ describe('ConversationPage（P2c-4 模式 / 删除）', () => {
     render(<ConversationPage conversationId="conv-1" onSelectConversation={onSelect} />)
     await screen.findByText('整理一下客户反馈')
 
-    await userEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    await userEvent.click(screen.getByRole('button', { name: '删除' }))
 
     expect(confirmMock).toHaveBeenCalled()
     await waitFor(() => expect(calls.some((call) => call.url.includes('/conversations/conv-1/delete'))).toBe(true))
     expect(onSelect).toHaveBeenCalledWith(undefined)
-    expect(await screen.findByText(/已删除（消息 2 \/ 帧 1 \/ 流状态 1 \/ 幂等 1）/)).toBeInTheDocument()
+    expect(await screen.findByText(/已删除：消息 2 条、执行过程记录 1 条/)).toBeInTheDocument()
   })
 
   it('删除会话：取消二次确认 ⇒ 不发请求（不误删）', async () => {
@@ -120,7 +122,7 @@ describe('ConversationPage（P2c-4 模式 / 删除）', () => {
     render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
     await screen.findByText('整理一下客户反馈')
 
-    await userEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    await userEvent.click(screen.getByRole('button', { name: '删除' }))
 
     expect(calls.some((call) => call.url.includes('/delete'))).toBe(false)
   })
@@ -172,7 +174,7 @@ describe('导出按钮（P2c-4）', () => {
 
     render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
     await screen.findByText('整理一下客户反馈')
-    await userEvent.click(screen.getByRole('button', { name: '导出我的数据' }))
+    await userEvent.click(screen.getByRole('button', { name: '导出' }))
 
     await waitFor(() => expect(createObjectURL).toHaveBeenCalled())
     expect(calls.some((call) => call.url.includes('/conversations/exports/mine'))).toBe(true)
@@ -180,19 +182,34 @@ describe('导出按钮（P2c-4）', () => {
     expect(await screen.findByText(/已导出 1 个会话 \/ 0 条消息/)).toBeInTheDocument()
     clickSpy.mockRestore()
   })
-})
 
-describe('会话列表（P2c-4）：模式可见', () => {
-  it('列表条目展示会话模式标签', async () => {
+  it('导出失败：页头如实告知并给重试（不写进无人渲染的字段）', async () => {
     const { fetchMock } = makeFetch()
-    vi.stubGlobal('fetch', fetchMock)
+    // 只让导出端点失败，其余请求照常 —— 复现"导出出错"这一条路径。
+    const failExport = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/conversations/exports/mine')) return json({ detail: '导出服务暂时不可用' }, 500)
+      return fetchMock(input, init)
+    })
+    vi.stubGlobal('fetch', failExport)
 
     render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+    await userEvent.click(screen.getByRole('button', { name: '导出' }))
 
-    // 列表与详情各出现一次「完整执行」（默认 craft）。
-    await waitFor(() => expect(screen.getAllByText('完整执行').length).toBeGreaterThan(0))
+    expect(await screen.findByText('导出没有完成')).toBeInTheDocument()
+    const retry = screen.getByRole('button', { name: '重新尝试' })
+    const before = failExport.mock.calls.filter(([input]) => String(input).includes('/exports/mine')).length
+    await userEvent.click(retry)
+    await waitFor(() =>
+      expect(
+        failExport.mock.calls.filter(([input]) => String(input).includes('/exports/mine')).length,
+      ).toBe(before + 1),
+    )
   })
 })
+
+// 「列表条目展示会话模式标签」已随会话列表一起迁到左栏（真源 §2.17.1），
+// 现由 `src/app/SidebarConversations.test.tsx` 覆盖。
 
 // 兜底：确认 fireEvent 仍可用于文本输入（与其它页测试保持一致的选择器口径）。
 it('（口径哨兵）列表与详情共用同一会话视图', async () => {

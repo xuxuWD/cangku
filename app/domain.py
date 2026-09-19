@@ -128,6 +128,19 @@ class TaskStore:
                 counts[task.employee_key] = counts.get(task.employee_key, 0) + 1
         return counts
 
+    def list_for_tenant(self, tenant_id: str, *, limit: int, offset: int) -> tuple[list[Task], int]:
+        """按租户列出任务元数据（B-2b 导出读取通道）。
+
+        任务没有业务时间字段 ⇒ 排序按 `id`（与 PG 实现的 `ORDER BY id` 同口径，顺序确定）；
+        返回 `(本页, 过滤后总数)`，越界分页返回空页。**只读**：不改状态、不触发通知。
+        """
+        with self._lock:
+            rows = sorted(
+                (task for task in self._tasks.values() if task.tenant_id == tenant_id),
+                key=lambda task: task.id,
+            )
+        return rows[offset : offset + limit], len(rows)
+
     def set_pending_approval(self, context: UserContext, task_id: str) -> Task:
         """把承载任务由 `queued` 置为 `pending_approval`（段二规格 §3.7 Y2）。
 

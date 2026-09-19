@@ -57,6 +57,16 @@ def read_plan() -> AgentPlan:
     return AgentPlan.from_steps([{"step_id": "s1", "kind": "read", "tool": "knowledge.search"}])
 
 
+def pending_plan() -> AgentPlan:
+    """待审批步骤 ⇒ 运行停在「运行中」。
+
+    终态不可再干预（2026-09-18 收紧）⇒ 要验证 pause/cancel 一类动作，必须让运行**非终态**。
+    """
+    return AgentPlan.from_steps(
+        [{"step_id": "s1", "kind": "write", "tool": "fs.write", "requires_approval": True}]
+    )
+
+
 @pytest.fixture()
 def connection():
     psycopg = pytest.importorskip("psycopg")
@@ -199,7 +209,7 @@ def test_mock_runtime_keeps_sequences_monotonic_across_store_reloads(connection)
     store = PostgresRuntimeStateStore(connection)
     runtime = MockRuntime(store)
 
-    run_id = runtime.start_run(context(), read_plan())
+    run_id = runtime.start_run(context(), pending_plan())
     started = runtime.stream_events(run_id)
     runtime.pause_run(run_id, "等待确认")
     runtime.cancel_run(run_id, "测试取消")

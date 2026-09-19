@@ -1,0 +1,159 @@
+{
+  "tenant_id": "demo-tenant",
+  "resources": {
+    "users": [
+      {
+        "account_id": "acct-234f66285f37",
+        "phone_masked": "137****0001",
+        "position": "内容运营",
+        "full_name": "走查账号",
+        "email": null,
+        "role": "employee",
+        "status": "approved",
+        "requested_at": "2026-09-18T18:56:12.016664+00:00",
+        "reviewed_at": "2026-09-18T18:56:12.016672+00:00",
+        "reviewed_by": "admin"
+      }
+    ],
+    "roles": [
+      {
+        "role_key": "walk-role",
+        "name": "走查岗位",
+        "description": "B-2 走查种子",
+        "status": "active",
+        "created_by": "admin",
+        "created_at": "2026-09-18T18:56:12.016329+00:00",
+        "updated_at": "2026-09-18T18:56:12.016331+00:00"
+      }
+    ],
+    "agents": [
+      {
+        "agent_key": "walk-agent",
+        "role_key": "walk-role",
+        "name": "走查数字员工",
+        "description": "",
+        "status": "active",
+        "created_by": "admin",
+        "created_at": "2026-09-18T18:56:12.016346+00:00",
+        "updated_at": "2026-09-18T18:56:12.016346+00:00"
+      }
+    ],
+    "tasks": [
+      {
+        "task_id": "walk-task",
+        "project_id": "walk-project",
+        "created_by": "admin",
+        "employee_key": "content-writer",
+        "title": "走查任务",
+        "risk_level": "low",
+        "budget": 5,
+        "status": "queued"
+      }
+    ],
+    "runs": [
+      {
+        "run_id": "walk-run",
+        "task_id": "walk-task",
+        "proposal_id": null,
+        "runtime_key": "mock",
+        "status": "completed",
+        "step_count": 0,
+        "completed_step_count": 0,
+        "tool_calls": 0,
+        "successful_tools": 0,
+        "knowledge_hits": 0,
+        "latency_ms": 0,
+        "started_at": "2026-09-19T08:00:00+00:00",
+        "finished_at": null,
+        "finish_reason": null
+      }
+    ],
+    "steps": [
+      {
+        "run_id": "walk-run",
+        "step_id": "s1",
+        "kind": "read",
+        "tool": "knowledge.search",
+        "requires_approval": false,
+        "completed": false
+      },
+      {
+        "run_id": "walk-run",
+        "step_id": "s2",
+        "kind": "write",
+        "tool": "file.write",
+        "requires_approval": true,
+        "completed": false
+      }
+    ],
+    "artifacts": [
+      {
+        "run_id": "walk-run",
+        "artifact_id": "895314be1fde498b8cbcb03ed0e0d10d",
+        "virtual_path": "/workspace/walk.txt",
+        "change_kind": "created",
+        "bytes": 16,
+        "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created_at": "2026-09-18T18:56:12.016710+00:00",
+        "expires_at": "2026-10-18T18:56:12.016710+00:00"
+      }
+    ],
+    "knowledge_documents": [
+      {
+        "document_id": "walk-doc",
+        "title": "走查文档",
+        "owner_id": "admin",
+        "status": "draft",
+        "version": "v1",
+        "source_key": "walk",
+        "registered_by": "admin",
+        "last_reviewed_at": null,
+        "review_due_at": null,
+        "created_at": "2026-09-18T18:56:12.016359+00:00",
+        "updated_at": "2026-09-18T18:56:12.016359+00:00"
+      }
+    ],
+    "knowledge_versions": [],
+    "knowledge_references": [],
+    "memories": [],
+    "growth_proposals": [],
+    "approvals": [],
+    "usage": [
+      {
+        "id": "usage-b3cb44bd0398",
+        "units": 7,
+        "cost_cents": 70,
+        "reversal_of": null,
+        "occurred_at": "2026-09-18T18:56:12.016687+00:00"
+      }
+    ],
+    "audits": [
+      {
+        "record_id": "audit-a64f53488d29",
+        "action": "account.login.succeeded",
+        "actor_id": "admin",
+        "target_type": "account",
+        "target_id": "walk-account",
+        "phone_masked": null,
+        "detail": {},
+        "occurred_at": "2026-09-18T18:56:12.016403+00:00"
+      }
+    ]
+  },
+  "unimplemented_categories": [
+    "approvals",
+    "growth_proposals",
+    "knowledge_references",
+    "knowledge_versions"
+  ],
+  "unavailable_categories": [],
+  "truncated_categories": {},
+  "redaction": [
+    "密码",
+    "Cookie",
+    "验证码",
+    "令牌",
+    "原始 API 密钥",
+    "客户原文"
+  ]
+}

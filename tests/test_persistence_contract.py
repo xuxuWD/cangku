@@ -136,6 +136,51 @@ def test_postgres_approval_missing_task_is_not_found() -> None:
         repository.approve(UserContext("t-1", "ceo-1", "ceo"), "missing")
 
 
+# ---------------------------------------------------------------------------
+# B-2b（2026-09-19）：任务按租户列出（导出包 `tasks` 类别的读取通道）
+# 口径：按 `tenant_id` 过滤 + `ORDER BY id`（任务无业务时间字段）+ 计数与分页。
+# ---------------------------------------------------------------------------
+
+
+def test_in_memory_task_store_list_for_tenant_scopes_and_counts() -> None:
+    store = TaskStore()
+    store._tasks["task-a"] = task_with("task-a", tenant_id="t-1")
+    store._tasks["task-b"] = task_with("task-b", tenant_id="t-1")
+    store._tasks["task-other"] = task_with("task-other", tenant_id="t-2")
+
+    rows, total = store.list_for_tenant("t-1", limit=10, offset=0)
+
+    assert total == 2
+    assert [item.id for item in rows] == ["task-a", "task-b"]
+    assert all(item.tenant_id == "t-1" for item in rows)
+
+    page, same_total = store.list_for_tenant("t-1", limit=1, offset=1)
+
+    assert same_total == 2 and [item.id for item in page] == ["task-b"]
+
+
+def test_postgres_task_list_for_tenant_scopes_counts_and_pages() -> None:
+    row = ("task-1", "t-1", "p-1", "u-1", "content-operator", "日报", "low", 1, "id-1", "fingerprint", "queued")
+    connection = RecordingConnection([[row], (3,)])
+    repository = PostgresTaskRepository(connection)
+
+    rows, total = repository.list_for_tenant("t-1", limit=10, offset=5)
+
+    assert total == 3 and [item.id for item in rows] == ["task-1"]
+    statements = connection.cursor_instance.statements
+    assert "WHERE tenant_id = %s" in statements[0][0]
+    assert "ORDER BY id" in statements[0][0]
+    assert statements[0][1] == ("t-1", 10, 5)
+    assert "COUNT(*)" in statements[1][0]
+    assert statements[1][1] == ("t-1",)
+
+
+def task_with(task_id: str, *, tenant_id: str) -> Task:
+    from dataclasses import replace
+
+    return replace(task(), id=task_id, tenant_id=tenant_id)
+
+
 def test_migration_runner_applies_new_sql_once() -> None:
     migration_sql = "CREATE TABLE example (id TEXT);"
 

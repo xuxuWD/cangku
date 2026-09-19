@@ -9,7 +9,7 @@ import pytest
 
 from app.domain import RiskLevel, Task, TaskStatus, TaskStore, UserContext
 from app.runtime.authorization import ExecutionNotAuthorized
-from app.runtime.contracts import AgentPlan, RuntimeContext
+from app.runtime.contracts import AgentPlan, RunNotActionable, RuntimeContext
 from app.runtime.mock import MockRuntime
 from app.runtime.records import InMemoryRunRecordStore
 from app.runtime.run_metrics import RunMetricsService
@@ -18,6 +18,8 @@ from app.runtime.state import RuntimeStateStore
 
 OWNER = UserContext("t-1", "u-1", "employee")
 READ_STEPS = [{"step_id": "s1", "kind": "read", "tool": "knowledge.search"}]
+# 待审批步骤：运行停在「运行中」（终态不可再干预，故干预类用例必须用非终态运行）。
+PENDING_STEPS = [{"step_id": "s1", "kind": "write", "tool": "fs.write", "requires_approval": True}]
 
 
 def runtime_context() -> RuntimeContext:
@@ -92,7 +94,8 @@ def test_start_passes_proposal_id_through() -> None:
 
 def test_pause_and_resume_rewrite_the_same_record() -> None:
     runtime, records, _store, task = build()
-    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", READ_STEPS, "product_manager")
+    # 终态不可再干预 ⇒ 用「停在运行中」的运行（待审批步骤）验证暂停 / 恢复。
+    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", PENDING_STEPS, "product_manager")
     started_at = records.get("t-1", run_id).started_at
 
     runtime.pause(OWNER, run_id, "等待确认")
@@ -110,7 +113,7 @@ def test_pause_and_resume_rewrite_the_same_record() -> None:
 
 def test_cancel_records_terminal_state() -> None:
     runtime, records, _store, task = build()
-    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", READ_STEPS, "product_manager")
+    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", PENDING_STEPS, "product_manager")
 
     runtime.cancel(OWNER, run_id, "测试取消")
 
@@ -118,6 +121,21 @@ def test_cancel_records_terminal_state() -> None:
     assert record.status == "cancelled"
     assert record.finish_reason == "cancelled_by_user"
     assert record.finished_at is not None
+
+
+def test_terminal_run_cannot_be_intervened_again() -> None:
+    """终态即终态：已完成的运行上暂停 / 恢复 / 取消一律拒绝（RunNotActionable）。"""
+    runtime, records, _store, task = build()
+    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", READ_STEPS, "product_manager")
+
+    with pytest.raises(RunNotActionable):
+        runtime.pause(OWNER, run_id, "再暂停")
+    with pytest.raises(RunNotActionable):
+        runtime.resume(OWNER, run_id)
+    with pytest.raises(RunNotActionable):
+        runtime.cancel(OWNER, run_id, "再取消")
+
+    assert records.get("t-1", run_id).status == "completed"
 
 
 def test_control_actions_are_denied_for_other_users() -> None:
@@ -131,7 +149,7 @@ def test_control_actions_are_denied_for_other_users() -> None:
 def test_runtime_without_metrics_still_works() -> None:
     runtime, records, _store, task = build(with_metrics=False)
 
-    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", READ_STEPS, "product_manager")
+    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", PENDING_STEPS, "product_manager")
     runtime.pause(OWNER, run_id, "等待确认")
     # 段二 §3.2 收窄：未装配运行记录仓储时，启动执行闸门必须 fail-closed（不再静默放行）。
     with pytest.raises(ExecutionNotAuthorized):

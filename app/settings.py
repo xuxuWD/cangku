@@ -748,6 +748,11 @@ CORS_HEADERS = [
     "X-User-Role",
     "Idempotency-Key",
 ]
+# **响应头**白名单（不是请求头白名单）：跨源时 JS 只允许读到被 expose 的响应头。
+# `X-Stream-Run-Id` 是 SSE 读端「该会话最新运行」的权威来源（契约「实时流」）——
+# 不 expose 的话 `response.headers.get(...)` 恒为 `null`，前端会据此误判「服务端没有 run」
+# 并提前关流，导致历史会话解析不到运行与审批（通知深链落不到卡上）。
+CORS_EXPOSE_HEADERS = ["X-Stream-Run-Id"]
 DEVELOPMENT_CORS_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1):\d+"
 
 
@@ -792,6 +797,7 @@ def resolve_cors_options(settings: Settings) -> dict[str, object] | None:
             "allow_credentials": False,
             "allow_methods": CORS_METHODS,
             "allow_headers": CORS_HEADERS,
+            "expose_headers": CORS_EXPOSE_HEADERS,
         }
 
     origins = parse_cors_origins(settings.cors_allowed_origins)
@@ -803,6 +809,7 @@ def resolve_cors_options(settings: Settings) -> dict[str, object] | None:
         "allow_credentials": settings.cors_allow_credentials,
         "allow_methods": CORS_METHODS,
         "allow_headers": CORS_HEADERS,
+        "expose_headers": CORS_EXPOSE_HEADERS,
     }
 
 

@@ -8,6 +8,7 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import NoReturn
+from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
@@ -18,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .audit.logging import configure_audit_logging
 from .audit.models import AuditAction
 from .audit.redaction import mask_phone
-from .bootstrap import allowed_tool_names, build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_member_store, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store, registered_model_keys
+from .bootstrap import allowed_tool_names, build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_member_store, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_acceptance_decision_store, build_run_promotion_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store, registered_model_keys
 from .events import EventEnvelope
 from .inbox import InboxItem, InboxNotFound
 # P5a CRM（真源 specs/2026-09-17-crm-p5a-design.md §2.12）：路由层只做校验 / 视图 / 异常映射。
@@ -57,7 +58,7 @@ from .accounts.sso_store import SsoStateNotFound
 from .auth import FULL_SCOPE, SSO_PENDING_SCOPE, TOTP_ENROLLMENT_SCOPE, create_access_token, verify_access_token
 from .settings import get_settings, resolve_cors_options, validate_runtime_settings
 from .runtime.authorization import ExecutionNotAuthorized
-from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotDecidable, RuntimeEventType
+from .runtime.contracts import ApprovalAlreadyDecided, ApprovalNotFound, RunNotActionable, RunNotDecidable, RuntimeEventType
 from .tool_execution.errors import ToolExecutionError
 from .tool_execution.catalog import build_tool_spec_catalog
 from .tool_execution.active_execution import ActiveExecutionRegistry
@@ -66,6 +67,19 @@ from .tool_execution.token_binding import BindingDenied, TokenBindingStore
 from .tool_execution.cleanup import build_body_cleanup_task, build_orphan_cleanup_task
 from .runtime.policy import ApprovalRequired, PolicyDenied
 from .runtime.acceptance import evaluate_acceptance
+from .runtime.acceptance_decisions import (
+    DECISION_CONFIRMED,
+    MAX_REASON_LENGTH as MAX_ACCEPTANCE_REASON_LENGTH,
+    AcceptanceDecision,
+    AcceptanceDecisionError,
+    validate_decision,
+)
+from .runtime.promotions import (
+    MAX_PROMOTION_TITLE_LENGTH,
+    RunPromotion,
+    RunPromotionError,
+    validate_promotion_title,
+)
 from .runtime.records import FinishReason, RunRecordNotFound
 from .runtime.service import RunAccessDenied, RunApprovalDenied
 from .content.models import ContentBriefInput, ContentStatus, SourceInput
@@ -77,11 +91,13 @@ from .content.publisher import PublicationFailed, PublicationNotConfigured
 from .commercial.lifecycle import (
     CommercialLifecycleService,
     DeletionNotPending,
+    DeletionPreconditionMissing,
     ExportPackageExpired,
     LifecycleJob,
 )
 from .commercial.repository import ResourceNotFound
 from .commercial.tenant import Actor, CommercialPolicyError
+from .commercial.export_readers import build_export_readers
 from .agent_services import ModelNotAllowed
 from .approvals import ApprovalsService
 from .planner.models import (
@@ -209,6 +225,12 @@ workforce_directory_service = WorkforceDirectoryService(
 # 读路径「本人 ∪ 成员」在仓储层生效，服务层的成员增删与参与者列表也读同一份数据。
 conversation_member_store = build_conversation_member_store(settings)
 conversation_store = build_conversation_store(settings, members=conversation_member_store)
+# P2c-4 §2.11 / P2c-6：账号服务与仓储**提前装配**（B-2b 起还因为导出读取器的 `users` 类别需要
+# 账号仓储实例，装配顺序为：商业化导出读取器 → 商业化组件）。会话协作亦复用**同一实例**
+# 按账号 id 校验成员合法性并解析 display_name（不建第二个）。
+account_service, account_repository = build_account_service(
+    settings, audit=audit_service, login_limiter=login_rate_limiter
+)
 # P3 记忆层（规格 docs/superpowers/specs/2026-09-15-memory-layer-p3-design.md §2.5/§2.8）：
 # 嵌入式服务开发环境缺 default 时由装配层回退到 FakeEmbeddingAdapter（仅验证链路）。
 memory_service = build_memory_service(settings, audit=audit_service)
@@ -228,6 +250,9 @@ agent_config_service = build_agent_config_service(
 )
 run_metrics_service = build_run_metrics(settings)
 runtime_state_store = build_runtime_state_store(settings)
+# P2c-3 产物登记（运行级元数据）：**装配提前**到商业化组件之前（B-2c 起导出读取器的 `artifacts`
+# 类别需要该实例）；与只读端点、`tool_execution` 共用**同一实例**（登记了就能查到；保留期在此注入）。
+run_artifact_store = build_run_artifact_store(settings)
 # 027 待批动作仓储：RuntimeService 与 tool_execution 复用**同一实例**（§4.1.6-2 不得建两个实例）；
 # backend=mock（默认）时为 None——不存在真实执行，RuntimeService 保持既有行为（§4.1.7-5）。
 tool_action_store = build_tool_action_store(settings)
@@ -235,8 +260,29 @@ tool_action_store = build_tool_action_store(settings)
 # 记账（`RuntimeService._record_usage_on_terminal`）与 `GET /api/v1/commercial/usage`
 # **必须读同一账本实例**——否则接口读到的恒为 0。
 # N2：把记忆层仓储注入生命周期服务（同一实例）→ 导出载荷含 memories、租户删除物理清场。
+# B-2（2026-09-19）：再注入**类别读取器**（岗位 / 数字员工 / 知识文档 / 审计 / 运行）
+# —— 具体接了哪几类见 `app/commercial/export_readers.py`；缺的类别仍如实留在
+# `unimplemented_categories`。⚠️ 导出作业由 **worker** 跑（见 `app/worker.py` 的同名装配），
+# 本进程的注入面用于开发态与 API 直接触发的路径，两处必须同一个 `build_export_readers`。
+commercial_export_readers = build_export_readers(
+    memory_store=memory_service.store,
+    workforce=workforce_directory_store,
+    knowledge=knowledge_governance_service.store,
+    audits=audit_service,
+    runs=run_metrics_service.store,
+    accounts=account_repository,
+    tasks=store,
+    artifacts=run_artifact_store,
+    steps=runtime_state_store,
+)
 commercial_repository, commercial_usage, commercial_lifecycle = build_commercial_components(
-    settings, audit=audit_service, memory_store=memory_service.store
+    settings,
+    audit=audit_service,
+    memory_store=memory_service.store,
+    # B-3 清场扩围：删除租户时同时按租户物理清场技能层与知识治理层。
+    skills_store=skills_service.store,
+    knowledge_store=knowledge_governance_service.store,
+    export_readers=commercial_export_readers,
 )
 # 段二-4 对话入口路由（§3.7 Y2 / §3.2 第四条）：幂等行落 027 的 `workbench_execution_idempotency`。
 # P2c-6：提前装配——运行级读路径的成员可见性（`_member_can_read_run`）需要「运行 → 会话」反查，
@@ -281,8 +327,11 @@ runtime_service = build_runtime_service(
 exec_authority_store = TokenBindingStore()
 exec_authority_registry = ActiveExecutionRegistry()
 # 段二（dsh 接入段）：backend=mock 时为 None；backend=dsh 且缺件时记 error 但不退进程（§4.1.6-2/-3）。
-# P2c-3 产物登记（运行级元数据）与只读端点共用**同一实例**（登记了就能查到；保留期在此注入）。
-run_artifact_store = build_run_artifact_store(settings)
+# （`run_artifact_store` 已装配提前到商业化组件之前，见上。）
+# S2 人工验收决议（append-only；写端与读端共用同一实例）
+run_acceptance_decision_store = build_run_acceptance_decision_store(settings)
+# S2 沉淀入口（存成任务）：**一个运行只能沉淀一次**（主键 (tenant_id, run_id)），与验收决议一一配套
+run_promotion_store = build_run_promotion_store(settings)
 tool_execution_service = build_tool_execution(
     settings,
     run_metrics=run_metrics_service,
@@ -313,11 +362,7 @@ conversation_stream_writer = build_conversation_stream_writer(
     settings, store=conversation_stream_store, audit=audit_service
 )
 # P2c-4 §2.11：会话服务需要流 / 幂等仓储（物理删除的按序跨仓储清理）⇒ 在两者装配之后构造。
-# P2c-6：账号仓储提前装配（会话协作要按账号 id 校验成员合法性并解析 display_name）——
-# 与 `ApprovalsService` 复用**同一实例**，不建第二个。
-account_service, account_repository = build_account_service(
-    settings, audit=audit_service, login_limiter=login_rate_limiter
-)
+# `account_service` / `account_repository` 已在会话协作装配处提前构建（P2c-6 / B-2b）——全长共用同一实例。
 conversation_service = build_conversation_service(
     settings,
     store=conversation_store,
@@ -583,6 +628,9 @@ class LifecycleJobView(BaseModel):
     requested_at: datetime
     execute_after: datetime | None = None
     final_exported: bool = False
+    # B-3：删除确认人与确认时刻（未确认时为 None；`None` 即「还没人确认」，客户端据此提示下一步）
+    confirmed_by: str | None = None
+    confirmed_at: datetime | None = None
 
 
 class ExportPackageView(BaseModel):
@@ -594,6 +642,23 @@ class ExportPackageView(BaseModel):
     created_at: datetime
     expires_at: datetime
     payload: dict[str, object]
+
+
+class ExportPackageSummaryView(BaseModel):
+    """导出包**元数据**（列表面条目，不含载荷）：契约「GET /api/v1/commercial/exports」。"""
+
+    package_id: str
+    tenant_id: str
+    job_id: str | None = None
+    created_at: datetime
+    expires_at: datetime
+
+
+class ExportPackageListView(BaseModel):
+    items: list[ExportPackageSummaryView]
+    total: int
+    limit: int
+    offset: int
 
 
 TOTP_ENROLLMENT_ALLOWED: frozenset[tuple[str, str]] = frozenset(
@@ -668,6 +733,8 @@ def _lifecycle_view(job: LifecycleJob) -> LifecycleJobView:
         requested_at=job.requested_at,
         execute_after=job.execute_after,
         final_exported=job.final_exported,
+        confirmed_by=job.confirmed_by,
+        confirmed_at=job.confirmed_at,
     )
 
 
@@ -1016,6 +1083,44 @@ def request_commercial_export(context: UserContext = Depends(current_user)) -> L
     return _lifecycle_view(job)
 
 
+@app.get("/api/v1/commercial/exports", response_model=ExportPackageListView)
+def list_commercial_export_packages(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> ExportPackageListView:
+    """列出本租户导出包**元数据**（契约「GET /api/v1/commercial/exports」）。
+
+    为什么需要它（2026-09-19 B-1 补链）：取回端点要 `package_id`，而申请响应与作业视图都
+    不携带 ⇒ 没有本端点客户端**无法发现包号**，取回能力实际不可用。
+    admin-only + 租户由登录上下文解析（客户端不能指定租户）；列表**不返回载荷**；
+    列表**如实包含已过期但未被 worker 清理的包**（客户端按 `expires_at` 标注）。
+    """
+    try:
+        items, total = commercial_lifecycle.list_export_packages(
+            Actor(context.user_id, context.role), context.tenant_id, limit=limit, offset=offset
+        )
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="租户不存在") from exc
+    return ExportPackageListView(
+        items=[
+            ExportPackageSummaryView(
+                package_id=item.id,
+                tenant_id=item.tenant_id,
+                job_id=item.job_id,
+                created_at=item.created_at,
+                expires_at=item.expires_at,
+            )
+            for item in items
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @app.get("/api/v1/commercial/exports/{package_id}", response_model=ExportPackageView)
 def get_commercial_export_package(
     package_id: str, context: UserContext = Depends(current_user)
@@ -1055,6 +1160,35 @@ def request_commercial_deletion(context: UserContext = Depends(current_user)) ->
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail="租户不存在") from exc
+    return _lifecycle_view(job)
+
+
+@app.post(
+    "/api/v1/commercial/deletion-requests/{job_id}/confirm", response_model=LifecycleJobView
+)
+def confirm_commercial_deletion(
+    job_id: str, context: UserContext = Depends(current_user)
+) -> LifecycleJobView:
+    """记录删除确认人（B-3，真源「删除前必须生成最终导出包并记录确认人」）。
+
+    admin-only；仅本租户处于冷静期内、且**已完成最终导出**的删除作业可确认；
+    **不改作业状态**（确认只记录「谁确认了」，执行仍由冷静期与 worker 排程决定）。
+    未完成最终导出 ⇒ `409`（业务前置未满足，不是参数错误）；跨租户 / 不存在 ⇒ `404`。
+    """
+    try:
+        _ensure_commercial_admin(context)
+        job = commercial_lifecycle.get_job(job_id)
+        if job.tenant_id != context.tenant_id:
+            raise ResourceNotFound(job_id)
+        job = commercial_lifecycle.confirm_deletion(Actor(context.user_id, context.role), context.tenant_id)
+    except DeletionPreconditionMissing as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DeletionNotPending as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CommercialPolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="生命周期任务不存在") from exc
     return _lifecycle_view(job)
 
 
@@ -3635,36 +3769,74 @@ def create_task(
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    # 审批判定收敛到 workforce 服务一处（段一规格 §2.2）：有纳管员工按其治理配置，
-    # 否则回落「风险不低于 high 即审批」的既有口径。
-    requires_approval = workforce_directory_service.task_requires_approval(
-        context, agent_key=payload.employee_key, risk_level=payload.risk_level
-    )
-
-    task = Task(
-        tenant_id=context.tenant_id,
-        project_id=payload.project_id,
-        created_by=context.user_id,
-        employee_key=payload.employee_key,
-        title=payload.title,
-        risk_level=payload.risk_level,
-        budget=payload.budget,
-        idempotency_key=payload.idempotency_key,
-        request_fingerprint=hashlib.sha256(
-            json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
-        status=TaskStatus.PENDING_APPROVAL if requires_approval else TaskStatus.QUEUED,
-    )
-    task.audits.append(AuditEvent(action="task.created", actor_id=context.user_id, actor_role=context.role))
     try:
-        stored, created = store.create(context, task)
+        stored, created = _store_new_task(
+            context,
+            title=payload.title,
+            employee_key=payload.employee_key,
+            risk_level=payload.risk_level,
+            budget=payload.budget,
+            project_id=payload.project_id,
+            idempotency_key=payload.idempotency_key,
+            fingerprint_source=payload.model_dump(mode="json"),
+        )
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not created:
         response.status_code = status.HTTP_200_OK
-        return to_view(stored)
-    publish_task_event(stored, "task.created", context)
     return to_view(stored)
+
+
+def _store_new_task(
+    context: UserContext,
+    *,
+    title: str,
+    employee_key: str,
+    risk_level: RiskLevel,
+    budget: int,
+    project_id: str | None,
+    idempotency_key: str,
+    fingerprint_source: dict | None = None,
+    task_id: str | None = None,
+) -> tuple[Task, bool]:
+    """**唯一**的任务落库路径（`POST /tasks` 与 S2「存成任务」共用）。
+
+    纪律：审批判定与幂等语义只有这一处（不另写一套），因此「存成任务」走的治理闸门、
+    指纹比对、事件发布与手工创建**逐条同源**。
+    """
+    # 审批判定收敛到 workforce 服务一处（段一规格 §2.2）：有纳管员工按其治理配置，
+    # 否则回落「风险不低于 high 即审批」的既有口径。
+    requires_approval = workforce_directory_service.task_requires_approval(
+        context, agent_key=employee_key, risk_level=risk_level
+    )
+    source = fingerprint_source if fingerprint_source is not None else {
+        "title": title,
+        "employee_key": employee_key,
+        "risk_level": str(risk_level),
+        "budget": budget,
+        "project_id": project_id,
+    }
+    identity = {"id": task_id} if task_id else {}
+    task = Task(
+        tenant_id=context.tenant_id,
+        project_id=project_id,
+        created_by=context.user_id,
+        employee_key=employee_key,
+        title=title,
+        risk_level=risk_level,
+        budget=budget,
+        idempotency_key=idempotency_key,
+        request_fingerprint=hashlib.sha256(
+            json.dumps(source, sort_keys=True, separators=(",", ":"), default=str).encode()
+        ).hexdigest(),
+        status=TaskStatus.PENDING_APPROVAL if requires_approval else TaskStatus.QUEUED,
+        **identity,
+    )
+    task.audits.append(AuditEvent(action="task.created", actor_id=context.user_id, actor_role=context.role))
+    stored, created = store.create(context, task)
+    if created:
+        publish_task_event(stored, "task.created", context)
+    return stored, created
 
 
 @app.get("/api/v1/tasks/{task_id}", response_model=TaskView)
@@ -3698,11 +3870,17 @@ def approve_task(task_id: str, context: UserContext = Depends(current_user)) -> 
     return to_view(task)
 
 
-def _notify_run_terminal(context: UserContext, run_id: str) -> None:
+def _notify_run_terminal(
+    context: UserContext, run_id: str, *, approval_id: str | None = None
+) -> None:
     """运行进入失败/取消终态时通知任务创建人。
 
     接收人必须反查（运行记录不含 user_id）；任务不可见时**跳过并写审计**，不猜接收人。
     通知本身不是关键路径：写入失败由 InboxService 降级为 `inbox.write_failed` 审计。
+
+    S1 第三款（2026-09-18）：通知**尽力携带上文**（`conversation_id` 反查自幂等行，
+    驳回场景再带 `approval_id`），界面据此直达「该会话的该条卡」；反查不到/无幂等行
+    一律为 `None`，界面回落既有落点（不猜、不编造）。
     """
     try:
         record = run_metrics_service.store.get(context.tenant_id, run_id)
@@ -3727,11 +3905,19 @@ def _notify_run_terminal(context: UserContext, run_id: str) -> None:
             detail={"kind": notify_kind, "reason": "task_unavailable"},
         )
         return
+    # 会话来源反查（fail-closed）：取不到就带 `None`，绝不猜测会话。
+    try:
+        idempotency_row = execution_idempotency_store.find_by_run(context.tenant_id, run_id)
+        conversation_id = getattr(idempotency_row, "conversation_id", None)
+    except Exception:
+        conversation_id = None
     if record.finish_reason is FinishReason.APPROVAL_REJECTED:
         inbox_service.run_approval_rejected(
             tenant_id=record.tenant_id,
             recipient_id=task.created_by,
             run_id=run_id,
+            conversation_id=conversation_id,
+            approval_id=approval_id,
         )
         return
     inbox_service.run_decided(
@@ -3739,6 +3925,7 @@ def _notify_run_terminal(context: UserContext, run_id: str) -> None:
         recipient_id=task.created_by,
         run_id=run_id,
         status=record.status,
+        conversation_id=conversation_id,
     )
 
 
@@ -3840,6 +4027,255 @@ def get_run_acceptance(run_id: str, context: UserContext = Depends(current_user)
     }
 
 
+class RunAcceptanceDecisionCreate(BaseModel):
+    """人工验收决议请求体。`extra="forbid"`：客户端塞 `decided_by` 之类字段会直接 422。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str = Field(pattern="^(confirmed|rejected)$")
+    reason: str = Field(default="", max_length=MAX_ACCEPTANCE_REASON_LENGTH)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+TERMINAL_RUN_STATUSES = ("completed", "failed", "cancelled")
+
+
+def _acceptance_decisions_for(context: UserContext, run_id: str, *, member_reader: bool) -> list:
+    """读决议历史（**归属判定与运行级读路径同口径**）：未知 / 跨租户 / 不可见一律 404。"""
+    try:
+        record = run_metrics_service.store.get(context.tenant_id, run_id)
+    except RunRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    try:
+        store.get(context, record.task_id)
+    except TaskNotFound as exc:
+        if not (member_reader and _member_can_read_run(context, run_id)):
+            raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    return run_acceptance_decision_store.list_for_run(context.tenant_id, run_id)
+
+
+@app.get("/api/v1/runs/{run_id}/acceptance/decisions")
+def list_run_acceptance_decisions(
+    run_id: str, context: UserContext = Depends(current_user)
+) -> dict[str, object]:
+    """验收决议历史（**最新在前**；契约「运行验收决议（S2 · 人工验收）」）。
+
+    **只读**：不改运行状态、不调模型。归属同运行级读路径（P2c-6 裁定 ⑤：会话成员可见）。
+    返回不含 `tenant_id` 与 `idempotency_key`（幂等键是写侧实现细节，不外泄）。
+    """
+    items = _acceptance_decisions_for(context, run_id, member_reader=True)
+    views = [row.to_view() for row in items]
+    # S2 沉淀状态（additive）：界面据此把「存成任务」显示成入口或「已存成任务」。
+    promotion = run_promotion_store.find_for_run(context.tenant_id, run_id)
+    return {
+        "run_id": run_id,
+        "items": views,
+        "latest": views[0] if views else None,
+        "promotion": promotion.to_view() if promotion is not None else None,
+    }
+
+
+@app.post("/api/v1/runs/{run_id}/acceptance/decisions")
+def decide_run_acceptance(
+    run_id: str,
+    payload: RunAcceptanceDecisionCreate,
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    """人工验收决议：**确认完成** / **打回重做（带原因）**（契约「运行验收决议（S2 · 人工验收）」）。
+
+    纪律：
+    - **权限独立判定**（按钮隐藏不算权限）：承载任务创建人 或 `ceo` / `super_admin`；
+      其余身份（含非成员、跨租户、未知运行）一律 **404**（不区分「无权限」与「不存在」，避免探测）；
+    - **仅终态运行可决议**：非终态 ⇒ `409`（如实拒绝，不排队等待）；
+    - **只记录不改状态**：不改运行状态、不触发重跑、不发通知；
+    - **幂等**：同租户同幂等键重复提交返回既有决议（`created: false`），**不重复写审计**；
+    - **理由正文只进决议表**：审计明细只记 `reason_present`，不落正文。
+    """
+    # 权限：与运行控制类端点同一判定（任务创建人 / CEO / 超管），越权一律 404。
+    try:
+        _key, _adapter, state = runtime_service.adapter_for_task(context, run_id)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    record = run_metrics_service.store.get(context.tenant_id, run_id)
+    if str(record.status) not in TERMINAL_RUN_STATUSES:
+        raise HTTPException(status_code=409, detail="运行尚未结束，暂不能验收")
+    result = evaluate_acceptance(
+        status=record.status,
+        step_count=record.step_count,
+        completed_step_count=record.completed_step_count,
+        finish_reason=str(record.finish_reason) if record.finish_reason else None,
+        approval_statuses=tuple(state.approvals.values()),
+    )
+    try:
+        decision, reason = validate_decision(
+            decision=payload.decision,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
+            structural_verdict=result.verdict.value,
+        )
+    except AcceptanceDecisionError as exc:
+        # 入参语义不合法（如打回未写原因）⇒ 422：与「参数校验」同一档，不回 400 混用。
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    stored, created = run_acceptance_decision_store.record(
+        AcceptanceDecision(
+            tenant_id=context.tenant_id,
+            run_id=run_id,
+            decision_id="",
+            decision=decision,
+            reason=reason,
+            idempotency_key=payload.idempotency_key.strip(),
+            decided_by=context.user_id,
+            decided_by_role=context.role,
+            structural_verdict=result.verdict.value,
+            created_at=datetime.now(UTC),
+        )
+    )
+    if created:
+        audit_service.record(
+            AuditAction.RUN_ACCEPTANCE_DECIDED,
+            tenant_id=context.tenant_id,
+            actor_id=context.user_id,
+            target_type="run",
+            target_id=run_id,
+            detail={
+                "decision": stored.decision,
+                "structural_verdict": stored.structural_verdict,
+                "reason_present": bool(stored.reason),
+            },
+        )
+    view = stored.to_view()
+    return {"run_id": run_id, **view, "created": created}
+
+
+class RunPromotionCreate(BaseModel):
+    """「存成任务」请求体：**只有标题**。`extra="forbid"` ⇒ 客户端塞 `task_id` / `employee_key` 一类字段直接 422。
+
+    其余字段（数字员工 / 风险档 / 预算 / 项目）一律**从来源承载任务复刻**，由服务端自取——
+    不接受客户端注入，也不允许绕过既有的治理与预算闸门。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=MAX_PROMOTION_TITLE_LENGTH)
+
+
+@app.post(
+    "/api/v1/runs/{run_id}/acceptance/tasks",
+    status_code=status.HTTP_201_CREATED,
+)
+def promote_run_to_task(
+    run_id: str,
+    payload: RunPromotionCreate,
+    response: Response,
+    context: UserContext = Depends(current_user),
+) -> dict[str, object]:
+    """S2 沉淀入口：**把已确认完成的这次运行存成一个可再跑的任务**（契约「运行沉淀（S2 · 存成任务）」）。
+
+    纪律：
+    - **权限与验收决议同一判定**（承载任务创建人 / CEO / 超管）：他人 / 跨租户 / 未知运行一律 **404**；
+    - **先确认完成**：最新决议不是 `confirmed` ⇒ `409`（不排队、不猜，也不允许「没验收就沉淀」）；
+    - **仅终态运行**：非终态 ⇒ `409`；
+    - **一个运行只能沉淀一次**：先占位再建任务，重复提交返回既有任务（`created: false`）；
+    - **任务走既有创建路径**：`_store_new_task` 同一治理闸门与幂等语义，不另写一套；
+    - **标题正文不进审计**：审计只记 `task_id`。
+    """
+    # 权限：与运行控制类 / 验收决议端点同一判定，越权一律 404（不区分「无权限」与「不存在」）。
+    try:
+        _key, _adapter, _state = runtime_service.adapter_for_task(context, run_id)
+    except RunAccessDenied as exc:
+        raise HTTPException(status_code=404, detail="运行不存在") from exc
+    try:
+        record = run_metrics_service.store.get(context.tenant_id, run_id)
+    except RunRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    if str(record.status) not in TERMINAL_RUN_STATUSES:
+        raise HTTPException(status_code=409, detail="运行尚未结束，暂不能沉淀成任务")
+    decisions = run_acceptance_decision_store.list_for_run(context.tenant_id, run_id)
+    if not decisions or decisions[0].decision != DECISION_CONFIRMED:
+        raise HTTPException(status_code=409, detail="先确认完成，再沉淀成任务")
+    try:
+        title = validate_promotion_title(payload.title)
+    except RunPromotionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def _view(promotion: RunPromotion, *, created: bool) -> dict[str, object]:
+        """读回任务（可见时给全量视图；**已沉淀但任务不可见时只给标识**，不编造内容）。"""
+        task_view: dict[str, object] | None = None
+        try:
+            task_view = to_view(store.get(context, promotion.task_id))
+        except TaskNotFound:
+            task_view = None
+        return {
+            "run_id": promotion.run_id,
+            "task_id": promotion.task_id,
+            "created": created,
+            "promotion": promotion.to_view(),
+            "task": task_view,
+        }
+
+    existing = run_promotion_store.find_for_run(context.tenant_id, run_id)
+    if existing is not None:
+        # 幂等：同一运行只沉淀一次——重复提交返回既有任务，不建第二条、不再写审计。
+        response.status_code = status.HTTP_200_OK
+        return _view(existing, created=False)
+
+    try:
+        source_task = store.get(context, record.task_id)
+    except TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail="承载任务不可见，无法沉淀") from exc
+
+    # 占位先行（`(tenant_id, run_id)` 主键）：并发提交只有一个能占到，占不到就读回赢家。
+    promotion, claimed = run_promotion_store.claim(
+        RunPromotion(
+            tenant_id=context.tenant_id,
+            run_id=run_id,
+            task_id=f"task-{uuid4().hex[:12]}",
+            title=title,
+            promoted_by=context.user_id,
+            created_at=datetime.now(UTC),
+        )
+    )
+    if not claimed:
+        response.status_code = status.HTTP_200_OK
+        return _view(promotion, created=False)
+
+    # 预算 / 风险闸门：与 `POST /tasks` 同一函数（同一口径，不因「沉淀」而放松）。
+    try:
+        ensure_can_create(context, source_task.risk_level, source_task.budget)
+        stored, task_created = _store_new_task(
+            context,
+            title=title,
+            employee_key=source_task.employee_key,
+            risk_level=source_task.risk_level,
+            budget=source_task.budget,
+            project_id=source_task.project_id,
+            # 服务端派生的幂等键：同一运行的任务在任务侧也天然幂等（用户重试不会再建一条）。
+            idempotency_key=f"promote:{run_id}",
+            task_id=promotion.task_id,
+        )
+    except (PolicyError, IdempotencyConflict) as exc:
+        # 被闸门挡下 / 任务侧冲突 ⇒ **归还占位**（不留悬挂链接），再如实返回。
+        run_promotion_store.release(context.tenant_id, run_id)
+        status_code = 403 if isinstance(exc, PolicyError) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except Exception:
+        run_promotion_store.release(context.tenant_id, run_id)
+        raise
+
+    audit_service.record(
+        AuditAction.RUN_PROMOTED_TO_TASK,
+        tenant_id=context.tenant_id,
+        actor_id=context.user_id,
+        target_type="run",
+        target_id=run_id,
+        detail={"task_id": promotion.task_id},
+    )
+    view = _view(promotion, created=True)
+    view["task"] = to_view(stored)
+    view["task_created"] = task_created
+    return view
+
+
 @app.get("/api/v1/runs/{run_id}/metrics", response_model=RunMetricsView)
 def get_run_metrics(run_id: str, context: UserContext = Depends(current_user)) -> RunMetricsView:
     """运行概览（**只读**）。P2c-6 裁定 ⑤：会话成员可见（承载任务不可见时用成员判定兜底）。"""
@@ -3881,28 +4317,40 @@ def get_run_metrics_summary(
 
 @app.post("/api/v1/runs/{run_id}/pause")
 def pause_runtime_run(run_id: str, payload: RuntimeAction, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    """暂停运行（**仅非终态**）：终态 ⇒ `409`（不允许用暂停把已结束的运行复活）。"""
     try:
         runtime_service.pause(context, run_id, payload.reason)
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
+    except RunNotActionable as exc:
+        raise HTTPException(status_code=409, detail="运行已结束，无法暂停") from exc
     return {"run_id": run_id, "status": "paused"}
 
 
 @app.post("/api/v1/runs/{run_id}/resume")
 def resume_runtime_run(run_id: str, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    """恢复运行（**仅非终态**）：终态 ⇒ `409`；授权位不满足 ⇒ `409`（fail-closed，与决议端点同口径）。"""
     try:
         runtime_service.resume(context, run_id)
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
+    except RunNotActionable as exc:
+        raise HTTPException(status_code=409, detail="运行已结束，无法恢复") from exc
+    except ExecutionNotAuthorized as exc:
+        # 推进执行前的闸门拒绝（授权位缺失 / 与当前计划不一致）：409 如实告知，不外抛 500。
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"run_id": run_id, "status": "running"}
 
 
 @app.post("/api/v1/runs/{run_id}/cancel")
 def cancel_runtime_run(run_id: str, payload: RuntimeAction, context: UserContext = Depends(current_user)) -> dict[str, str]:
+    """取消运行（**仅非终态**）：终态 ⇒ `409`（不重复取消、不给终态运行二次结局）。"""
     try:
         runtime_service.cancel(context, run_id, payload.reason)
     except RunAccessDenied as exc:
         raise HTTPException(status_code=404, detail="运行不存在") from exc
+    except RunNotActionable as exc:
+        raise HTTPException(status_code=409, detail="运行已结束，无法取消") from exc
     _notify_run_terminal(context, run_id)
     return {"run_id": run_id, "status": "cancelled"}
 
@@ -4007,7 +4455,7 @@ def decide_run_approval(
             "authorized_by_source": RUN_APPROVAL_SOURCE,
         },
     )
-    _notify_run_terminal(context, run_id)
+    _notify_run_terminal(context, run_id, approval_id=approval_id)
     # 段二（dsh 接入段）§4.1.6-4：审批**通过**且装配了工具执行入口时，在同一请求内触发「审批后重跑」。
     # 调用位置在 `decide_approval`（【事务 A】写 027 决议 + 026 快照 + 适配器决议）**提交之后**，
     # **不在其事务内**——依据 §4.1.6-5「授权位不回滚」（重跑失败不撤销已批准的授权）与 §4.1.6-4 调用链
@@ -4256,6 +4704,10 @@ class InboxItemView(BaseModel):
     title: str
     target_type: str | None = None
     target_id: str | None = None
+    # S1 第三款（迁移 041，additive）：可空的上文标识——有则界面直达「该会话的该条卡」，
+    # 无（存量行/反查不到）则回落 `target_type`/`target_id` 的既有落点。
+    target_conversation_id: str | None = None
+    target_approval_id: str | None = None
     created_at: datetime
     read_at: datetime | None = None
 
@@ -4272,6 +4724,8 @@ def _inbox_view(item: InboxItem) -> InboxItemView:
         title=item.title,
         target_type=item.target_type,
         target_id=item.target_id,
+        target_conversation_id=item.target_conversation_id,
+        target_approval_id=item.target_approval_id,
         created_at=item.created_at,
         read_at=item.read_at,
     )

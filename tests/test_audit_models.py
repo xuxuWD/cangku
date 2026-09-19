@@ -101,7 +101,13 @@ def test_action_values_are_stable_strings() -> None:
     # P2c-6（2026-09-17）：两个动作码（会话成员添加 / 撤销）。
     assert AuditAction.CONVERSATION_MEMBER_ADDED.value == "conversation.member.added"
     assert AuditAction.CONVERSATION_MEMBER_REMOVED.value == "conversation.member.removed"
-    assert len(set(AuditAction)) == 90
+    # S2（2026-09-18）：一个动作码（运行验收决议；**只记结论，不落理由正文**）。
+    assert AuditAction.RUN_ACCEPTANCE_DECIDED.value == "run.acceptance_decided"
+    # S2 沉淀入口（2026-09-19）：一个动作码（存成任务；只记 task_id，标题正文不落审计）。
+    assert AuditAction.RUN_PROMOTED_TO_TASK.value == "run.promoted_to_task"
+    # B-3（2026-09-19）：一个动作码（租户删除确认；确认人是独立于「申请」的显式动作）。
+    assert AuditAction.COMMERCIAL_DELETION_CONFIRMED.value == "commercial.deletion.confirmed"
+    assert len(set(AuditAction)) == 93
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

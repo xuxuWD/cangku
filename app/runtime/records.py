@@ -53,6 +53,7 @@ class RunRecordStore(Protocol):
     def get(self, tenant_id: str, run_id: str) -> RunRecord: ...
     def list_for_task(self, tenant_id: str, task_id: str) -> list[RunRecord]: ...
     def list_recent(self, tenant_id: str, *, limit: int) -> list[RunRecord]: ...
+    def count_for_tenant(self, tenant_id: str) -> int: ...
     def set_execution_authorization(
         self, tenant_id: str, run_id: str, authorization: ExecutionAuthorization | None
     ) -> RunRecord: ...
@@ -107,6 +108,11 @@ class InMemoryRunRecordStore:
             items = [item for item in self._items.values() if item.tenant_id == tenant_id]
         items.sort(key=lambda item: item.started_at, reverse=True)
         return items[:limit]
+
+    def count_for_tenant(self, tenant_id: str) -> int:
+        """本租户运行记录总数（导出包用来声明「取了多少 / 共多少」，不拿返回条数冒充总数）。"""
+        with self._lock:
+            return sum(1 for item in self._items.values() if item.tenant_id == tenant_id)
 
     def delete(self, tenant_id: str, run_id: str) -> None:
         """删除运行记录（⑥ 失败回滚，§4.1.3）；仅删除本租户匹配的记录，幂等。"""
@@ -296,6 +302,17 @@ class PostgresRunRecordStore:
                 )
                 rows = cursor.fetchall()
         return [self._hydrate(row) for row in rows]
+
+    def count_for_tenant(self, tenant_id: str) -> int:
+        """本租户运行记录总数（导出包用来声明「取了多少 / 共多少」，不拿返回条数冒充总数）。"""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM workbench_run_records WHERE tenant_id = %s",
+                    (tenant_id,),
+                )
+                row = cursor.fetchone()
+        return int(row[0]) if row is not None else 0
 
     def delete(self, tenant_id: str, run_id: str) -> None:
         """删除运行记录（⑥ 失败回滚，§4.1.3）；仅删除本租户匹配的行，幂等。"""

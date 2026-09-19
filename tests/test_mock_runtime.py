@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 
-from app.runtime.contracts import AgentPlan, RuntimeContext, RuntimeEventType
+import pytest
+
+from app.runtime.contracts import AgentPlan, RunNotActionable, RuntimeContext, RuntimeEventType
 from app.runtime.mock import MockRuntime
 from app.runtime.state import RuntimeStateStore
 
@@ -26,11 +28,28 @@ def test_mock_runtime_lifecycle_and_resume_is_idempotent():
 
 def test_cancel_and_cursor_replay_do_not_duplicate_events():
     runtime=MockRuntime(RuntimeStateStore())
-    run=runtime.start_run(ctx(),AgentPlan.from_steps([{'step_id':'s1','kind':'read','tool':'knowledge.search'}]))
+    # 待审批步骤 ⇒ 运行停在「运行中」（终态不可再干预，取消用例必须用非终态运行）。
+    run=runtime.start_run(ctx(),AgentPlan.from_steps([{'step_id':'s1','kind':'write','tool':'fs.write','requires_approval':True}]))
     first=runtime.stream_events(run); cursor=first[-1].to_public_dict()['cursor']
     assert runtime.stream_events(run,cursor) == []
     runtime.cancel_run(run,'用户取消')
     assert runtime.get_checkpoint(run)['status'] == 'cancelled'
+
+
+def test_terminal_run_cannot_be_paused_resumed_or_cancelled_again():
+    """终态即终态：已完成的运行上暂停 / 恢复 / 取消一律拒绝（`RunNotActionable`）。"""
+    runtime=MockRuntime(RuntimeStateStore())
+    run=runtime.start_run(ctx(),AgentPlan.from_steps([{'step_id':'s1','kind':'read','tool':'knowledge.search'}]))
+    assert runtime.get_checkpoint(run)['status'] == 'completed'
+
+    for action in (
+        lambda: runtime.pause_run(run, '再暂停'),
+        lambda: runtime.resume_run(run),
+        lambda: runtime.cancel_run(run, '再取消'),
+    ):
+        with pytest.raises(RunNotActionable):
+            action()
+    assert runtime.get_checkpoint(run)['status'] == 'completed'
 
 
 def test_mock_runtime_marks_run_completed_when_no_approvals_pending():

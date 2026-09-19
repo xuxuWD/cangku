@@ -87,14 +87,12 @@ export function ContentWorkbenchPage({ taskId, onNavigate }: { taskId?: string; 
   }
 
   const editable = task?.status === 'reviewing'
+  const filledSources = sources.filter((item) => item.excerpt.trim().length > 0).length
 
   return <>
-    <main className="main-content content-workbench">
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">内容工作台</h1>
-          <p className="page-desc">提交主题和素材，生成可编辑的公众号草稿。</p>
-        </div>
+    <div className="tasks__body">
+      <div className="tasks__intro">
+        <p className="page-desc">提交主题和素材，生成可编辑的公众号草稿；确认后导出 Markdown。</p>
         <span className="page-meta">
           <span className="status-badge">{task ? labels[task.status] : '准备素材'}</span>
           {task && <span className="page-code">{task.task_id}</span>}
@@ -103,6 +101,25 @@ export function ContentWorkbenchPage({ taskId, onNavigate }: { taskId?: string; 
 
       {error && <div className="notice notice-error" role="alert"><div><strong>操作未完成</strong><p>{error}</p></div></div>}
       {task?.status === 'failed' && <div className="notice notice-error" data-testid="generation-failure" role="alert"><div><strong>草稿生成失败</strong><p>{draft?.summary || '请检查模型配置或稍后重新生成。'}</p></div></div>}
+
+      {/* 统计条：全部来自本页真实输入与草稿，不做服务端猜测 */}
+      <div className="metrics">
+        <div className="metric">
+          <div className="metric__label">材料条数</div>
+          <div className="metric__value">{sources.length}</div>
+          <div className="metric__hint">按当前填写</div>
+        </div>
+        <div className="metric">
+          <div className="metric__label">已填摘录</div>
+          <div className="metric__value">{filledSources}</div>
+          <div className="metric__hint">至少一条才能开始生成</div>
+        </div>
+        <div className="metric">
+          <div className="metric__label">正文字数</div>
+          <div className="metric__value">{draft ? draft.body_markdown.length : 0}</div>
+          <div className="metric__hint">生成后可编辑</div>
+        </div>
+      </div>
 
       <div className="content-grid">
         <section className="content-panel">
@@ -158,6 +175,6 @@ export function ContentWorkbenchPage({ taskId, onNavigate }: { taskId?: string; 
           </div>
         </section>
       </div>
-    </main>
+    </div>
   </>
 }

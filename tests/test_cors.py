@@ -8,7 +8,7 @@
 """
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
@@ -38,6 +38,12 @@ def build_client(settings: Settings) -> TestClient:
 
     @app.get("/ping")
     def ping() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/stream")
+    def stream_placeholder(response: Response) -> dict[str, bool]:
+        # 占位：真实 SSE 读端会带 `X-Stream-Run-Id`（契约「实时流」）。
+        response.headers["X-Stream-Run-Id"] = "run-1"
         return {"ok": True}
 
     return TestClient(app)
@@ -111,6 +117,25 @@ def test_production_without_origins_denies_cross_origin_preflight() -> None:
     response = preflight(client, "https://app.example.com")
 
     assert "access-control-allow-origin" not in response.headers
+
+
+# 跨源时 JS **只能读到被 expose 的响应头**：`X-Stream-Run-Id` 是 SSE 读端「该会话最新运行」
+# 的唯一权威来源（契约「实时流」）。不 expose ⇒ 前端恒读 null，历史会话解析不到运行与审批。
+def test_cors_exposes_the_stream_run_id_header() -> None:
+    for options in (
+        resolve_cors_options(Settings(env="development")),
+        resolve_cors_options(production_settings(cors_allowed_origins="https://app.example.com")),
+    ):
+        assert options is not None
+        assert "X-Stream-Run-Id" in options["expose_headers"]
+
+    client = build_client(
+        production_settings(cors_allowed_origins="https://app.example.com")
+    )
+    response = client.get("/stream", headers={"Origin": "https://app.example.com"})
+
+    assert response.headers["x-stream-run-id"] == "run-1"
+    assert "x-stream-run-id" in response.headers["access-control-expose-headers"].lower()
 
 
 def test_parse_cors_origins_rejects_wildcard_and_paths() -> None:

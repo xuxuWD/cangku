@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
+import { EmptyState } from '../../components/ui/EmptyState'
 import { formatLocalTime } from '../../utils/time'
 import { generateFollowupPlan, getAccount, listAccounts, listActivities, listContacts, listInsights, listOpportunities, revealContact } from './api'
 import { CrmNotice, Pagination } from './CrmShared'
@@ -72,13 +73,39 @@ function AccountList({ onOpen }: { onOpen: (accountId: string) => void }) {
     return state.items.filter((account) => account.name.toLowerCase().includes(text) || account.industry.toLowerCase().includes(text))
   }, [state.items, keyword])
 
-  return <main className="main-content content-history crm">
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">客户</h1>
-        <p className="page-desc">客户主数据列表：健康度未计算时显示「未计算」（不是 0 分）；联系人电话 / 邮箱在列表与详情中一律掩码。</p>
+  // 统计条数字来源：命中总数取服务端 total；其余按本页已加载列表现算（关键字过滤后）。
+  const activeOnPage = visible.filter((account) => account.status === 'active').length
+  const uncomputedOnPage = visible.filter((account) => account.health_score === null || account.health_band === null).length
+
+  return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">客户主数据：健康度未计算时显示「未计算」（不是 0 分）；联系人电话 / 邮箱在列表与详情中一律掩码。</p>
+      <div className="t3__actions">
+        <button className="btn btn--secondary" type="button" disabled={state.loading} onClick={() => void load()}>刷新</button>
       </div>
-      <div className="actions"><button className="button" type="button" onClick={() => void load()}>刷新</button></div>
+    </div>
+
+    <div className="metrics">
+      <div className="metric">
+        <div className="metric__label">命中总数</div>
+        <div className="metric__value">{state.loading ? '—' : state.total}</div>
+        <div className="metric__hint">当前筛选条件下服务端返回的总条数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页客户</div>
+        <div className="metric__value">{state.loading ? '—' : visible.length}</div>
+        <div className="metric__hint">按本页统计：当前页展示的客户数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页活跃</div>
+        <div className="metric__value">{state.loading ? '—' : activeOnPage}</div>
+        <div className="metric__hint">按本页统计：状态为「活跃」的客户数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">健康度待计算</div>
+        <div className="metric__value">{state.loading ? '—' : uncomputedOnPage}</div>
+        <div className="metric__hint">按本页统计：尚未跑过重算任务（不代表 0 分）</div>
+      </div>
     </div>
 
     <div className="toolbar">
@@ -100,21 +127,30 @@ function AccountList({ onOpen }: { onOpen: (accountId: string) => void }) {
       <span className="history-count">当前页 {visible.length} 条 / 共 {state.total} 条</span>
     </div>
 
-    {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载客户列表…</div>}
-    {!state.loading && state.error && <CrmNotice
-      tone="error"
-      title="客户列表加载失败"
-      action={state.error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
-    >
-      <p>{state.error.message}</p>
-    </CrmNotice>}
-    {!state.loading && !state.error && <section className="history-panel crm__panel" aria-label="客户列表">
-      <div className="panel-header"><h2>客户列表</h2><span>{state.total} 条</span></div>
-      {state.items.length === 0
-        ? <div className="empty-state"><strong>暂无客户</strong><span>调整筛选条件，或先从线索转化 / 接口建客户。</span></div>
+    <section className="card" aria-label="客户列表">
+      <div className="card__head"><h2>客户列表</h2><span className="badge">{state.total} 条</span></div>
+
+      {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载客户列表…</div>}
+
+      {!state.loading && state.error && <div className="card__body">
+        <CrmNotice
+          tone="error"
+          title={state.error.status === 403 ? '当前账号无权查看客户列表' : '客户列表加载失败'}
+          action={state.error.status !== 403 && state.error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+        >
+          <p>{state.error.message}</p>
+        </CrmNotice>
+      </div>}
+
+      {!state.loading && !state.error && (state.items.length === 0
+        ? <EmptyState illustration="list" title="暂无客户" text="调整筛选条件，或先从线索转化建立客户。">
+            <button className="btn btn--secondary btn--sm" type="button" onClick={() => void load()}>刷新</button>
+          </EmptyState>
         : visible.length === 0
-          ? <div className="empty-state"><strong>当前页没有匹配的客户</strong><span>关键字只过滤当前页；可翻页或清空关键字。</span></div>
-          : <div className="panel-body"><table className="workforce__table">
+          ? <EmptyState illustration="list" title="当前页没有匹配的客户" text="关键字只过滤当前页；可翻页或清空关键字。">
+              <button className="btn btn--secondary btn--sm" type="button" onClick={() => setKeyword('')}>清空关键字</button>
+            </EmptyState>
+          : <div className="card__body"><table className="workforce__table">
             <thead><tr><th>名称</th><th>行业</th><th>状态</th><th>健康度</th><th>负责人</th><th>更新时间</th><th>操作</th></tr></thead>
             <tbody>{visible.map((account) => <tr key={account.account_id}>
               <td><span className="workforce__key">{account.name}</span></td>
@@ -125,9 +161,10 @@ function AccountList({ onOpen }: { onOpen: (accountId: string) => void }) {
               <td>{formatLocalTime(account.updated_at) || '—'}</td>
               <td><button className="text-action" type="button" onClick={() => onOpen(account.account_id)}>查看详情</button></td>
             </tr>)}</tbody>
-          </table></div>}
-      <Pagination total={state.total} limit={state.limit} offset={state.offset} loading={state.loading} onPrev={() => setOffset(Math.max(0, state.offset - state.limit))} onNext={() => setOffset(state.offset + state.limit)} />
-    </section>}
+          </table></div>)}
+
+      {!state.loading && !state.error && <Pagination total={state.total} limit={state.limit} offset={state.offset} loading={state.loading} onPrev={() => setOffset(Math.max(0, state.offset - state.limit))} onNext={() => setOffset(state.offset + state.limit)} />}
+    </section>
   </main>
 }
 
@@ -205,13 +242,16 @@ function AccountDetail({ accountId, onBack }: { accountId: string; onBack: () =>
     }
   }
 
-  if (loading) return <main className="main-content content-history crm"><div className="loading-state" role="status"><span className="loading-dot" />正在加载客户详情…</div></main>
-  if (error || !account) return <main className="main-content content-history crm">
-    <div className="page-head"><div><h1 className="page-title">客户详情</h1></div><div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div></div>
+  if (loading) return <main className="main-content t3 crm"><div className="loading-state" role="status"><span className="loading-dot" />正在加载客户详情…</div></main>
+  if (error || !account) return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">客户详情：健康度、进行中商机、活动时间线、跟进计划（人工触发）与历史生成记录。</p>
+      <div className="t3__actions"><button className="btn btn--secondary" type="button" onClick={onBack}>返回列表</button></div>
+    </div>
     <CrmNotice
       tone="error"
-      title="客户详情加载失败"
-      action={error?.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+      title={error?.status === 403 ? '当前账号无权查看该客户' : '客户详情加载失败'}
+      action={error?.status !== 403 && error?.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
     >
       <p>{error?.message ?? '没有找到该客户。'}</p>
     </CrmNotice>
@@ -221,20 +261,17 @@ function AccountDetail({ accountId, onBack }: { accountId: string; onBack: () =>
   const fields = scalarEntries(account.custom_fields)
   const latestPlan = insights[0]
 
-  return <main className="main-content content-history crm">
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">{account.name}</h1>
-        <p className="page-desc">客户详情：健康度、进行中商机、活动时间线、跟进计划（人工触发）与历史生成记录。</p>
-      </div>
-      <div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div>
+  return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">{account.name}：健康度、进行中商机、活动时间线、跟进计划（人工触发）与历史生成记录。</p>
+      <div className="t3__actions"><button className="btn btn--secondary" type="button" onClick={onBack}>返回列表</button></div>
     </div>
 
-    {revealError && <CrmNotice tone="error" title="敏感字段揭示未完成"><p>{revealError}</p></CrmNotice>}
+    {revealError && <CrmNotice tone="error" title="未能显示完整联系方式"><p>{revealError}</p></CrmNotice>}
 
-    <section className="history-panel crm__panel" aria-label="客户信息">
-      <div className="panel-header"><h2>基本信息</h2><span>{account.account_id}</span></div>
-      <div className="panel-body">
+    <section className="card" aria-label="客户信息">
+      <div className="card__head"><h2>基本信息</h2><span className="page-code">{account.account_id}</span></div>
+      <div className="card__body">
         <div className="run-detail__grid">
           <div className="run-detail__item"><span className="run-detail__label">行业</span><span className="run-detail__value">{account.industry || '—'}</span></div>
           <div className="run-detail__item"><span className="run-detail__label">来源</span><span className="run-detail__value">{account.source}</span></div>
@@ -247,20 +284,20 @@ function AccountDetail({ accountId, onBack }: { accountId: string; onBack: () =>
       </div>
     </section>
 
-    <section className="history-panel crm__panel" aria-label="健康度">
-      <div className="panel-header"><h2>健康度</h2><span>四维规则分（参考值，不作客户价值排名）</span></div>
-      <div className="panel-body"><div className="stat-grid">
-        <div className="stat-tile"><span className="stat-label">健康分</span><b className="stat-value">{account.health_score === null ? '未计算' : account.health_score}</b><p className="stat-hint">未计算 = 尚未跑过重算任务，不是 0 分。</p></div>
-        <div className="stat-tile"><span className="stat-label">分档</span><b className="stat-value">{account.health_band === null ? '未计算' : crmLabel(HEALTH_BAND_LABELS, account.health_band)}</b><p className="stat-hint">green ≥ 80 / yellow 60–79 / red &lt; 60。</p></div>
-        <div className="stat-tile"><span className="stat-label">计算时间</span><b className="stat-value">{formatLocalTime(account.health_computed_at) || '未计算'}</b><p className="stat-hint">由周期任务 crm-health-recompute 重算。</p></div>
+    <section className="card" aria-label="健康度">
+      <div className="card__head"><h2>健康度</h2><span className="page-meta">四维规则分（参考值，不作客户价值排名）</span></div>
+      <div className="card__body"><div className="metrics">
+        <div className="metric"><div className="metric__label">健康分</div><div className="metric__value">{account.health_score === null ? '未计算' : account.health_score}</div><div className="metric__hint">未计算 = 尚未跑过重算任务，不是 0 分。</div></div>
+        <div className="metric"><div className="metric__label">分档</div><div className="metric__value">{account.health_band === null ? '未计算' : crmLabel(HEALTH_BAND_LABELS, account.health_band)}</div><div className="metric__hint">green ≥ 80 / yellow 60–79 / red &lt; 60。</div></div>
+        <div className="metric"><div className="metric__label">计算时间</div><div className="metric__value">{formatLocalTime(account.health_computed_at) || '未计算'}</div><div className="metric__hint">由周期任务 crm-health-recompute 重算。</div></div>
       </div></div>
     </section>
 
-    <section className="history-panel crm__panel" aria-label="进行中商机">
-      <div className="panel-header"><h2>进行中商机</h2><span>{activeOpportunities.length} 条</span></div>
+    <section className="card" aria-label="进行中商机">
+      <div className="card__head"><h2>进行中商机</h2><span className="badge">{activeOpportunities.length} 条</span></div>
       {activeOpportunities.length === 0
         ? <div className="empty-state"><strong>没有进行中的商机</strong><span>终态（赢单 / 输单）商机不计入。</span></div>
-        : <div className="panel-body"><table className="workforce__table">
+        : <div className="card__body"><table className="workforce__table">
           <thead><tr><th>名称</th><th>阶段</th><th>金额</th><th>预计成交</th><th>进入阶段时间</th></tr></thead>
           <tbody>{activeOpportunities.map((item) => <tr key={item.opportunity_id}>
             <td><span className="workforce__key">{item.name}</span></td>
@@ -272,11 +309,11 @@ function AccountDetail({ accountId, onBack }: { accountId: string; onBack: () =>
         </table></div>}
     </section>
 
-    <section className="history-panel crm__panel" aria-label="跟进计划">
-      <div className="panel-header"><h2>跟进计划</h2><span>人工触发 · 建议永不自动执行</span></div>
-      <div className="panel-body">
+    <section className="card" aria-label="跟进计划">
+      <div className="card__head"><h2>跟进计划</h2><span className="page-meta">人工触发 · 建议永不自动执行</span></div>
+      <div className="card__body">
         <div className="actions crm__actions">
-          <button className="button primary" type="button" disabled={planBusy} onClick={() => void generatePlan()}>{planBusy ? '正在生成…' : '生成跟进计划'}</button>
+          <button className="btn btn--primary" type="button" disabled={planBusy} onClick={() => void generatePlan()}>{planBusy ? '正在生成…' : '生成跟进计划'}</button>
           <span className="role-note">服务端逐条校验证据引用真实性；无效引用会被丢弃并标注。</span>
         </div>
         {planError && <CrmNotice tone="error" title="跟进计划生成失败"><p>{planError}</p></CrmNotice>}
@@ -285,8 +322,8 @@ function AccountDetail({ accountId, onBack }: { accountId: string; onBack: () =>
       </div>
     </section>
 
-    <section className="history-panel crm__panel" aria-label="历史生成记录">
-      <div className="panel-header"><h2>历史生成记录</h2><span>{insights.length} 条（追加式）</span></div>
+    <section className="card" aria-label="历史生成记录">
+      <div className="card__head"><h2>历史生成记录</h2><span className="badge">{insights.length} 条（追加式）</span></div>
       {insights.length === 0
         ? <div className="empty-state"><strong>暂无生成记录</strong><span>每次生成都会追加一条，不覆盖旧记录。</span></div>
         : <div className="history-list" role="list">{insights.map((insight) => <article className="history-row crm-insight" role="listitem" key={insight.insight_id}>
@@ -304,11 +341,11 @@ function AccountDetail({ accountId, onBack }: { accountId: string; onBack: () =>
         </article>)}</div>}
     </section>
 
-    <section className="history-panel crm__panel" aria-label="活动时间线">
-      <div className="panel-header"><h2>活动时间线</h2><span>最近 {activities.length} 条</span></div>
+    <section className="card" aria-label="活动时间线">
+      <div className="card__head"><h2>活动时间线</h2><span className="badge">最近 {activities.length} 条</span></div>
       {activities.length === 0
         ? <div className="empty-state"><strong>暂无跟进活动</strong><span>登记活动后会按时间倒序展示在这里。</span></div>
-        : <div className="panel-body crm__timeline"><div className="timeline">{activities.map((activity) => <article className="audit-event" key={activity.activity_id}>
+        : <div className="card__body crm__timeline"><div className="timeline">{activities.map((activity) => <article className="audit-event" key={activity.activity_id}>
           <time>{formatLocalTime(activity.occurred_at) || '—'}</time>
           <strong>{crmLabel(ACTIVITY_KIND_LABELS, activity.kind)} · {activity.subject || '（无主题）'}</strong>
           <p>
@@ -319,11 +356,11 @@ function AccountDetail({ accountId, onBack }: { accountId: string; onBack: () =>
         </article>)}</div></div>}
     </section>
 
-    <section className="history-panel crm__panel" aria-label="联系人">
-      <div className="panel-header"><h2>联系人</h2><span>电话 / 邮箱默认掩码；明文经专用端点获取并落审计</span></div>
+    <section className="card" aria-label="联系人">
+      <div className="card__head"><h2>联系人</h2><span className="page-meta">电话 / 邮箱默认掩码；明文需单独申请并记录审计</span></div>
       {contacts.length === 0
-        ? <div className="empty-state"><strong>暂无联系人</strong><span>联系人可由线索转化或接口创建。</span></div>
-        : <div className="panel-body"><table className="workforce__table">
+        ? <div className="empty-state"><strong>暂无联系人</strong><span>联系人可由线索转化创建。</span></div>
+        : <div className="card__body"><table className="workforce__table">
           <thead><tr><th>姓名</th><th>称谓</th><th>电话</th><th>邮箱</th><th>主联系人</th></tr></thead>
           <tbody>{contacts.map((contact) => <tr key={contact.contact_id}>
             <td><span className="workforce__key">{contact.name}</span></td>

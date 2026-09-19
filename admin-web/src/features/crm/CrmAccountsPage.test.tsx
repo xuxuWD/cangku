@@ -166,7 +166,7 @@ describe('CrmAccountsPage', () => {
     // 按钮始终可见（隐藏按钮不构成权限），越权由服务端返回并如实展示。
     await userEvent.click(await screen.findByRole('button', { name: '查看邮箱明文' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('敏感字段揭示未完成')
+    expect(await screen.findByRole('alert')).toHaveTextContent('未能显示完整联系方式')
     expect(screen.getByText('查看明文失败：当前账号没有执行该操作的权限。')).toBeInTheDocument()
   })
 })

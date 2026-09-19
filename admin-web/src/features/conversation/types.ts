@@ -65,16 +65,12 @@ export interface ConversationErrorShape {
 }
 
 export interface ConversationState {
-  conversations: Conversation[]
-  conversationsTotal: number
-  conversationsLoading: boolean
-  conversationsError: ConversationErrorShape | null
-  statusFilter: ConversationStatus | 'all'
-  listOffset: number
   detail: ConversationDetail | null
   detailLoading: boolean
   detailError: ConversationErrorShape | null
   createError: ConversationErrorShape | null
+  /** 「导出我的数据」失败（页面级动作，与新建失败并列展示；成功走 toast）。 */
+  exportError: ConversationErrorShape | null
   sending: boolean
   sendError: ConversationErrorShape | null
   /** 结构化调用未产生运行时的如实告知（后端未装配真实执行 ⇒ 回落桩路径）；下次发送时清空。 */
@@ -122,10 +118,8 @@ export function frameKindLabel(kind: string): string {
   return RUN_EVENT_LABELS[kind] ?? '其他事件'
 }
 
-// 页面级显式声明：默认后端（mock）不接真实模型、不执行任何工具，助手回复是 stub 桩回复。
-// P2a 段二起，带 `Idempotency-Key` 的**结构化工具调用**消息可能触发真实执行（受九步闸门约束）。
-export const STUB_NOTICE =
-  '默认阶段未接入真实模型：普通消息的助手回复均为后端标注 stub 的确定性桩回复，仅用于打通会话、权限与审计链路，请勿当作真实模型输出；带幂等键的结构化工具调用消息会按九步闸门执行或转为待审批。'
+// 页面级「能力说明」文案已随 D-01 改为**分环境内联**（见 ConversationPage 顶部提示块）：
+// 开发态写内联字面量、生产态用业务语言 —— 常量导出会被打进产物，故不再保留共享常量。
 
 export const CONVERSATION_STATUS_LABELS: Record<ConversationStatus, string> = {
   active: '进行中',

@@ -34,7 +34,7 @@ const task = {
 
 interface Call { url: string; method: string; body: string; headers: Record<string, string> }
 
-function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean; frames?: string[]; streamHeaders?: Record<string, string>; acceptance?: Record<string, unknown> } = {}) {
+function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean; frames?: string[]; streamHeaders?: Record<string, string>; acceptance?: Record<string, unknown>; runMetrics?: () => Record<string, unknown> } = {}) {
   const calls: Call[] = []
   const approvals = options.approvals ?? []
   const produceRun = options.produceRun !== false
@@ -71,7 +71,8 @@ function makeFetch(options: { approvals?: unknown[]; produceRun?: boolean; frame
     }
     if (url.includes('/conversations/conv-1/stream')) return sseResponse(frames, options.streamHeaders)
     if (url.includes('/runs/run-9/acceptance')) return json(acceptance)
-    if (url.includes('/runs/run-9/metrics')) return json(metrics)
+    if (url.includes('/runs/run-9/metrics')) return json(options.runMetrics ? options.runMetrics() : metrics)
+    if (url.includes('/runs/run-9/') && method === 'POST' && /(pause|resume|cancel)$/.test(url)) return json({ run_id: 'run-9', status: 'paused' })
     if (url.includes('/runs/run-9/approvals/') && method === 'POST') return json({ run_id: 'run-9', approval_id: 'ap-1', status: 'approved', run_status: 'completed' })
     if (url.includes('/runs/run-9/approvals')) return json({ items: approvals })
     if (url.includes('/tasks/')) return json(task)
@@ -116,7 +117,7 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     // 舞台：运行概览（既有 runs 接口）+ 审批（既有 run 审批接口）——全部来自同一条 run
     expect(await screen.findByText('步骤完成度')).toBeInTheDocument()
     // 审批卡会在对话流内联与舞台各出现一次（两处同源）
-    expect((await screen.findAllByRole('button', { name: '通过' })).length).toBeGreaterThan(0)
+    expect((await screen.findAllByRole('button', { name: '同意并继续' })).length).toBeGreaterThan(0)
     // 过程时间线：终态帧已到达（帧同时出现在折叠条与舞台，两处同源）
     expect((await screen.findAllByText('运行完成')).length).toBeGreaterThan(0)
   })
@@ -154,7 +155,7 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: invocation } })
     await userEvent.click(screen.getByRole('button', { name: '发送消息' }))
 
-    const approve = (await screen.findAllByRole('button', { name: '通过' }))[0]
+    const approve = (await screen.findAllByRole('button', { name: '同意并继续' }))[0]
     const before = calls.filter((call) => call.method === 'GET' && call.url.includes('/runs/run-9/approvals')).length
 
     await userEvent.click(approve)
@@ -176,8 +177,8 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     await userEvent.click(screen.getByRole('button', { name: '发送消息' }))
 
     expect((await screen.findAllByText(/仅 CEO \/ 超级管理员可决议/)).length).toBeGreaterThan(0)
-    expect(screen.queryByRole('button', { name: '通过' })).toBeNull()
-    expect(screen.queryByRole('button', { name: '驳回' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '同意并继续' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '拒绝' })).toBeNull()
   })
 
   it('收尾检查（P2c-4）：终态后给出进度档与服务端结构判定（达标），且不改运行状态', async () => {
@@ -193,7 +194,7 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     expect(await screen.findByText('进度档')).toBeInTheDocument()
     // 结构判定结论来自服务端端点（前端只渲染，不自行复算）。
     expect(await screen.findByText('达标')).toBeInTheDocument()
-    expect(screen.getByText(/结构判定（服务端只读运行字段，不调模型、不改运行状态）/, { exact: false })).toBeInTheDocument()
+    expect(screen.getByText(/结构判定（按运行记录逐项核对，不改动运行）/, { exact: false })).toBeInTheDocument()
     expect(screen.getAllByText('会话模式').length).toBeGreaterThan(0)
     expect(screen.getAllByText('完整执行').length).toBeGreaterThan(0)
     expect(screen.getByText('产物')).toBeInTheDocument()
@@ -246,7 +247,7 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     await userEvent.click(screen.getByRole('button', { name: '发送消息' }))
 
     expect(await screen.findByText('本次没有过程流')).toBeInTheDocument()
-    expect(screen.getByText(/未产生运行：后端未装配真实执行/)).toBeInTheDocument()
+    expect(screen.getByText(/没有产生执行过程/)).toBeInTheDocument()
     // 关流后过程条不残留（不谎报「执行中」）
     await waitFor(() => expect(document.querySelector('.process-bar')).toBeNull())
     expect(screen.queryByText('执行中')).toBeNull()
@@ -301,5 +302,86 @@ describe('ConversationPage（P2c-1 实时流路径与舞台）', () => {
     expect(await screen.findByText('步骤完成度')).toBeInTheDocument()
     expect(calls.some((call) => call.url.includes('/runs/run-9/metrics'))).toBe(true)
     expect(calls.some((call) => call.url.includes('/runs/run-9/approvals'))).toBe(true)
+  })
+
+  it('S4 干预：运行中可暂停，暂停后按服务端状态切到「恢复运行」（不做本地乐观更新）', async () => {
+    // 状态翻转以**服务端**为准：只有真的发出保留 POST 后，指标才回 running → paused。
+    const { fetchMock, calls } = makeFetch({
+      runMetrics: () => ({
+        ...metrics,
+        status: calls.some((call) => call.method === 'POST' && call.url.includes('/runs/run-9/pause')) ? 'paused' : 'running',
+        completed_step_count: 0,
+        finished_at: null,
+        finish_reason: null,
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: invocation } })
+    await userEvent.click(screen.getByRole('button', { name: '发送消息' }))
+
+    const pause = await screen.findByRole('button', { name: '暂停运行' })
+    const metricsBefore = calls.filter((call) => call.url.includes('/runs/run-9/metrics')).length
+
+    await userEvent.click(pause)
+
+    await waitFor(() => expect(calls.some((call) => call.method === 'POST' && call.url.includes('/runs/run-9/pause'))).toBe(true))
+    // 权威态回流：重取运行概览后才切成「恢复运行」。
+    await waitFor(() => expect(calls.filter((call) => call.url.includes('/runs/run-9/metrics')).length).toBeGreaterThan(metricsBefore))
+    expect(await screen.findByRole('button', { name: '恢复运行' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '暂停运行' })).toBeNull()
+  })
+
+  it('S4 干预：终态运行不渲染任何干预按钮（没有可干预项）', async () => {
+    const { fetchMock } = makeFetch()
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: invocation } })
+    await userEvent.click(screen.getByRole('button', { name: '发送消息' }))
+
+    expect(await screen.findByText('收尾检查')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '暂停运行' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '取消运行' })).toBeNull()
+  })
+
+  // S1 第三款：从通知点开时带审批标识 ⇒ 页内定位并高亮那张卡（数据仍全部来自服务端审批接口）。
+  it('S1 深链：带审批标识进入时高亮那张卡（已驳回的卡也在消息流里）', async () => {
+    const { fetchMock, calls } = makeFetch({
+      approvals: [{ approval_id: 'ap-1', step_id: 's-1', tool: 'cmd.run', status: 'rejected' }],
+      frames: [sseFrame(1, 'run.completed', true)],
+      streamHeaders: { 'X-Stream-Run-Id': 'run-9' },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" focusApprovalId="ap-1" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+
+    const note = await screen.findByText('已按通知定位到这条审批')
+    const card = note.closest('[data-approval-id]') as HTMLElement
+    expect(card).toHaveAttribute('data-approval-id', 'ap-1')
+    expect(card).toHaveClass('flow-card--focus')
+    // 只做定位：数据仍来自服务端审批接口，不改状态、不做本地乐观更新。
+    expect(calls.some((call) => call.method === 'GET' && call.url.includes('/runs/run-9/approvals'))).toBe(true)
+    expect(screen.queryByText('没有定位到那条审批')).toBeNull()
+  })
+
+  it('S1 深链：标识对不上时如实说明（本页只展示最近一次运行的审批），不静默', async () => {
+    const { fetchMock } = makeFetch({
+      approvals: [{ approval_id: 'ap-1', step_id: 's-1', tool: 'cmd.run', status: 'rejected' }],
+      frames: [sseFrame(1, 'run.completed', true)],
+      streamHeaders: { 'X-Stream-Run-Id': 'run-9' },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ConversationPage conversationId="conv-1" focusApprovalId="ap-missing" onSelectConversation={vi.fn()} />)
+    await screen.findByText('整理一下客户反馈')
+
+    expect(await screen.findByText('没有定位到那条审批')).toBeInTheDocument()
+    expect(screen.queryByText('已按通知定位到这条审批')).toBeNull()
+    expect(document.querySelector('.flow-card--focus')).toBeNull()
   })
 })

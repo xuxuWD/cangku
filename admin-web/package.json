@@ -10,7 +10,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:ui-copy": "node scripts/check-ui-copy.mjs",
+    "check:contrast": "node scripts/check-contrast.mjs"
   },
   "dependencies": {
     "eventsource-parser": "4.1.1",

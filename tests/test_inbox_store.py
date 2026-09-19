@@ -31,6 +31,8 @@ def item(
     created_at: datetime | None = None,
     read_at: datetime | None = None,
     target_id: str = "task-1",
+    conversation_id: str | None = None,
+    approval_id: str | None = None,
 ) -> InboxItem:
     return InboxItem(
         inbox_id=inbox_id,
@@ -40,6 +42,9 @@ def item(
         title="你提交的任务已通过审批",
         target_type="task",
         target_id=target_id,
+        # S1 第三款（迁移 041）：可空上文；默认 None 即「存量通知」形态。
+        target_conversation_id=conversation_id,
+        target_approval_id=approval_id,
         created_at=created_at or datetime.now(UTC),
         read_at=read_at,
     )
@@ -163,7 +168,14 @@ class FakeConnection:
         return self.cursor_instance
 
 
-def row(*, inbox_id: str = "inbox-1", read_at: datetime | None = None) -> tuple:
+def row(
+    *,
+    inbox_id: str = "inbox-1",
+    read_at: datetime | None = None,
+    conversation_id: str | None = None,
+    approval_id: str | None = None,
+) -> tuple:
+    """按 `PostgresInboxStore._COLUMNS` 的顺序造一行（列顺序本身就是被测契约）。"""
     return (
         inbox_id,
         TENANT,
@@ -172,22 +184,29 @@ def row(*, inbox_id: str = "inbox-1", read_at: datetime | None = None) -> tuple:
         "你提交的任务已通过审批",
         "task",
         "task-1",
+        conversation_id,
+        approval_id,
         datetime(2026, 9, 11, tzinfo=UTC),
         read_at,
     )
 
 
 def test_postgres_store_inserts_and_hydrates() -> None:
-    connection = FakeConnection([row()])
+    connection = FakeConnection([row(conversation_id="conv-9", approval_id="ap-9")])
     store = PostgresInboxStore(connection)
 
-    saved = store.add(item())
+    saved = store.add(item(conversation_id="conv-9", approval_id="ap-9"))
 
     insert_params = [params for statement, params in connection.cursor_instance.statements if "INSERT" in statement][0]
     assert insert_params[0] == "inbox-1"
+    # 判定依据：参数顺序与 `_COLUMNS` 一致（错位即写错列）；两列上文落在 7 / 8 位。
+    assert insert_params[7] == "conv-9"
+    assert insert_params[8] == "ap-9"
     assert saved.inbox_id == "inbox-1"
     assert saved.kind is InboxKind.TASK_APPROVED
     assert saved.target_id == "task-1"
+    assert saved.target_conversation_id == "conv-9"
+    assert saved.target_approval_id == "ap-9"
     # 判定依据：写入时顺带清理过期条目，避免表无限增长。
     assert any("DELETE FROM workbench_inbox_items" in statement for statement, _ in connection.cursor_instance.statements)
 
@@ -205,6 +224,9 @@ def test_postgres_store_lists_with_recipient_scope_and_ordering() -> None:
     assert "LIMIT %s" in statement
     assert params == (TENANT, RECIPIENT, 20)
     assert [entry.inbox_id for entry in listed] == ["inbox-1", "inbox-2"]
+    # 判定依据：新列对「存量行」（上下文为 NULL）零破坏——读回来是 `None`，不是空串。
+    assert listed[0].target_conversation_id is None
+    assert listed[0].target_approval_id is None
 
 
 def test_postgres_store_counts_unread() -> None:

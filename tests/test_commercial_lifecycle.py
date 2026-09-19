@@ -21,6 +21,8 @@ from app.commercial.lifecycle import (
 )
 from app.commercial.repository import InMemoryCommercialRepository, ResourceNotFound
 from app.commercial.tenant import Actor, CommercialPolicyError, TenantStatus
+from app.domain import UserContext
+from app.knowledge_governance.models import KnowledgeDoc, KnowledgeDocStatus
 from app.memory.embedding import FakeEmbeddingAdapter
 from app.memory.service import MemoryService
 from app.memory.store import InMemoryMemoryStore
@@ -56,8 +58,175 @@ def test_delete_requires_cooldown_and_final_export():
     with pytest.raises(CommercialPolicyError):
         service.execute_delete(tenant.id, now=job.execute_after)
     service.mark_final_exported(job.id)
+    with pytest.raises(CommercialPolicyError):
+        service.execute_delete(tenant.id, now=job.execute_after)
+    service.confirm_deletion(Actor("admin-1", "customer_admin"), tenant.id)
     service.execute_delete(tenant.id, now=job.execute_after)
     assert service.tenant_status(tenant.id) == TenantStatus.DELETED
+
+
+# ---------------------------------------------------------------------------
+# B-3（2026-09-19）：删除清场扩围 + 记录确认人（真源 commercial-g0-design.md:114）
+# ---------------------------------------------------------------------------
+
+
+def test_delete_requires_recorded_confirmer_and_audits_confirmation():
+    repository, tenant, service = seeded_service(cooldown_days=7)
+    actor = Actor("admin-1", "customer_admin")
+    job = service.request_delete(actor, tenant.id)
+    service.mark_final_exported(job.id)
+
+    # 未记录确认人 ⇒ fail-closed（真源：「删除前必须生成最终导出包**并记录确认人**」）。
+    with pytest.raises(CommercialPolicyError, match="确认人"):
+        service.execute_delete(tenant.id, now=job.execute_after)
+
+    confirmed = service.confirm_deletion(actor, tenant.id)
+
+    assert confirmed.confirmed_by == "admin-1"
+    assert confirmed.confirmed_at is not None
+    records = service.audit.store.list_recent(tenant.id)
+    confirmed_actions = [r for r in records if r.action == AuditAction.COMMERCIAL_DELETION_CONFIRMED]
+    assert len(confirmed_actions) == 1
+    assert confirmed_actions[0].actor_id == "admin-1"
+    assert confirmed_actions[0].target_id == tenant.id
+
+    service.execute_delete(tenant.id, now=job.execute_after)
+
+    assert service.get_job(job.id).status == "completed"
+
+
+def test_confirmation_requires_admin_cooldown_and_final_export():
+    repository, tenant, service = seeded_service(cooldown_days=7)
+    actor = Actor("admin-1", "customer_admin")
+    job = service.request_delete(actor, tenant.id)
+
+    # ① 非管理员：拒绝
+    with pytest.raises(CommercialPolicyError):
+        service.confirm_deletion(Actor("employee-1", "employee"), tenant.id)
+    # ② 未完成最终导出：拒绝
+    with pytest.raises(CommercialPolicyError, match="最终导出"):
+        service.confirm_deletion(actor, tenant.id)
+
+    service.mark_final_exported(job.id)
+    # ③ 冷静期内确认：允许（确认只是记录「谁确认了」，执行仍受冷静期闸门约束）
+    service.confirm_deletion(actor, tenant.id)
+    with pytest.raises(CommercialPolicyError, match="冷静期"):
+        service.execute_delete(tenant.id, now=job.execute_after - timedelta(days=1))
+
+
+def test_confirmation_requires_audit_channel():
+    """与删除执行同口径 fail-closed：确认人必须可审计，没有审计通道就拒绝确认。"""
+    repository = InMemoryCommercialRepository()
+    tenant = repository.create_tenant("客户 A", owner_id="owner-1")
+    repository.add_customer_admin(tenant.id, "admin-1")
+    service = CommercialLifecycleService(repository, cooldown_days=7)
+    actor = Actor("admin-1", "customer_admin")
+    job = service.request_delete(actor, tenant.id)
+    service.mark_final_exported(job.id)
+
+    with pytest.raises(CommercialPolicyError, match="审计"):
+        service.confirm_deletion(actor, tenant.id)
+
+
+def test_delete_clears_skills_and_knowledge_stores_and_reports_categories():
+    """清场扩围：记忆层之外，技能层与知识治理层也按租户物理清场（真源「业务数据……按策略清理」）。"""
+    from app.knowledge_governance.store import InMemoryKnowledgeGovStore
+    from app.skills.store import InMemorySkillStore
+
+    repository, tenant, service = seeded_service(cooldown_days=7)
+    service.memory_store = _memory_store_with_one(tenant.id)
+    service.skills_store = _skill_store_with_one(tenant.id)
+    service.knowledge_store = _knowledge_store_with_one(tenant.id)
+    actor = Actor("admin-1", "customer_admin")
+    job = service.request_delete(actor, tenant.id)
+    service.mark_final_exported(job.id)
+    service.confirm_deletion(actor, tenant.id)
+
+    service.execute_delete(tenant.id, now=job.execute_after)
+
+    assert service.memory_store.list_all_for_tenant(tenant.id) == []
+    assert service.skills_store.list_all_for_tenant(tenant.id) == []
+    assert service.knowledge_store.list_all_for_tenant(tenant.id) == []
+    # 2026-09-19 加严：**面名之下是多张表**，只核 `list_all_for_tenant`（各层只读一张表）会漏掉
+    # 规则 / 画像 / 绑定三张表的残留（真机验证实测到该盲区），故按表逐张核到「整层」。
+    assert [r for r in service.memory_store._rules.values() if r.tenant_id == tenant.id] == []
+    assert [p for p in service.memory_store._profiles.values() if p.tenant_id == tenant.id] == []
+    assert [b for b in service.skills_store._bindings.values() if b.tenant_id == tenant.id] == []
+    executed = [
+        r for r in service.audit.store.list_recent(tenant.id)
+        if r.action == AuditAction.COMMERCIAL_DELETION_EXECUTED
+    ]
+    assert len(executed) == 1
+    # 清场面与确认人都要可追（受控值，不含自由文本）。
+    assert executed[0].detail["confirmed_by"] == "admin-1"
+    assert executed[0].detail["cleared_categories"] == ["knowledge_governance", "memories", "skills"]
+
+
+def _memory_store_with_one(tenant_id: str):
+    """记忆层**三张表各一行**（事实 / 规则 / 身份类画像）。
+
+    2026-09-19：原先只种事实一行 ⇒ 断言只能覆盖「面名」（`list_all_for_tenant` 只读事实表），
+    规则表与画像表的残留看不见（真机验证以同一盲区漏过一轮，见清单 10.7 该条留痕）。
+    """
+    from app.memory.embedding import FakeEmbeddingAdapter
+    from app.memory.service import MemoryService
+    from app.memory.store import InMemoryMemoryStore
+
+    store = InMemoryMemoryStore()
+    service = MemoryService(store, FakeEmbeddingAdapter())
+    actor = UserContext(tenant_id, "u-1", "super_admin")
+    service.create_fact(
+        actor, content="待清场记忆", scope="user", owner_kind="user", owner_id="u-1",
+        idempotency_key="b3-purge-1",
+    )
+    service.create_rule(
+        actor, rule_key="walk.rule", content="待清场规则",
+        scope="user", owner_kind="user", owner_id="u-1",
+    )
+    service.set_profile_key(
+        actor, key="walk-profile", value="待清场画像", owner_kind="user", owner_id="u-1",
+    )
+    return store
+
+
+def _skill_store_with_one(tenant_id: str):
+    """技能层**两张表各一行**（技能包 / 数字员工绑定）—— 口径同上（绑定表原先没种）。"""
+    from app.skills.models import Skill, SkillStatus
+    from app.skills.store import InMemorySkillStore
+
+    store = InMemorySkillStore()
+    actor = UserContext(tenant_id=tenant_id, user_id="u-1", role="super_admin")
+    store.submit(
+        actor,
+        skill=Skill(
+            tenant_id=tenant_id, skill_key="walk-skill", version="1", name="走查技能",
+            description="待清场技能", license="MIT", allowed_tools=(), status=SkillStatus.SUBMITTED,
+            source_key="walk", content_sha256="sha256:" + "a" * 64, owner_id="u-1",
+        ),
+        package_sha256="sha256:" + "a" * 64,
+    )
+    store.bind_skill(actor, "walk-agent", "walk-skill", created_by="u-1")
+    return store
+
+
+def _knowledge_store_with_one(tenant_id: str):
+    from app.knowledge_governance.store import InMemoryKnowledgeGovStore
+
+    store = InMemoryKnowledgeGovStore()
+    store.register_document(
+        UserContext(tenant_id=tenant_id, user_id="u-1", role="super_admin"),
+        doc=KnowledgeDoc(
+            tenant_id=tenant_id,
+            document_id="walk-doc",
+            title="待清场文档",
+            owner_id="u-1",
+            status=KnowledgeDocStatus.DRAFT,
+            version="v1",
+            source_key="walk",
+            registered_by="u-1",
+        ),
+    )
+    return store
 
 
 def test_retention_policy_has_positive_days_and_is_audited():
@@ -316,6 +485,13 @@ def test_worker_deletes_after_cooldown_and_final_export_with_audit():
     assert len(executed) == 1
     assert executed[0].target_type == "tenant"
     assert executed[0].target_id == tenant.id
+    # B-3：管理员未显式确认时，worker 到期**按申请自动确认**（确认人 = 请求人），
+    # 且与手动确认写**同一审计动作** ⇒ 自动路径同样可追，不会静默删除。
+    confirmed = [r for r in records if r.action == AuditAction.COMMERCIAL_DELETION_CONFIRMED]
+    assert len(confirmed) == 1
+    assert confirmed[0].actor_id == "admin-1"
+    assert service.get_job(delete_job.id).confirmed_by == "admin-1"
+    assert executed[0].detail["confirmed_by"] == "admin-1"
 
 
 def test_delete_execution_fails_closed_without_audit_channel():
@@ -328,6 +504,9 @@ def test_delete_execution_fails_closed_without_audit_channel():
     service.mark_final_exported(delete_job.id)
 
     with pytest.raises(CommercialPolicyError, match="审计"):
+        service.confirm_deletion(actor, tenant.id)
+    # 未确认 ⇒ 删除执行同样被拒（不无审计地删租户；执行侧的审计闸门是第二道防线）。
+    with pytest.raises(CommercialPolicyError, match="确认人"):
         service.execute_delete(tenant.id, now=delete_job.execute_after)
 
 
@@ -425,12 +604,14 @@ def test_execute_delete_targets_most_recent_delete_job():
     newer = LifecycleJob(
         tenant_id=tenant.id, kind="delete", status="cooling_down", requested_by="admin-1",
         requested_at=datetime(2026, 9, 12, 8, 0, tzinfo=UTC),
-        execute_after=datetime(2026, 9, 13, 8, 0, tzinfo=UTC), final_exported=True, id="job-newer",
+        execute_after=datetime(2026, 9, 13, 8, 0, tzinfo=UTC), final_exported=True,
+        confirmed_by="admin-1", id="job-newer",
     )
     older = LifecycleJob(
         tenant_id=tenant.id, kind="delete", status="cooling_down", requested_by="admin-1",
         requested_at=datetime(2026, 9, 10, 8, 0, tzinfo=UTC),
-        execute_after=datetime(2026, 9, 11, 8, 0, tzinfo=UTC), final_exported=True, id="job-older",
+        execute_after=datetime(2026, 9, 11, 8, 0, tzinfo=UTC), final_exported=True,
+        confirmed_by="admin-1", id="job-older",
     )
     service.job_store.create(newer)  # 先插入时间更晚的 ⇒ 插入顺序 != 时间顺序
     service.job_store.create(older)
@@ -449,6 +630,7 @@ def test_execute_delete_goes_through_state_machine(monkeypatch):
     actor = Actor("admin-1", "customer_admin")
     job = service.request_delete(actor, tenant.id)
     service.mark_final_exported(job.id)
+    service.confirm_deletion(actor, tenant.id)
     seen: list[TenantStatus] = []
     real = lifecycle_module.transition_tenant
 
@@ -462,6 +644,74 @@ def test_execute_delete_goes_through_state_machine(monkeypatch):
 
     # 断言：删除执行经 `transition_tenant`（状态机）而非直接改状态字段。
     assert seen == [TenantStatus.DELETED]
+
+
+# ---------------------------------------------------------------------------
+# B-1（2026-09-19）：列出本租户导出包（取回端点的「发现」补链）
+# 契约：docs/api-contract.md「GET /api/v1/commercial/exports」
+# 判据：admin-only、租户隔离、按生成时间倒序（同刻按包号倒序）、计数与分页、
+#       列表是**元数据面**（不携带载荷）。
+# ---------------------------------------------------------------------------
+
+
+def _summary_package_ids(items) -> list[str]:
+    return [item.id for item in items]
+
+
+def test_list_export_packages_scopes_tenant_and_orders_deterministically():
+    repository, tenant, service = seeded_service()
+    other = repository.create_tenant("客户 B", owner_id="owner-2")
+    now = datetime(2026, 9, 19, 8, 0, tzinfo=UTC)
+    older = service.store_export_package(
+        tenant.id, "job-ls-old", created_at=now, expires_at=now + EXPORT_PACKAGE_TTL
+    )
+    tie_a = service.store_export_package(
+        tenant.id, "job-ls-a", created_at=now + timedelta(minutes=1), expires_at=now + EXPORT_PACKAGE_TTL
+    )
+    tie_b = service.store_export_package(
+        tenant.id, "job-ls-b", created_at=now + timedelta(minutes=1), expires_at=now + EXPORT_PACKAGE_TTL
+    )
+    # 他租户的包**比本租户任何一条都新** ⇒ 若租户过滤缺失，它必然出现在首位（反假可构造）。
+    foreign = service.store_export_package(
+        other.id, "job-ls-foreign", created_at=now + timedelta(minutes=2), expires_at=now + EXPORT_PACKAGE_TTL
+    )
+
+    items, total = service.list_export_packages(
+        Actor("admin-1", "customer_admin"), tenant.id, limit=10, offset=0
+    )
+
+    assert total == 3
+    # 倒序（最新在前）+ 同刻按包号倒序 ⇒ 顺序确定（不依赖插入/物理行序）。
+    assert _summary_package_ids(items) == [*sorted([tie_b.id, tie_a.id], reverse=True), older.id]
+    assert foreign.id not in _summary_package_ids(items)
+    assert {item.tenant_id for item in items} == {tenant.id}
+    # 列表是元数据面：不携带载荷（载荷按包号单独取回，避免列表接口携带大体积数据）。
+    assert not hasattr(items[0], "payload")
+
+
+def test_list_export_packages_requires_admin_and_pages_by_offset():
+    repository, tenant, service = seeded_service()
+    now = datetime(2026, 9, 19, 8, 0, tzinfo=UTC)
+    first = service.store_export_package(
+        tenant.id, "job-lp-1", created_at=now, expires_at=now + EXPORT_PACKAGE_TTL
+    )
+    service.store_export_package(
+        tenant.id, "job-lp-2", created_at=now + timedelta(minutes=1), expires_at=now + EXPORT_PACKAGE_TTL
+    )
+    actor = Actor("admin-1", "customer_admin")
+
+    with pytest.raises(CommercialPolicyError):
+        service.list_export_packages(Actor("employee-1", "employee"), tenant.id)
+
+    page, total = service.list_export_packages(actor, tenant.id, limit=1, offset=1)
+
+    assert total == 2  # 计数是**过滤后**的总数，不受分页影响
+    assert _summary_package_ids(page) == [first.id]
+
+    empty_page, same_total = service.list_export_packages(actor, tenant.id, limit=10, offset=10)
+
+    # 越界分页：返回空页（不报错），总数不变。
+    assert empty_page == [] and same_total == 2
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +780,7 @@ def test_execute_delete_purges_memories_when_store_injected():
 
     delete_job = service.request_delete(Actor("admin-1", "customer_admin"), tenant.id)
     service.mark_final_exported(delete_job.id)
+    service.confirm_deletion(Actor("admin-1", "customer_admin"), tenant.id)
     service.execute_delete(tenant.id, now=delete_job.execute_after + timedelta(seconds=1))
 
     assert service.tenant_status(tenant.id) == TenantStatus.DELETED

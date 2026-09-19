@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
+import { EmptyState } from '../../components/ui/EmptyState'
 import { createAgent, createRole, listAgents, listCandidates, listModelCandidates, readAgentConfig, readToolCatalog, listRoles, updateAgent, updateAgentConfig, updateRole } from './api'
 import { asDirectoryError, initialDirectoryState } from './state'
 import { formatLocalTime } from '../../utils/time'
@@ -167,7 +168,7 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
       if (!Array.isArray(models?.items) || !Array.isArray(catalog?.items) || !Array.isArray(catalog?.allowlist)) {
         setModelKeys(null)
         setToolCatalog(null)
-        setCandidateError({ status: 0, message: '候选端点返回的数据形态不完整，已回落自由文本输入。', retryable: true })
+        setCandidateError({ status: 0, message: '可选清单返回的内容不完整，已改为手动填写。', retryable: true })
         return
       }
       setModelKeys(models.items.filter((key): key is string => typeof key === 'string' && key.trim() !== ''))
@@ -248,41 +249,65 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
   }
 
   return <>
-    <main className="main-content content-history workforce-settings">
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">数字员工设置</h1>
-          <p className="page-desc">维护本租户的岗位与数字员工。标识创建后不可修改；停用只影响后续挂载与指派，不撤销既有知识绑定、也不影响历史任务。仅超级管理员可读写。</p>
+    <main className="main-content content-history t3 workforce-settings">
+      <div className="t3__intro">
+        <p className="page-desc">维护本公司的岗位与数字员工：标识创建后不可修改；停用只影响后续挂载与指派，不撤销已有的知识范围绑定，也不影响历史任务。仅超级管理员可读写。</p>
+        <div className="t3__actions">
+          <button className="btn btn--secondary" type="button" disabled={state.loading} onClick={() => void load()}>{state.loading ? '正在刷新' : '刷新'}</button>
         </div>
-        <div className="actions"><button className="button" type="button" onClick={() => void load()}>刷新</button></div>
+      </div>
+
+      <div className="metrics">
+        <div className="metric">
+          <div className="metric__label">岗位</div>
+          <div className="metric__value">{state.loading ? '—' : state.roles.total}</div>
+          <div className="metric__hint">已纳入目录的岗位数</div>
+        </div>
+        <div className="metric">
+          <div className="metric__label">数字员工</div>
+          <div className="metric__value">{state.loading ? '—' : state.agents.total}</div>
+          <div className="metric__hint">已纳入目录的数字员工数</div>
+        </div>
+        <div className="metric">
+          <div className="metric__label">未纳管标识</div>
+          <div className="metric__value">{state.loading ? '—' : state.candidates.roles.length + state.candidates.agents.length}</div>
+          <div className="metric__hint">出现在知识绑定或历史任务里、尚未纳入目录</div>
+        </div>
+        <div className="metric">
+          <div className="metric__label">启用中的岗位</div>
+          <div className="metric__value">{state.loading ? '—' : activeRoles.length}</div>
+          <div className="metric__hint">新建数字员工时只能挂到启用的岗位</div>
+        </div>
       </div>
 
       <div className="toolbar">
-        <div className="segment" role="tablist" aria-label="目录类型">
-          <button role="tab" type="button" aria-selected={state.tab === 'roles'} className={state.tab === 'roles' ? 'active' : ''} onClick={() => switchTab('roles')}>岗位</button>
-          <button role="tab" type="button" aria-selected={state.tab === 'agents'} className={state.tab === 'agents' ? 'active' : ''} onClick={() => switchTab('agents')}>数字员工</button>
+        <div className="segmented" role="tablist" aria-label="目录类型">
+          <button role="tab" type="button" aria-selected={state.tab === 'roles'} className={state.tab === 'roles' ? 'is-active' : ''} onClick={() => switchTab('roles')}>岗位</button>
+          <button role="tab" type="button" aria-selected={state.tab === 'agents'} className={state.tab === 'agents' ? 'is-active' : ''} onClick={() => switchTab('agents')}>数字员工</button>
         </div>
         <span className="role-note">{state.tab === 'roles' ? `共 ${state.roles.total} 个岗位` : `共 ${state.agents.total} 个数字员工`}</span>
       </div>
 
-      {state.error && <div className="notice notice-error" role="alert"><div><strong>目录加载失败</strong><p>{state.error.message}</p></div>{state.error.retryable && <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button>}</div>}
+      {state.error && <div className="notice notice-error" role="alert"><div><strong>名单加载失败</strong><p>{state.error.message}</p></div>{state.error.retryable && <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button>}</div>}
       {!state.error && state.formError && <div className="notice notice-error" role="alert"><div><strong>保存失败</strong><p>{state.formError.message}</p></div></div>}
       {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载岗位与数字员工…</div>}
 
       {!state.loading && !state.error && state.tab === 'roles' && <>
-        <section className="history-panel workforce-settings__panel" aria-label="新建岗位">
-          <div className="panel-header"><h2>新建岗位</h2><span>标识创建后不可修改</span></div>
-          <div className="ws-form">
-            <label className="ws-field">岗位标识<input value={roleForm.role_key} placeholder="content-operator" onChange={(event) => setRoleForm({ ...roleForm, role_key: event.target.value })} /></label>
-            <label className="ws-field">中文名<input value={roleForm.name} placeholder="自媒体运营岗" onChange={(event) => setRoleForm({ ...roleForm, name: event.target.value })} /></label>
-            <label className="ws-field ws-field--wide">描述<input value={roleForm.description} placeholder="可选" onChange={(event) => setRoleForm({ ...roleForm, description: event.target.value })} /></label>
-            <div className="ws-submit"><button className="button primary" type="button" disabled={state.saving} onClick={() => void submit(() => createRole(roleForm), `岗位 ${roleForm.role_key} 已创建`, () => setRoleForm(EMPTY_ROLE_FORM))}>创建岗位</button></div>
+        <section className="card" aria-label="新建岗位">
+          <div className="card__head"><h2>新建岗位</h2><span className="role-note">标识创建后不可修改</span></div>
+          <div className="card__body">
+            <div className="ws-form">
+              <label className="ws-field">岗位标识<input value={roleForm.role_key} placeholder="content-operator" onChange={(event) => setRoleForm({ ...roleForm, role_key: event.target.value })} /></label>
+              <label className="ws-field">中文名<input value={roleForm.name} placeholder="自媒体运营岗" onChange={(event) => setRoleForm({ ...roleForm, name: event.target.value })} /></label>
+              <label className="ws-field ws-field--wide">描述<input value={roleForm.description} placeholder="可选" onChange={(event) => setRoleForm({ ...roleForm, description: event.target.value })} /></label>
+              <div className="ws-submit"><button className="btn btn--primary" type="button" disabled={state.saving} onClick={() => void submit(() => createRole(roleForm), `岗位 ${roleForm.role_key} 已创建`, () => setRoleForm(EMPTY_ROLE_FORM))}>创建岗位</button></div>
+            </div>
           </div>
         </section>
 
-        <section className="history-panel workforce-settings__panel" aria-label="岗位列表">
-          <div className="panel-header"><h2>岗位</h2><span>{state.roles.items.length} / {state.roles.total}</span></div>
-          {state.roles.items.length === 0 && <div className="empty-state"><strong>暂无岗位</strong><span>先创建一个岗位，再把数字员工挂载到它下面。</span></div>}
+        <section className="card" aria-label="岗位列表">
+          <div className="card__head"><h2>岗位</h2><span className="role-note">{state.roles.items.length} / {state.roles.total}</span></div>
+          {state.roles.items.length === 0 && <EmptyState illustration="list" title="暂无岗位" text="先创建一个岗位，再把数字员工挂到它下面。" />}
           {state.roles.items.map((role) => editing?.kind === 'role' && editing.key === role.role_key
             ? <div className="ws-row" key={role.role_key}>
               <div className="ws-row-main">
@@ -291,8 +316,8 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
                 <div className="history-meta"><span className="ws-code">{role.role_key}</span><span>标识不可修改</span></div>
               </div>
               <div className="history-actions">
-                <button className="button primary" type="button" disabled={state.saving} onClick={() => void submit(() => updateRole(role.role_key, { name: editing.name, description: editing.description }), `岗位 ${role.role_key} 已更新`)}>保存</button>
-                <button className="button" type="button" onClick={() => setEditing(null)}>取消</button>
+                <button className="btn btn--primary btn--sm" type="button" disabled={state.saving} onClick={() => void submit(() => updateRole(role.role_key, { name: editing.name, description: editing.description }), `岗位 ${role.role_key} 已更新`)}>保存</button>
+                <button className="btn btn--secondary btn--sm" type="button" onClick={() => setEditing(null)}>取消</button>
               </div>
             </div>
             : <div className="ws-row" key={role.role_key}>
@@ -305,38 +330,42 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
                 </div>
               </div>
               <div className="history-actions">
-                <button className="button" type="button" onClick={() => setEditing({ kind: 'role', key: role.role_key, name: role.name, description: role.description, role_key: role.role_key })}>修改</button>
-                <button className="button" type="button" disabled={state.saving} onClick={() => void submit(() => updateRole(role.role_key, { status: role.status === 'active' ? 'disabled' : 'active' }), `岗位 ${role.role_key} 已${role.status === 'active' ? '停用' : '启用'}`)}>{role.status === 'active' ? '停用' : '启用'}</button>
+                <button className="btn btn--secondary btn--sm" type="button" onClick={() => setEditing({ kind: 'role', key: role.role_key, name: role.name, description: role.description, role_key: role.role_key })}>修改</button>
+                <button className="btn btn--secondary btn--sm" type="button" disabled={state.saving} onClick={() => void submit(() => updateRole(role.role_key, { status: role.status === 'active' ? 'disabled' : 'active' }), `岗位 ${role.role_key} 已${role.status === 'active' ? '停用' : '启用'}`)}>{role.status === 'active' ? '停用' : '启用'}</button>
               </div>
             </div>)}
         </section>
 
-        {state.candidates.roles.length > 0 && <section className="history-panel workforce-settings__panel" aria-label="未纳管岗位标识">
-          <div className="panel-header"><h2>未纳管标识</h2><span>{state.candidates.roles.length} 个</span></div>
-          <p className="ws-hint">这些标识已出现在知识范围绑定里，但还没有纳入目录。纳管时补一个中文名即可（标识保持不变）。</p>
+        {state.candidates.roles.length > 0 && <section className="card" aria-label="未纳管岗位标识">
+          <div className="card__head"><h2>未纳管标识</h2><span className="role-note">{state.candidates.roles.length} 个</span></div>
+          <div className="card__body">
+            <p className="stage-hint">这些标识已出现在知识范围绑定里，但还没有纳入目录。纳管时补一个中文名即可（标识保持不变）。</p>
+          </div>
           {state.candidates.roles.map((key) => <div className="ws-row" key={key}>
             <div className="ws-row-main"><strong className="ws-code">{key}</strong><div className="history-meta"><span>来源：知识范围绑定</span></div></div>
-            <div className="history-actions"><button className="button" type="button" onClick={() => setRoleForm({ role_key: key, name: '', description: '' })}>纳管</button></div>
+            <div className="history-actions"><button className="btn btn--secondary btn--sm" type="button" onClick={() => setRoleForm({ role_key: key, name: '', description: '' })}>纳管</button></div>
           </div>)}
         </section>}
       </>}
 
       {!state.loading && !state.error && state.tab === 'agents' && <>
-        <section className="history-panel workforce-settings__panel" aria-label="新建数字员工">
-          <div className="panel-header"><h2>新建数字员工</h2><span>必须归属一个启用的岗位</span></div>
-          <div className="ws-form">
-            <label className="ws-field">员工标识<input value={agentForm.agent_key} placeholder="content-writer" onChange={(event) => setAgentForm({ ...agentForm, agent_key: event.target.value })} /></label>
-            <label className="ws-field">中文名<input value={agentForm.name} placeholder="内容创作数字员工" onChange={(event) => setAgentForm({ ...agentForm, name: event.target.value })} /></label>
-            <label className="ws-field">所属岗位<select value={agentForm.role_key} onChange={(event) => setAgentForm({ ...agentForm, role_key: event.target.value })}><option value="">请选择岗位</option>{activeRoles.map((role) => <option key={role.role_key} value={role.role_key}>{role.name}（{role.role_key}）</option>)}</select></label>
-            <label className="ws-field ws-field--wide">描述<input value={agentForm.description} placeholder="可选" onChange={(event) => setAgentForm({ ...agentForm, description: event.target.value })} /></label>
-            <div className="ws-submit"><button className="button primary" type="button" disabled={state.saving} onClick={() => void submit(() => createAgent(agentForm), `数字员工 ${agentForm.agent_key} 已创建`, () => setAgentForm(EMPTY_AGENT_FORM))}>创建数字员工</button></div>
+        <section className="card" aria-label="新建数字员工">
+          <div className="card__head"><h2>新建数字员工</h2><span className="role-note">必须归属一个启用中的岗位</span></div>
+          <div className="card__body">
+            <div className="ws-form">
+              <label className="ws-field">员工标识<input value={agentForm.agent_key} placeholder="content-writer" onChange={(event) => setAgentForm({ ...agentForm, agent_key: event.target.value })} /></label>
+              <label className="ws-field">中文名<input value={agentForm.name} placeholder="内容创作数字员工" onChange={(event) => setAgentForm({ ...agentForm, name: event.target.value })} /></label>
+              <label className="ws-field">所属岗位<select value={agentForm.role_key} onChange={(event) => setAgentForm({ ...agentForm, role_key: event.target.value })}><option value="">请选择岗位</option>{activeRoles.map((role) => <option key={role.role_key} value={role.role_key}>{role.name}（{role.role_key}）</option>)}</select></label>
+              <label className="ws-field ws-field--wide">描述<input value={agentForm.description} placeholder="可选" onChange={(event) => setAgentForm({ ...agentForm, description: event.target.value })} /></label>
+              <div className="ws-submit"><button className="btn btn--primary" type="button" disabled={state.saving} onClick={() => void submit(() => createAgent(agentForm), `数字员工 ${agentForm.agent_key} 已创建`, () => setAgentForm(EMPTY_AGENT_FORM))}>创建数字员工</button></div>
+            </div>
+            {activeRoles.length === 0 && <p className="stage-hint">当前没有启用中的岗位：请先在「岗位」页签创建岗位，再回来挂载数字员工。</p>}
           </div>
-          {activeRoles.length === 0 && <p className="ws-hint">当前没有启用中的岗位：请先在「岗位」页签创建岗位，再回来挂载数字员工。</p>}
         </section>
 
-        <section className="history-panel workforce-settings__panel" aria-label="数字员工列表">
-          <div className="panel-header"><h2>数字员工</h2><span>{state.agents.items.length} / {state.agents.total}</span></div>
-          {state.agents.items.length === 0 && <div className="empty-state"><strong>暂无数字员工</strong><span>创建数字员工后需要指定它归属的岗位。</span></div>}
+        <section className="card" aria-label="数字员工列表">
+          <div className="card__head"><h2>数字员工</h2><span className="role-note">{state.agents.items.length} / {state.agents.total}</span></div>
+          {state.agents.items.length === 0 && <EmptyState illustration="list" title="暂无数字员工" text="创建数字员工后需要指定它归属的岗位。" />}
           {state.agents.items.map((employee) => (
             <Fragment key={employee.agent_key}>
               {editing?.kind === 'agent' && editing.key === employee.agent_key
@@ -348,8 +377,8 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
                     <div className="history-meta"><span className="ws-code">{employee.agent_key}</span><span>标识不可修改</span></div>
                   </div>
                   <div className="history-actions">
-                    <button className="button primary" type="button" disabled={state.saving} onClick={() => void submit(() => updateAgent(employee.agent_key, { name: editing.name, description: editing.description, role_key: editing.role_key }), `数字员工 ${employee.agent_key} 已更新`)}>保存</button>
-                    <button className="button" type="button" onClick={() => setEditing(null)}>取消</button>
+                    <button className="btn btn--primary btn--sm" type="button" disabled={state.saving} onClick={() => void submit(() => updateAgent(employee.agent_key, { name: editing.name, description: editing.description, role_key: editing.role_key }), `数字员工 ${employee.agent_key} 已更新`)}>保存</button>
+                    <button className="btn btn--secondary btn--sm" type="button" onClick={() => setEditing(null)}>取消</button>
                   </div>
                 </div>
                 : <div className="ws-row">
@@ -363,9 +392,9 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
                     </div>
                   </div>
                   <div className="history-actions">
-                    <button className="button" type="button" onClick={() => void openConfig(employee.agent_key)}>配置</button>
-                    <button className="button" type="button" onClick={() => setEditing({ kind: 'agent', key: employee.agent_key, name: employee.name, description: employee.description, role_key: employee.role_key })}>修改</button>
-                    <button className="button" type="button" disabled={state.saving} onClick={() => void submit(() => updateAgent(employee.agent_key, { status: employee.status === 'active' ? 'disabled' : 'active' }), `数字员工 ${employee.agent_key} 已${employee.status === 'active' ? '停用' : '启用'}`)}>{employee.status === 'active' ? '停用' : '启用'}</button>
+                    <button className="btn btn--secondary btn--sm" type="button" onClick={() => void openConfig(employee.agent_key)}>配置</button>
+                    <button className="btn btn--secondary btn--sm" type="button" onClick={() => setEditing({ kind: 'agent', key: employee.agent_key, name: employee.name, description: employee.description, role_key: employee.role_key })}>修改</button>
+                    <button className="btn btn--secondary btn--sm" type="button" disabled={state.saving} onClick={() => void submit(() => updateAgent(employee.agent_key, { status: employee.status === 'active' ? 'disabled' : 'active' }), `数字员工 ${employee.agent_key} 已${employee.status === 'active' ? '停用' : '启用'}`)}>{employee.status === 'active' ? '停用' : '启用'}</button>
                   </div>
                 </div>}
 
@@ -391,12 +420,14 @@ export function WorkforceSettingsPage({ onNavigate }: { onNavigate?: (view: AppV
           ))}
         </section>
 
-        {state.candidates.agents.length > 0 && <section className="history-panel workforce-settings__panel" aria-label="未纳管员工标识">
-          <div className="panel-header"><h2>未纳管标识</h2><span>{state.candidates.agents.length} 个</span></div>
-          <p className="ws-hint">这些标识出现在知识范围绑定或历史任务里，但还没有纳入目录。纳管时补一个中文名并选择所属岗位。</p>
+        {state.candidates.agents.length > 0 && <section className="card" aria-label="未纳管员工标识">
+          <div className="card__head"><h2>未纳管标识</h2><span className="role-note">{state.candidates.agents.length} 个</span></div>
+          <div className="card__body">
+            <p className="stage-hint">这些标识出现在知识范围绑定或历史任务里，但还没有纳入目录。纳管时补一个中文名并选择所属岗位。</p>
+          </div>
           {state.candidates.agents.map((key) => <div className="ws-row" key={key}>
             <div className="ws-row-main"><strong className="ws-code">{key}</strong><div className="history-meta"><span>来源：知识范围绑定或历史任务</span></div></div>
-            <div className="history-actions"><button className="button" type="button" onClick={() => setAgentForm({ agent_key: key, name: '', role_key: activeRoles[0]?.role_key ?? '', description: '' })}>纳管</button></div>
+            <div className="history-actions"><button className="btn btn--secondary btn--sm" type="button" onClick={() => setAgentForm({ agent_key: key, name: '', role_key: activeRoles[0]?.role_key ?? '', description: '' })}>纳管</button></div>
           </div>)}
         </section>}
       </>}
@@ -469,7 +500,7 @@ function AgentConfigEditor({
                 maxLength={MAX_SYSTEM_PROMPT_LENGTH}
                 onChange={(event) => onChange({ ...form, system_prompt: event.target.value })}
               />
-              <small className="ws-field-hint">前端上限 {MAX_SYSTEM_PROMPT_LENGTH} 字符，后端才是权威（超长或含「忽略 / 绕过审批」这类指令一律被拒绝）。</small>
+              <small className="ws-field-hint">最多 {MAX_SYSTEM_PROMPT_LENGTH} 字；写着「忽略审批」「绕过审批」这类指令的提示词会被拒绝。</small>
               <small className="ws-counter">{form.system_prompt.length} / {MAX_SYSTEM_PROMPT_LENGTH}</small>
             </label>
 
@@ -488,16 +519,16 @@ function AgentConfigEditor({
                   </select>
                   <small className="ws-field-hint">
                     {modelKeys.length === 0
-                      ? '本部署未注册任何模型键（模型由配置注入）：只能使用默认模型；留空即默认。'
-                      : `候选 ${modelKeys.length} 个，来自模型网关注册键（与保存闸门同源）；不在候选内的键会被后端拒绝（422）。`}
+                      ? '本部署没有登记可选的模型键（模型由部署配置决定）：只能用默认模型；留空即默认。'
+                      : `可选 ${modelKeys.length} 个，来自本部署已登记的模型键；不在其中的键保存时会被拒绝。`}
                   </small>
                 </>
               ) : (
                 <>
-                  <input aria-label="模型键" value={form.model_key} placeholder="须在模型网关注册" onChange={(event) => onChange({ ...form, model_key: event.target.value })} />
+                  <input aria-label="模型键" value={form.model_key} placeholder="须为本部署已登记的模型键" onChange={(event) => onChange({ ...form, model_key: event.target.value })} />
                   <small className="ws-field-hint">
-                    候选端点不可用（{candidateError?.message ?? '读取失败'}）⇒ 已回落自由文本；
-                    {form.model_key.trim() === '' ? `当前为「${EMPTY_MODEL_KEY_LABEL}」。` : '不在模型网关候选内的键会被后端拒绝（422）。'}
+                    暂时读不到可选的模型清单（{candidateError?.message ?? '读取失败'}）⇒ 已改为手动填写；
+                    {form.model_key.trim() === '' ? `当前为「${EMPTY_MODEL_KEY_LABEL}」。` : '不在已登记清单里的键保存时会被拒绝。'}
                   </small>
                 </>
               )}
@@ -537,14 +568,14 @@ function AgentConfigEditor({
                     })}
                   </div>
                   <small className="ws-field-hint">
-                    勾选项来自「执行工具目录」；能保存的键以「规划器工具白名单」（保存闸门）为准——
-                    不在其中的目录项已灰显并给出原因，保存仍由服务端校验（非法键 422）。
+                    勾选项来自「执行工具清单」；能保存哪些以「规划器工具白名单」为准——
+                    不在其中的工具已灰显并给出原因，保存时仍会被校验拒绝。
                   </small>
                   {blockedTools.length > 0 && (
                     <div className="notice" role="status">
                       <div>
                         <strong>当前配置含不可用工具（{blockedTools.length} 项）</strong>
-                        <p>这些键不在保存闸门内，直接保存会被后端拒绝（422）。</p>
+                        <p>这些工具当前不可勾选，直接保存会被拒绝。</p>
                       </div>
                       <button
                         className="text-action"
@@ -573,7 +604,7 @@ function AgentConfigEditor({
                     })}
                   />
                   <small className="ws-field-hint">
-                    工具目录端点不可用（{candidateError?.message ?? '读取失败'}）⇒ 已回落自由文本；白名单外的工具会被后端拒绝（422）。
+                    暂时读不到工具清单（{candidateError?.message ?? '读取失败'}）⇒ 已改为手动填写；不在白名单里的工具保存时会被拒绝。
                   </small>
                 </>
               )}
@@ -624,7 +655,7 @@ function AgentConfigEditor({
             <label className="ws-field">
               每日预算（元）
               <input aria-label="每日预算（元）" type="number" min={0} step={0.01} value={form.daily_budget_yuan} onChange={(event) => onChange({ ...form, daily_budget_yuan: event.target.value })} />
-              <small className="ws-field-hint">按元填写，提交时换算为整数分（后端字段是 daily_budget_cents）。</small>
+              <small className="ws-field-hint">按元填写，保存时换算为整数分（金额一律以分为单位记录，避免小数误差）。</small>
             </label>
 
             <div className="ws-field ws-field--wide">
@@ -641,8 +672,8 @@ function AgentConfigEditor({
       </div>
 
       <div className="history-actions">
-        <button className="button primary" type="button" disabled={saving || !form} onClick={onSave}>保存配置</button>
-        <button className="button" type="button" onClick={onClose}>收起</button>
+        <button className="btn btn--primary" type="button" disabled={saving || !form} onClick={onSave}>保存配置</button>
+        <button className="btn btn--secondary" type="button" onClick={onClose}>收起</button>
       </div>
     </div>
   )

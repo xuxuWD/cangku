@@ -30,6 +30,12 @@ TWO_STEPS = [
     {"step_id": "s1", "kind": "read", "tool": "knowledge.search"},
     {"step_id": "s2", "kind": "write", "tool": "file.write"},
 ]
+# 两步都待审批：批准 s2 后 s3 仍待批 ⇒ 运行停在「运行中」（终态不可再干预，验证 resume 必须用非终态运行）。
+THREE_STEPS = [
+    {"step_id": "s1", "kind": "read", "tool": "knowledge.search"},
+    {"step_id": "s2", "kind": "write", "tool": "file.write"},
+    {"step_id": "s3", "kind": "write", "tool": "file.write"},
+]
 MODE = "product_manager"
 
 
@@ -57,8 +63,8 @@ def build_service() -> tuple[RuntimeService, InMemoryRunRecordStore, Task]:
     return RuntimeService(task_store, run_metrics=RunMetricsService(record_store)), record_store, task
 
 
-def start_run(service: RuntimeService, task: Task) -> str:
-    run_id, _key, _version = service.start(OWNER, task.id, "mock", TWO_STEPS, MODE)
+def start_run(service: RuntimeService, task: Task, steps=None) -> str:
+    run_id, _key, _version = service.start(OWNER, task.id, "mock", steps or TWO_STEPS, MODE)
     return run_id
 
 
@@ -203,7 +209,8 @@ def test_rejection_revokes_any_existing_authorization() -> None:
 
 def test_resume_passes_when_plan_matches_authorization() -> None:
     service, _record_store, task = build_service()
-    run_id = start_run(service, task)
+    # 三步计划：批准 s2 后 s3 仍待批 ⇒ 运行停在「运行中」，resume 才有意义（终态不可再干预）。
+    run_id = start_run(service, task, THREE_STEPS)
     service.decide_approval(DECIDER, run_id, "s2", True)
 
     service.resume(DECIDER, run_id)  # 不抛即通过

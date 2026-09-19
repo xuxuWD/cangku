@@ -6,6 +6,7 @@ import { ObjectSelect } from '../../components/ObjectSelect'
 import { SaveButton } from '../../components/SaveButton'
 import { SegmentedControl } from '../../components/SegmentedControl'
 import { Toast } from '../../components/Toast'
+import { EmptyState } from '../../components/ui/EmptyState'
 import { getDirectorySubjects, getKnowledgeAccess, getKnowledgeAudits, saveKnowledgeAccess, type DirectorySubjects } from './api'
 import { AuditTimeline } from './AuditTimeline'
 import { initialKnowledgeState, createIdempotencyKey } from './state'
@@ -30,6 +31,8 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
   // 候选岗位/数字员工来自目录（「数字员工设置」）；为空时本页无事可做，给出明确指引。
   const [subjects, setSubjects] = useState<DirectorySubjects>({ role: [], agent: [] })
   const [subjectsLoading, setSubjectsLoading] = useState(true)
+  // 目录读取失败或为空后，允许重新读取一次（真实动作，不做本地猜测）。
+  const [directoryNonce, setDirectoryNonce] = useState(0)
   const subjectsInitialised = useRef(false)
   const loadSequence = useRef(0)
   const options = subjects[state.subjectType]
@@ -73,6 +76,13 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
       }
     })()
     return () => { cancelled = true }
+  }, [directoryNonce])
+
+  const reloadDirectory = useCallback(() => {
+    // 重新读取目录后要重新挑一次默认对象（否则对象列表回来了却没人去读绑定）。
+    subjectsInitialised.current = false
+    setSubjectsLoading(true)
+    setDirectoryNonce((value) => value + 1)
   }, [])
 
   // 目录就绪后只挑一次默认对象：沿用当前类型里的第一个，没有就退到另一类。
@@ -153,22 +163,66 @@ export function KnowledgeAccessPage({ onNavigate }: { onNavigate?: (view: AppVie
     return <NoticeBanner tone="error" title={state.error.unauthorized ? '暂时无法配置知识权限' : '知识权限读取失败'}>{state.error.message} {state.error.retryable && <button className="text-action" type="button" onClick={retryLoad}>重新尝试</button>}</NoticeBanner>
   }, [retryLoad, save, state.error, state.saveError])
 
-  if (state.loading || subjectsLoading) return <><main className="main-content"><div className="loading-state" aria-live="polite"><span className="loading-dot" />正在读取知识权限...</div></main></>
+  const pageDesc = '设置这个岗位和它的数字员工可以使用哪些资料。未授权的内容不会被读取，所有调整都会记录岗位、范围与操作人。'
 
-  if (subjects.role.length === 0 && subjects.agent.length === 0) return <><main className="main-content">
-    <div className="page-head"><div><h1 className="page-title">知识权限管理</h1><p className="page-desc">选择这个岗位和它的数字员工可以使用的资料。未授权的内容不会被读取。</p></div></div>
-    {statusNotice}
-    <div className="empty-state"><strong>还没有可配置的岗位或数字员工</strong><span>请先在「数字员工设置」中创建岗位与数字员工，再回来配置知识范围。</span></div>
-  </main></>
+  if (state.loading || subjectsLoading) return <><main className="main-content t3 knowledge"><div className="loading-state" role="status" aria-live="polite"><span className="loading-dot" />正在读取知识权限...</div></main></>
+
+  if (subjects.role.length === 0 && subjects.agent.length === 0) return <>
+    <main className="main-content t3 knowledge">
+      <div className="t3__intro"><p className="page-desc">{pageDesc}</p></div>
+      {/* 空目录分支也保留统计条（数字为 0 是真实状态，不是错误） */}
+      <div className="metrics">
+        <div className="metric">
+          <div className="metric__label">已开启</div>
+          <div className="metric__value">0</div>
+          <div className="metric__hint">还没有可配置的对象</div>
+        </div>
+        <div className="metric">
+          <div className="metric__label">共</div>
+          <div className="metric__value">{KNOWLEDGE_BASES.length}</div>
+          <div className="metric__hint">系统内置的知识范围（有了对象才能逐个配置）</div>
+        </div>
+      </div>
+      {statusNotice}
+      <section className="card">
+        <EmptyState illustration="list" title="还没有可配置的知识范围" text="请先在「数字员工设置」中创建岗位与数字员工，再回来配置知识范围。">
+          {onNavigate && <button className="btn btn--primary btn--sm" type="button" onClick={() => onNavigate('workforceSettings')}>去数字员工设置</button>}
+          <button className="btn btn--secondary btn--sm" type="button" onClick={reloadDirectory}>刷新</button>
+        </EmptyState>
+      </section>
+    </main>
+  </>
 
   return <>
-    <main className="main-content">
-      <div className="page-head"><div><h1 className="page-title">知识权限管理</h1><p className="page-desc">选择这个岗位和它的数字员工可以使用的资料。未授权的内容不会被读取。</p></div><div className="actions"><button className="button" type="button" disabled={!canEdit} onClick={clear}>清空选择</button><SaveButton saving={state.saving} disabled={!canSave || isUnauthorized || !state.bindingLoaded} onClick={() => void save()} /></div></div>
+    <main className="main-content t3 knowledge">
+      <div className="t3__intro">
+        <p className="page-desc">{pageDesc}</p>
+        <div className="t3__actions">
+          <button className="btn btn--secondary btn--sm" type="button" disabled={!canEdit} onClick={clear}>清空选择</button>
+          <SaveButton saving={state.saving} disabled={!canSave || isUnauthorized || !state.bindingLoaded} onClick={() => void save()} />
+        </div>
+      </div>
+
+      <div className="metrics">
+        <div className="metric">
+          <div className="metric__label">已开启</div>
+          <div className="metric__value">{state.selectedIds.length}</div>
+          <div className="metric__hint">当前对象已授权的知识范围</div>
+        </div>
+        <div className="metric">
+          <div className="metric__label">共</div>
+          <div className="metric__value">{KNOWLEDGE_BASES.length}</div>
+          <div className="metric__hint">可配置的知识范围总数</div>
+        </div>
+      </div>
+
       <div className="toolbar"><SegmentedControl value={state.subjectType} onChange={switchSubjectType} /><ObjectSelect value={state.subjectKey} options={options} onChange={(key) => void load(state.subjectType, key)} /><span className="role-note">{state.subjectType === 'role' ? `共 ${subjects.role.length} 个启用中的岗位` : currentSubject ? `所属岗位：${currentSubject.role_key ?? '未设置'}` : '暂无启用中的数字员工'}</span></div>
       {statusNotice}
-      <section className={`knowledge-panel ${isUnauthorized ? 'panel-locked' : ''}`} aria-busy={state.saving}>
-        <div className="panel-header"><h2>可以使用的知识库</h2><span>{state.selectedIds.length ? `已选择 ${state.selectedIds.length} 个` : '暂未授权'}</span></div>
-        {isUnauthorized ? <div className="empty-state locked-state"><strong>当前账号无法读取知识范围</strong><span>请联系超级管理员开通配置权限。</span></div> : !state.bindingLoaded ? <div className="empty-state"><strong>当前对象的权限暂时读不到</strong><span>检查网络后重新尝试，当前页面不会修改已有配置。</span><button className="text-action" type="button" onClick={retryLoad}>重新读取</button></div> : state.selectedIds.length === 0 && <div className="empty-state">当前对象还没有授权知识库，请按需要选择。</div>}
+      <section className="card" aria-busy={state.saving}>
+        <div className="card__head"><h2>可以使用的知识库</h2><span className="page-meta">{state.selectedIds.length ? `已选择 ${state.selectedIds.length} 个` : '暂未授权'}</span></div>
+        {isUnauthorized && <div className="card__body"><div className="notice" role="status"><div><strong>当前账号无法读取知识范围</strong><p>请联系超级管理员开通配置权限。</p></div></div></div>}
+        {!isUnauthorized && !state.bindingLoaded && <div className="card__body"><div className="notice notice-error" role="alert"><div><strong>当前对象的权限暂时读不到</strong><p>检查网络后重新尝试，当前页面不会修改已有配置。</p></div><button className="text-action" type="button" onClick={retryLoad}>重新读取</button></div></div>}
+        {!isUnauthorized && state.bindingLoaded && state.selectedIds.length === 0 && <div className="card__body"><p className="page-desc">当前对象还没有授权知识库，请按需要选择。</p></div>}
         {state.bindingLoaded && !isUnauthorized && KNOWLEDGE_BASES.map((item) => <KnowledgeScopeRow key={item.id} item={item} enabled={state.selectedIds.includes(item.id)} disabled={!canEdit} onToggle={() => toggle(item.id)} />)}
       </section>
       <NoticeBanner title="敏感资料提醒">GEO 项目资料仅在绑定项目内可见，不能跨项目查看；所有引用都会保留在操作记录中。</NoticeBanner>

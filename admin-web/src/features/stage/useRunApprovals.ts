@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { decideRunApproval, listRunApprovals } from '../runDetail/api'
+import { publishApprovalDecided, subscribeApprovalDecided } from '../runDetail/approvalEvents'
 import { asRunError } from '../runDetail/state'
 import type { RunApproval, RunErrorShape } from '../runDetail/types'
 
@@ -13,7 +14,12 @@ export interface RunApprovalsState {
   reload: () => void
 }
 
-/** 运行审批（既有 `GET/POST /runs/{run_id}/approvals...`，**不新增后端契约**）。 */
+/**
+ * 运行审批（既有 `GET/POST /runs/{run_id}/approvals...`，**不新增后端契约**）。
+ *
+ * S1「三处一致」：决议成功后广播事件；**同一运行的**所有订阅方（本 hook 的其它实例、
+ * 运行详情页）据此重取，因此对话流 / 舞台 / 运行详情在任何一处决议后都会刷新为同一权威态。
+ */
 export function useRunApprovals(runId: string | undefined): RunApprovalsState {
   const [items, setItems] = useState<RunApproval[]>([])
   const [loading, setLoading] = useState(false)
@@ -51,13 +57,22 @@ export function useRunApprovals(runId: string | undefined): RunApprovalsState {
     }
   }, [runId, nonce])
 
+  // 别处（运行详情 / 另一处舞台）决议后，同一运行也要刷新。
+  useEffect(() => {
+    if (!runId) return
+    return subscribeApprovalDecided((event) => {
+      if (event.runId === runId) setNonce((value) => value + 1)
+    })
+  }, [runId])
+
   const decide = useCallback(
     async (approvalId: string, approved: boolean) => {
       if (!runId) return '缺少运行标识，无法决议。'
       setDecidingId(approvalId)
       try {
         await decideRunApproval(runId, approvalId, approved)
-        reload()
+        // 广播 ⇒ 本实例与其它视图（含运行详情）一起刷新为服务端权威态。
+        publishApprovalDecided(runId, approvalId)
         return null
       } catch (cause) {
         const mapped = asRunError(cause)

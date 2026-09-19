@@ -30,13 +30,20 @@ from .workforce.store import (
 )
 
 
-def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True, audit: AuditService | None = None, memory_store=None):
+def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True, audit: AuditService | None = None, memory_store=None, skills_store=None, knowledge_store=None, export_readers=None):
     """Build tenant, usage, and lifecycle persistence as one coordinated unit.
 
     `audit` 注入生命周期服务：真源要求「任何保留策略变化都写入审计」
     （`commercial-g0-design.md:118`）；未注入时 `set_retention` fail-closed。
     `memory_store`（可选）为 P3 记忆层生命周期通道（N2）：注入后租户导出载荷含 memories
     数据、租户删除流程物理清场；未注入保持「memories 未实现」现状。
+    `skills_store` / `knowledge_store`（可选，B-3）为**清场扩围**通道：注入后租户删除会同时按租户
+    物理清场技能层与知识治理层（真源「业务数据……按策略清理」）；未注入的面不参与清场，
+    并在审计 `cleared_categories` 里如实只列真正清到的一侧。
+    `export_readers`（可选，B-2）为**类别 → 读取器**映射（`app/commercial/export_readers.py`
+    的 `build_export_readers` 产物）：接了哪几类，导出包就填哪几类的真实行；缺的类别保持
+    「未实现（空数组 + `unimplemented_categories` 如实标注）」。**导出作业在 worker 进程执行**
+    ⇒ 生产环境两个进程都必须注入（否则 worker 生成的包会是空的）。
     """
     validate_runtime_settings(settings)
     from .commercial.lifecycle import (
@@ -51,6 +58,15 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
     from .commercial.repository import InMemoryCommercialRepository, PostgresCommercialRepository
     from .commercial.usage import InMemoryUsageLedger, PostgresUsageLedger
 
+    # B-2b：用量账本由本函数持有（同进程唯一实例）⇒ `usage` 类别的读取器在这里接线，
+    # 调用方无需（也无法）在构造前拿到账本；其余类别由调用方按可用上游传 `export_readers`。
+    def _with_usage(readers, ledger):
+        from .commercial.export_readers import usage_export_reader
+
+        merged = dict(readers or {})
+        merged["usage"] = usage_export_reader(ledger)
+        return merged
+
     if settings.storage_backend == "memory":
         if settings.env != "development":
             raise ValueError("生产环境禁止使用内存商业化仓储")
@@ -62,6 +78,9 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
             retention_store=InMemoryRetentionPolicyStore(),
             export_store=InMemoryExportPackageStore(),
             memory_store=memory_store,
+            skills_store=skills_store,
+            knowledge_store=knowledge_store,
+            export_readers=_with_usage(export_readers, usage),
             audit=audit,
         )
         return repository, usage, lifecycle
@@ -82,6 +101,9 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
         retention_store=PostgresRetentionPolicyStore(connection),
         export_store=PostgresExportPackageStore(connection),
         memory_store=memory_store,
+        skills_store=skills_store,
+        knowledge_store=knowledge_store,
+        export_readers=_with_usage(export_readers, usage),
         audit=audit,
     )
     return repository, usage, lifecycle
@@ -1150,6 +1172,59 @@ def build_run_artifact_store(settings: Settings, *, connection=None, migrate: bo
             connection, retention_days=settings.run_artifact_retention_days
         )
     raise ValueError("不支持的产物登记存储类型")
+
+
+def build_run_acceptance_decision_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """装配运行验收决议仓储（S2，表 `workbench_run_acceptance_decisions`，迁移 040）。
+
+    口径同其它仓储：内存实现仅 development；PG 缺省自建池并跑迁移（API 进程负责迁移，
+    worker 侧以 `migrate=False` 复用既有连接）。**无保留期**（验收决议与运行记录同寿命）。
+    """
+    validate_runtime_settings(settings)
+    from .runtime.acceptance_decisions import (
+        InMemoryAcceptanceDecisionStore,
+        PostgresAcceptanceDecisionStore,
+    )
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存验收决议仓储")
+        return InMemoryAcceptanceDecisionStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresAcceptanceDecisionStore(connection)
+    raise ValueError("不支持的验收决议存储类型")
+
+
+def build_run_promotion_store(settings: Settings, *, connection=None, migrate: bool = True):
+    """装配运行沉淀仓储（S2 存成任务，表 `workbench_run_promotions`，迁移 `042`）。
+
+    口径同其它仓储：内存实现仅 development；PG 缺省自建池并跑迁移（API 进程负责迁移，
+    worker 侧以 `migrate=False` 复用既有连接）。**无保留期**：与运行记录同寿命（级联）。
+    """
+    validate_runtime_settings(settings)
+    from .runtime.promotions import InMemoryRunPromotionStore, PostgresRunPromotionStore
+
+    if settings.storage_backend == "memory":
+        if settings.env != "development":
+            raise ValueError("生产环境禁止使用内存沉淀仓储")
+        return InMemoryRunPromotionStore()
+    if settings.storage_backend == "postgres":
+        if connection is None:
+            from psycopg_pool import ConnectionPool
+
+            database_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            connection = ConnectionPool(database_url, min_size=1, max_size=10, open=True)
+        if migrate:
+            apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
+        return PostgresRunPromotionStore(connection)
+    raise ValueError("不支持的沉淀存储类型")
 
 
 def build_conversation_stream_store(settings: Settings, *, connection=None, migrate: bool = True):

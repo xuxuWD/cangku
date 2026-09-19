@@ -290,6 +290,53 @@ def service_factory() -> SkillService:
     )
 
 
+# ------------------------------------------------------------ 生命周期（租户整体删除）
+
+def test_delete_all_for_tenant_clears_bindings_too() -> None:
+    """租户整体删除必须清**整个技能层**（技能包 + 数字员工绑定），不是只清技能包表。
+
+    为什么单列这条（2026-09-19 真机验证抓到的真缺陷）：技能层在 `030` 迁移里是**两张表**
+    （`workbench_skills` / `workbench_skill_bindings`，`PostgresSkillStore` 的 docstring 也如此自述），
+    而 `delete_all_for_tenant` 原先只删技能包 ⇒ **绑定行整租户残留**（指向已消失技能的悬挂绑定）。
+    真机实测：租户已 `deleted`、审计报 `skills`，但 `workbench_skill_bindings` 行数原样不动。
+    """
+    svc = service_factory()
+    _submit(svc, key="lc-skill", version="1.0.0")
+    svc.review_skill(_admin(), "lc-skill", "1.0.0", approved=True)
+    svc.enable_skill(_admin(), "lc-skill", "1.0.0")
+    svc.bind_skill(_admin(), "agent-lc", "lc-skill")
+    assert svc.list_bindings(_admin())[1] == 1  # 前置：绑定确实存在
+
+    deleted = svc.store.delete_all_for_tenant(TENANT)
+
+    assert deleted >= 1
+    assert svc.store.list_all_for_tenant(TENANT) == []  # 技能包面
+    assert svc.list_bindings(_admin()) == ([], 0)  # 绑定面
+
+
+def test_list_bindings_tolerates_missing_created_at() -> None:
+    """`list_bindings` 的排序键在 `created_at is None` 时不得抛错（2026-09-19 顺带修掉的未定义名）。
+
+    背景：内存实现的排序键原写作 `b.created_at or parse_epoch(b)`，而 `parse_epoch` 在本仓库
+    **并不存在**（静态检查报 `F821 undefined name`；同文件另三处同类排序用的是 `_dt_or_min`）。
+    正常路径下 `created_at` 总有默认值（`SkillBinding.created_at` 的 `default_factory=now`）
+    ⇒ 该分支从不执行、缺陷一直潜伏；一旦某行 `created_at` 为空（外部直写 / 未来水合路径），
+    `list_bindings` 就会抛 `NameError`。本用例把这一路径钉住。
+    """
+    from app.skills.models import BindingStatus, SkillBinding
+
+    svc = service_factory()
+    svc.store._bindings[(TENANT, "agent-x", "skill-x")] = SkillBinding(
+        tenant_id=TENANT, agent_key="agent-x", skill_key="skill-x",
+        status=BindingStatus.ACTIVE, created_by="u-1", created_at=None,
+    )
+
+    listed, total = svc.list_bindings(_admin())
+
+    assert total == 1
+    assert [b.agent_key for b in listed] == ["agent-x"]
+
+
 # ------------------------------------------------------------ 审计
 
 def test_audit_actions_registered(service: SkillService) -> None:

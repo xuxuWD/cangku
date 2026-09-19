@@ -133,20 +133,61 @@ def configure_runtime(*, settings=None, connection=None, redis_client=None, audi
         settings, connection=connection, redis_client=redis_client, audit=audit
     )
     # E2/E3：商业化生命周期执行层复用同一连接；worker **不跑迁移**（迁移由 API 进程负责）。
+    # B-2（2026-09-19）：**导出作业正是在本进程执行** ⇒ 必须注入类别读取器与记忆层仓储，
+    # 否则生产里生成的导出包会是「所有类别皆空」的假包（API 进程注入不覆盖本进程）。
+    # 读取器与 API 进程同源（`build_export_readers`），存储实现按本进程连接构造。
+    from .bootstrap import build_memory_store, build_skills_service, build_task_repository
+    from .accounts.repository import PostgresAccountRepository
+    from .audit.store import PostgresAuditStore
+    from .commercial.export_readers import build_export_readers
+    from .knowledge_governance.store import PostgresKnowledgeGovStore
+    from .runtime.artifacts import PostgresRunArtifactStore
+    from .runtime.records import PostgresRunRecordStore
+    from .runtime.state_postgres import PostgresRuntimeStateStore
+    from .skills.store import PostgresSkillStore
+    from .workforce.store import PostgresWorkforceDirectoryStore
+
+    # 记忆层仓储**一次构造、两处复用**：导出读取器（memories 类别）与生命周期清场（删除租户时清记忆层）。
+    # 2026-09-19 真机验证抓到：此前它只传给 `export_readers`，**没传给 `build_commercial_components`**
+    # ⇒ 生命周期服务 `memory_store=None` ⇒ **生产删除租户时记忆层完全不清场**（审计 `cleared_categories`
+    # 只列出 skills / knowledge_governance 两面，暴露了这一点）。导出包能出 memories 数据、删除却不清它，
+    # 属"两面不一致"的真缺陷。
+    memory_store = build_memory_store(settings, connection=connection, migrate=False)
+    export_readers = build_export_readers(
+        memory_store=memory_store,
+        workforce=PostgresWorkforceDirectoryStore(connection),
+        knowledge=PostgresKnowledgeGovStore(connection),
+        audits=PostgresAuditStore(connection),
+        runs=PostgresRunRecordStore(connection),
+        accounts=PostgresAccountRepository(connection),
+        tasks=build_task_repository(settings, connection=connection, migrate=False),
+        artifacts=PostgresRunArtifactStore(connection, retention_days=settings.run_artifact_retention_days),
+        steps=PostgresRuntimeStateStore(connection),
+        # `usage` 由 `build_commercial_components` 用本进程的账本实例自行接线（账本归它持有）。
+    )
     _, _, lifecycle = build_commercial_components(
-        settings, connection=connection, migrate=False, audit=audit
+        settings,
+        connection=connection,
+        migrate=False,
+        audit=audit,
+        export_readers=export_readers,
+        # B-3 清场扩围 + 2026-09-19 补漏：worker 是**执行删除的进程** ⇒ 三面清场通道都必须在这里注入
+        # （与 API 侧同源）。**只注入部分**的后果由审计 `cleared_categories` 如实暴露，但数据已经漏清。
+        # 技能仓储用共享连接显式构造（`build_skills_service(store=...)` 缺省会自建池并跑迁移 ⇒ 违反
+        # 「worker 不跑迁移」）。
+        memory_store=memory_store,
+        skills_store=build_skills_service(
+            settings, store=PostgresSkillStore(connection), audit=audit
+        ).store,
+        knowledge_store=PostgresKnowledgeGovStore(connection),
     )
     # N3：知识治理到期扫描（跨租户候选 → 逐条置 needs_review，审计 actor=system:worker）。
     # 显式传 store ⇒ 复用同一连接且**不跑迁移**（`build_knowledge_governance_service` 缺省会自建池并跑迁移）。
-    from .knowledge_governance.store import PostgresKnowledgeGovStore
-
     governance = build_knowledge_governance_service(
         settings, store=PostgresKnowledgeGovStore(connection), audit=audit
     )
     # 「运行事件有界」：复用同一连接的运行时状态仓储按保留期清理 append-only 的运行事件
     # （`purge_events_before` 只删 `workbench_runtime_events`，不碰审计）。
-    from .runtime.state_postgres import PostgresRuntimeStateStore
-
     configure_outbox_publisher(publisher)
     configure_lifecycle(lifecycle)
     configure_knowledge_review(governance)

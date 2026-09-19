@@ -18,6 +18,18 @@ export type IconName =
   | 'send'
   | 'plus'
   | 'chevron'
+  | 'tasks'
+  | 'users'
+  | 'book'
+  | 'dots'
+  | 'help'
+  | 'settings'
+  | 'sun'
+  | 'moon'
+  | 'panel'
+  | 'paperclip'
+  | 'refresh'
+  | 'close'
 
 const PATHS: Record<IconName, React.ReactNode> = {
   home: (
@@ -129,6 +141,80 @@ const PATHS: Record<IconName, React.ReactNode> = {
   chevron: (
     <>
       <path d="m6.5 9.8 5.5 5.4 5.5-5.4" />
+    </>
+  ),
+  tasks: (
+    <>
+      <path d="M4.5 6.5h8M4.5 12h8M4.5 17.5h5" />
+      <path d="m14 17 2 2 4.5-4.6" />
+    </>
+  ),
+  users: (
+    <>
+      <circle cx="9" cy="8.5" r="3.2" />
+      <path d="M3.9 19.2c0-2.9 2.3-5.2 5.1-5.2s5.1 2.3 5.1 5.2" />
+      <path d="M15.6 5.6a3.1 3.1 0 0 1 0 5.9" />
+      <path d="M17.4 14.4c1.6.6 2.7 2.2 2.7 4" />
+    </>
+  ),
+  book: (
+    <>
+      <path d="M12 7.2A3.9 3.9 0 0 0 8.1 4H4.5v13h3.6A3.9 3.9 0 0 1 12 20z" />
+      <path d="M12 7.2A3.9 3.9 0 0 1 15.9 4h3.6v13h-3.6A3.9 3.9 0 0 0 12 20z" />
+    </>
+  ),
+  dots: (
+    <>
+      <circle cx="6" cy="12" r="1.4" />
+      <circle cx="12" cy="12" r="1.4" />
+      <circle cx="18" cy="12" r="1.4" />
+    </>
+  ),
+  help: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.6 9.4a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1.1.9-1.1 1.7" />
+      <path d="M12 17.2h.01" />
+    </>
+  ),
+  settings: (
+    <>
+      <path d="M4 7h16M4 17h16" />
+      <circle cx="9" cy="7" r="2.2" />
+      <circle cx="15" cy="17" r="2.2" />
+    </>
+  ),
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4.2" />
+      <path d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.5 5.5 7 7M17 17l1.5 1.5M18.5 5.5 17 7M7 17l-1.5 1.5" />
+    </>
+  ),
+  moon: (
+    <>
+      <path d="M20 14.4A8.1 8.1 0 0 1 9.6 4a8.4 8.4 0 1 0 10.4 10.4Z" />
+    </>
+  ),
+  panel: (
+    <>
+      <rect x="3.6" y="5" width="16.8" height="14" rx="2.2" />
+      <path d="M9.4 5v14" />
+    </>
+  ),
+  paperclip: (
+    <>
+      <path d="M14.5 7.5 8 14a2.5 2.5 0 0 0 3.5 3.5l7-7a4.5 4.5 0 0 0-6.4-6.4l-7 7A6.5 6.5 0 0 0 14.2 20l5.1-5.1" />
+    </>
+  ),
+  refresh: (
+    <>
+      <path d="M19.5 12a7.5 7.5 0 1 1-2.6-5.7" />
+      <path d="M19.8 5.1v4.2h-4.2" />
+    </>
+  ),
+  close: (
+    <>
+      <path d="m6.8 6.8 10.4 10.4M17.2 6.8 6.8 17.2" />
     </>
   ),
 }

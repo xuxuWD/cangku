@@ -67,6 +67,61 @@ export interface RunArtifactList {
   total: number
 }
 
+// S4 干预（暂停 / 恢复 / 取消）的应答：服务端只回运行号与**权威状态**；
+// 客户端据此不做本地乐观更新，而是重取概览 / 事件 / 审批。
+export interface RunActionAck {
+  run_id: string
+  status: string
+}
+
+// S2 人工验收决议（契约「运行验收决议（S2 · 人工验收）」）：
+// **人的结论**与机器结论（结构判定）分开存；本表 append-only，历史里带 `structural_verdict` 供追溯。
+export type RunAcceptanceDecisionKind = 'confirmed' | 'rejected'
+
+export interface RunAcceptanceDecision {
+  decision_id: string
+  decision: RunAcceptanceDecisionKind
+  reason: string
+  decided_by: string
+  decided_at: string
+  structural_verdict: 'met' | 'unmet'
+}
+
+// S2 沉淀入口（契约「运行沉淀（S2 · 存成任务）」）：一个运行最多沉淀一次；`promotion` 为空即还没沉淀。
+export interface RunAcceptancePromotion {
+  task_id: string
+  title: string
+  promoted_by: string
+  promoted_at: string
+}
+
+export interface RunAcceptanceDecisionList {
+  run_id: string
+  items: RunAcceptanceDecision[]
+  latest: RunAcceptanceDecision | null
+  /** 未沉淀为 `null`（服务端权威；界面据此把「存成任务」显示成入口或「已存成任务」）。 */
+  promotion: RunAcceptancePromotion | null
+}
+
+export interface RunPromotionResult {
+  run_id: string
+  task_id: string
+  created: boolean
+  promotion: RunAcceptancePromotion
+  /** 承载任务不可见时服务端返回 `null`（界面只给标识，不编造内容）。 */
+  task: RunTask | null
+  task_created?: boolean
+}
+
+export const ACCEPTANCE_DECISION_LABELS: Record<string, string> = {
+  confirmed: '已确认完成',
+  rejected: '已打回重做',
+}
+
+export function acceptanceDecisionLabel(decision: string): string {
+  return ACCEPTANCE_DECISION_LABELS[decision] ?? decision
+}
+
 // 变更类型中文标签；**未知取值原样展示**（不猜测）。
 export const CHANGE_KIND_LABELS: Record<string, string> = {
   created: '新建',

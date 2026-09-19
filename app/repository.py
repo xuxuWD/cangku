@@ -12,6 +12,7 @@ class TaskRepository(Protocol):
     def get(self, context: UserContext, task_id: str) -> Task: ...
     def approve(self, context: UserContext, task_id: str) -> Task: ...
     def list_pending_approval(self, tenant_id: str, *, limit: int) -> list[Task]: ...
+    def list_for_tenant(self, tenant_id: str, *, limit: int, offset: int) -> tuple[list[Task], int]: ...
     def count_by_employee(self, tenant_id: str) -> dict[str, int]: ...
     def set_pending_approval(self, context: UserContext, task_id: str) -> Task: ...
     def delete(self, tenant_id: str, task_id: str) -> None: ...
@@ -214,6 +215,30 @@ class PostgresTaskRepository:
                 )
                 rows = cursor.fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
+
+    def list_for_tenant(self, tenant_id: str, *, limit: int, offset: int) -> tuple[list[Task], int]:
+        """按租户列出任务元数据（B-2b 导出读取通道）。
+
+        任务没有业务时间字段 ⇒ `ORDER BY id`（顺序确定，与内存实现同口径）；
+        `COUNT(*)` 是与 `LIMIT/OFFSET` **同条件**的过滤后总数（不拿返回条数冒充总数）。
+        """
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, tenant_id, project_id, created_by, employee_key, title,
+                           risk_level, budget, idempotency_key, request_fingerprint, status
+                    FROM workbench_tasks
+                    WHERE tenant_id = %s
+                    ORDER BY id
+                    LIMIT %s OFFSET %s
+                    """,
+                    (tenant_id, limit, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute("SELECT COUNT(*) FROM workbench_tasks WHERE tenant_id = %s", (tenant_id,))
+                total = cursor.fetchone()
+        return [self._row_to_task(row) for row in rows], int(total[0]) if total is not None else 0
 
     @staticmethod
     def _row_to_task(row: tuple) -> Task:

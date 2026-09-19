@@ -100,11 +100,11 @@ export interface ToolCatalog {
   total: number
 }
 
-// 不可用原因（**受控文案**，与服务端口径一致；界面灰显并给原因，不改变后端校验）。
-export const TOOL_NOT_IN_GATE_REASON = '未在本部署的规划器工具白名单（WORKBENCH_PLANNER_TOOLS）中登记：勾选后保存会被后端拒绝（422）'
-export const TOOL_UNKNOWN_REASON = '不在执行工具目录、也不在规划器白名单内：保存会被后端拒绝（422）'
-export const MODEL_NOT_REGISTERED_REASON = '未在模型网关注册：保存会被后端拒绝（422）'
-export const MODEL_EMPTY_LABEL = '（默认模型：本部署未注册模型键）'
+// 不可用原因（**受控文案**，与服务端口径一致；界面灰显并给原因，不改变服务端校验）。
+export const TOOL_NOT_IN_GATE_REASON = '本部署未提供该工具：勾选后保存会被拒绝。'
+export const TOOL_UNKNOWN_REASON = '本部署的工具清单里没有这一项：保存会被拒绝。'
+export const MODEL_NOT_REGISTERED_REASON = '本部署没有登记这个模型键：保存会被拒绝。'
+export const MODEL_EMPTY_LABEL = '（默认模型：本部署未登记模型键）'
 
 export type DirectoryTab = 'roles' | 'agents'
 
@@ -141,11 +141,11 @@ export const AUTONOMY_LEVEL_LABELS: Record<string, string> = {
 export const AUTONOMY_LEVEL_HINTS: Record<string, string> = {
   approval_for_all: '每个工具调用都需要人工审批通过后才执行。',
   approval_for_risky: '只有风险不低于风险阈值的动作需要人工审批，低风险动作直接执行。',
-  full_auto: '免人工审批；但「极高（critical）」风险动作任何自治等级都必须审批，后端写死不可豁免。仍受权限判定与后端闸门约束，不能做操作者本人无权做的事。',
+  full_auto: '免人工审批；但「极高（critical）」风险动作任何自治等级都必须审批，不可豁免。仍受权限判定约束，不能做操作者本人无权做的事。',
 }
 
 // `full_auto` 是特权而非默认：选中时必须显式提示「仅超管可设 + 写审计」，不得静默授予。
-export const FULL_AUTO_NOTICE = 'full_auto 除「极高（critical）」风险外免人工审批；critical 任何自治等级都必须审批，不可豁免。仅超级管理员可设置，且该变更会写入审计；它只决定「是否需要人批」，不决定「是否绕开权限判定」。'
+export const FULL_AUTO_NOTICE = '除「极高（critical）」风险外免人工审批；critical 风险任何自治等级都必须审批，不可豁免。仅超级管理员可设置，且该变更会写入审计；它只决定「是否需要人批」，不决定「是否绕开权限判定」。'
 
 // `model_key` 为空是合法状态（后端语义 = 用默认模型），界面上要写明而不是留空。
 export const EMPTY_MODEL_KEY_LABEL = '未指定（用默认模型）'

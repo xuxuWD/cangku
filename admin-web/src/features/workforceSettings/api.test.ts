@@ -89,7 +89,7 @@ describe('workforceSettings api', () => {
 
   it('maps network failures and 5xx to a retryable message', async () => {
     expect(directoryErrorFromStatus(0).retryable).toBe(true)
-    expect(directoryErrorFromStatus(503).message).toBe('目录服务暂时不可用，请检查网络后重新尝试。')
+    expect(directoryErrorFromStatus(503).message).toBe('名单暂时读不出来，请检查网络后重新尝试。')
 
     vi.stubGlobal('fetch', vi.fn<FetchMock>(async () => { throw new Error('boom') }))
     await expect(listAgents()).rejects.toMatchObject({ status: 0, retryable: true })

@@ -34,6 +34,8 @@ TWO_READ_STEPS = [
     {"step_id": "s1", "kind": "read", "tool": "knowledge.search"},
     {"step_id": "s2", "kind": "read", "tool": "knowledge.search"},
 ]
+# 待审批步骤：运行停在「运行中」（终态不可再干预，故干预类用例必须用非终态运行）。
+PENDING_STEPS = [{"step_id": "s1", "kind": "write", "tool": "fs.write", "requires_approval": True}]
 
 
 def make_task(task_store: TaskStore, *, tenant_id: str = "t-1", created_by: str = "u-1") -> Task:
@@ -84,9 +86,9 @@ def test_same_task_and_run_is_recorded_once() -> None:
     run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", TWO_READ_STEPS, "product_manager")
     assert ledger.total("t-1") == 1
 
-    # 同一 (task_id, run_id) 的第二次终态同步：Mock 下 start 即 completed，这里再取消一次，
-    # 仍落同一幂等键 ⇒ 账本**不得**多出第二条。
-    runtime.cancel(OWNER, run_id, "用户取消")
+    # 终态即终态（2026-09-18 收紧：终态上暂停 / 取消一律 409）⇒ 公开接口不再能对同一运行触发第二次终态同步。
+    # 账本幂等键（task_id + run_id）仍必须守住「重复终态同步只落一条」（补偿写 / 重试路径），故直接调回写钩子。
+    runtime._sync_run_record(OWNER, run_id, "mock", latency_ms=0)
 
     assert ledger.total("t-1") == 1
     assert ledger.total_cost_cents("t-1") == 0
@@ -95,14 +97,15 @@ def test_same_task_and_run_is_recorded_once() -> None:
 def test_non_terminal_sync_does_not_write_usage() -> None:
     runtime, ledger, task = build()
 
-    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", TWO_READ_STEPS, "product_manager")
-    assert ledger.total("t-1") == 1
+    # 待审批步骤 ⇒ 运行停在「运行中」：非终态同步一律不记账（暂停 / 恢复同理）。
+    run_id, _key, _policy = runtime.start(OWNER, task.id, "mock", PENDING_STEPS, "product_manager")
+    assert ledger.total("t-1") == 0
 
     runtime.pause(OWNER, run_id, "暂停")
-    assert ledger.total("t-1") == 1
+    assert ledger.total("t-1") == 0
 
     runtime.resume(OWNER, run_id)
-    assert ledger.total("t-1") == 1
+    assert ledger.total("t-1") == 0
 
 
 def test_usage_total_is_tenant_scoped() -> None:

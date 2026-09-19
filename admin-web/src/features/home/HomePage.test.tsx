@@ -23,6 +23,7 @@ function stub(handler: (url: string) => Response) {
 function baseRoute(url: string): Response {
   if (url.includes('/workforce/agents')) return json({ items: [AGENT], total: 1, limit: 50, offset: 0 })
   if (url.includes('/conversations?')) return json({ items: [], total: 0, limit: 4, offset: 0 })
+  if (url.includes('/inbox')) return json({ items: [], unread_count: 0 })
   if (url.includes('/conversations/') && url.includes('/messages')) return json({ message_id: 'msg-1', conversation_id: 'conv-1', stub: true, reply: {} }, 201)
   if (url.endsWith('/conversations')) return json({ conversation_id: 'conv-1', agent_key: 'agent-ops', title: '整理客户反馈', status: 'active', created_at: null, updated_at: null }, 201)
   return json({ id: 'task-1', title: '整理客户反馈', status: 'queued', risk_level: 'low' })
@@ -37,7 +38,7 @@ describe('HomePage', () => {
     const user = userEvent.setup()
     render(<HomePage onOpenConversation={onOpenConversation} />)
 
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: /今天让数字员工做点什么/ })
     await user.type(screen.getByLabelText('想对数字员工说的话'), '整理客户反馈')
     await user.click(screen.getByRole('button', { name: '开始对话' }))
 
@@ -62,7 +63,7 @@ describe('HomePage', () => {
     const user = userEvent.setup()
     render(<HomePage onOpenConversation={vi.fn()} />)
 
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: /今天让数字员工做点什么/ })
     await user.click(screen.getByRole('button', { name: '或直接建任务' }))
     await user.type(screen.getByLabelText('任务描述'), '接入新渠道')
     await user.selectOptions(screen.getByLabelText('风险等级'), 'high')
@@ -88,7 +89,7 @@ describe('HomePage', () => {
     const user = userEvent.setup()
     render(<HomePage onOpenConversation={vi.fn()} />)
 
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: /今天让数字员工做点什么/ })
     await user.click(screen.getByRole('button', { name: '或直接建任务' }))
     await user.type(screen.getByLabelText('任务描述'), '删库演练')
     await user.selectOptions(screen.getByLabelText('风险等级'), 'critical')
@@ -104,7 +105,7 @@ describe('HomePage', () => {
     stub(baseRoute)
     render(<HomePage onOpenConversation={vi.fn()} />)
 
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: /今天让数字员工做点什么/ })
     expect(screen.getByRole('button', { name: '开始对话' })).toBeDisabled()
   })
 
@@ -133,7 +134,7 @@ describe('HomePage', () => {
     const user = userEvent.setup()
     render(<HomePage onOpenConversation={onOpenConversation} />)
 
-    await screen.findByRole('heading', { name: '数字员工，我帮你' })
+    await screen.findByRole('heading', { name: /今天让数字员工做点什么/ })
     await user.type(screen.getByLabelText('想对数字员工说的话'), '整理客户反馈')
     await user.click(screen.getByRole('button', { name: '开始对话' }))
 
@@ -158,5 +159,42 @@ describe('HomePage', () => {
     render(<HomePage onOpenConversation={vi.fn()} />)
 
     await waitFor(() => expect(screen.getByText('还没有会话')).toBeInTheDocument())
+  })
+
+  // S5：待我审批指标卡与「等你拍板」列表同源（同一个聚合端点）；有落点的行可直达，
+  // 没有处理入口的类型只给如实说明（不给按钮）。
+  it('surfaces pending approvals from the aggregate endpoint and jumps to the actionable row', async () => {
+    const onOpenRun = vi.fn()
+    stub((url) => {
+      if (url.includes('/approvals/pending')) {
+        return json({
+          items: [
+            { kind: 'run_approval', target_id: 'a-1', title: '整理选题', requested_by: 'u-1', created_at: '2026-09-18T00:00:00+00:00', detail: { run_id: 'run-7', approval_id: 'a-1', step_id: 's-1', tool: 'search' } },
+            { kind: 'plan_proposal', target_id: 'p-1', title: '三步计划', requested_by: 'u-2', created_at: '2026-09-18T00:00:00+00:00', detail: { step_count: 3 } },
+          ],
+          counts: { task_approval: 0, plan_proposal: 1, account_registration: 0, run_approval: 1, total: 2 },
+        })
+      }
+      return baseRoute(url)
+    })
+    const user = userEvent.setup()
+    render(<HomePage onOpenConversation={vi.fn()} onOpenRun={onOpenRun} />)
+
+    // 指标卡数值取服务端 counts.total
+    const metric = await screen.findByRole('button', { name: /待我审批/ })
+    expect(metric).toHaveTextContent('2')
+    expect(metric).toHaveTextContent('任务 / 计划 / 运行内 / 账号注册')
+
+    // 列表按类型标注 + 有落点的一行给真实按钮
+    expect(screen.getByText('待我审批 2 项')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '打开运行去审批' }))
+    expect(onOpenRun).toHaveBeenCalledWith('run-7')
+
+    // 没有处理入口的类型：不给按钮、只给如实说明
+    expect(screen.getByText('计划提案的处理入口尚未交付：现在只能看到它，交付后可直接处理。')).toBeInTheDocument()
+
+    // 指标卡点开 = 焦点落到第一条可操作按钮（键盘用户可继续回车直达）
+    await user.click(metric)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '打开运行去审批' }))
   })
 })

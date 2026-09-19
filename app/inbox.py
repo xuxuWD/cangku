@@ -88,6 +88,10 @@ class InboxItem:
     title: str
     target_type: str | None = None
     target_id: str | None = None
+    # S1 第三款（迁移 041）：**可空**的上文标识——能反查出来就带，界面据此直达「该会话的该条卡」；
+    # 反查不到即 `None` ⇒ 界面回落按 `target_type/target_id` 的既有落点（存量行零破坏）。
+    target_conversation_id: str | None = None
+    target_approval_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     read_at: datetime | None = None
     inbox_id: str = field(default_factory=lambda: f"inbox-{uuid4().hex[:12]}")
@@ -183,7 +187,7 @@ class PostgresInboxStore:
 
     _COLUMNS = (
         "inbox_id, tenant_id, recipient_id, kind, title, target_type, target_id, "
-        "created_at, read_at"
+        "target_conversation_id, target_approval_id, created_at, read_at"
     )
 
     def __init__(self, connection_or_pool, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> None:
@@ -209,8 +213,10 @@ class PostgresInboxStore:
             title=str(row[4]),
             target_type=row[5],
             target_id=row[6],
-            created_at=row[7],
-            read_at=row[8],
+            target_conversation_id=row[7],
+            target_approval_id=row[8],
+            created_at=row[9],
+            read_at=row[10],
         )
 
     def add(self, item: InboxItem) -> InboxItem:
@@ -220,7 +226,7 @@ class PostgresInboxStore:
                     cursor.execute(
                         f"""
                         INSERT INTO workbench_inbox_items ({self._COLUMNS})
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING {self._COLUMNS}
                         """,
                         (
@@ -231,6 +237,8 @@ class PostgresInboxStore:
                             item.title,
                             item.target_type,
                             item.target_id,
+                            item.target_conversation_id,
+                            item.target_approval_id,
                             item.created_at,
                             item.read_at,
                         ),
@@ -325,8 +333,14 @@ class InboxService:
         kind: InboxKind,
         target_type: str | None = None,
         target_id: str | None = None,
+        target_conversation_id: str | None = None,
+        target_approval_id: str | None = None,
     ) -> None:
-        """写入一条通知；租户或接收人为空则跳过，写入失败只写审计、不阻断业务。"""
+        """写入一条通知；租户或接收人为空则跳过，写入失败只写审计、不阻断业务。
+
+        `target_conversation_id` / `target_approval_id`（S1 第三款）为**可空**上文：
+        由调用方从服务端权威链路反查得到（运行 → 幂等行 → 会话），**反查不到就留空**。
+        """
         if not tenant_id or not recipient_id:
             return
         item = InboxItem(
@@ -336,6 +350,8 @@ class InboxService:
             title=_TITLES[kind],
             target_type=target_type,
             target_id=target_id,
+            target_conversation_id=target_conversation_id,
+            target_approval_id=target_approval_id,
         )
         try:
             self.store.add(item)
@@ -402,8 +418,19 @@ class InboxService:
             kind=InboxKind.ACCOUNT_REGISTRATION_APPROVED,
         )
 
-    def run_decided(self, *, tenant_id: str, recipient_id: str, run_id: str, status: str) -> None:
-        """运行进入失败/取消终态：通知等待结果的人。非终态不通知。"""
+    def run_decided(
+        self,
+        *,
+        tenant_id: str,
+        recipient_id: str,
+        run_id: str,
+        status: str,
+        conversation_id: str | None = None,
+    ) -> None:
+        """运行进入失败/取消终态：通知等待结果的人。非终态不通知。
+
+        S1 第三款：会话触发的运行带上 `conversation_id` ⇒ 界面可直达该会话（反查不到则留空）。
+        """
         if status == "failed":
             kind = InboxKind.RUN_FAILED
         elif status == "cancelled":
@@ -416,16 +443,30 @@ class InboxService:
             kind=kind,
             target_type="run",
             target_id=run_id,
+            target_conversation_id=conversation_id,
         )
 
-    def run_approval_rejected(self, *, tenant_id: str, recipient_id: str, run_id: str) -> None:
-        """运行内审批被驳回：告知提交人（与普通运行失败区分开）。"""
+    def run_approval_rejected(
+        self,
+        *,
+        tenant_id: str,
+        recipient_id: str,
+        run_id: str,
+        conversation_id: str | None = None,
+        approval_id: str | None = None,
+    ) -> None:
+        """运行内审批被驳回：告知提交人（与普通运行失败区分开）。
+
+        S1 第三款：带上会话与**该条审批**的标识 ⇒ 界面可直达「该会话的该条卡」（缺则留空，回落运行详情）。
+        """
         self.notify(
             tenant_id=tenant_id,
             recipient_id=recipient_id,
             kind=InboxKind.RUN_APPROVAL_REJECTED,
             target_type="run",
             target_id=run_id,
+            target_conversation_id=conversation_id,
+            target_approval_id=approval_id,
         )
 
     # ------------------------------------------------------------ 读取

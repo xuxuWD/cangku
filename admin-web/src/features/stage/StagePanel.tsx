@@ -2,6 +2,7 @@ import type { RunStream } from '../conversation/useRunStream'
 import { conversationModeLabel } from '../conversation/types'
 import type { RunApproval } from '../runDetail/types'
 import { finishReasonLabel, runStatusLabel } from '../runDetail/types'
+import { RunActions } from '../runDetail/RunActions'
 import { formatLocalTime } from '../../utils/time'
 import { ApprovalCard } from './ApprovalCard'
 import { ArtifactPanel } from './ArtifactPanel'
@@ -91,7 +92,7 @@ function WrapUpCheck({
         )}
         {acceptance.acceptance && (
           <p className="stage-hint">
-            结构判定（服务端只读运行字段，不调模型、不改运行状态）：步骤完成
+            结构判定（按运行记录逐项核对，不改动运行）：步骤完成
             {acceptance.acceptance.checks.steps_complete ? '✓' : '✗'} · 无未决审批
             {acceptance.acceptance.checks.no_pending_approvals ? '✓' : '✗'} · 正常终态
             {acceptance.acceptance.checks.finish_reason_ok ? '✓' : '✗'}
@@ -111,13 +112,13 @@ function WrapUpCheck({
               <button className="button" type="button" onClick={onRedo}>一键重做</button>
             </div>
             <p className="stage-hint">
-              重做 = 以「新幂等键」重发本页仍持有的原结构化调用（新的运行，不改动原运行）；判定与重做都不会自动重跑。
+              重做 = 重新发出本页仍保留的那次调用（算一次新的运行，不改动原运行）；判定与重做都不会自动重跑。
             </p>
           </>
         )}
         {unmet && !redoAvailable && (
           <p className="stage-hint">
-            未达标：原始参数未留存（安全口径，消息只落脱敏摘要），已无法一键重放——请重新输入调用后再次发送。
+            未达标：原始调用内容没有留存（安全口径，消息只保存脱敏摘要），已无法一键重做——请重新输入调用后再次发送。
           </p>
         )}
       </div>
@@ -144,6 +145,8 @@ export function StagePanel({
   canDecide,
   expanded = false,
   onOpenRunDetail,
+  canIntervene = false,
+  onNotice,
   collaboration,
 }: {
   runId?: string
@@ -163,6 +166,10 @@ export function StagePanel({
   /** 窄屏抽屉是否展开（宽屏由 CSS 强制展示该面板）。 */
   expanded?: boolean
   onOpenRunDetail?: (runId: string) => void
+  /** S4：是否展示干预动作（暂停 / 恢复 / 取消）——由页面的运行概览推得，服务端仍是权威。 */
+  canIntervene?: boolean
+  /** S4：干预成功后的提示出口（页面 Toast）；失败提示由动作组件就地展示。 */
+  onNotice?: (message: string) => void
   /**
    * 参与者与分享（P2c-6；由页面提供数据与增删回调，本组件只呈现）。
    * 未传入（如运行详情页复用舞台）⇒ 不渲染该区块（零破坏）。
@@ -234,6 +241,18 @@ export function StagePanel({
                 <span className="run-detail__value">{metrics.finished_at ? formatLocalTime(metrics.finished_at) : '—'}</span>
               </div>
             </div>
+            {/* S4：干预动作贴着运行状态（终态自动不渲染；可见性≠权限，服务端仍是权威）。 */}
+            <RunActions
+              runId={runId}
+              status={metrics.status}
+              canOperate={canIntervene}
+              onRefresh={() => {
+                overview.reload()
+                approvals.reload()
+                acceptance.reload()
+              }}
+              onNotice={onNotice}
+            />
           </div>
         )}
       </section>

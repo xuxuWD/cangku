@@ -114,15 +114,38 @@ def test_postgres_usage_ledger_totals_are_tenant_scoped():
     assert all("WHERE tenant_id = %s" in sql for sql, _ in connection.cursor_instance.statements)
 
 
+def test_postgres_usage_ledger_list_for_tenant_scopes_orders_and_counts():
+    """B-2b：导出读取通道——租户过滤 + `occurred_at, id` 稳定排序 + 计数与分页。"""
+    occurred = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
+    rows = [("usage-1", 2, 20, None, occurred)]
+    connection = Connection([rows, (7,)])
+    ledger = PostgresUsageLedger(connection)
+
+    entries, total = ledger.list_for_tenant("tenant-1", limit=10, offset=20)
+
+    assert total == 7 and [entry.id for entry in entries] == ["usage-1"]
+    statements = connection.cursor_instance.statements
+    assert "WHERE tenant_id = %s" in statements[0][0]
+    assert "ORDER BY occurred_at, id" in statements[0][0]
+    assert statements[0][1] == ("tenant-1", 10, 20)
+    assert "COUNT(*)" in statements[1][0]
+    assert statements[1][1] == ("tenant-1",)
+
+
 def test_postgres_lifecycle_store_scopes_reads_and_updates_by_tenant():
     created_at = datetime.now(UTC)
-    row = ("job-1", "tenant-1", "delete", "cooling_down", created_at, "admin-1", created_at, False)
+    # 列序 = `PostgresLifecycleJobStore._COLUMNS`（B-3 增 confirmed_by / confirmed_at 两列）。
+    row = (
+        "job-1", "tenant-1", "delete", "cooling_down", created_at, "admin-1", created_at, False, None, None,
+    )
     connection = Connection([row, [row]])
     store = PostgresLifecycleJobStore(connection)
     job = store.get("job-1", tenant_id="tenant-1")
 
     assert job.tenant_id == "tenant-1"
+    assert job.confirmed_by is None
     job.final_exported = True
+    job.confirmed_by = "admin-1"
     store.save(job)
     listed = store.list_for_tenant("tenant-1", kind="delete")
 
@@ -133,6 +156,14 @@ def test_postgres_lifecycle_store_scopes_reads_and_updates_by_tenant():
     # 排序确定性（E2+E3 真库演练暴露）：list_for_tenant 必须带确定性 ORDER BY，与 list_pending 同口径。
     assert any("ORDER BY created_at, id" in sql for sql, _ in statements)
     assert any("WHERE id = %s AND tenant_id = %s" in sql for sql, _ in statements if sql.startswith("UPDATE"))
+    # B-3：确认人两列必须真的进 SELECT 与 UPDATE（漏列会让确认人读了就丢）。
+    select_sql = next(sql for sql, _ in statements if sql.startswith("SELECT") and "confirmed_by" in sql)
+    assert "confirmed_at" in select_sql
+    update_sql, update_params = next(
+        (sql, params) for sql, params in statements if sql.startswith("UPDATE")
+    )
+    assert "confirmed_by = %s" in update_sql and "confirmed_at = %s" in update_sql
+    assert "admin-1" in update_params
 
 
 def test_postgres_retention_store_persists_tenant_scoped_policy():

@@ -183,7 +183,7 @@ describe('WorkforceSettingsPage', () => {
 
     render(<WorkforceSettingsPage />)
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('目录服务暂时不可用')
+    expect(await screen.findByRole('alert')).toHaveTextContent('名单暂时读不出来')
 
     await userEvent.click(screen.getByRole('button', { name: '重新尝试' }))
 
@@ -325,7 +325,7 @@ describe('WorkforceSettingsPage（P2c-4 选择器）', () => {
     expect(select.value).toBe('mock-default')
     const options = Array.from(select.options).map((option) => option.value)
     expect(options).toEqual(expect.arrayContaining(['', 'mock-default', 'deepseek-chat']))
-    expect(screen.getByText(/候选 2 个，来自模型网关注册键/)).toBeInTheDocument()
+    expect(screen.getByText(/可选 2 个，来自本部署已登记的模型键/)).toBeInTheDocument()
   })
 
   it('当前模型键不在候选内 ⇒ 灰显选项 + 原因（保存会被后端 422 拒绝）', async () => {
@@ -342,7 +342,7 @@ describe('WorkforceSettingsPage（P2c-4 选择器）', () => {
     expect(select.value).toBe('legacy-model')
     const disabled = Array.from(select.options).filter((option) => option.disabled)
     expect(disabled).toHaveLength(1)
-    expect(disabled[0].textContent).toContain('未在模型网关注册')
+    expect(disabled[0].textContent).toContain('本部署没有登记这个模型键')
   })
 
   it('工具白名单为目录多选：闸门内的目录项可勾选，闸门外的灰显并给原因', async () => {
@@ -357,7 +357,7 @@ describe('WorkforceSettingsPage（P2c-4 选择器）', () => {
     const blockedTool = screen.getByLabelText('工具 artifact.export')
     expect(gateTool).not.toBeDisabled()
     expect(blockedTool).toBeDisabled()
-    expect(screen.getByText(/未在本部署的规划器工具白名单（WORKBENCH_PLANNER_TOOLS）中登记/)).toBeInTheDocument()
+    expect(screen.getByText(/本部署未提供该工具：勾选后保存会被拒绝/)).toBeInTheDocument()
     // 保存闸门里的目录外键也要出现（否则管理员无法勾选合法键）。
     expect(screen.getByLabelText('工具 knowledge.search')).not.toBeDisabled()
 
@@ -382,9 +382,9 @@ describe('WorkforceSettingsPage（P2c-4 选择器）', () => {
 
     const modelInput = screen.getByLabelText('模型键')
     expect(modelInput.tagName).toBe('INPUT')
-    expect(screen.getByText(/候选端点不可用（当前账号没有管理岗位与数字员工的权限。）/)).toBeInTheDocument()
+    expect(screen.getByText(/暂时读不到可选的模型清单（当前账号没有管理岗位与数字员工的权限。）/)).toBeInTheDocument()
     const toolInput = screen.getByLabelText('工具白名单')
     expect(toolInput.tagName).toBe('INPUT')
-    expect(screen.getByText(/工具目录端点不可用/)).toBeInTheDocument()
+    expect(screen.getByText(/暂时读不到工具清单/)).toBeInTheDocument()
   })
 })

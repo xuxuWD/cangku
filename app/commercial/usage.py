@@ -64,6 +64,20 @@ class InMemoryUsageLedger:
         with self._lock:
             return sum(item.cost_cents for item in self._entries.values() if item.tenant_id == tenant_id)
 
+    def list_for_tenant(self, tenant_id: str, *, limit: int, offset: int) -> tuple[list[UsageEntry], int]:
+        """按租户列出账本明细（B-2b 导出读取通道）。
+
+        排序 `(occurred_at, id)` —— 与 PG 实现的 `ORDER BY occurred_at, id` 同口径、顺序确定；
+        返回 `(本页条目, 过滤后总数)`。冲正记录以 `reversal_of` 指向原条目（负值），
+        与 `total()` / `total_cost_cents()` 的累计口径一致。
+        """
+        with self._lock:
+            rows = sorted(
+                (item for item in self._entries.values() if item.tenant_id == tenant_id),
+                key=lambda item: (item.occurred_at, item.id),
+            )
+        return rows[offset : offset + limit], len(rows)
+
 
 class PostgresUsageLedger:
     def __init__(self, connection_or_pool) -> None:
@@ -107,6 +121,35 @@ class PostgresUsageLedger:
                 cursor.execute("SELECT COALESCE(SUM(cost_cents), 0) FROM workbench_usage_ledger WHERE tenant_id = %s", (tenant_id,))
                 row = cursor.fetchone()
         return int(row[0] if row else 0)
+
+    def list_for_tenant(self, tenant_id: str, *, limit: int, offset: int) -> tuple[list[UsageEntry], int]:
+        """按租户列出账本明细（B-2b 导出读取通道；字段口径同内存实现）。
+
+        `ORDER BY occurred_at, id`（迁移 006 已有 `idx_workbench_usage_tenant_time (tenant_id, occurred_at)`
+        支撑本查询）；`COUNT(*)` 为与 `LIMIT/OFFSET` 同条件的过滤后总数。
+        """
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, units, cost_cents, reversal_of, occurred_at FROM workbench_usage_ledger "
+                    "WHERE tenant_id = %s ORDER BY occurred_at, id LIMIT %s OFFSET %s",
+                    (tenant_id, limit, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute("SELECT COUNT(*) FROM workbench_usage_ledger WHERE tenant_id = %s", (tenant_id,))
+                total = cursor.fetchone()
+        return [
+            UsageEntry(
+                idempotency_key="",  # 明细读出不需要幂等键（调用方也不用它）；导出读取器亦不导出该字段
+                tenant_id=tenant_id,
+                units=int(row[1]),
+                cost_cents=int(row[2]),
+                id=str(row[0]),
+                reversal_of=row[3],
+                occurred_at=row[4] if isinstance(row[4], datetime) else datetime.now(UTC),
+            )
+            for row in rows
+        ], int(total[0]) if total is not None else 0
 
     def reverse(self, entry_id: str, *, reason: str, actor_id: str) -> UsageEntry:
         reversal_id = f"usage-{uuid4().hex[:12]}"

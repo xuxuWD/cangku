@@ -29,6 +29,7 @@ class AccountRepository(Protocol):
     def find_by_email(self, email: str) -> Account | None: ...
     def get(self, account_id: str) -> Account: ...
     def list_by_status(self, status: AccountStatus) -> list[Account]: ...
+    def list_for_tenant(self, tenant_id: str, *, limit: int, offset: int) -> tuple[list[Account], int]: ...
     def mark_approved(self, account_id: str, *, role: str, tenant_id: str, reviewed_by: str) -> Account: ...
     def mark_rejected(self, account_id: str, *, reason: str, reviewed_by: str) -> Account: ...
     def update_password(self, account_id: str, password_hash: str) -> Account: ...
@@ -81,6 +82,20 @@ class InMemoryAccountRepository:
     def list_by_status(self, status: AccountStatus) -> list[Account]:
         with self._lock:
             return [item for item in self._accounts.values() if item.status == status]
+
+    def list_for_tenant(self, tenant_id: str, *, limit: int, offset: int) -> tuple[list[Account], int]:
+        """按租户列出账号（B-2b 导出读取通道）。
+
+        **未审批的申请账号 `tenant_id` 为空** ⇒ 不属于任何租户，天然不出现在任何租户的导出里
+        （与「已审批但被拒」不同：被拒账号从未绑定租户）。排序 `(requested_at, account_id)`
+        与 PG 实现同口径，顺序确定。
+        """
+        with self._lock:
+            rows = sorted(
+                (item for item in self._accounts.values() if item.tenant_id == tenant_id),
+                key=lambda item: (item.requested_at, item.account_id),
+            )
+        return rows[offset : offset + limit], len(rows)
 
     def mark_approved(self, account_id: str, *, role: str, tenant_id: str, reviewed_by: str) -> Account:
         with self._lock:
@@ -299,6 +314,26 @@ class PostgresAccountRepository:
                 )
                 rows = cursor.fetchall()
         return [self._hydrate(row) for row in rows]
+
+    def list_for_tenant(self, tenant_id: str, *, limit: int, offset: int) -> tuple[list[Account], int]:
+        """按租户列出账号（B-2b 导出读取通道；字段口径同内存实现）。
+
+        `tenant_id IS NULL` 的待审批申请不属于任何租户 ⇒ `WHERE tenant_id = %s` 天然排除；
+        `ORDER BY requested_at, account_id` 保证顺序确定；`COUNT(*)` 为过滤后总数。
+        """
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT {self._COLUMNS} FROM workbench_accounts
+                    WHERE tenant_id = %s ORDER BY requested_at, account_id LIMIT %s OFFSET %s
+                    """,
+                    (tenant_id, limit, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute("SELECT COUNT(*) FROM workbench_accounts WHERE tenant_id = %s", (tenant_id,))
+                total = cursor.fetchone()
+        return [self._hydrate(row) for row in rows], int(total[0]) if total is not None else 0
 
     def mark_approved(self, account_id: str, *, role: str, tenant_id: str, reviewed_by: str) -> Account:
         with self._connection() as connection:

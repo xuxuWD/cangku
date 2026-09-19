@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import RLock
-from typing import Protocol
+from typing import Mapping, Protocol
 from uuid import uuid4
 
 from .repository import InMemoryCommercialRepository, ResourceNotFound
 from .tenant import Actor, CommercialPolicyError, TenantStatus, transition_tenant
 from ..audit.models import AuditAction
 from ..audit.service import AuditService
+from ..runtime.contracts import redact_payload
+
+logger = logging.getLogger(__name__)
 
 
 # 保留策略默认值（真源 commercial-g0-design.md:118）：任务和运行 180 天、事件和用量 365 天、审计 730 天。
@@ -40,7 +44,14 @@ EXPORT_RESOURCE_CATEGORIES: tuple[str, ...] = (
     "audits",                 # 审计记录
 )
 # 无现成读取方法、因而**未实现**（返回空数组）的类别集合。
+# B-2（2026-09-19）：接线后**未接线的类别**由 `build_export_readers` 决定 ⇒ 运行时口径 =
+# `set(EXPORT_RESOURCE_CATEGORIES) - set(export_readers)`；本常量保留为「一个都没接」时的默认值
+# （服务未注入读取器时的既有行为，契约与既有测试不变）。
 UNIMPLEMENTED_EXPORT_CATEGORIES: frozenset[str] = frozenset(EXPORT_RESOURCE_CATEGORIES)
+
+# 单类导出行数上限（B-2）：导出包整体落在 JSONB 一行里，必须有界；
+# 超出时**不静默截断**——服务层在 `truncated_categories` 里给出「取了多少 / 共多少」。
+EXPORT_CATEGORY_MAX_ROWS = 5000
 
 # 导出脱敏契约（docs/api-contract.md:144）：以下内容**一律不导出**。
 EXPORT_REDACTED_FIELDS: tuple[str, ...] = ("密码", "Cookie", "验证码", "令牌", "原始 API 密钥", "客户原文")
@@ -52,6 +63,16 @@ EXPORT_PACKAGE_TTL = timedelta(days=7)
 
 class DeletionNotPending(CommercialPolicyError):
     """撤销删除申请时找不到处于冷静期内、可撤销的删除作业。"""
+
+
+class DeletionPreconditionMissing(CommercialPolicyError):
+    """删除确认的前置未满足（尚未完成最终导出）。
+
+    **归属与 HTTP 语义**：继承 `CommercialPolicyError` 只为复用异常族，
+    其对外语义**不是 403**——路由必须**先于** `CommercialPolicyError` 捕获本异常并映射 `409`
+    （先例：`DeletionNotPending` → `409`、`ExportPackageExpired` → `404`）。
+    与「无权限（403）」区分开：这是**业务前置未满足**，不是调用方没资格。
+    """
 
 
 class ExportPackageExpired(CommercialPolicyError):
@@ -74,6 +95,9 @@ class LifecycleJob:
     id: str = field(default_factory=lambda: f"lifecycle-{uuid4().hex[:12]}")
     requested_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     final_exported: bool = False
+    # B-3：删除确认人 / 确认时刻（迁移 043）。存量行两列均为此默认值（未确认）。
+    confirmed_by: str | None = None
+    confirmed_at: datetime | None = None
 
 
 @dataclass
@@ -92,6 +116,22 @@ class ExportPackage:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
+@dataclass
+class ExportPackageSummary:
+    """导出包**元数据**（列表面）：不含载荷。
+
+    列表只回元数据（`package_id` / 租户 / 所属作业 / 生成与过期时刻），载荷按 `package_id`
+    单独取回（契约「GET /api/v1/commercial/exports」）：列表可能一次几十上百条，带上载荷
+    会把「看有哪些包」变成大体积传输。
+    """
+
+    id: str
+    tenant_id: str
+    created_at: datetime
+    expires_at: datetime
+    job_id: str | None = None
+
+
 class LifecycleJobStore(Protocol):
     def create(self, job: LifecycleJob) -> LifecycleJob: ...
     def get(self, job_id: str, *, tenant_id: str | None = None) -> LifecycleJob: ...
@@ -108,7 +148,36 @@ class RetentionPolicyStore(Protocol):
 class ExportPackageStore(Protocol):
     def save(self, package: ExportPackage) -> ExportPackage: ...
     def get(self, package_id: str, *, tenant_id: str | None = None) -> ExportPackage: ...
+    def list_for_tenant(
+        self, tenant_id: str, *, limit: int, offset: int
+    ) -> tuple[list[ExportPackageSummary], int]: ...
     def purge_expired(self, *, now: datetime | None = None) -> int: ...
+
+
+def _summarize_package(package: ExportPackage) -> ExportPackageSummary:
+    """导出包 → 列表面条目（丢弃载荷）。"""
+    return ExportPackageSummary(
+        id=package.id,
+        tenant_id=package.tenant_id,
+        job_id=package.job_id,
+        created_at=package.created_at,
+        expires_at=package.expires_at,
+    )
+
+
+class TenantPurgeStore(Protocol):
+    """租户级**物理清场**接口（B-3 清场扩围）。
+
+    实现 = `app/skills/store.py` / `app/knowledge_governance/store.py` 的仓储（与 `MemoryExportStore`
+    同款最小面）。语义是**租户整体删除**：删除流程按租户物理清场，避免孤儿数据残留
+    （软删语义只留给正常业务）。
+
+    ⚠️ **「整层」= 该层在迁移里的全部租户级表**（技能层 = 技能包 + 数字员工绑定），
+    不是只清「主表」：2026-09-19 真机验证实测到只清主表的后果——审计 `cleared_categories`
+    报得出面名、面上却仍有整租户行残留（清单 10.7 该条留痕）。
+    """
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int: ...
 
 
 class MemoryExportStore(Protocol):
@@ -117,6 +186,10 @@ class MemoryExportStore(Protocol):
 
     注：`delete_all_for_tenant` 是**租户整体删除**语义（生命周期 CLI/worker 专用），
     与业务侧「事实类 supersede 软删」不冲突——软删留给正常业务，删除流程物理清场。
+
+    ⚠️ **「整层」= 三张表一起清**（事实 / 规则 / 身份类画像；见 `029` 迁移），不是只清事实表：
+    2026-09-19 真机验证实测到只清事实表的后果——租户已 `deleted`、审计报 `memories`，
+    规则表与画像表行数原样不动（口径同 `TenantPurgeStore`）。
     """
 
     def list_all_for_tenant(self, tenant_id: str, *, since=None) -> list[object]: ...
@@ -199,6 +272,19 @@ class InMemoryExportPackageStore:
                 raise ResourceNotFound(package_id)
             return package
 
+    def list_for_tenant(
+        self, tenant_id: str, *, limit: int, offset: int
+    ) -> tuple[list[ExportPackageSummary], int]:
+        """列出本租户导出包元数据：生成时间倒序，同刻按包号倒序 ⇒ 顺序确定。
+
+        返回 `(本页条目, 过滤后总数)`；越界分页返回空页（总数不变）。
+        """
+        with self._lock:
+            rows = [package for package in self._packages.values() if package.tenant_id == tenant_id]
+        rows.sort(key=lambda package: (package.created_at, package.id), reverse=True)
+        total = len(rows)
+        return [_summarize_package(package) for package in rows[offset : offset + limit]], total
+
     def purge_expired(self, *, now: datetime | None = None) -> int:
         """物理删除 `expires_at <= now` 的导出包，返回删除条数（与 PG 实现同语义）。"""
         cutoff = now or datetime.now(UTC)
@@ -219,18 +305,38 @@ class CommercialLifecycleService:
         retention_store: RetentionPolicyStore | None = None,
         export_store: ExportPackageStore | None = None,
         memory_store: MemoryExportStore | None = None,
+        skills_store: TenantPurgeStore | None = None,
+        knowledge_store: TenantPurgeStore | None = None,
+        export_readers: Mapping[str, object] | None = None,
+        export_category_max_rows: int = EXPORT_CATEGORY_MAX_ROWS,
         audit: AuditService | None = None,
     ) -> None:
         if cooldown_days < 1:
             raise CommercialPolicyError("删除冷静期必须至少 1 天")
+        if export_category_max_rows < 1:
+            raise CommercialPolicyError("导出行数上限必须是正整数")
         self.repository = repository
         self.cooldown_days = cooldown_days
         self.job_store = job_store or InMemoryLifecycleJobStore()
         self.retention_store = retention_store or InMemoryRetentionPolicyStore()
         self.export_store = export_store or InMemoryExportPackageStore()
+        self.export_category_max_rows = export_category_max_rows
+        # B-2 接线：类别 → 读取器（`app/commercial/export_readers.py`，签名
+        # `reader(tenant_id, *, limit) -> (rows, total)`）。缺哪一类就不接哪一类
+        # （该类仍留在 `unimplemented_categories`，**不假装有数据**）。
+        self.export_readers: dict[str, object] = dict(export_readers or {})
         # P3 记忆层生命周期通道（N2）：注入后导出载荷含 memories 数据、删除流程物理清场；
         # 未注入时保持「memories 未实现（空数组）」现状（既有契约与测试不变）。
+        # B-2：等价于往 `export_readers` 里补一个 memories 读取器（同一实现，两条注入路径归一）。
+        if memory_store is not None:
+            from .export_readers import memory_export_reader
+
+            self.export_readers.setdefault("memories", memory_export_reader(memory_store))
         self.memory_store = memory_store
+        # B-3 清场扩围：技能层 / 知识治理层也按租户物理清场（真源「业务数据、对象存储文件、向量索引
+        # 和缓存按策略清理」）。未注入的仓储**不参与清场**（`cleared_categories` 只列真正清到的一侧）。
+        self.skills_store = skills_store
+        self.knowledge_store = knowledge_store
         # 保留策略变更必须写入审计（真源 commercial-g0-design.md:118）。
         # 未配置审计通道时 `set_retention` 会 fail-closed（见下），不静默跳过。
         self.audit = audit
@@ -252,32 +358,41 @@ class CommercialLifecycleService:
     def build_export_payload(self, tenant_id: str) -> dict[str, object]:
         """构造租户导出载荷（真源 commercial-g0-design.md §6.1）。
 
-        结构按真源类别清单产出；**未注入跨模块读取通道的类别一律为空数组**（**未实现**，
-        见 `UNIMPLEMENTED_EXPORT_CATEGORIES`）；**不臆造字段、不假装有数据**。
-        已注入的通道（P3 记忆层 `memory_store`）会填充实际数据并从 `unimplemented_categories`
-        移除该类别。载荷只承载元数据/脱敏字段（契约 docs/api-contract.md:144）。
+        结构按真源类别清单产出；**未注入读取通道的类别一律为空数组**（**未实现**，
+        见 `unimplemented_categories`）；**不臆造字段、不假装有数据**。
+        B-2（2026-09-19）起支持注入 `export_readers`：接了读取器的类别填真实行（字段口径见
+        `app/commercial/export_readers.py` 与 `docs/api-contract.md`），并：
+
+        - 每类**行数上限** `export_category_max_rows`，超出时在 `truncated_categories` 里给出
+          `{"exported": 行数, "total": 总数}`（**不静默截断**）；
+        - 读取器运行期报错的类别进 `unavailable_categories` 且**不写入 `resources`**
+          （与「读了但是空」区分开：前者是读不到，后者是真的没有），其余类别照常导出；
+        - 所有行统一过 `redact_payload`（既有脱敏器：敏感键名 + 值内凭据形态）。
         """
         self.repository.get_tenant(tenant_id)
         resources: dict[str, object] = {category: [] for category in EXPORT_RESOURCE_CATEGORIES}
-        unimplemented = set(UNIMPLEMENTED_EXPORT_CATEGORIES)
-        if self.memory_store is not None:
-            memories = self.memory_store.list_all_for_tenant(tenant_id)
-            resources["memories"] = [
-                {
-                    "memory_id": memory.memory_id,
-                    "scope": memory.scope.value if hasattr(memory.scope, "value") else str(memory.scope),
-                    "status": memory.status.value if hasattr(memory.status, "value") else str(memory.status),
-                    "content": memory.content,
-                    "created_at": memory.created_at.isoformat() if memory.created_at is not None else None,
-                }
-                for memory in memories
-            ]
-            # 已接线：memories 不再属于「未实现」类别（其余类别保持现状）。
-            unimplemented.discard("memories")
+        unimplemented = set(EXPORT_RESOURCE_CATEGORIES) - set(self.export_readers)
+        truncated: dict[str, dict[str, int]] = {}
+        unavailable: list[str] = []
+        for category, reader in self.export_readers.items():
+            if category not in resources:
+                continue  # 未知类别名：忽略，不往载荷里塞计划外字段
+            try:
+                rows, total = reader(tenant_id, limit=self.export_category_max_rows)  # type: ignore[operator]
+            except Exception as exc:  # noqa: BLE001 — 单类读取失败不毒化整包：如实标注 + 记日志
+                logger.warning("导出类别 %s 读取失败（租户 %s）：%s", category, tenant_id, exc)
+                resources.pop(category, None)
+                unavailable.append(category)
+                continue
+            resources[category] = redact_payload(rows)
+            if total > len(rows):
+                truncated[category] = {"exported": len(rows), "total": int(total)}
         return {
             "tenant_id": tenant_id,
             "resources": resources,
             "unimplemented_categories": sorted(unimplemented),
+            "unavailable_categories": sorted(unavailable),
+            "truncated_categories": truncated,
             "redaction": list(EXPORT_REDACTED_FIELDS),
         }
 
@@ -316,6 +431,19 @@ class CommercialLifecycleService:
             raise ExportPackageExpired("导出包已过期")
         return package
 
+    def list_export_packages(
+        self, actor: Actor, tenant_id: str, *, limit: int = 50, offset: int = 0
+    ) -> tuple[list[ExportPackageSummary], int]:
+        """列出本租户**已生成**导出包的元数据（契约「GET /api/v1/commercial/exports」）。
+
+        为什么需要它（2026-09-19 B-1 补链）：取回端点要 `package_id`，而申请响应与作业视图
+        都不携带 ⇒ 没有本方法客户端**无法发现包号**，取回能力实际不可用。
+        权限与租户口径同 `get_export_package`：admin-only + 以 `tenant_id` 限定（永不列他租户）；
+        列表**如实包含已过期但尚未被清理的包**（客户端按 `expires_at` 标注，取回仍 `404`）。
+        """
+        self._ensure_admin(actor, tenant_id)
+        return self.export_store.list_for_tenant(tenant_id, limit=limit, offset=offset)
+
     def purge_expired_export_packages(self, *, now: datetime | None = None) -> int:
         """清理过期导出包（物理删除），返回删除条数；供 worker 周期任务调用。
 
@@ -352,19 +480,60 @@ class CommercialLifecycleService:
         job.final_exported = True
         self.job_store.save(job)
 
+    def confirm_deletion(self, actor: Actor, tenant_id: str, *, now: datetime | None = None) -> LifecycleJob:
+        """记录删除确认人（真源 commercial-g0-design.md:114「删除前必须生成最终导出包**并记录确认人**」）。
+
+        这是一次**显式确认动作**（admin-only），与「申请删除」分开：
+        - 必须已完成**最终导出**（`final_exported`）——真源把两者并列要求；
+        - **不改作业状态**（确认只是记录「谁确认了」；执行仍由冷静期闸门与 worker 排程决定）；
+        - 与删除执行同口径 **fail-closed**：没有审计通道就拒绝确认，绝不留下不可追的确认人。
+        """
+        self._ensure_admin(actor, tenant_id)
+        job = self._latest_delete_job(tenant_id)
+        if job.status != "cooling_down":
+            raise DeletionNotPending("没有处于冷静期内、可确认的删除申请")
+        if not job.final_exported:
+            raise DeletionPreconditionMissing("删除前必须完成最终导出，再记录确认人")
+        if self.audit is None:
+            raise CommercialPolicyError("删除确认必须写入审计（未配置审计通道）")
+        job.confirmed_by = actor.user_id
+        job.confirmed_at = now or datetime.now(UTC)
+        self.job_store.save(job)
+        self.audit.record(
+            AuditAction.COMMERCIAL_DELETION_CONFIRMED,
+            tenant_id=tenant_id,
+            actor_id=actor.user_id,
+            target_type="tenant",
+            target_id=tenant_id,
+            # 只记受控值：作业种类与状态；确认人由 `actor_id` 承载，不重复落自由文本。
+            detail={"kind": job.kind, "status": job.status},
+        )
+        return job
+
+    def _latest_delete_job(self, tenant_id: str) -> LifecycleJob:
+        """「最近的删除作业」= 按 `(requested_at, id)` 显式取最新（与存储层 `ORDER BY created_at, id` 同口径）。
+
+        依据：E2+E3 真库演练暴露——原 `jobs[-1]` 依赖物理行序，同租户多条 `kind=delete` 时可能选错作业；
+        这里显式取 max，即便后端返回顺序变化语义仍确定。
+        """
+        jobs = self.job_store.list_for_tenant(tenant_id, kind="delete")
+        job = max(jobs, key=lambda candidate: (candidate.requested_at, candidate.id), default=None)
+        if job is None:
+            raise CommercialPolicyError("没有待执行的删除任务")
+        return job
+
     def execute_delete(self, tenant_id: str, *, now: datetime | None = None) -> None:
         current = now or datetime.now(UTC)
-        jobs = self.job_store.list_for_tenant(tenant_id, kind="delete")
-        # 「最近的删除作业」= 按 (requested_at, id) 显式取最新（与存储层 `ORDER BY created_at, id` 同口径）。
-        # 依据：E2+E3 真库演练暴露——原 `jobs[-1]` 依赖物理行序，同租户多条 `kind=delete` 时可能选错作业；
-        # 这里显式取 max，即便后端返回顺序变化语义仍确定。
-        job = max(jobs, key=lambda candidate: (candidate.requested_at, candidate.id), default=None)
-        if job is None or job.execute_after is None:
+        job = self._latest_delete_job(tenant_id)
+        if job.execute_after is None:
             raise CommercialPolicyError("没有待执行的删除任务")
         if current < job.execute_after:
             raise CommercialPolicyError("删除仍在冷静期内")
         if not job.final_exported:
             raise CommercialPolicyError("删除前必须完成最终导出")
+        # B-3：确认人必须已记录（真源把「最终导出」与「记录确认人」并列作为删除前的前置）。
+        if not job.confirmed_by:
+            raise CommercialPolicyError("删除前必须记录确认人")
         # fail-closed：真源要求删除流程「包含……审计记录」（commercial-g0-design.md:114/:174），
         # 没有审计通道就拒绝执行删除，绝不无审计地删租户。
         if self.audit is None:
@@ -377,10 +546,18 @@ class CommercialLifecycleService:
         transition_tenant(tenant, TenantStatus.DELETED, Actor(job.requested_by, "super_admin"))
         if hasattr(self.repository, "set_tenant_status"):
             self.repository.set_tenant_status(tenant_id, TenantStatus.DELETED)
-        # N2：租户删除 = 物理清场（记忆层生命周期方法）。软删语义只留给正常业务；
-        # 删除流程按租户整体销毁记忆数据，避免孤儿数据残留。
-        if self.memory_store is not None:
-            self.memory_store.delete_all_for_tenant(tenant_id)
+        # N2 + B-3：租户删除 = 物理清场（各层生命周期方法）。软删语义只留给正常业务；
+        # 删除流程按租户整体销毁数据，避免孤儿数据残留。**逐面记录实际清到哪些面**（未注入的不列）。
+        cleared: list[str] = []
+        for name, store in (
+            ("memories", self.memory_store),
+            ("skills", self.skills_store),
+            ("knowledge_governance", self.knowledge_store),
+        ):
+            if store is None:
+                continue
+            store.delete_all_for_tenant(tenant_id)
+            cleared.append(name)
         job.status = "completed"
         self.job_store.save(job)
         self.audit.record(
@@ -389,7 +566,12 @@ class CommercialLifecycleService:
             actor_id=job.requested_by,
             target_type="tenant",
             target_id=tenant_id,
-            detail={"kind": job.kind, "status": TenantStatus.DELETED.value},
+            detail={
+                "kind": job.kind,
+                "status": TenantStatus.DELETED.value,
+                "confirmed_by": job.confirmed_by,
+                "cleared_categories": sorted(cleared),
+            },
         )
 
     def complete_export_job(self, job_id: str, *, now: datetime | None = None) -> LifecycleJob:
@@ -474,6 +656,27 @@ class CommercialLifecycleService:
                 continue
             if not job.final_exported:
                 continue
+            # B-3：确认人由**管理员显式确认**（`confirm_deletion`）。但冷静期本身可能长达数十天，
+            # 管理员常遗忘最后一步 ⇒ 到期且已完成最终导出时，由 worker 代表平台**按申请自动确认**
+            # （确认人 = 请求人，即代表租户决策的那个管理员），保证删除不会因遗漏而静默卡死；
+            # 自动确认**写与手动确认同一审计动作**（`commercial.deletion.confirmed`），可追。
+            if not job.confirmed_by:
+                job.confirmed_by = job.requested_by
+                job.confirmed_at = current
+                self.job_store.save(job)
+                if self.audit is not None:
+                    self.audit.record(
+                        AuditAction.COMMERCIAL_DELETION_CONFIRMED,
+                        tenant_id=job.tenant_id,
+                        actor_id=job.requested_by,
+                        target_type="tenant",
+                        target_id=job.tenant_id,
+                        detail={"kind": job.kind, "status": job.status},
+                    )
+                logger.info(
+                    "删除作业 %s 到期未显式确认，worker 按申请自动确认（确认人 = 请求人 %s）",
+                    job.id, job.requested_by,
+                )
             self.execute_delete(job.tenant_id, now=current)
             executed_deletions += 1
         return {"exports": completed_exports, "deletions": executed_deletions}
@@ -510,50 +713,64 @@ class CommercialLifecycleService:
 
 
 class PostgresLifecycleJobStore:
+    # B-3：列清单与行水合集中到一处——此前三处 SELECT + 三处位置水合各写一遍，
+    # 加列时极易漏改（真库演练已暴露过排序类同源问题）。
+    _COLUMNS = "id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported, confirmed_by, confirmed_at"
+
     def __init__(self, connection_or_pool) -> None: self.connection = connection_or_pool
     def _connection(self):
         from contextlib import nullcontext
         return self.connection.connection() if hasattr(self.connection, "connection") and callable(self.connection.connection) else nullcontext(self.connection)
+
+    @staticmethod
+    def _hydrate(row) -> LifecycleJob:
+        return LifecycleJob(
+            tenant_id=str(row[1]), kind=str(row[2]), status=str(row[3]), requested_by=str(row[5]),
+            execute_after=row[4], id=str(row[0]),
+            requested_at=row[6] if isinstance(row[6], datetime) else datetime.now(UTC),
+            final_exported=bool(row[7]),
+            confirmed_by=row[8], confirmed_at=row[9],
+        )
     def create(self, job: LifecycleJob) -> LifecycleJob:
         with self._connection() as c:
             with c.transaction():
                 with c.cursor() as cur:
-                    cur.execute("INSERT INTO workbench_lifecycle_jobs (id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)", (job.id,job.tenant_id,job.kind,job.status,job.execute_after,job.requested_by,job.requested_at,job.final_exported))
+                    cur.execute("INSERT INTO workbench_lifecycle_jobs (id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported, confirmed_by, confirmed_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (job.id,job.tenant_id,job.kind,job.status,job.execute_after,job.requested_by,job.requested_at,job.final_exported,job.confirmed_by,job.confirmed_at))
         return job
     def get(self, job_id: str, *, tenant_id: str | None = None) -> LifecycleJob:
         with self._connection() as c:
             with c.cursor() as cur:
-                sql="SELECT id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported FROM workbench_lifecycle_jobs WHERE id = %s"; params=[job_id]
+                sql=f"SELECT {self._COLUMNS} FROM workbench_lifecycle_jobs WHERE id = %s"; params=[job_id]
                 if tenant_id is not None: sql += " AND tenant_id = %s"; params.append(tenant_id)
                 cur.execute(sql, tuple(params)); row=cur.fetchone()
         if row is None: raise ResourceNotFound(job_id)
-        return LifecycleJob(tenant_id=str(row[1]), kind=str(row[2]), status=str(row[3]), requested_by=str(row[5]), execute_after=row[4], id=str(row[0]), requested_at=row[6] if isinstance(row[6], datetime) else datetime.now(UTC), final_exported=bool(row[7]))
+        return self._hydrate(row)
     def save(self, job: LifecycleJob) -> LifecycleJob:
         with self._connection() as c:
             with c.transaction():
                 with c.cursor() as cur:
-                    cur.execute("UPDATE workbench_lifecycle_jobs SET status = %s, execute_after = %s, final_exported = %s WHERE id = %s AND tenant_id = %s", (job.status,job.execute_after,job.final_exported,job.id,job.tenant_id))
+                    cur.execute("UPDATE workbench_lifecycle_jobs SET status = %s, execute_after = %s, final_exported = %s, confirmed_by = %s, confirmed_at = %s WHERE id = %s AND tenant_id = %s", (job.status,job.execute_after,job.final_exported,job.confirmed_by,job.confirmed_at,job.id,job.tenant_id))
         return job
     def list_for_tenant(self, tenant_id: str, *, kind: str | None = None) -> list[LifecycleJob]:
         with self._connection() as c:
             with c.cursor() as cur:
-                sql="SELECT id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported FROM workbench_lifecycle_jobs WHERE tenant_id = %s"; params=[tenant_id]
+                sql=f"SELECT {self._COLUMNS} FROM workbench_lifecycle_jobs WHERE tenant_id = %s"; params=[tenant_id]
                 if kind is not None: sql += " AND kind = %s"; params.append(kind)
                 # 确定性排序，口径与 `list_pending` 一致（内存侧按 (requested_at, id)）。
                 # 依据：E2+E3 真库演练暴露——调用方"取最近的删除作业"，无 `ORDER BY` 时依赖物理行序，
                 # 同租户多条 `kind=delete` 时可能选错作业。
                 sql += " ORDER BY created_at, id"
                 cur.execute(sql, tuple(params)); rows=cur.fetchall()
-        return [LifecycleJob(tenant_id=str(r[1]), kind=str(r[2]), status=str(r[3]), requested_by=str(r[5]), execute_after=r[4], id=str(r[0]), requested_at=r[6] if isinstance(r[6], datetime) else datetime.now(UTC), final_exported=bool(r[7])) for r in rows]
+        return [self._hydrate(r) for r in rows]
     def list_pending(self, *, kind: str, limit: int = 100) -> list[LifecycleJob]:
         with self._connection() as c:
             with c.cursor() as cur:
                 cur.execute(
-                    "SELECT id, tenant_id, kind, status, execute_after, requested_by, created_at, final_exported FROM workbench_lifecycle_jobs WHERE kind = %s AND status NOT IN ('completed', 'cancelled') ORDER BY created_at, id LIMIT %s",
+                    f"SELECT {self._COLUMNS} FROM workbench_lifecycle_jobs WHERE kind = %s AND status NOT IN ('completed', 'cancelled') ORDER BY created_at, id LIMIT %s",
                     (kind, limit),
                 )
                 rows=cur.fetchall()
-        return [LifecycleJob(tenant_id=str(r[1]), kind=str(r[2]), status=str(r[3]), requested_by=str(r[5]), execute_after=r[4], id=str(r[0]), requested_at=r[6] if isinstance(r[6], datetime) else datetime.now(UTC), final_exported=bool(r[7])) for r in rows]
+        return [self._hydrate(r) for r in rows]
 
 class PostgresRetentionPolicyStore:
     def __init__(self, connection_or_pool) -> None: self.connection = connection_or_pool
@@ -596,6 +813,37 @@ class PostgresExportPackageStore:
                 cur.execute(sql, tuple(params)); row=cur.fetchone()
         if row is None: raise ResourceNotFound(package_id)
         return ExportPackage(tenant_id=str(row[1]), job_id=row[2], payload=dict(json.loads(row[3]) if isinstance(row[3], str) else row[3]), expires_at=row[5], id=str(row[0]), created_at=row[4] if isinstance(row[4], datetime) else datetime.now(UTC))
+    def list_for_tenant(
+        self, tenant_id: str, *, limit: int, offset: int
+    ) -> tuple[list[ExportPackageSummary], int]:
+        """真库口径同内存实现：租户限定 + 生成时间倒序（同刻按包号倒序）+ 计数与分页。
+
+        **SELECT 不含 `payload` 列**：列表是元数据面（载荷按包号单独取回）。
+        `created_at DESC, id DESC` + `LIMIT/OFFSET`；计数为**过滤后总数**，不受分页影响。
+        """
+        with self._connection() as c:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM workbench_export_packages WHERE tenant_id = %s",
+                    (tenant_id,),
+                )
+                total = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT id, tenant_id, job_id, created_at, expires_at FROM workbench_export_packages "
+                    "WHERE tenant_id = %s ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
+                    (tenant_id, limit, offset),
+                )
+                rows = cur.fetchall()
+        return [
+            ExportPackageSummary(
+                id=str(row[0]),
+                tenant_id=str(row[1]),
+                job_id=row[2],
+                created_at=row[3] if isinstance(row[3], datetime) else datetime.now(UTC),
+                expires_at=row[4] if isinstance(row[4], datetime) else datetime.now(UTC),
+            )
+            for row in rows
+        ], total
     def purge_expired(self, *, now: datetime | None = None) -> int:
         """物理删除过期导出包（`expires_at <= cutoff`，正点即过期），返回删除条数。
 

@@ -108,6 +108,36 @@ def test_list_by_status_filters() -> None:
     assert [item.phone for item in repository.list_by_status(AccountStatus.PENDING)] == ["13800000001"]
 
 
+# ---------------------------------------------------------------------------
+# B-2b（2026-09-19）：账号按租户列出（导出包 `users` 类别的读取通道）
+# 口径：按租户过滤 + 稳定排序（`requested_at, account_id`）+ 总数与分页；
+# **待审批（tenant_id 为空）不属于任何租户** ⇒ 不出现在任何租户的导出里。
+# ---------------------------------------------------------------------------
+
+
+def test_list_for_tenant_scopes_orders_and_counts() -> None:
+    repository = InMemoryAccountRepository()
+    pending = repository.add(make_account("13800000009"))  # 未审批：无租户
+    first = repository.add(make_account("13800000001"))
+    repository.mark_approved(first.account_id, role="employee", tenant_id="t-1", reviewed_by="admin-1")
+    second = repository.add(make_account("13800000002"))
+    repository.mark_approved(second.account_id, role="ceo", tenant_id="t-1", reviewed_by="admin-1")
+    foreign = repository.add(make_account("13800000003"))
+    repository.mark_approved(foreign.account_id, role="employee", tenant_id="t-2", reviewed_by="admin-2")
+
+    rows, total = repository.list_for_tenant("t-1", limit=10, offset=0)
+
+    assert total == 2  # 他租户与未审批账号都不计入
+    assert {row.account_id for row in rows} == {first.account_id, second.account_id}
+    assert all(row.tenant_id == "t-1" for row in rows)
+
+    page, same_total = repository.list_for_tenant("t-1", limit=1, offset=1)
+
+    assert same_total == 2
+    assert len(page) == 1
+    assert pending.account_id not in {row.account_id for row in page}
+
+
 def test_concurrent_approval_only_succeeds_once() -> None:
     from concurrent.futures import ThreadPoolExecutor
 

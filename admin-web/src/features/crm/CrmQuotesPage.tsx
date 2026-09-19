@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AppView } from '../../app/AppShell'
 import { Toast } from '../../components/Toast'
+import { EmptyState } from '../../components/ui/EmptyState'
 import { formatLocalTime } from '../../utils/time'
 import { confirmQuote, convertQuoteToContract, getQuote, listQuotes, replaceQuoteLines, voidQuote, type QuoteLineInput } from './api'
 import { CrmNotice, Pagination, AccountName, useAccountNames, type AccountNames } from './CrmShared'
@@ -48,13 +49,39 @@ function QuoteList({ accountNames, onOpen }: { accountNames: AccountNames; onOpe
 
   useEffect(() => { void load() }, [load])
 
-  return <main className="main-content content-history crm">
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">报价</h1>
-        <p className="page-desc">报价金额一律以整数分存储与传输，页面按整数运算换算为元展示；行金额与税额由服务端重算，确认后冻结（不可改行 / 改金额）。</p>
+  // 统计条数字来源：命中总数取服务端 total；其余按本页已加载列表现算。
+  const draftOnPage = state.items.filter((item) => item.status === 'draft').length
+  const confirmedOnPage = state.items.filter((item) => item.status === 'confirmed').length
+
+  return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">报价金额一律以整数分存储与传输，页面按整数运算换算为元展示；行金额与税额由服务端重算，确认后冻结（不可改行 / 改金额）。</p>
+      <div className="t3__actions">
+        <button className="btn btn--secondary" type="button" disabled={state.loading} onClick={() => void load()}>刷新</button>
       </div>
-      <div className="actions"><button className="button" type="button" onClick={() => void load()}>刷新</button></div>
+    </div>
+
+    <div className="metrics">
+      <div className="metric">
+        <div className="metric__label">命中总数</div>
+        <div className="metric__value">{state.loading ? '—' : state.total}</div>
+        <div className="metric__hint">当前状态筛选下服务端返回的总条数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页报价</div>
+        <div className="metric__value">{state.loading ? '—' : state.items.length}</div>
+        <div className="metric__hint">按本页统计：当前页展示的报价单数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页草稿</div>
+        <div className="metric__value">{state.loading ? '—' : draftOnPage}</div>
+        <div className="metric__hint">按本页统计：仍可编辑报价行的单数</div>
+      </div>
+      <div className="metric">
+        <div className="metric__label">本页已确认</div>
+        <div className="metric__value">{state.loading ? '—' : confirmedOnPage}</div>
+        <div className="metric__hint">按本页统计：已确认并冻结、尚未转合同的单数</div>
+      </div>
     </div>
 
     <div className="toolbar">
@@ -72,19 +99,26 @@ function QuoteList({ accountNames, onOpen }: { accountNames: AccountNames; onOpe
       <span className="history-count">共 {state.total} 条</span>
     </div>
 
-    {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载报价列表…</div>}
-    {!state.loading && state.error && <CrmNotice
-      tone="error"
-      title="报价列表加载失败"
-      action={state.error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
-    >
-      <p>{state.error.message}</p>
-    </CrmNotice>}
-    {!state.loading && !state.error && <section className="history-panel crm__panel" aria-label="报价列表">
-      <div className="panel-header"><h2>报价列表</h2><span>{state.total} 条</span></div>
-      {state.items.length === 0
-        ? <div className="empty-state"><strong>暂无报价</strong><span>调整状态筛选，或先为客户建报价。</span></div>
-        : <div className="panel-body"><table className="workforce__table">
+    <section className="card" aria-label="报价列表">
+      <div className="card__head"><h2>报价列表</h2><span className="badge">{state.total} 条</span></div>
+
+      {state.loading && <div className="loading-state" role="status"><span className="loading-dot" />正在加载报价列表…</div>}
+
+      {!state.loading && state.error && <div className="card__body">
+        <CrmNotice
+          tone="error"
+          title={state.error.status === 403 ? '当前账号无权查看报价列表' : '报价列表加载失败'}
+          action={state.error.status !== 403 && state.error.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+        >
+          <p>{state.error.message}</p>
+        </CrmNotice>
+      </div>}
+
+      {!state.loading && !state.error && (state.items.length === 0
+        ? <EmptyState illustration="list" title="暂无报价" text="调整状态筛选，或先为客户建立报价。">
+            <button className="btn btn--secondary btn--sm" type="button" onClick={() => void load()}>刷新</button>
+          </EmptyState>
+        : <div className="card__body"><table className="workforce__table">
           <thead><tr><th>单号</th><th>客户</th><th>状态</th><th>合计金额</th><th>有效期至</th><th>确认时间</th><th>操作</th></tr></thead>
           <tbody>{state.items.map((item) => <tr key={item.quote_id}>
             <td><span className="workforce__key">{item.quote_no}</span></td>
@@ -95,9 +129,10 @@ function QuoteList({ accountNames, onOpen }: { accountNames: AccountNames; onOpe
             <td>{formatLocalTime(item.confirmed_at) || '—'}</td>
             <td><button className="text-action" type="button" onClick={() => onOpen(item.quote_id)}>查看详情</button></td>
           </tr>)}</tbody>
-        </table></div>}
-      <Pagination total={state.total} limit={state.limit} offset={state.offset} loading={state.loading} onPrev={() => setOffset(Math.max(0, state.offset - state.limit))} onNext={() => setOffset(state.offset + state.limit)} />
-    </section>}
+        </table></div>)}
+
+      {!state.loading && !state.error && <Pagination total={state.total} limit={state.limit} offset={state.offset} loading={state.loading} onPrev={() => setOffset(Math.max(0, state.offset - state.limit))} onNext={() => setOffset(state.offset + state.limit)} />}
+    </section>
   </main>
 }
 
@@ -188,13 +223,16 @@ function QuoteDetail({ quoteId, accountNames, onBack }: { quoteId: string; accou
     })
   }
 
-  if (loading) return <main className="main-content content-history crm"><div className="loading-state" role="status"><span className="loading-dot" />正在加载报价详情…</div></main>
-  if (error || !quote) return <main className="main-content content-history crm">
-    <div className="page-head"><div><h1 className="page-title">报价详情</h1></div><div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div></div>
+  if (loading) return <main className="main-content t3 crm"><div className="loading-state" role="status"><span className="loading-dot" />正在加载报价详情…</div></main>
+  if (error || !quote) return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">报价明细：报价行、税额与合计，以及确认 / 转合同 / 作废的状态操作。</p>
+      <div className="t3__actions"><button className="btn btn--secondary" type="button" onClick={onBack}>返回列表</button></div>
+    </div>
     <CrmNotice
       tone="error"
-      title="报价详情加载失败"
-      action={error?.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
+      title={error?.status === 403 ? '当前账号无权查看该报价' : '报价详情加载失败'}
+      action={error?.status !== 403 && error?.retryable ? <button className="text-action" type="button" onClick={() => void load()}>重新尝试</button> : undefined}
     >
       <p>{error?.message ?? '没有找到该报价。'}</p>
     </CrmNotice>
@@ -202,22 +240,19 @@ function QuoteDetail({ quoteId, accountNames, onBack }: { quoteId: string; accou
 
   const editable = quote.status === 'draft'
 
-  return <main className="main-content content-history crm">
-    <div className="page-head">
-      <div>
-        <h1 className="page-title">{quote.quote_no}</h1>
-        <p className="page-desc">客户 <AccountName accountId={quote.account_id} names={accountNames} /> · 状态 {crmLabel(QUOTE_STATUS_LABELS, quote.status)} · 负责人 {quote.owner_id}</p>
-      </div>
-      <div className="actions"><button className="button" type="button" onClick={onBack}>返回列表</button></div>
+  return <main className="main-content t3 crm">
+    <div className="t3__intro">
+      <p className="page-desc">报价 <span className="page-code">{quote.quote_no}</span> · 客户 <AccountName accountId={quote.account_id} names={accountNames} /> · 状态 {crmLabel(QUOTE_STATUS_LABELS, quote.status)} · 负责人 {quote.owner_id}</p>
+      <div className="t3__actions"><button className="btn btn--secondary" type="button" onClick={onBack}>返回列表</button></div>
     </div>
 
     {!editable && <CrmNotice tone="info" title="报价已冻结">
-      <p>确认后的报价不允许修改行或金额（服务端返回 409）；如需变更请作废后重新开单。</p>
+      <p>确认后的报价不允许修改行或金额，如需变更请作废后重新开单。</p>
     </CrmNotice>}
 
-    <section className="history-panel crm__panel" aria-label="报价行">
-      <div className="panel-header"><h2>报价行</h2><span>{editable ? '草稿：可编辑行' : '只读'}</span></div>
-      <div className="panel-body">
+    <section className="card" aria-label="报价行">
+      <div className="card__head"><h2>报价行</h2><span className="badge">{editable ? '草稿：可编辑行' : '只读'}</span></div>
+      <div className="card__body">
         <table className="workforce__table">
           <thead><tr><th>序号</th><th>描述</th><th>数量</th><th>单价（元）</th><th>税率（万分比）</th><th>小计</th><th>税额</th>{editable && <th>操作</th>}</tr></thead>
           <tbody>{draftLines.map((line, index) => <tr key={index}>
@@ -247,26 +282,26 @@ function QuoteDetail({ quoteId, accountNames, onBack }: { quoteId: string; accou
         </div>
 
         {editable && <div className="actions crm__actions">
-          <button className="button" type="button" disabled={busy} onClick={() => setDraftLines((old) => [...old, { description: '', qty: '1', unit_price_yuan: '0.00', tax_rate_bp: '0' }])}>新增一行</button>
-          <button className="button primary" type="button" disabled={busy} onClick={() => void saveLines()}>保存报价行</button>
+          <button className="btn btn--secondary" type="button" disabled={busy} onClick={() => setDraftLines((old) => [...old, { description: '', qty: '1', unit_price_yuan: '0.00', tax_rate_bp: '0' }])}>新增一行</button>
+          <button className="btn btn--primary" type="button" disabled={busy} onClick={() => void saveLines()}>保存报价行</button>
         </div>}
       </div>
     </section>
 
-    <section className="history-panel crm__panel" aria-label="报价动作">
-      <div className="panel-header"><h2>状态操作</h2><span>单向推进 · 联动人工触发</span></div>
-      <div className="panel-body">
+    <section className="card" aria-label="报价动作">
+      <div className="card__head"><h2>状态操作</h2><span className="page-meta">单向推进 · 联动人工触发</span></div>
+      <div className="card__body">
         <div className="actions crm__actions">
-          {quote.status === 'draft' && <button className="button primary" type="button" disabled={busy} onClick={() => void run(async () => {
+          {quote.status === 'draft' && <button className="btn btn--primary" type="button" disabled={busy} onClick={() => void run(async () => {
             setQuote(await confirmQuote(quoteId))
             setToast('报价已确认并冻结')
           })}>确认报价</button>}
-          {quote.status === 'confirmed' && <button className="button primary" type="button" disabled={busy} onClick={() => void run(async () => {
+          {quote.status === 'confirmed' && <button className="btn btn--primary" type="button" disabled={busy} onClick={() => void run(async () => {
             const contract = await convertQuoteToContract(quoteId)
             setToast(`已转合同：${contract.contract_no}`)
             await load()
           })}>转合同</button>}
-          {(quote.status === 'draft' || quote.status === 'confirmed') && <button className="button danger" type="button" disabled={busy} onClick={() => void run(async () => {
+          {(quote.status === 'draft' || quote.status === 'confirmed') && <button className="btn btn--danger" type="button" disabled={busy} onClick={() => void run(async () => {
             setQuote(await voidQuote(quoteId))
             setToast('报价已作废')
           })}>作废报价</button>}

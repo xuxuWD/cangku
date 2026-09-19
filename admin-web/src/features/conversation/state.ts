@@ -3,16 +3,11 @@ import type { ConversationErrorShape, ConversationState } from './types'
 const DEFAULT_CONVERSATION_ERROR = '对话服务暂时不可用，请检查网络后重新尝试。'
 
 export const initialConversationState: ConversationState = {
-  conversations: [],
-  conversationsTotal: 0,
-  conversationsLoading: true,
-  conversationsError: null,
-  statusFilter: 'all',
-  listOffset: 0,
   detail: null,
   detailLoading: false,
   detailError: null,
   createError: null,
+  exportError: null,
   sending: false,
   sendError: null,
   streamNotice: null,

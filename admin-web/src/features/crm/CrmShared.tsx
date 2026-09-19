@@ -59,9 +59,9 @@ export function Pagination({
   const end = Math.min(offset + limit, total)
   return (
     <div className="history-pagination">
-      <button className="button" type="button" disabled={loading || offset <= 0} onClick={onPrev}>上一页</button>
+      <button className="btn btn--secondary btn--sm" type="button" disabled={loading || offset <= 0} onClick={onPrev}>上一页</button>
       <span>共 {total} 条（第 {start}–{end} 条）</span>
-      <button className="button" type="button" disabled={loading || offset + limit >= total} onClick={onNext}>下一页</button>
+      <button className="btn btn--secondary btn--sm" type="button" disabled={loading || offset + limit >= total} onClick={onNext}>下一页</button>
     </div>
   )
 }
