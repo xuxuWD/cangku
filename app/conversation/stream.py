@@ -317,6 +317,19 @@ class InMemoryStreamStore:
             states = sum(1 for key in state_keys if self._states.pop(key, None) is not None)
             return frames, states
 
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：真删本租户全部流帧与流状态行，返回行数合计（帧 + 状态行）。
+
+        与单会话的 `delete_for_conversation` 同语义，只是范围换成整租户；幂等、只动本租户，
+        **不触碰**消息 / 会话 / 审计 / 运行记录（后两者由各自清理路径负责）。
+        """
+        with self._lock:
+            frame_keys = [key for key in self._frames if key[0] == tenant_id]
+            state_keys = [key for key in self._states if key[0] == tenant_id]
+            frames = sum(len(self._frames.pop(key, [])) for key in frame_keys)
+            states = sum(1 for key in state_keys if self._states.pop(key, None) is not None)
+            return frames + states
+
 
 _FRAME_COLUMNS = "tenant_id, conversation_id, run_id, seq, kind, payload, is_terminal, created_at"
 _STATE_COLUMNS = (
@@ -680,3 +693,23 @@ class PostgresStreamStore:
                     )
                     states = int(cursor.rowcount)
         return frames, states
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：真删本租户全部流帧与流状态行（**同一事务**），返回行数合计。
+
+        顺序固定「帧 → 状态行」；幂等、只动本租户；不触碰消息 / 会话 / 审计 / 运行记录。
+        """
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_conversation_stream_frames WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                    frames = int(cursor.rowcount)
+                    cursor.execute(
+                        "DELETE FROM workbench_conversation_stream_state WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                    states = int(cursor.rowcount)
+        return frames + states

@@ -70,6 +70,10 @@ class ConversationMemberStore(Protocol):
         """撤销成员；**幂等**：本就不是成员返回 `False`（调用方据此不重复写审计）。"""
         ...
 
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：生命周期专用物理删除（整层成员表），语义见实现 docstring。"""
+        ...
+
 
 class InMemoryConversationMemberStore:
     """开发期内存实现（`memory` 存储模式，仅限 development）。"""
@@ -112,6 +116,18 @@ class InMemoryConversationMemberStore:
     def delete(self, tenant_id: str, conversation_id: str, member_id: str) -> bool:
         with self._lock:
             return self._items.pop((str(tenant_id), str(conversation_id), str(member_id)), None) is not None
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：真删本租户全部成员行，返回删除行数。
+
+        本表对会话行是 `ON DELETE CASCADE`（039），单独显式删是为了与其他子表**同一口径**
+        （整层清场逐表可数、不依赖级联），且顺序排在会话行之前。幂等、只动本租户。
+        """
+        with self._lock:
+            keys = [key for key in self._items if key[0] == tenant_id]
+            for key in keys:
+                self._items.pop(key, None)
+            return len(keys)
 
 
 class PostgresConversationMemberStore:
@@ -202,3 +218,14 @@ class PostgresConversationMemberStore:
                         (tenant_id, str(conversation_id), str(member_id)),
                     )
                     return int(cursor.rowcount) > 0
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：真删本租户全部成员行，返回删除行数（语义同内存实现）。"""
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_conversation_members WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                    return int(cursor.rowcount)

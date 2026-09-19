@@ -76,6 +76,10 @@ class ExecutionIdempotencyStore(Protocol):
         """
         ...
 
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：生命周期专用物理删除（整层幂等表），语义见实现 docstring。"""
+        ...
+
 
 class InMemoryExecutionIdempotencyStore:
     """开发 / 测试用内存实现；复合主键即去重机制（并发写收敛为首次行）。"""
@@ -136,6 +140,14 @@ class InMemoryExecutionIdempotencyStore:
                 for key in self._items
                 if key[0] == tenant_id and key[2] == conversation_id
             ]
+            for key in keys:
+                self._items.pop(key, None)
+            return len(keys)
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：真删本租户全部执行幂等行（语义同 PG 实现，见其 docstring）。"""
+        with self._lock:
+            keys = [key for key in self._items if key[0] == tenant_id]
             for key in keys:
                 self._items.pop(key, None)
             return len(keys)
@@ -265,6 +277,22 @@ class PostgresExecutionIdempotencyStore:
                         WHERE tenant_id = %s AND conversation_id = %s
                         """,
                         (tenant_id, str(conversation_id)),
+                    )
+                    return int(cursor.rowcount)
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：真删本租户全部执行幂等行，返回删除行数。
+
+        **必须排在会话 / 消息行之前**：本表同时以 `(tenant_id, conversation_id)` 与
+        `(tenant_id, message_id)` 引用它们（027，均无级联）⇒ 后删会被外键拒绝。
+        幂等、只动本租户。
+        """
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_execution_idempotency WHERE tenant_id = %s",
+                        (tenant_id,),
                     )
                     return int(cursor.rowcount)
 

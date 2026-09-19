@@ -184,6 +184,8 @@ def test_postgres_job_runs_only_the_real_db_modules() -> None:
     # 2026-09-19 补钉：B-4 选项 C 保留策略执行器真库回归（账本结转恒等式 / 运行域先子后父 /
     # 任务防孤儿谓词 / `events` 与 `audit` 两面不被触碰）。
     assert "tests/test_retention_executor_postgres.py" in command
+    # 2026-09-19 补钉：B1 清场扩围会话层真库回归（六张表整层清场 / 外键顺序前提 / 他租户零影响）。
+    assert "tests/test_tenant_purge_conversations_postgres.py" in command
 
 
 def test_postgres_job_requires_zero_skipped() -> None:

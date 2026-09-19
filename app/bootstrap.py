@@ -30,7 +30,7 @@ from .workforce.store import (
 )
 
 
-def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True, audit: AuditService | None = None, memory_store=None, skills_store=None, knowledge_store=None, export_readers=None):
+def build_commercial_components(settings: Settings, *, connection=None, migrate: bool = True, audit: AuditService | None = None, memory_store=None, skills_store=None, knowledge_store=None, export_readers=None, conversation_store=None):
     """Build tenant, usage, and lifecycle persistence as one coordinated unit.
 
     `audit` 注入生命周期服务：真源要求「任何保留策略变化都写入审计」
@@ -44,6 +44,9 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
     的 `build_export_readers` 产物）：接了哪几类，导出包就填哪几类的真实行；缺的类别保持
     「未实现（空数组 + `unimplemented_categories` 如实标注）」。**导出作业在 worker 进程执行**
     ⇒ 生产环境两个进程都必须注入（否则 worker 生成的包会是空的）。
+    `conversation_store`（可选，B1 清场扩围）：会话层整层清场通道（`app/conversation/purge.py`）。
+    传 `None` 时 PG 分支**按同一连接自建**（真库删除必须覆盖会话层），内存分支不装配（内存会话仓储
+    是 API 进程私有的、商业化装配拿不到同一实例；生产删除流程在 worker 且 PG 强制）。
     """
     validate_runtime_settings(settings)
     from .commercial.lifecycle import (
@@ -99,6 +102,20 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
         apply_migrations(connection, Path(__file__).resolve().parents[1] / "migrations")
     repository = PostgresCommercialRepository(connection)
     usage = PostgresUsageLedger(connection)
+    # B1 清场扩围：会话层整层（幂等行 → 流帧/流态 → 成员 → 消息 → 会话）。未由调用方显式传入时
+    # 按同一连接自建（流仓储带上部署配置的帧上限，与写端同源）。
+    if conversation_store is None:
+        from .conversation.purge import PostgresConversationLayerPurgeStore
+        from .conversation.stream import PostgresStreamStore
+
+        conversation_store = PostgresConversationLayerPurgeStore(
+            connection,
+            stream=PostgresStreamStore(
+                connection,
+                max_frames=settings.stream_max_frames,
+                max_bytes=settings.stream_max_bytes,
+            ),
+        )
     lifecycle = CommercialLifecycleService(
         repository,
         job_store=PostgresLifecycleJobStore(connection),
@@ -114,6 +131,8 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
         # `configure_runtime` 装配到，API 侧装配不影响清理是否发生（与导出读取器的口径不同：那是双向都要）。
         usage_ledger=usage,
         retention_purge_store=PostgresRetentionPurgeStore(connection),
+        # B1 清场扩围：会话层整层（上面按同一连接构造；worker/API 两侧都经本函数装配 ⇒ 两进程同源）。
+        conversation_store=conversation_store,
     )
     return repository, usage, lifecycle
 

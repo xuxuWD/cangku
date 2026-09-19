@@ -1,6 +1,7 @@
-# 租户清场扩围（专项方案 · 待拍板）
+# 租户清场扩围（专项方案 · B1 已实施）
 
-> 状态：**方案（未实施）**。依据 = 用户 2026-09-19 裁决「清场扩围：先出专项方案再定」。
+> 状态：**方案（B1 已实施，2026-09-19；B2→B5 待做）**。依据 = 用户 2026-09-19 裁决「清场扩围：先出专项方案再定」
+> 与「三个阻塞点按方案建议全选」。B1 实施记录见 §9。
 > 关联文档：真源 `docs/superpowers/specs/2026-09-06-commercial-g0-design.md`（§6.1 导出 / §6.2 删除 / §6.3 保留）、
 > 差距台账 `docs/delivery-remaining-checklist.md`（组 10.7「清场 / 导出覆盖面普查」条）、
 > 契约 `docs/api-contract.md`（删除清场口径段）。
@@ -59,7 +60,7 @@
 
 | 批次 | 步骤（每批 8 步，缺一不算完成） |
 | --- | --- |
-| **B1 会话层** | ① 契约补面名 `conversations`（层级定义：会话 / 成员 / 消息 / 流帧 / 流态）；② `PostgresConversationStore` 等既有 store 加 `delete_all_for_tenant`（**子先父后**：流帧 → 消息 → 成员 → 会话；流态按 run 关联一并清）；③ 内存实现同步；④ `main.py` + `worker.py` 双进程注入；⑤ 逐表取证脚本（`tmp/`）；⑥ 真机删一轮 + 逐表计数 + 他租户零影响；⑦ 反假（漏删任一子表必真库外键/计数红）；⑧ 全量回归 |
+| **B1 会话层** ✅ | ① 契约补面名 `conversations`（层级定义：会话 / 成员 / 消息 / 流帧 / 流态）——**已落**（契约「删除清场口径」段，口径为**六张表**：`execution_idempotency` → 流帧 → 流态 → 成员 → 消息 → 会话）；② ~`PostgresConversationStore` 等既有 store 加 `delete_all_for_tenant`~ ⇒ 实施期改为**四个 store 各加 `delete_all_for_tenant`（各删自己的表）+ 组合仓储 `app/conversation/purge.py` 固定顺序调用**（比「一个 store 删四张表」更贴模块边界：六张表全在 `app/conversation/` 包内）；③ 内存实现同步（四个内存 store 各加方法 + 内存组合实现，供单测直接构造）；④ 装配：`build_commercial_components` 的 PG 分支按同一连接自建并注入（**API 与 worker 两进程都经该函数** ⇒ 同源，无需在两处各写一遍）；⑤ 逐表取证脚本 `tmp/b1-seed.py` / `tmp/b1-verify.py`；⑥ 真机删一轮 + 逐表计数 + 他租户零影响——**已做**（见 §9）；⑦ 反假——**已做**（三轮：顺序颠倒 ⇒ 真库外键错；漏删成员表 ⇒ 返回行数 5≠6 且顺序单测 3≠4；面脱钩 ⇒ 逐表未清 + 面名缺失）；⑧ 全量回归 2612 passed |
 | **B2 任务域** | 同上 8 步；面名 `tasks`；表 = `tasks` / `plan_proposals` / `plan_versions` / `orchestration_proposals`；**先跑 B-4 的运行域原语**避免孤儿运行；审计口径按 §4 裁决写进契约 |
 | **B3 运行域** | 同上 8 步；面名 `runs`；**复用 B-4 的 `purge_expired_for_tenant` 原语**（把「按龄」参数换成「全龄」）；销毁面清单进契约与手册 |
 | **B4 CRM** | 同上 8 步；面名 `crm`；13 张表子先父后（报价行 → 报价；阶段事件 → 商机；其余按引用） |
@@ -94,8 +95,41 @@
 
 ## 8. 未验证与边界（不得读成已验）
 
-- 本方案的批次划分与风险判断来自**静态核查 + 测试库实测**，**未**在真库上实跑任何一批的删除（按纪律不先动破坏性代码）；
+- 本方案的批次划分与风险判断来自**静态核查 + 测试库实测**；**B1 已在真库实跑并真机取证**（§9），
+  B2→B5 仍**未**在真库上实跑（按纪律不先动破坏性代码）；
 - 各批的**耗时 / 锁影响**未评估（大租户下逐表 DELETE 的时长与对在线请求的影响）；
 - 跨批的**跨域外键**（如 `run_records.task_id` 指向已删任务、`inbox_items` 引用运行 / 审批）未逐条列出隐含顺序依赖
   ⇒ 实施每批前需再跑一次「该批表的外键入边清单」核对；
 - 对象存储 / 向量索引 / 缓存**不在本方案**；用户级（非租户级）导出 / 删除沿用 P2c-4 已交付路径。
+
+## 9. B1 实施记录（2026-09-19）
+
+**落点**：
+
+| 步骤 | 落点 |
+| --- | --- |
+| 契约 | `docs/api-contract.md`「删除清场口径（B-3 + B1）」：清场面从三面扩为**四面**，写明会话层六张表与顺序及其外键依据 |
+| 各 store | `app/conversation/store.py`（消息 → 会话）、`members.py`（成员）、`stream.py`（帧 → 流态）、`idempotency.py`（幂等）各加 `delete_all_for_tenant`（**内存 + PG 双实现**；域 Protocol 同步声明） |
+| 组合原语 | `app/conversation/purge.py`（新）：`PostgresConversationLayerPurgeStore` / `InMemoryConversationLayerPurgeStore` + `CONVERSATION_LAYER_ORDER` |
+| 服务层 | `app/commercial/lifecycle.py`：`conversation_store` 注入 + 清场循环**新增会话面并置于首位**；未注入 ⇒ 面不清场且**如实不列** |
+| 装配 | `app/bootstrap.py` 的 PG 分支：按同一连接自建并注入（流仓储带部署配置的帧上限）；内存分支不装配（内存会话仓储是 API 进程私有的，且生产删除流程在 worker / PG 强制） |
+| 手册 | `docs/handbooks/customer-admin-handbook.md` §7：删除清场扩为四面 + 六张表口径 |
+| 测试 | 单元 `tests/test_tenant_purge_conversations.py` **6 条**（顺序 ×2 实现 / 内存整层 + 他租户 + 幂等 / 面名只在注入时上报 / 注入即真清）；真库 `tests/test_tenant_purge_conversations_postgres.py` **3 条**（六表整层 + 他租户零影响 + 返回值 = 实际行数 / **「先删父行会被外键拒绝」可执行断言** / 服务端到端面名 + 逐表归零）；CI 真库 job 与 `tests/test_ci_assets.py` 同步钉住新模块 |
+
+**反假三轮（真变红后还原）**：
+① 组合顺序改成「先删会话行」⇒ 真库两条用例 `ForeignKeyViolation` + 顺序单测红（3 条）；
+② 漏删成员表 ⇒ 返回行数 `5 != 6` + 顺序单测 `3 != 4` 红（**注意：成员表因 `ON DELETE CASCADE` 仍会归零 ⇒
+   「只数行数」这一判据单独用会漏，返回值与顺序判据补住了该洞**）；
+③ 服务循环去掉会话面 ⇒ 逐表未清 + `cleared_categories` 缺面 + 内存层未清（3 条红）。
+
+**真机取证（2026-09-19，真实 worker 容器 + 真实 celery 派发 + 测试库）**：新镜像起一次性 worker（独立队列
+`b1purge`，规避旧容器截胡），派发 `app.worker.run_lifecycle_jobs` 执行到期删除作业；日志
+`{'exports': 0, 'deletions': 1}` + 审计 `commercial.deletion.executed` 的
+`cleared_categories = ["conversations", "knowledge_governance", "memories", "skills"]`（**四面齐全**）。
+逐表查库（before → after）：目标租户六张表 `1 → 0`、租户状态 `deleting → deleted`；
+**他租户六张表全部原样 1**（零影响）。
+
+**全量回归**：后端 `2612 passed`（基线 2603 ⇒ **＋9 恰为 B1 新用例**）。
+**未验证（B1）**：① 大租户下逐表 DELETE 的耗时与锁影响未测；② 中断后重跑的收敛性只在设计上成立
+（顺序幂等），**未做进程中途 kill 演练**；③ 内存模式不装配该面（dev-only，已在 `app/bootstrap.py` 与
+`app/conversation/purge.py` 注明），其影响是「开发环境删除租户不清会话层」——**审计会如实少列该面**。

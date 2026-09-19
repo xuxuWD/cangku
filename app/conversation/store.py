@@ -99,6 +99,9 @@ class ConversationStore(Protocol):
     def set_mode(self, context: UserContext, conversation_id: str, mode: str | ConversationMode) -> tuple[Conversation, ConversationMode | None]: ...
 
     def delete_conversation_content(self, context: UserContext, conversation_id: str) -> int: ...
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：生命周期专用物理删除（消息 → 会话），语义见实现 docstring。"""
+        ...
 
     def export_mine(self, context: UserContext, *, limit: int = 500, offset: int = 0) -> ConversationExportPage: ...
 
@@ -230,6 +233,24 @@ class InMemoryConversationStore:
                 existing, title="", deleted_at=now(), updated_at=now()
             )
             return len(messages)
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：真删本租户全部消息行与会话行，返回删除行数合计。
+
+        与 `delete_conversation_content`（单会话、**软删**、给正常业务用）刻意区分：本方法是
+        **生命周期专用**的物理删除（租户删除流程），无归属校验、无软删语义。
+        **顺序固定：消息 → 会话**（消息持 `(tenant_id, conversation_id)` 外键引用会话行；
+        流帧 / 流状态 / 执行幂等行由本层其他仓储先删，见 `app/conversation/purge.py`）。
+        幂等（重复调用返回 0）；只动本租户键，绝不跨租户。
+        """
+        with self._lock:
+            message_keys = [key for key in self._messages if key[0] == tenant_id]
+            messages = sum(len(self._messages.pop(key, [])) for key in message_keys)
+            conversation_keys = [key for key in self._conversations if key[0] == tenant_id]
+            conversations = sum(
+                1 for key in conversation_keys if self._conversations.pop(key, None) is not None
+            )
+        return messages + conversations
 
     def export_mine(self, context: UserContext, *, limit: int = MAX_EXPORT_LIMIT, offset: int = 0) -> ConversationExportPage:
         """本人（`operator_id` = 当前用户）全部**未软删**会话（含归档）+ 各自全部消息。"""
@@ -578,6 +599,27 @@ class PostgresConversationStore:
                         (context.tenant_id, str(conversation_id)),
                     )
         return deleted
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """**租户整层清场（B1）**：真删本租户全部消息行与会话行（**同一事务**），返回行数合计。
+
+        语义与内存实现逐条一致（见其 docstring）：生命周期专用物理删除、顺序固定「消息 → 会话」、
+        幂等、只动本租户。流帧 / 流状态 / 执行幂等行由本层其他仓储先删（`app/conversation/purge.py`）。
+        """
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_conversation_messages WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                    messages = int(cursor.rowcount)
+                    cursor.execute(
+                        "DELETE FROM workbench_conversations WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                    conversations = int(cursor.rowcount)
+        return messages + conversations
 
     def export_mine(self, context: UserContext, *, limit: int = MAX_EXPORT_LIMIT, offset: int = 0) -> ConversationExportPage:
         """本人（`operator_id` = 当前用户）全部**未软删**会话（含归档）+ 本页会话的全部消息。"""

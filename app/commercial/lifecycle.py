@@ -313,6 +313,7 @@ class CommercialLifecycleService:
         audit: AuditService | None = None,
         usage_ledger=None,
         retention_purge_store: RetentionPurgeStore | None = None,
+        conversation_store: TenantPurgeStore | None = None,
     ) -> None:
         if cooldown_days < 1:
             raise CommercialPolicyError("删除冷静期必须至少 1 天")
@@ -340,6 +341,10 @@ class CommercialLifecycleService:
         # 和缓存按策略清理」）。未注入的仓储**不参与清场**（`cleared_categories` 只列真正清到的一侧）。
         self.skills_store = skills_store
         self.knowledge_store = knowledge_store
+        # B1（2026-09-19）清场扩围：会话层整层（幂等行 → 流帧/流态 → 成员 → 消息 → 会话）。
+        # 组合仓储见 `app/conversation/purge.py`（顺序由真库外键决定，不在此处再排一遍）。
+        # 未注入 ⇒ 该面不清场，并在审计 `cleared_categories` 里**如实不列**（不假装清过）。
+        self.conversation_store = conversation_store
         # 保留策略变更必须写入审计（真源 commercial-g0-design.md:118）。
         # 未配置审计通道时 `set_retention` 会 fail-closed（见下），不静默跳过。
         self.audit = audit
@@ -555,10 +560,13 @@ class CommercialLifecycleService:
         transition_tenant(tenant, TenantStatus.DELETED, Actor(job.requested_by, "super_admin"))
         if hasattr(self.repository, "set_tenant_status"):
             self.repository.set_tenant_status(tenant_id, TenantStatus.DELETED)
-        # N2 + B-3：租户删除 = 物理清场（各层生命周期方法）。软删语义只留给正常业务；
+        # N2 + B-3 + B1：租户删除 = 物理清场（各层生命周期方法）。软删语义只留给正常业务；
         # 删除流程按租户整体销毁数据，避免孤儿数据残留。**逐面记录实际清到哪些面**（未注入的不列）。
+        # ⚠️ 面之间的**次序**：会话层（B1）必须**先**于运行域/任务域之外的任何引用者 —— 它的
+        # `execution_idempotency` 行同时引用会话与消息行；本循环里各面互不引用，故只保证会话层在首位即可。
         cleared: list[str] = []
         for name, store in (
+            ("conversations", self.conversation_store),
             ("memories", self.memory_store),
             ("skills", self.skills_store),
             ("knowledge_governance", self.knowledge_store),
