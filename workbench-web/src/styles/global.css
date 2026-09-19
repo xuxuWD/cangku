@@ -1,0 +1,21 @@
+/* 最小 reset + 内容区背景（第 1 轮只放这些，样式取值统一来自 src/theme/tokens.ts）。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  line-height: 1.5;
+  /* 内容区背景：与 tokens.ts 的 color.contentBg（#F5F7FA）同值。
+     主题里已通过 ConfigProvider 的 colorBgLayout 下发，这里只兜底首屏与超出视口的滚动区域。 */
+  background: #F5F7FA;
+}
