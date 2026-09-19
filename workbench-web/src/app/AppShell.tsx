@@ -17,6 +17,7 @@ import { KnowledgePage } from '../features/knowledge/KnowledgePage'
 import { MyAgentsPage } from '../features/myAgents/MyAgentsPage'
 import { MyWorkbenchPage } from '../features/myWorkbench/MyWorkbenchPage'
 import { PermissionsPage } from '../features/permissions/PermissionsPage'
+import { ComponentsPlaygroundPage } from '../features/playground/ComponentsPlaygroundPage'
 import { SkillsMcpPage } from '../features/skillsMcp/SkillsMcpPage'
 import { TeamPage } from '../features/team/TeamPage'
 import { antdTheme, tokens } from '../theme/tokens'
@@ -35,6 +36,8 @@ const PAGES: Record<NavKey, ComponentType> = {
   permissions: PermissionsPage,
   'skills-mcp': SkillsMcpPage,
   'audit-log': AuditLogPage,
+  // 开发期辅助页（只在 vite dev 出现在导航里，见 navigation.ts 的 devOnly）。
+  'components-playground': ComponentsPlaygroundPage,
 }
 
 export function AppShell() {

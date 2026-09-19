@@ -19,10 +19,13 @@ describe('AppShell（第 1 轮应用壳）', () => {
     useSession.setState({ role: 'employee' })
   })
 
-  it('导航定义本身是既定的 4 + 4 结构', () => {
-    expect(NAV_ITEMS).toHaveLength(8)
+  it('导航定义本身是既定的 4 + 4 结构，开发辅助入口不计入业务导航', () => {
     expect(navItemsForRole('employee')).toHaveLength(4)
     expect(navItemsForRole('super_admin')).toHaveLength(8)
+    // 「组件样品」是 devOnly 入口：测试模式（MODE=test）下不得混进导航。
+    expect(NAV_ITEMS.some((item) => item.devOnly)).toBe(true)
+    expect(navItemsForRole('employee').some((item) => item.devOnly)).toBe(false)
+    expect(navItemsForRole('super_admin').some((item) => item.devOnly)).toBe(false)
   })
 
   it('员工角色只渲染 4 个导航项', () => {

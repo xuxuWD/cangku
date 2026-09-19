@@ -12,13 +12,14 @@ import {
   AuditOutlined,
   BookOutlined,
   DeploymentUnitOutlined,
+  ExperimentOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
 } from '@ant-design/icons'
 import type { Role } from './session'
 
-/** 导航项唯一键，同时也是占位页注册表的键。 */
+/** 导航项唯一键，同时也是页面注册表（`AppShell` 的 `PAGES`）的键。 */
 export type NavKey =
   | 'my-workbench'
   | 'my-agents'
@@ -28,6 +29,7 @@ export type NavKey =
   | 'permissions'
   | 'skills-mcp'
   | 'audit-log'
+  | 'components-playground'
 
 export interface NavItem {
   key: NavKey
@@ -37,6 +39,8 @@ export interface NavItem {
   icon: ComponentType
   /** 可见角色集合。 */
   roles: readonly Role[]
+  /** 仅开发模式（`vite dev`）可见：测试与构建产物里都不出现。 */
+  devOnly?: boolean
 }
 
 /** 员工与管理员都可见。 */
@@ -55,9 +59,18 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'permissions', title: '权限配置', icon: SafetyCertificateOutlined, roles: ADMIN_ONLY },
   { key: 'skills-mcp', title: 'Skill & MCP', icon: ApiOutlined, roles: ADMIN_ONLY },
   { key: 'audit-log', title: '审计日志', icon: AuditOutlined, roles: ADMIN_ONLY },
+  // 开发期辅助入口：组件样品页，不属业务导航，后续轮次可整体移除。
+  { key: 'components-playground', title: '组件样品', icon: ExperimentOutlined, roles: ALL_ROLES, devOnly: true },
 ]
 
-/** 按角色过滤后的导航项（顺序即展示顺序）。 */
+/**
+ * 是否处于开发模式。
+ * 用 `MODE === 'development'`（`vite dev`）而不是 `DEV`：后者在 vitest 下也为 true，
+ * 会让样品页混进测试与业务导航。
+ */
+const IS_DEV_MODE = import.meta.env.MODE === 'development'
+
+/** 按角色过滤后的导航项（顺序即展示顺序）；开发期辅助入口只在 `vite dev` 出现。 */
 export function navItemsForRole(role: Role): NavItem[] {
-  return NAV_ITEMS.filter((item) => item.roles.includes(role))
+  return NAV_ITEMS.filter((item) => item.roles.includes(role) && (!item.devOnly || IS_DEV_MODE))
 }

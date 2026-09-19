@@ -36,3 +36,39 @@ export const useSession = create<SessionState>((set) => ({
   displayName: '演示账号',
   setRole: (role) => set({ role }),
 }))
+
+/**
+ * 能力（capability）受控枚举 —— 第 2 轮的权限呈现（`PermissionGuard`）按它判定。
+ * 用"能力"而不是"角色"做判断：角色会变，能力名是界面与代码的稳定契约。
+ */
+export type Capability =
+  | 'agent.manage'
+  | 'permission.manage'
+  | 'skill.manage'
+  | 'audit.view'
+  | 'data.export'
+  | 'data.delete'
+
+/** 能力显示名（用于"无权限"时的原因说明）。 */
+export const CAPABILITY_LABEL: Record<Capability, string> = {
+  'agent.manage': '数字员工管理',
+  'permission.manage': '权限配置',
+  'skill.manage': 'Skill & MCP 管理',
+  'audit.view': '审计日志查看',
+  'data.export': '数据导出',
+  'data.delete': '数据删除',
+}
+
+/**
+ * 本地桩：角色 → 能力。
+ * 这是**演示用的前端桩**，只用于界面呈现；真实权限由服务端在每次请求时校验（后续轮次）。
+ */
+const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
+  employee: ['data.export'],
+  super_admin: ['agent.manage', 'permission.manage', 'skill.manage', 'audit.view', 'data.export', 'data.delete'],
+}
+
+/** 判断某角色是否具备某能力（本地桩，见上）。 */
+export function hasCapability(role: Role, capability: Capability): boolean {
+  return ROLE_CAPABILITIES[role].includes(capability)
+}
