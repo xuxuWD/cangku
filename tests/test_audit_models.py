@@ -107,7 +107,9 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.RUN_PROMOTED_TO_TASK.value == "run.promoted_to_task"
     # B-3（2026-09-19）：一个动作码（租户删除确认；确认人是独立于「申请」的显式动作）。
     assert AuditAction.COMMERCIAL_DELETION_CONFIRMED.value == "commercial.deletion.confirmed"
-    assert len(set(AuditAction)) == 93
+    # B-4 选项 C（2026-09-19）：一个动作码（保留策略执行；只记各面行数与结转净额，仅在有清理时写入）。
+    assert AuditAction.COMMERCIAL_RETENTION_PURGED.value == "commercial.retention.purged"
+    assert len(set(AuditAction)) == 94
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

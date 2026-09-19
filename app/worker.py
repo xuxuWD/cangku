@@ -18,6 +18,10 @@ class LifecycleRunnerProtocol(Protocol):
     def run_pending_jobs(self, *, limit: int = 100) -> dict[str, int]:
         ...
 
+    def purge_expired_data_across_tenants(self, **kwargs) -> dict[str, int]:
+        """保留策略执行器（B-4 选项 C）：跨租户按策略清理过期数据（`CommercialLifecycleService` 满足）。"""
+        ...
+
 
 class KnowledgeReviewScannerProtocol(Protocol):
     def scan_review_due_across_tenants(self, *, now=None, limit: int = 500) -> dict[str, int]:
@@ -276,6 +280,13 @@ def create_celery_app() -> Celery:
                 "task": "app.worker.purge_export_packages",
                 "schedule": settings.export_package_purge_interval_seconds,
             },
+            # B-4 选项 C：保留策略**执行器**（默认 1h 一次）——逐租户按策略清理过期数据：
+            # 账本结转（`usage`，总额逐分不变）→ 运行域先子后父 → 提案域 → 任务域（防孤儿谓词）。
+            # 间隔由 **beat** 侧读取 ⇒ 与 worker 侧必须同值（口径同既有条目）。
+            "retention-purge": {
+                "task": "app.worker.purge_expired_tenant_data",
+                "schedule": settings.retention_purge_interval_seconds,
+            },
             # P5a CRM（crm-p5a-design §2.11）：健康度重算 / 活动到期提醒（幂等）/ 续约窗口。
             # 间隔由 **beat** 侧读取 ⇒ 与 worker 侧必须同值（口径同既有条目）。
             "crm-health-recompute": {
@@ -477,6 +488,36 @@ def purge_export_packages() -> int:
     if runner is None:
         return 0
     return runner.purge_expired_export_packages()
+
+
+@celery_app.task
+def purge_expired_tenant_data() -> dict[str, int]:
+    """保留策略执行器（B-4 选项 C，2026-09-19）：逐租户按策略清理过期数据，返回各面计数。
+
+    - 保留期按租户取自 `workbench_retention_policies`（**未自定义的租户按 `DEFAULT_RETENTION_POLICY`**：
+      tasks/runs 180 天、usage 365 天）；执行顺序与各面语义见 `CommercialLifecycleService.
+      purge_expired_data_for_tenant` 与契约「保留策略执行口径」；
+    - `events` 面不在此处（运行事件由全局 `runtime-events-purge` 按 30 天清理 ⇒ 实际保留期取更短者）；
+      `audit` 面**永不删除**；执行器只在**确有清理/结转**时写审计 `commercial.retention.purged`；
+    - 与 `run_lifecycle_jobs` 共用既有 `_lifecycle_runner` 注入点（删除原语归生命周期服务持有）：
+      **未接线即返回零值**，绝不伪造清理结果；development 下不自动装配（同 `_ensure_runtime` 口径）；
+    - ⚠️ 已接线但**装配不完整**（缺删除通道 / 账本 / 审计）时**不返回零值**：服务层 fail-closed 抛错
+      ⇒ 任务显式失败、日志可见 —— 这是刻意行为，不要「修」成静默跳过。
+    """
+    _ensure_runtime()
+    runner = _lifecycle_runner
+    if runner is None:
+        return {
+            "tenants": 0,
+            "runs_deleted": 0,
+            "run_domain_deleted": 0,
+            "tasks_deleted": 0,
+            "proposals_deleted": 0,
+            "usage_rows_deleted": 0,
+            "usage_carried_units": 0,
+            "usage_carried_cents": 0,
+        }
+    return runner.purge_expired_data_across_tenants()
 
 
 @celery_app.task

@@ -56,6 +56,7 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
         PostgresRetentionPolicyStore,
     )
     from .commercial.repository import InMemoryCommercialRepository, PostgresCommercialRepository
+    from .commercial.retention import PostgresRetentionPurgeStore
     from .commercial.usage import InMemoryUsageLedger, PostgresUsageLedger
 
     # B-2b：用量账本由本函数持有（同进程唯一实例）⇒ `usage` 类别的读取器在这里接线，
@@ -82,6 +83,9 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
             knowledge_store=knowledge_store,
             export_readers=_with_usage(export_readers, usage),
             audit=audit,
+            # B-4 选项 C：内存模式**只接账本**（结转可跑）；删除通道不装配 —— 内存 `Task` 无创建时间
+            # ⇒ 无法判定年龄，服务层对「删除通道缺失」fail-closed（不假装清过），见 `app/commercial/retention.py`。
+            usage_ledger=usage,
         )
         return repository, usage, lifecycle
     if settings.storage_backend != "postgres":
@@ -105,6 +109,11 @@ def build_commercial_components(settings: Settings, *, connection=None, migrate:
         knowledge_store=knowledge_store,
         export_readers=_with_usage(export_readers, usage),
         audit=audit,
+        # B-4 选项 C 执行器装配：账本（`usage` 结转）+ 三域删除原语（运行域先子后父 / 提案域 / 任务域）。
+        # **保留清理只在 worker 执行**（beat 条目 `retention-purge`）⇒ 生产必须由 worker 侧的
+        # `configure_runtime` 装配到，API 侧装配不影响清理是否发生（与导出读取器的口径不同：那是双向都要）。
+        usage_ledger=usage,
+        retention_purge_store=PostgresRetentionPurgeStore(connection),
     )
     return repository, usage, lifecycle
 

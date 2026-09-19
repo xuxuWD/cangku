@@ -63,6 +63,10 @@ class AuditAction(StrEnum):
     TOOL_BLOCKED = "tool.blocked"
     # 商业化保留策略变更（真源 commercial-g0-design.md:118「任何保留策略变化都写入审计」）
     COMMERCIAL_RETENTION_UPDATED = "commercial.retention.updated"
+    # 商业化保留策略**执行**（B-4 选项 C，2026-09-19）：worker 按策略清理过期数据的逐租户留痕。
+    # 只记受控值（各面删除行数、结转净额整数分、两个截止时刻 ISO），**仅在本轮确有清理/结转时写入**
+    # （空转不落审计 —— 审计面不可删除，不能被心跳噪声占满）。
+    COMMERCIAL_RETENTION_PURGED = "commercial.retention.purged"
     # 租户删除执行（真源 commercial-g0-design.md:114/:174「删除流程包含……审计记录」）
     COMMERCIAL_DELETION_EXECUTED = "commercial.deletion.executed"
     # 租户删除确认（B-3 补丁，真源「删除前必须生成最终导出包并记录确认人」：
@@ -217,6 +221,15 @@ ALLOWED_DETAIL_KEYS = frozenset(
         # 租户删除（B-3）：确认人标识与「按策略清场了哪些面」——均为服务端声明值，不含自由文本
         "confirmed_by",
         "cleared_categories",
+        # 保留策略**执行**（B-4 选项 C）：各面删除行数与结转净额（整数）、两个截止时刻（ISO 字符串）——
+        # 全为服务端计算值，无自由文本。
+        "runs_deleted",
+        "tasks_deleted",
+        "proposals_deleted",
+        "usage_carried_units",
+        "usage_carried_cents",
+        "cutoff",
+        "usage_cutoff",
         "create_opportunity",
         "model_key",
         # P2c-4（会话模式 / 导出 / 物理删除）：模式为受控枚举、计数为整数，**均不含正文**。

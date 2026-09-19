@@ -46,6 +46,18 @@ class InMemoryCommercialRepository:
             except KeyError as exc:
                 raise ResourceNotFound(tenant_id) from exc
 
+    def list_tenant_ids(self, *, limit: int = 500) -> list[str]:
+        """列出本平台登记的租户 ID（保留策略执行器的**逐租户**遍历入口，B-4 选项 C）。
+
+        为什么在仓储而不是策略表（实施期勘误，计划初稿写的是 `RetentionPolicyStore.list_tenants()`）：
+        契约口径是「**未自定义策略的租户按默认策略清理**」⇒ 遍历必须是**全部租户**，
+        只查 `workbench_retention_policies` 会漏掉从未配置过保留策略的租户（那是多数）。
+        顺序**确定**（`id` 升序）⇒ `limit` 截断时每轮取到的是同一批，不会被物理行序影响。
+        **包含 `deleted` 租户**：其残留数据同样按龄清理（删除流程只清了三个已接线面）。
+        """
+        with self._lock:
+            return sorted(self._tenants)[:limit]
+
     def activate_tenant(self, tenant_id: str, *, actor: Actor) -> Tenant:
         return transition_tenant(self.get_tenant(tenant_id), TenantStatus.ACTIVE, actor)
 
@@ -99,6 +111,14 @@ class PostgresCommercialRepository:
                 row = cursor.fetchone()
         if row is None: raise ResourceNotFound(tenant_id)
         return Tenant(id=str(row[0]), name=str(row[1]), owner_id=str(row[2]), status=TenantStatus(str(row[3])), created_at=row[4] if isinstance(row[4], datetime) else datetime.now(UTC))
+
+    def list_tenant_ids(self, *, limit: int = 500) -> list[str]:
+        """列出本平台登记的租户 ID（口径同内存实现，见其 docstring：全部租户、含 `deleted`、顺序确定）。"""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id FROM workbench_tenants ORDER BY id LIMIT %s", (limit,))
+                rows = cursor.fetchall()
+        return [str(row[0]) for row in rows]
 
     def is_customer_admin(self, tenant_id: str, user_id: str) -> bool:
         with self._connection() as connection:

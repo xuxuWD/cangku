@@ -117,7 +117,8 @@ def test_postgres_usage_ledger_totals_are_tenant_scoped():
 def test_postgres_usage_ledger_list_for_tenant_scopes_orders_and_counts():
     """B-2b：导出读取通道——租户过滤 + `occurred_at, id` 稳定排序 + 计数与分页。"""
     occurred = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
-    rows = [("usage-1", 2, 20, None, occurred)]
+    # 列序 = `PostgresUsageLedger.list_for_tenant` 的 SELECT（B-4 选项 C 起追加 `reason` 列）。
+    rows = [("usage-1", 2, 20, None, occurred, None)]
     connection = Connection([rows, (7,)])
     ledger = PostgresUsageLedger(connection)
 

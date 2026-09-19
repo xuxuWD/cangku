@@ -104,6 +104,9 @@ services:
       WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS: ${WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS:-3600}
       # 过期导出包清理（组 10.7）：间隔由 beat 排程 ⇒ 两边同值（导出包过期时刻由包自身 expires_at 决定）。
       WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS: ${WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS:-3600}
+      # 保留策略执行器（B-4 选项 C）：间隔由 beat 排程 ⇒ 两边同值（保留期本身按租户取自
+      # workbench_retention_policies，缺省 180/365 天）。
+      WORKBENCH_RETENTION_PURGE_INTERVAL_SECONDS: ${WORKBENCH_RETENTION_PURGE_INTERVAL_SECONDS:-3600}
     # slim 镜像没有 curl：用 celery 自身经 broker 探活（节点名默认 celery@<hostname>）。
     healthcheck:
       test:
@@ -155,6 +158,8 @@ services:
       WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS: ${WORKBENCH_RUNTIME_EVENTS_PURGE_INTERVAL_SECONDS:-3600}
       # 过期导出包清理的排程间隔（组 10.7；同口径：由 beat 读取 ⇒ 与 worker 同值）。
       WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS: ${WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS:-3600}
+      # 保留策略执行器的排程间隔（B-4 选项 C；同口径：由 beat 读取 ⇒ 与 worker 同值）。
+      WORKBENCH_RETENTION_PURGE_INTERVAL_SECONDS: ${WORKBENCH_RETENTION_PURGE_INTERVAL_SECONDS:-3600}
     volumes:
       - workbench-celerybeat:/var/lib/celery
     healthcheck:

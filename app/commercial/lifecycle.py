@@ -8,6 +8,7 @@ from typing import Mapping, Protocol
 from uuid import uuid4
 
 from .repository import InMemoryCommercialRepository, ResourceNotFound
+from .retention import PROPOSAL_TABLES, RETENTION_PURGE_LIMIT, RUN_DOMAIN_CHILD_TABLES, RetentionPurgeStore
 from .tenant import Actor, CommercialPolicyError, TenantStatus, transition_tenant
 from ..audit.models import AuditAction
 from ..audit.service import AuditService
@@ -310,6 +311,8 @@ class CommercialLifecycleService:
         export_readers: Mapping[str, object] | None = None,
         export_category_max_rows: int = EXPORT_CATEGORY_MAX_ROWS,
         audit: AuditService | None = None,
+        usage_ledger=None,
+        retention_purge_store: RetentionPurgeStore | None = None,
     ) -> None:
         if cooldown_days < 1:
             raise CommercialPolicyError("删除冷静期必须至少 1 天")
@@ -340,6 +343,12 @@ class CommercialLifecycleService:
         # 保留策略变更必须写入审计（真源 commercial-g0-design.md:118）。
         # 未配置审计通道时 `set_retention` 会 fail-closed（见下），不静默跳过。
         self.audit = audit
+        # B-4 选项 C（2026-09-19）：保留策略**执行器**的两个通道 —— 用量账本（结转）与
+        # 运行/任务/提案三域的删除原语（`app/commercial/retention.py`）。二者与审计一起构成
+        # 「可执行」的完整装配；`purge_expired_data_for_tenant` 对三者**逐一 fail-closed**
+        # （缺任一项即拒绝执行，绝不返回零值假装清过）。内存模式不装配删除通道（见 retention.py 说明）。
+        self.usage_ledger = usage_ledger
+        self.retention_purge_store = retention_purge_store
 
     def _ensure_admin(self, actor: Actor, tenant_id: str) -> None:
         tenant = self.repository.get_tenant(tenant_id)
@@ -680,6 +689,113 @@ class CommercialLifecycleService:
             self.execute_delete(job.tenant_id, now=current)
             executed_deletions += 1
         return {"exports": completed_exports, "deletions": executed_deletions}
+
+    def purge_expired_data_for_tenant(
+        self, tenant_id: str, *, now: datetime | None = None, limit: int = RETENTION_PURGE_LIMIT
+    ) -> dict[str, int]:
+        """按本租户的保留策略清理过期数据（B-4 选项 C；**worker 周期任务入口**，不在请求线程执行）。
+
+        顺序（对外口径见契约「保留策略执行口径」）：
+        ① **账本结转**（`usage` 面）：先把过期明细净额成一行、再**按行**删除 ⇒ 总额逐分不变；
+        ② **运行域先子后父 → 提案域 → 任务域**（删除原语在同一事务内完成；任务带「运行全部过期」防孤儿谓词）；
+        ③ **仅当本轮确有清理或结转**时写审计 `commercial.retention.purged`（空转轮次不落审计 ——
+           审计面不可删除，不能被心跳噪声占满）。
+
+        保留期取值：运行/任务/提案共用 `tasks` 键（真源 §6.3「任务和运行 180 天」），`usage` 面用 `usage` 键；
+        **未自定义策略的租户按 `DEFAULT_RETENTION_POLICY` 清理**（默认保留期是平台声明，不是可选项）。
+        `events` 面不在此处（运行事件由全局 `runtime-events-purge` 按 30 天清理 ⇒ 实际保留期取更短者）；
+        `audit` 面**永不删除**（730 只作留存上限声明）。
+
+        **fail-closed**：删除通道 / 用量账本 / 审计三者任一未装配即拒绝执行 —— 既不做「假装清过」的
+        零值返回，也不在无审计通道时销毁数据。
+        """
+        current = now or datetime.now(UTC)
+        if self.retention_purge_store is None:
+            raise CommercialPolicyError("保留清理必须装配删除通道（内存模式不支持按龄清理）")
+        if self.usage_ledger is None:
+            raise CommercialPolicyError("保留清理必须装配用量账本（结转通道缺失）")
+        if self.audit is None:
+            raise CommercialPolicyError("保留清理必须写入审计（未配置审计通道）")
+        policy = self.retention(tenant_id)
+        cutoff = current - timedelta(days=int(policy.get("tasks", DEFAULT_RETENTION_POLICY["tasks"])))
+        usage_cutoff = current - timedelta(days=int(policy.get("usage", DEFAULT_RETENTION_POLICY["usage"])))
+        carried = self.usage_ledger.carry_over_before(tenant_id, cutoff=usage_cutoff)
+        counts = self.retention_purge_store.purge_expired_for_tenant(
+            tenant_id, cutoff=cutoff, limit=limit
+        )
+        run_domain_deleted = counts.get("runs", 0) + sum(
+            counts.get(key, 0) for _table, key in RUN_DOMAIN_CHILD_TABLES
+        )
+        proposals_deleted = sum(counts.get(key, 0) for _table, key in PROPOSAL_TABLES)
+        result = {
+            "runs_deleted": counts.get("runs", 0),
+            "run_domain_deleted": run_domain_deleted,
+            "tasks_deleted": counts.get("tasks", 0),
+            "proposals_deleted": proposals_deleted,
+            "usage_rows_deleted": carried["rows"],
+            "usage_carried_units": carried["units"],
+            "usage_carried_cents": carried["cost_cents"],
+        }
+        if any(
+            (
+                result["run_domain_deleted"],
+                result["tasks_deleted"],
+                result["proposals_deleted"],
+                result["usage_rows_deleted"],
+            )
+        ):
+            self.audit.record(
+                AuditAction.COMMERCIAL_RETENTION_PURGED,
+                tenant_id=tenant_id,
+                # 平台身份（worker 代表平台执行例行清理；与 CRM 周期任务同一口径）。
+                actor_id="system:worker",
+                target_type="retention_policy",
+                target_id=tenant_id,
+                # 只记受控值：各面删除行数、结转净额（整数分）与两个截止时刻（ISO），不含自由文本。
+                detail={
+                    "runs_deleted": result["runs_deleted"],
+                    "tasks_deleted": result["tasks_deleted"],
+                    "proposals_deleted": result["proposals_deleted"],
+                    "usage_carried_units": result["usage_carried_units"],
+                    "usage_carried_cents": result["usage_carried_cents"],
+                    "cutoff": cutoff.isoformat(),
+                    "usage_cutoff": usage_cutoff.isoformat(),
+                },
+            )
+        return result
+
+    def purge_expired_data_across_tenants(
+        self,
+        *,
+        now: datetime | None = None,
+        limit_tenants: int = 500,
+        limit: int = RETENTION_PURGE_LIMIT,
+    ) -> dict[str, int]:
+        """跨租户执行保留清理（worker 周期任务入口）：逐租户 = `purge_expired_data_for_tenant`。
+
+        遍历**全部登记租户**（`repository.list_tenant_ids`，含 `deleted` 租户的残留数据）、顺序确定、
+        `limit_tenants` 截断（本轮超出的租户留待下一轮）。
+        **不捕获单租户异常**：任一租户失败即整任务 FAILURE（与 `run_pending_jobs` 同口径）——
+        清理是销毁性动作，静默跳过某租户会变成「看起来清过」；失败原因由任务失败与日志暴露。
+        """
+        current = now or datetime.now(UTC)
+        totals = {
+            "tenants": 0,
+            "runs_deleted": 0,
+            "run_domain_deleted": 0,
+            "tasks_deleted": 0,
+            "proposals_deleted": 0,
+            "usage_rows_deleted": 0,
+            "usage_carried_units": 0,
+            "usage_carried_cents": 0,
+        }
+        for tenant_id in self.repository.list_tenant_ids(limit=limit_tenants):
+            counts = self.purge_expired_data_for_tenant(tenant_id, now=current, limit=limit)
+            totals["tenants"] += 1
+            for key in totals:
+                if key != "tenants":
+                    totals[key] += counts[key]
+        return totals
 
     def set_retention(self, tenant_id: str, policy: dict[str, int], actor: Actor) -> None:
         self._ensure_admin(actor, tenant_id)

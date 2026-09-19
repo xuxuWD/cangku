@@ -544,6 +544,20 @@ class Settings(BaseSettings):
             "WORKBENCH_EXPORT_PACKAGE_PURGE_INTERVAL_SECONDS",
         ),
     )
+    # 保留策略**执行器**（B-4 选项 C，迁移零新增）的 beat 间隔（秒）。保留期本身按租户取自
+    # `workbench_retention_policies`（缺省 = `DEFAULT_RETENTION_POLICY`：tasks/runs 180、usage 365 天），
+    # 本项只控「多久执行一轮」；执行顺序（账本结转 → 运行域先子后父 → 提案域 → 任务域）与各面语义
+    # 见 `app/commercial/lifecycle.py::purge_expired_data_for_tenant` 与契约「保留策略执行口径」。
+    # 命名与区间口径同 `export_package_purge_interval_seconds`。
+    retention_purge_interval_seconds: int = Field(
+        default=3600,
+        ge=30,
+        le=7 * 24 * 3600,
+        validation_alias=AliasChoices(
+            "RETENTION_PURGE_INTERVAL_SECONDS",
+            "WORKBENCH_RETENTION_PURGE_INTERVAL_SECONDS",
+        ),
+    )
 
     # ---- P5a CRM 周期任务（crm-p5a-design §2.11）：3 个 beat 间隔，命名与区间口径同上一节 ----
     # 健康度重算：默认每日一次（逐租户全量重算，批量收集避免 N+1）。

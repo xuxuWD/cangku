@@ -1,7 +1,8 @@
 # 保留策略服务侧执行器（B-4 选项 C）实施计划
 
-> 状态：**实施计划（未开工）**。依据：用户 2026-09-19 裁决「B-4：**C**（B + `runs` 先子后父删）」，
+> 状态：**已实施（2026-09-19）**。依据：用户 2026-09-19 裁决「B-4：**C**（B + `runs` 先子后父删）」，
 > 且同批裁决「两个都先出实施计划」「清场扩围三个阻塞点按方案建议全选」。
+> 实施记录与**实施期勘误**见文末 §7（勘误已回改到 §2 / §3 正文，避免留错）。
 > 关联：真源 `docs/superpowers/specs/2026-09-06-commercial-g0-design.md`（§6.3 保留 / §6.2 删除）、
 > 差距台账 `docs/delivery-remaining-checklist.md`（10.1 / 10.7 的 B-4 条）、
 > 清场扩围方案 `docs/superpowers/specs/2026-09-19-tenant-purge-expansion-design.md`（**本执行器的删除原语将被其复用**）。
@@ -26,9 +27,12 @@
 - **运行域外键（决定删除顺序的关键事实）**：
   - `workbench_run_records`：`run_id` PK、`tenant_id`、`task_id`、`started_at`（索引 `(tenant_id, task_id, started_at DESC)`）；
     027 补 `UNIQUE (run_id, tenant_id)` 供复合外键引用。
-  - 子表（**均无 `ON DELETE CASCADE`**，故必须显式先删）：`workbench_run_artifacts`（037）、
-    `workbench_run_acceptance_decisions`（040）、`workbench_run_promotions`（042）、
-    `workbench_tool_actions`（027，复合外键 `(tenant_id, run_id)`）、`workbench_execution_idempotency`（027，`run_id` 可空）。
+  - 子表（**4 张无 `ON DELETE CASCADE`**，故必须显式先删；第 5 张虽有 CASCADE 仍显式删，保持顺序统一）：
+    `workbench_run_artifacts`（037）、`workbench_run_acceptance_decisions`（040）、
+    `workbench_tool_actions`（027，复合外键 `(tenant_id, run_id)`）、`workbench_execution_idempotency`（027，`run_id` 可空）、
+    `workbench_run_promotions`（042，**有** `ON DELETE CASCADE` —— 初稿误记为「均无 CASCADE」，实施期勘误）。
+    实测证据（2026-09-19 反假演练 ①）：先删父行会直接触发
+    `ForeignKeyViolation ... workbench_tool_actions_tenant_id_run_id_fkey`。
   - 关联但**无外键**：`workbench_runtime_states`（021，`run_id` PK）、`workbench_runtime_events`（034，PK `(run_id, sequence)`）、
     `workbench_plan_proposals.run_id`（013 追加列）。
 - **账本**：`workbench_usage_ledger (id, tenant_id, idempotency_key, units, cost_cents, reversal_of, reason, actor_id, occurred_at)`，
@@ -53,8 +57,11 @@
 **仅当该任务的运行（若有）全部已过期时才删它**（SQL 谓词：`NOT EXISTS (SELECT 1 FROM workbench_run_records r
 WHERE r.task_id = t.id AND r.started_at >= cutoff)`）；不满足则本轮跳过（下一轮其运行过期后自然可删）。
 - 同批删除顺序：**先运行域后任务域**，避免「刚删任务、其运行还在」的中间态被观察到。
-- `workbench_plan_proposals` / `workbench_plan_versions` / `workbench_orchestration_proposals` 也按龄删
+- `workbench_plan_proposals` / `workbench_orchestration_proposals` 也按龄删
   （它们按 `task_id` / 租户挂靠，成批处理时与任务同轮，避免残留）。
+  ⚠️ **实施期勘误**：初稿把 `workbench_plan_versions` 一并列进「提案域」——它是**商业化套餐版本目录**
+  （`006`：`plan_key` / `limits` / `overage_policy` / `effective_at`），不是运行期数据，**永不按龄清理**；
+  已改写为只含两张**提案**表（守护用例：`test_proposals_purged_by_age_but_commercial_plan_versions_kept`）。
 - **审计口径**：`workbench_audit_events` 随任务级联删除 —— 用户已裁决接受；契约、手册与审计动作码说明里
   都要写「任务域事件流不保留」。
 
@@ -69,11 +76,16 @@ WHERE r.task_id = t.id AND r.started_at >= cutoff)`）；不满足则本轮跳�
 ### 3.4 触发与可观测
 - **触发**：worker 周期任务 `app.worker.purge_expired_tenant_data`（beat 条目名 `retention-purge`，
   间隔 `WORKBENCH_RETENTION_PURGE_INTERVAL_SECONDS`，默认 3600、范围 30–604800，与既有清理任务同口径）。
-- **逐租户**：按 `workbench_retention_policies` 有策略的租户逐个跑（无策略的租户 ⇒ **空转**，不默认套用
-  `DEFAULT_RETENTION_POLICY`？**决定：套用默认**——真源 §6.3 给的是默认保留期；契约写明「未自定义的租户按默认策略清理」）。
-- **审计**：每租户每轮写一条 `commercial.retention.purged`（新增动作码；明细只含受控值：
-  各面删除行数与结转金额（整数分）、`cutoff`，**不含自由文本**）。
-- **有界**：每轮每面设 `limit`（默认沿用既有清理器的量级，如 5000 行/轮），避免一次事务过大；剩余留给下一轮。
+- **逐租户**：遍历**全部登记租户**（`repository.list_tenant_ids()`，顺序按 `id`、有界截断），
+  逐个按策略跑。**未自定义策略的租户按 `DEFAULT_RETENTION_POLICY` 清理**（真源 §6.3 给的是默认保留期；
+  契约写明「未自定义的租户按默认策略清理」）。
+  实施期勘误：初稿写的是 `RetentionPolicyStore.list_tenants()`——但只查策略表会**漏掉从未配置保留策略的租户**
+  （那是多数），故枚举落在**租户仓储**（`list_tenant_ids`，含 `deleted` 租户的残留数据）。
+- **审计**：新增动作码 `commercial.retention.purged`；明细只含受控值：各面删除行数与结转金额（整数分）、
+  `cutoff` / `usage_cutoff`（ISO），**不含自由文本**。
+  实施期收严：**仅当本轮确有清理或结转时才写**（初稿写「每租户每轮写一条」）——审计面不可删除
+  （730 天只作声明），逐小时的空转心跳会把不可删的审计面占满；`worker` 任务的返回计数已提供「跑过一轮」的可观测性。
+- **有界**：每面每轮上限 = 常量 `RETENTION_PURGE_LIMIT`（5000 行/面），剩余留给下一轮。
 - **未接线返回零值**：与既有周期任务同口径（`_lifecycle_runner` 注入点复用或新开一个注入点；**决定：复用
   `_lifecycle_runner`**，因为删除原语归生命周期服务持有）。
 
@@ -125,8 +137,37 @@ WHERE r.task_id = t.id AND r.started_at >= cutoff)`）；不满足则本轮跳�
 
 ## 6. 未验证（不得读成已验）
 
-- 各面在**真实规模数据**上的耗时与锁影响未测（本机测试库接近空库）；
-- 「运行未过期则跳过任务」这一谓词对**长跑任务**（运行持续时间 > 保留期）的影响未评估；
-- 结转行在**导出包 `usage` 类别**里的呈现（当前导出为明细字段 `id/units/cost_cents/reversal_of/occurred_at`；
-  结转行的 `reason` **不在字段集内** ⇒ 导出包里「结转行」与普通明细不可区分）——**需一并裁决**：
-  A) 导出补 `reason`（字段口径变更）；B) 导出保持现状并在契约写明「不计 reason」。
+- 各面在**真实规模数据**上的耗时与锁影响未测（本机测试库接近空库：单轮 5000 行上限下的真实锁竞争未证）；
+- 「运行未过期则跳过任务」这一谓词对**长跑任务**（运行持续时间 > 保留期）的影响未评估
+  （逻辑上安全：只会**延后**任务删除，不会误删；但「长期不删」的规模影响未测）；
+- **任务被清后 `workbench_event_outbox` 的行仍在**（出箱是投递事实、无外键指向任务；出箱自身的清理是独立事项，
+  本批不含）——登记为残留，**不假装已清**。
+
+## 7. 实施记录（2026-09-19）
+
+**落点**（与 §4 清单的对应）：
+
+| 步骤 | 落点 |
+| --- | --- |
+| 契约 | `docs/api-contract.md`「保留策略执行口径」段 + `usage` 导出字段补 `reason` |
+| 结转原语 | `app/commercial/usage.py`：`carry_over_before`（内存 + PG，**同一事务、按行 id 删、`FOR UPDATE` 串行化**） |
+| 删除原语 | `app/commercial/retention.py`（新模块）：`PostgresRetentionPurgeStore` + `RUN_DOMAIN_CHILD_TABLES` / `PROPOSAL_TABLES` / `RETENTION_PURGE_LIMIT` |
+| 服务层 | `app/commercial/lifecycle.py`：`purge_expired_data_for_tenant` / `purge_expired_data_across_tenants`（三者缺一 **fail-closed**） |
+| 租户枚举 | `app/commercial/repository.py`：`list_tenant_ids`（内存 + PG） |
+| worker | `app/worker.py`：任务 `purge_expired_tenant_data` + beat 条目 `retention-purge`（复用 `_lifecycle_runner`） |
+| 配置 | `app/settings.py`：`retention_purge_interval_seconds`（3600 / 30–604800）+ `.env.staging.example` + `docker-compose.app.yml`（worker 与 beat 两处同值） |
+| 审计 | `AuditAction.COMMERCIAL_RETENTION_PURGED` + 7 个受控明细键 + 前端 `AUDIT_ACTION_LABELS` |
+| 装配 | `app/bootstrap.py` 两个分支：内存侧只接账本（**删除通道不装配**，内存 `Task` 无创建时间 ⇒ 无法按龄判定，服务层 fail-closed）；PG 侧两通道都接 |
+| 用例 | 单元 19 条 `tests/test_retention_executor.py`；真库 8 条 `tests/test_retention_executor_postgres.py`；同步 3 条既有守护（动作码计数 94 / `usage` 字段集 / 列序） |
+
+**勘误与收严**（已回改 §2 / §3，不静默）：① 042 沉淀链接**有** `ON DELETE CASCADE`；② `workbench_plan_versions`
+**不属**提案域、永不清理；③ 租户枚举在**租户仓储**而非策略表；④ 审计**仅在有清理时**写。
+
+**反假四轮（全真库，每轮都变红并还原）**：
+① 去掉先子后父 ⇒ `ForeignKeyViolation ... workbench_tool_actions_tenant_id_run_id_fkey`；
+② 结转不写净额 ⇒ 恒等式 3 条红（总额 12/34 → 0/0）；
+③ 任务谓词放宽 ⇒ 删 3 条（应 2 条），孤儿运行用例红；
+④ 审计面误删 ⇒ 「审计面永不删除」断言红（0 == 1）。
+
+**裁决落定**：`usage` 导出**补 `reason`**（选项 A）——结转行在包内可识别，字段口径变更已写进契约与
+`USAGE_FIELDS` 守护用例。

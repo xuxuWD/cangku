@@ -388,7 +388,7 @@ USER_FIELDS = {
     "reviewed_at",
     "reviewed_by",
 }
-USAGE_FIELDS = {"id", "units", "cost_cents", "reversal_of", "occurred_at"}
+USAGE_FIELDS = {"id", "units", "cost_cents", "reversal_of", "occurred_at", "reason"}
 
 
 def _memory_only_store():

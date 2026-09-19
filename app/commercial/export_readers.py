@@ -389,6 +389,8 @@ def usage_export_reader(ledger) -> ExportReader:
 
     冲正以 `reversal_of` 指向原条目、`units` / `cost_cents` 为负值 ⇒ 累计口径与
     `GET /api/v1/commercial/usage` 一致（含冲正，客户端可自行汇总核对）。
+    含 `reason`（服务端写入的标记列）：保留策略结转行 `reason='retention_carryover'`
+    ⇒ 结转净额在包内**可识别**（否则与普通明细不可区分，见契约「保留策略执行口径」）。
     """
 
     def read(tenant_id: str, *, limit: int) -> tuple[list[ExportRow], int]:
@@ -401,6 +403,7 @@ def usage_export_reader(ledger) -> ExportReader:
                     "cost_cents": entry.cost_cents,
                     "reversal_of": entry.reversal_of,
                     "occurred_at": _iso(entry.occurred_at),
+                    "reason": entry.reason,
                 }
                 for entry in entries
             ], total

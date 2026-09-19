@@ -94,6 +94,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'tool.executed': '工具已执行',
   'tool.blocked': '工具执行被拦截',
   'commercial.retention.updated': '保留策略已更新',
+  'commercial.retention.purged': '过期数据已按保留策略清理',
   'commercial.deletion.executed': '租户删除已执行',
   'commercial.deletion.confirmed': '租户删除已确认',
   'memory.fact.created': '记忆事实已创建',
