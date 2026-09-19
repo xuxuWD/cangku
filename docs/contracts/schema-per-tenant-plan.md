@@ -117,6 +117,23 @@
 | **S4 回退演练** | 副本库三段闭合 | 前滚/回退/再前滚 都成功，且回退后旧用例全绿 |
 | **S5 切换** | 测试 → 预发 → 生产（按七步更新） | 每环境按真实流程 + 歪路验证；生产切换前打 tag |
 
+### S0 完成记录（2026-09-19，已交付）
+
+| 产物 | 路径 | 实测 |
+| --- | --- | --- |
+| 表分类清单（权威、机器可读） | `migrations/tenant_template/classification.json` | tenant_schema 51 / platform_tenant_scoped 4 / platform_core 6，与实测库逐字一致 |
+| 租户模板链（生成物） | `migrations/tenant_template/0001_tenant_baseline.sql` | **1247 行**：51 表 / 53 索引 / 98 约束 / **2 序列**（含 `OWNED BY` 与 `nextval` 默认值）/ **4 处 `${PLATFORM_SCHEMA}` 外键改写** |
+| 工具链 | `scripts/tenant_schema.py`（`build-template` / `verify` / `inventory`）+ `migrations/tenant_template/README.md` | 纯标准库 + psycopg；可重复执行（产物逐字节稳定） |
+
+**S0 验收（逐条）**：
+1. ✅ 分类与实测一致（脚本 `[1/3]` 校验：含 `tenant_id` 55 张 = A 51 + B 4；不含 6 张 = C）；
+2. ✅ 模板覆盖 == 分类清单 A 组（脚本 `[2/3]`）；
+3. ✅ **空库跑通**：临时 schema 内应用模板 208 条语句成功，且与 `public` 的 A 组表在**表 / 列（含 `column_default`）/ 索引 / 约束**上集合完全一致，临时 schema 已清理（`verify --apply` 退出码 0）。
+
+**S0 期发现并已修的保真缺口（真实缺陷，不是纸面）**：首版模板**漏掉自增序列**——`workbench_audit_events` / `workbench_knowledge_access_audits` 的 `id bigint` 无 `nextval` 默认值 ⇒ 新租户 schema 下**不带 id 的插入会失败**。已补：纳入 A 组表自有的 `CREATE SEQUENCE` + `OWNED BY` + `SET DEFAULT nextval`（去 `public.` 限定，靠 search_path 落在租户 schema 内），并**把 `column_default` 纳入结构比对**（该缺口的检测判据由此具备牙齿；反假已证：注释掉序列语句 ⇒ 校验变红并指名到列，恢复 ⇒ 变绿）。
+
+**S0 尚未覆盖（承接 §6，勿读成已验）**：触发器/规则、函数/视图/自定义类型、扩展对象本身、`COMMENT`、`GRANT`/所有者/表空间、RLS、分区与继承；序列自身属性（START/INCREMENT/CACHE）未跨 schema 比对；**未做真实"不带 id 的 INSERT"实测**（按"不写业务数据"约束留给 S1）。
+
 ## 6. 风险登记与未验证（不得读成已验）
 
 - **资源竞争**：Schema 改造与第一期功能并行，单人主导下有排队风险（§4 已给排期建议）。
