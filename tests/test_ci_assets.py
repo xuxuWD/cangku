@@ -47,13 +47,20 @@ def test_backend_job_runs_the_same_gate_commands_as_documented() -> None:
 def test_frontend_and_desktop_jobs_run_tests_and_builds() -> None:
     content = read_workflow()
 
-    for directory in ("admin-web", "companion-pwa", "desktop"):
+    # 2026-09-19 补钉：新工作台 `workbench-web`（第 1~4 轮交付）此前**没有 CI 覆盖** ——
+    # 已交付物缺门禁属交付缺口（"一键跑全量 + 门禁"口径），故加入本断言：
+    # 「job 里写了的」与「断言钉住的」必须逐条对齐（本文件既有教训）。
+    for directory in ("admin-web", "companion-pwa", "desktop", "workbench-web"):
         assert directory in content, f"工作流缺少 {directory} 任务"
 
     assert "npm ci" in content
     # 判定依据：必须显式 `vitest run`，否则 vitest 会进入 watch 模式导致 CI 挂住。
-    assert content.count("npx vitest run") == 2
-    assert content.count("npm run build") == 2
+    # 计数 3 = admin-web + workbench-web + companion-pwa（桌面端走 node --test）。
+    assert content.count("npx vitest run") == 3
+    # 计数 3 = admin-web + workbench-web + companion-pwa。
+    assert content.count("npm run build") == 3
+    # 新工作台另加显式类型检查（vite build 不做类型检查）。
+    assert content.count("npx tsc --noEmit") == 1
     assert 'node-version: "22"' in content
 
 

@@ -67,6 +67,31 @@ jobs:
       - name: 生产构建
         run: npm run build
 
+  # 新工作台（第 1~4 轮交付：应用壳 / 组件库 / 我的工作台 / 我的数字员工）。
+  # 与 admin-web / companion-pwa 同口径（npm ci 按 lockfile + vitest run + 生产构建），另加显式类型检查。
+  workbench-web:
+    name: 新工作台（tsc + vitest + build）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workbench-web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          # vite 8 / vitest 5 要求 Node 22+
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: workbench-web/package-lock.json
+      - name: 安装依赖（按 lockfile）
+        run: npm ci
+      - name: 类型检查
+        run: npx tsc --noEmit
+      - name: vitest
+        run: npx vitest run
+      - name: 生产构建
+        run: npm run build
+
   companion-pwa:
     name: 手机伴侣端（vitest + build）
     runs-on: ubuntu-latest
