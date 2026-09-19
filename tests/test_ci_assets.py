@@ -186,6 +186,8 @@ def test_postgres_job_runs_only_the_real_db_modules() -> None:
     assert "tests/test_retention_executor_postgres.py" in command
     # 2026-09-19 补钉：B1 清场扩围会话层真库回归（六张表整层清场 / 外键顺序前提 / 他租户零影响）。
     assert "tests/test_tenant_purge_conversations_postgres.py" in command
+    # 2026-09-19 补钉：B2+B3 清场扩围任务与运行层真库回归（整层清场 / 分批收敛 / 套餐版本目录不清理）。
+    assert "tests/test_tenant_purge_tasks_runs_postgres.py" in command
 
 
 def test_postgres_job_requires_zero_skipped() -> None:

@@ -21,11 +21,16 @@ worker 本身要求 PostgreSQL（`configure_runtime` 拒绝非 PG），生产恒
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol
 
 # 每面每轮的删除上限（有界：单事务/单轮不无限大，剩余留待下一轮）。量级与既有清理器同口径。
 RETENTION_PURGE_LIMIT = 5000
+
+# 「全龄」截止时刻：租户删除（B2+B3）用它与按龄清理**共用同一套删除 SQL**（不过滤年龄 ⇒ 全清）。
+# 取 Python 的 `datetime.max`（9999-12-31，在 `TIMESTAMPTZ` 取值域内）⇒ `started_at < cutoff` /
+# `created_at < cutoff` 恒真，且调用方不必为「不过滤」另写一套语句。
+ALL_AGES_CUTOFF = datetime.max.replace(tzinfo=UTC)
 
 # 运行域子表 → **删除顺序**（先子后父，顺序即本元组次序）；返回计数用的键名与之对应。
 RUN_DOMAIN_CHILD_TABLES: tuple[tuple[str, str], ...] = (
@@ -141,3 +146,46 @@ class PostgresRetentionPurgeStore:
                     )
                     counts["tasks"] = int(cursor.rowcount)
         return counts
+
+    def purge_all_for_tenant(self, tenant_id: str, *, limit: int = RETENTION_PURGE_LIMIT) -> dict[str, int]:
+        """**租户删除（B2+B3）**：把本租户的任务域 / 提案域 / 运行域**整层**清空（不分年龄）。
+
+        与 `purge_expired_for_tenant`（保留策略执行器，按龄）**共用同一套删除 SQL 与顺序**，
+        差异只有两处：
+
+        ① 截止时刻取 `ALL_AGES_CUTOFF`（等价「不过滤年龄」）⇒ 该租户的全部任务 / 提案 / 运行都命中；
+        ② **额外清 `workbench_runtime_events`** —— 按龄清理**不碰**它（属 `events` 面，由全局 30 天清理器
+           负责），但租户删除是「整租户销毁」⇒ 运行事件作为租户数据一并清。
+
+        **分批循环**直到一轮无任何删除为止（每轮 ≤ `limit` 行/面，避免单事务过大）；每轮内部仍是
+        「先子后父 + 任务防孤儿谓词」的**同一事务**。终止性：每轮要么删除 ≥1 行、要么全零返回 ⇒ 必然收敛。
+        """
+        totals = {
+            "runs": 0,
+            **{key: 0 for _table, key in RUN_DOMAIN_CHILD_TABLES},
+            "tasks": 0,
+            **{key: 0 for _table, key in PROPOSAL_TABLES},
+            "runtime_events": 0,
+        }
+        while True:
+            batch = self.purge_expired_for_tenant(tenant_id, cutoff=ALL_AGES_CUTOFF, limit=limit)
+            for key, value in batch.items():
+                totals[key] = totals.get(key, 0) + value
+            if not any(batch.values()):
+                break
+        with self._connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM workbench_runtime_events WHERE tenant_id = %s",
+                        (tenant_id,),
+                    )
+                    totals["runtime_events"] = int(cursor.rowcount)
+        return totals
+
+    def delete_all_for_tenant(self, tenant_id: str) -> int:
+        """`TenantPurgeStore` 口径别名（供租户删除的清场面循环调用）：= `purge_all_for_tenant`。
+
+        返回删除行数**合计**（含运行事件）；逐表计数由 `purge_all_for_tenant` 提供（取证用）。
+        """
+        return sum(self.purge_all_for_tenant(tenant_id).values())

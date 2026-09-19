@@ -567,6 +567,11 @@ class CommercialLifecycleService:
         cleared: list[str] = []
         for name, store in (
             ("conversations", self.conversation_store),
+            # B2+B3（2026-09-19）：任务域 / 提案域 / 运行域（含运行事件）——复用 B-4 的删除原语
+            # （`delete_all_for_tenant` = `purge_all_for_tenant`：全龄整层，先子后父 + 防孤儿谓词）。
+            # 两批**合为一面**：任务的删除以「其运行全部已删」为前提（`run_records.task_id` 无外键），
+            # 拆成两面会留下「面名齐全、任务却按谓词跳过」的假清场空间 ⇒ 合并为一次调用、一并声明。
+            ("tasks_and_runs", self.retention_purge_store),
             ("memories", self.memory_store),
             ("skills", self.skills_store),
             ("knowledge_governance", self.knowledge_store),

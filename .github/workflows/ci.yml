@@ -106,7 +106,7 @@ jobs:
         run: node --test
 
   postgres:
-    # 覆盖「真连库」的十四个模块：tests/test_tool_action_store_postgres.py、
+    # 覆盖「真连库」的十五个模块：tests/test_tool_action_store_postgres.py、
     # tests/test_dsh_execution_postgres.py、tests/test_commercial_lifecycle_postgres.py、
     # tests/test_memory_postgres.py（P3 记忆层真库回归）、tests/test_skills_postgres.py（P4 技能层真库回归）、
     # tests/test_knowledge_governance_postgres.py（知识治理层真库回归，迁移 032）、
@@ -120,6 +120,8 @@ jobs:
     # 运行域先子后父 / 任务防孤儿谓词 / events+audit 两面不被触碰）。
     # 与 tests/test_tenant_purge_conversations_postgres.py（B1 清场扩围：会话层六张表整层清场 /
     # 外键顺序前提可执行断言 / 他租户零影响 / 服务端到端面名与逐表归零）。
+    # 与 tests/test_tenant_purge_tasks_runs_postgres.py（B2+B3 清场扩围：任务与运行层整层清场 /
+    # 分批循环收敛（limit=1）/ 套餐版本目录永不清理 / 服务端到端面名与逐表归零）。
     # 它们由 WORKBENCH_TEST_DATABASE_URL 门控，
     # 无该变量即**整体 skip**（默认 backend job 不提供 ⇒ 那时它们是 skip、不受守护）。
     # 本 job 提供一次性真库、按仓库自身 apply_migrations 建表，并要求 `skipped == 0`，
@@ -183,6 +185,7 @@ jobs:
             tests/test_conversation_members_postgres.py \
             tests/test_retention_executor_postgres.py \
             tests/test_tenant_purge_conversations_postgres.py \
+            tests/test_tenant_purge_tasks_runs_postgres.py \
             --junitxml=postgres-junit.xml
           python - <<'PY'
           import sys
