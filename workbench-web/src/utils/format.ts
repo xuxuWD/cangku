@@ -17,3 +17,11 @@ export function formatBudgetCents(cents: number): string {
   if (!Number.isInteger(cents) || cents < 0) return String(cents)
   return `¥${(cents / 100).toFixed(2)}`
 }
+
+/**
+ * 比率（0–1）→ `91.7%`。
+ * 说明：**只用于"就绪"的比率**；未配置 / 样本不足 / 未验证的数据不得经此渲染成 0% 或 100%。
+ */
+export function formatPercent(rate: number): string {
+  return `${(rate * 100).toFixed(1)}%`
+}

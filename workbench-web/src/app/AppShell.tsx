@@ -12,7 +12,7 @@ import type { ComponentType } from 'react'
 import { ConfigProvider, Layout, Menu, Segmented, Space, Typography } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ContentState } from '../components'
-import { AgentAdminPage } from '../features/agentAdmin/AgentAdminPage'
+import { AgentRegistryPage } from '../features/agentRegistry/AgentRegistryPage'
 import { AuditLogPage } from '../features/auditLog/AuditLogPage'
 import { KnowledgePage } from '../features/knowledge/KnowledgePage'
 import { MyAgentsPage } from '../features/myAgents/MyAgentsPage'
@@ -48,7 +48,8 @@ const PAGES: Record<NavKey, ComponentType | null> = {
   'my-agents': MyAgentsPage,
   knowledge: KnowledgePage,
   team: TeamPage,
-  'agent-admin': AgentAdminPage,
+  // 「数字员工管理」（管理后台视角）由第 5 轮模块「数字员工注册中心」承载。
+  'agent-admin': AgentRegistryPage,
   permissions: PermissionsPage,
   'skills-mcp': SkillsMcpPage,
   'audit-log': AuditLogPage,
