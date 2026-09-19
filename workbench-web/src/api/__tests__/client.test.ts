@@ -75,6 +75,20 @@ describe('统一请求层 client', () => {
     expect(headersOf(calls[1])['Content-Type']).toBeUndefined()
   })
 
+  it('PUT：方法透传（受控枚举已含 PUT —— 契约里知识访问绑定的写路径用它）', async () => {
+    signInAs('employee')
+    const calls = stubFetch({ body: {} })
+
+    await request('/api/v1/knowledge-access/roles/content-ops', {
+      method: 'PUT',
+      body: { knowledge_base_ids: ['kb-1'] },
+    })
+
+    expect(calls[0].init.method).toBe('PUT')
+    expect(calls[0].init.body).toBe('{"knowledge_base_ids":["kb-1"]}')
+    expect(headersOf(calls[0])['Content-Type']).toBe('application/json')
+  })
+
   it('401：清本地会话（令牌 + 角色）并抛 unauthorized，界面据此回到登录页', async () => {
     signInAs('employee')
     expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBe('test-token')

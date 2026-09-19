@@ -28,10 +28,14 @@
 
 | D-019 | 2026-09-19 | **前端第 5 轮「数字员工注册中心」（AD-01）已交付**：全员统一视图（表格，与员工侧卡片对照）+ 指标区 5 卡（全部(含草稿)/启用/停用/草稿/近7天有运行）+ 筛选透传（岗位/状态/创建者/搜索，**服务端为准、不做前端过滤假象**）+ 详情只读抽屉 + 启停走 `DangerConfirm` + 仅管理角色可见（员工 ⇒ 无权限态、不渲染表格）；**状态保真**（无运行 = 未验证/暂无，无 0%）；字段与 `my-agents-api.md` **类型层直取 + 运行时点名 + 文档 32/32 命中**三重一致。累计 **153 用例**、tsc/构建全绿、产物 0 调试串 | 本轮提交；契约 `docs/contracts/agent-registry-api.md`（77 行） | ✅ 已交付（自跑复核） |
 
+| D-020 | 2026-09-19 | **前端第 6 轮「权限配置」已交付**（三块：角色知识范围 / 数字员工知识范围 / 最近变更；四态齐备 + 员工⇒整页无权限且不渲染编辑控件；写失败就地呈现不关抽屉）。**同轮三项决策**：① **候选知识库标识采用方案 A** —— 候选 = **现有绑定（两块）∪ 变更记录 old/new 的并集** + **手动录入**，前端只校验非空/去重/**≤100**（服务端仍是唯一权威）；② **不做只读权限矩阵页签**（矩阵唯一权威是 `permission-matrix.md`，界面另绘必然漂移）；③ **不做文档级四级 ACL**（`knowledge-acl.md` 字段未落库，属 Schema 线） | 用户 2026-09-19 批准方案与缺口处置；本轮真机取证 5 项（`403`/`409` 零写入/纳管后 `200`+查库/审计可读/清理）；契约 `docs/contracts/permissions-api.md`（新增 §8/§9）、`permission-matrix.md` §10 | ✅ 已交付（自跑复核：tsc 退出码 0、vitest **231/231**、build 成功、产物样例字样 0 命中） |
+
 ## 待你确认的清理项（按清理纪律：清单须经确认后才删）
 
-- `workbench-web/src/features/agentAdmin/AgentAdminPage.tsx` —— 第 1 轮占位页，已被 `features/agentRegistry` 取代成为**孤儿**（壳的 `agent-admin` 已指向新模块）。**本轮只在文件头加了"待清理项"注释，未删除**。
+- ~~`workbench-web/src/features/agentAdmin/AgentAdminPage.tsx` —— 第 1 轮占位页，已被 `features/agentRegistry` 取代成为**孤儿**~~ ⇒ **已删除（用户裁决 2026-09-19）**：随接线轮提交 `ba993f0` 移除（删除前已用 grep 确认全仓零引用）。
 - `workbench-web/src/features/myAgents` 的 `ROLE_TEMPLATES` / `CapabilityPack` / `MOCK_WRITE_NOTE` 被注册中心**跨模块复用**（未复制第二份）⇒ 建议后续提升为共享模块（`src/shared/` 或 `src/domain/`），但属**改稳定模块**，需你确认后再动。
+- ~~**统一请求层未开放 `PUT`**~~ ⇒ **已修复（2026-09-19 第 6 轮收口，由我执行）**：`src/api/client.ts` 的 `RequestOptions.method` 补入 `PUT`；权限配置 service 里的显式收窄（`as unknown as`）已移除；新增请求层用例「PUT：方法透传」锁定。**反假已做**：把 `PUT` 从枚举里去掉 ⇒ `tsc` 报出两处调用点（`client.test.ts:83`、`permissionsService.ts:133`）变红，还原后 `tsc` 退出 0、全量 **232 用例**绿。
+- **真库残留行（第 6 轮真机取证产生，后端无删除接口，本轮未物理删除）**：`workbench_job_roles` 1 行（`role_key=evidence-ops`，已 `disabled`）、`workbench_knowledge_access_audits` 2 行（该标识的绑定 / 解绑各一条）。清单与依据见 `docs/contracts/permissions-api.md` §9。
 
 ## 测试等待上限（两处，均只放宽等待、不放宽断言）
 

@@ -93,7 +93,9 @@ function parseBody(text: string): unknown {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+  // 受控枚举：与后端契约实际使用的方法集一致（`PUT` 是知识访问绑定的写路径，
+  // 第 6 轮补入；此前缺它导致调用方只能做类型收窄 —— 见 decision-log 清理清单）。
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   /** JSON 请求体（自动序列化并带 `Content-Type`）。 */
   body?: unknown
   query?: QueryParams
