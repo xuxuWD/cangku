@@ -44,7 +44,13 @@ export function AgentDetailDrawer({ open, agent, onClose, width = 560 }: AgentDe
               { key: 'agent_key', label: '员工标识', children: agent.agent_key },
               { key: 'name', label: '名称', children: agent.name },
               { key: 'description', label: '工作范围', children: agent.description },
-              { key: 'role_key', label: '所属岗位', children: `${agent.template.name}（${agent.role_key}）` },
+              {
+                key: 'role_key',
+                label: '所属岗位',
+                children: agent.template
+                  ? `${agent.template.name}（${agent.role_key}）`
+                  : `${agent.role_key}（模板未接入）`,
+              },
               { key: 'created_by', label: '创建者', children: agent.created_by },
               {
                 key: 'status',
@@ -53,7 +59,12 @@ export function AgentDetailDrawer({ open, agent, onClose, width = 560 }: AgentDe
                   <StatusTag tone={AGENT_STATUS_TONE[agent.status]}>{AGENT_STATUS_LABEL[agent.status]}</StatusTag>
                 ),
               },
-              { key: 'created_at', label: '创建时间', children: formatDateTime(agent.created_at) },
+              {
+                key: 'created_at',
+                label: '创建时间',
+                // 后端视图模型允许为空：为空时如实写"未提供"，**不编造时间**
+                children: agent.created_at ? formatDateTime(agent.created_at) : '未提供',
+              },
               {
                 key: 'last_run_at',
                 label: '最近使用',
@@ -65,10 +76,19 @@ export function AgentDetailDrawer({ open, agent, onClose, width = 560 }: AgentDe
           />
 
           <Typography.Title level={4}>能力包</Typography.Title>
-          <CapabilityPack template={agent.template} />
-          <Typography.Paragraph type="secondary" style={{ marginTop: tokens.spacing.md }}>
-            本抽屉为管理侧只读视图：能力包由所属岗位模板继承，改能力属"换岗 / 升级模板"，不在本页进行。
-          </Typography.Paragraph>
+          {agent.template ? (
+            <>
+              <CapabilityPack template={agent.template} />
+              <Typography.Paragraph type="secondary" style={{ marginTop: tokens.spacing.md }}>
+                本抽屉为管理侧只读视图：能力包按所属岗位从项目级目录（role-templates.md）解析，
+                后端未下发岗位模板字段；实际生效的自治档与工具白名单以服务端员工配置为准（本批未接入该配置面）。
+              </Typography.Paragraph>
+            </>
+          ) : (
+            <Typography.Paragraph type="secondary">
+              能力包未接入：该岗位键不在项目级目录里，后端也不下发岗位模板，本批不展示能力包，也不以样例模板冒充。
+            </Typography.Paragraph>
+          )}
         </>
       )}
     </FormDrawer>

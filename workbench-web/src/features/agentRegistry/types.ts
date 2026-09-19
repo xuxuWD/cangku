@@ -60,21 +60,24 @@ export type RegistryRow = RegistrySharedFields & {
 
 /** 指标统计（管理侧大盘；**不受筛选影响**）。 */
 export interface RegistryStatsSummary {
-  /** 全部（含草稿）：总数口径，恒等于 `active + disabled + draft`。 */
+  /** 全部：总数口径（后端无草稿枚举时 = `active + disabled`）。 */
   total: number
   active: number
   disabled: number
-  /** 草稿数（后端枚举未定义的展示态，见契约 §2）：单独给数，界面**不靠减法**猜。 */
-  draft: number
+  /**
+   * 草稿数；**`null` = 后端未定义草稿枚举 ⇒ 本批如实未接入**（不得显示 `0`：
+   * `0` 会被读成"确实没有草稿"，而事实是"后端没有这个概念"）。见契约 §2。
+   */
+  draft: number | null
   /**
    * 最近 7 天有运行的员工数；`null` = 运行口径暂无数据（**不得显示 0**）。
    */
   ran_last_7d: number | null
 }
 
-/** 统计信封：`sample` 为样例硬标记（与列表信封同口径）。 */
+/** 统计信封：`sample` 为样例硬标记（与列表信封同口径；真实数据必须为 `false`）。 */
 export interface RegistryStatsPayload extends RegistryStatsSummary {
-  sample: true
+  sample: boolean
 }
 
 /** 筛选条件：**原样透传给服务端**，页面不得在前端过滤。 */
@@ -95,7 +98,8 @@ export interface RegistryQuery extends RegistryFilters {
 
 /** 列表信封：`items / total / limit / offset` 与后端列表接口同形，另带样例硬标记。 */
 export interface RegistryListPayload {
-  sample: true
+  /** `true` = 开发期样例（界面必须显示「示例数据（未接后端）」）；`false` = 后端真实数据。 */
+  sample: boolean
   items: RegistryRow[]
   total: number
   limit: number
@@ -129,4 +133,12 @@ export function lastRunPresence(row: RegistrySharedFields): DataPresence {
 /** 运行口径统计可用性（"最近 7 天有运行"这张卡）。 */
 export function ranLast7dPresence(stats: RegistryStatsSummary): DataPresence {
   return stats.ran_last_7d === null ? 'unverified' : 'ready'
+}
+
+/**
+ * 草稿口径可用性：后端 `status` 库列有 `CHECK (status IN ('active','disabled'))`，
+ * **没有 `draft` 枚举** ⇒ http 模式下 `draft = null`，界面按「未验证」呈现（不得显示 `0`）。
+ */
+export function draftPresence(stats: RegistryStatsSummary): DataPresence {
+  return stats.draft === null ? 'unverified' : 'ready'
 }

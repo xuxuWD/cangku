@@ -19,7 +19,15 @@ import { AUTONOMY_LABEL } from './CapabilityPack'
 const STATUS_LABEL: Record<AgentStatus, string> = { active: '已启用', disabled: '已停用' }
 
 /** 归属中文名。 */
-const OWNERSHIP_LABEL: Record<AgentItem['ownership'], string> = { mine: '我创建的', shared: '共享给我的' }
+const OWNERSHIP_LABEL: Record<AgentItem['ownership'], string> = {
+  mine: '我创建的',
+  shared: '共享给我的',
+  // 后端不下发当前用户标识、也没有「共享」实体 ⇒ 本批如实标"无法判定"，不编造归属
+  unknown: '归属未判定',
+}
+
+/** 岗位模板缺失时的固定说明（后端不下发 `template`；未知岗位键不编造模板）。 */
+const TEMPLATE_ABSENT = '模板未接入（后端未下发岗位模板）'
 
 export interface AgentCardProps {
   agent: AgentItem
@@ -63,15 +71,21 @@ export function AgentCard({
         </Space>
 
         <Typography.Text type="secondary">
-          所属岗位：{template.name}（{agent.role_key}）
+          所属岗位：{template ? `${template.name}（${agent.role_key}）` : `${agent.role_key}（${TEMPLATE_ABSENT}）`}
         </Typography.Text>
 
-        {/* 能力标签：全部来自岗位模板（继承），不是卡片里写死的 */}
-        <Space size={tokens.spacing.sm} wrap>
-          <StatusTag tone="info">Skill {template.skills.length} 个</StatusTag>
-          <StatusTag tone="info">知识范围 {template.knowledge_scopes.length} 个</StatusTag>
-          <StatusTag tone="neutral">自治档：{AUTONOMY_LABEL[template.autonomy_level]}</StatusTag>
-        </Space>
+        {/* 能力标签：全部来自岗位模板（继承），不是卡片里写死的；模板缺失时不摆假数字 */}
+        {template ? (
+          <Space size={tokens.spacing.sm} wrap>
+            <StatusTag tone="info">Skill {template.skills.length} 个</StatusTag>
+            <StatusTag tone="info">知识范围 {template.knowledge_scopes.length} 个</StatusTag>
+            <StatusTag tone="neutral">自治档：{AUTONOMY_LABEL[template.autonomy_level]}</StatusTag>
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">
+            能力包未接入：后端未下发岗位模板，本批不展示能力标签，也不以样例模板冒充。
+          </Typography.Text>
+        )}
 
         {/* 状态保真：没有运行记录就如实说"暂无 / 未验证"，不给 0、不给成功态 */}
         {agent.last_run_at === null ? (

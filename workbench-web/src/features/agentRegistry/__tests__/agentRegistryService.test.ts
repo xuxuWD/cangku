@@ -8,11 +8,43 @@ import {
   setAgentStatus,
   setServiceMode,
 } from '../services/agentRegistryService'
-import { ServiceError } from '../../../utils/serviceKit'
-import { ROLE_TEMPLATES } from '../../myAgents/services/myAgentsService'
+import { AGENT_PAGE_LIMIT, ROLE_TEMPLATES } from '../../myAgents/services/myAgentsService'
 import type { AgentItem, RoleKey } from '../../myAgents/types'
 import { REGISTRY_PAGE_SIZE, lastRunPresence, ranLast7dPresence, usagePresence } from '../types'
 import type { RegistryRow } from '../types'
+
+/**
+ * 最小 `fetch` 桩（与接线批 1 同形，不引 MSW）：**不发真实网络请求**。
+ */
+function stubFetch(routes: Record<string, { status?: number; body?: unknown }>) {
+  const calls: { url: string; init: RequestInit }[] = []
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    calls.push({ url: String(url), init })
+    const path = Object.keys(routes).find((key) => String(url).startsWith(key))
+    if (!path) throw new Error(`未预期的请求：${url}`)
+    const { status = 200, body } = routes[path]
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      text: async () => (body === undefined ? '' : JSON.stringify(body)),
+    }
+  }) as unknown as typeof fetch
+  return { fetchImpl, calls }
+}
+
+/** 后端 `DigitalEmployeeView` 实测形状（8 个键；**无** template / usage / last_run_at）。 */
+const AGENT_VIEW = {
+  agent_key: 'content-ops',
+  name: '内容运营助手',
+  description: '负责选题与草稿。',
+  role_key: 'ops',
+  status: 'active',
+  created_by: 'acct-0001',
+  created_at: '2026-09-10T09:00:00+08:00',
+  updated_at: '2026-09-19T09:00:00+08:00',
+}
+
+const LIST_VIEW = { items: [AGENT_VIEW], total: 1, limit: REGISTRY_PAGE_SIZE, offset: 0 }
 
 /**
  * 与员工侧实体（`my-agents-api.md`）**逐字一致**的共享字段清单。
@@ -66,7 +98,7 @@ describe('agentRegistryService 适配层', () => {
 
     // 岗位键 / 自治档 / 模板对象都来自项目级唯一一份（同对象身份 ⇒ 没有第二份副本）
     expect(['sales', 'hr', 'rd', 'finance', 'ops', 'admin']).toContain(row.role_key)
-    expect(['approval_for_all', 'approval_for_risky', 'full_auto']).toContain(row.template.autonomy_level)
+    expect(['approval_for_all', 'approval_for_risky', 'full_auto']).toContain(row.template!.autonomy_level)
     expect(row.template).toBe(ROLE_TEMPLATES.find((template) => template.role_key === row.role_key))
     expect(roleTemplateOptions()).toBe(ROLE_TEMPLATES)
   })
@@ -122,8 +154,8 @@ describe('agentRegistryService 适配层', () => {
     expect(stats.sample).toBe(true)
     // 与逐行派生的期望值一致（样例增删行时用例自动跟随，不硬编码 9/6/2/1）
     expect(stats).toMatchObject(expected)
-    expect(stats.total).toBe(stats.active + stats.disabled + stats.draft)
-    expect(stats.draft).toBeGreaterThan(0)
+    expect(stats.total).toBe(stats.active + stats.disabled + stats.draft!)
+    expect(stats.draft!).toBeGreaterThan(0)
     expect(stats.ran_last_7d).toBeNull()
     expect(ranLast7dPresence(stats)).toBe('unverified')
   })
@@ -164,20 +196,117 @@ describe('agentRegistryService 适配层', () => {
     expect(found.agent_key).toBe('sample-ops-content')
   })
 
-  it('http 模式：全部取数 / 写入都抛"尚未接入"，**不静默返回空数据**', async () => {
-    setServiceMode('http')
+  describe('http 模式（接线批 2：列表 / 指标 / 启停走真接口）', () => {
+    beforeEach(() => {
+      setServiceMode('http')
+      sessionStorage.removeItem('workbench.token')
+    })
 
-    const calls: (() => Promise<unknown>)[] = [
-      () => fetchRegistryAgents({ page: 1, pageSize: REGISTRY_PAGE_SIZE }),
-      () => fetchRegistryStats(),
-      () => fetchRegistryAgentDetail('sample-ops-content'),
-      () => setAgentStatus({ agent_key: 'sample-ops-content', status: 'disabled' }),
-    ]
-    for (const call of calls) {
-      await expect(call()).rejects.toBeInstanceOf(ServiceError)
-      await expect(call()).rejects.toMatchObject({ failure: 'not_connected' })
-      await expect(call()).rejects.toThrow(/尚未接入/)
-    }
+    it('列表：`GET /api/v1/workforce/agents`，筛选与分页原样透传（limit / offset）', async () => {
+      const { fetchImpl, calls } = stubFetch({ '/api/v1/workforce/agents': { body: LIST_VIEW } })
+
+      const payload = await fetchRegistryAgents(
+        { role_key: 'ops', status: 'disabled', page: 3, pageSize: REGISTRY_PAGE_SIZE },
+        fetchImpl,
+      )
+
+      expect(calls).toHaveLength(1)
+      expect(calls[0].url).toBe(
+        `/api/v1/workforce/agents?role_key=ops&status=disabled&limit=${REGISTRY_PAGE_SIZE}&offset=${2 * REGISTRY_PAGE_SIZE}`,
+      )
+      expect(calls[0].init.method).toBe('GET')
+      expect(payload).toMatchObject({ sample: false, total: 1, limit: REGISTRY_PAGE_SIZE, offset: 0 })
+    })
+
+    it('列表：字段逐个映射；usage / last_run_at 后端不提供 ⇒ 非就绪（绝不填 0 或 0%）', async () => {
+      const { fetchImpl } = stubFetch({ '/api/v1/workforce/agents': { body: LIST_VIEW } })
+
+      const row = (await fetchRegistryAgents({ page: 1, pageSize: REGISTRY_PAGE_SIZE }, fetchImpl)).items[0]
+
+      expect(row).toEqual({
+        agent_key: 'content-ops',
+        name: '内容运营助手',
+        description: '负责选题与草稿。',
+        role_key: 'ops',
+        created_by: 'acct-0001',
+        created_at: '2026-09-10T09:00:00+08:00',
+        updated_at: '2026-09-19T09:00:00+08:00',
+        last_run_at: null,
+        template: ROLE_TEMPLATES.find((template) => template.role_key === 'ops'),
+        status: 'active',
+        usage: { run_count: null, success_rate: null },
+      })
+      expect(usagePresence(row.usage)).toBe('unverified')
+      expect(lastRunPresence(row)).toBe('unverified')
+      // 管理侧**不含**员工侧视角字段（后端也没有共享关系）
+      expect(Object.keys(row)).not.toContain('ownership')
+    })
+
+    it('列表：后端未支持的筛选（创建者 / 名称 / 草稿）⇒ 抛"尚未接入"，**不静默忽略**', async () => {
+      const { fetchImpl } = stubFetch({ '/api/v1/workforce/agents': { body: LIST_VIEW } })
+
+      for (const query of [
+        { created_by: 'acct', page: 1, pageSize: REGISTRY_PAGE_SIZE },
+        { keyword: '助手', page: 1, pageSize: REGISTRY_PAGE_SIZE },
+        { status: 'draft' as const, page: 1, pageSize: REGISTRY_PAGE_SIZE },
+      ]) {
+        await expect(fetchRegistryAgents(query, fetchImpl)).rejects.toMatchObject({ failure: 'not_connected' })
+      }
+    })
+
+    it('指标：**从真实列表派生**（无聚合接口）；草稿枚举后端未定义 ⇒ null，运行口径 ⇒ null', async () => {
+      const { fetchImpl, calls } = stubFetch({
+        '/api/v1/workforce/agents': {
+          body: {
+            items: [AGENT_VIEW, { ...AGENT_VIEW, agent_key: 'b', status: 'disabled' }],
+            total: 2,
+            limit: AGENT_PAGE_LIMIT,
+            offset: 0,
+          },
+        },
+      })
+
+      const stats = await fetchRegistryStats(fetchImpl)
+
+      expect(calls[0].url).toBe(`/api/v1/workforce/agents?limit=${AGENT_PAGE_LIMIT}&offset=0`)
+      expect(stats).toEqual({ sample: false, total: 2, active: 1, disabled: 1, draft: null, ran_last_7d: null })
+      expect(ranLast7dPresence(stats)).toBe('unverified')
+    })
+
+    it('指标：`total` 大于单页返回 ⇒ 抛 failed（不把残缺派生当准数）', async () => {
+      const { fetchImpl } = stubFetch({
+        '/api/v1/workforce/agents': { body: { items: [AGENT_VIEW], total: 900, limit: 200, offset: 0 } },
+      })
+
+      await expect(fetchRegistryStats(fetchImpl)).rejects.toMatchObject({ failure: 'failed' })
+    })
+
+    it('启停：`PATCH /api/v1/workforce/agents/{agent_key}`，请求体恰为 `{status}`，`written` 为 true', async () => {
+      const { fetchImpl, calls } = stubFetch({
+        '/api/v1/workforce/agents/': { body: { ...AGENT_VIEW, status: 'disabled' } },
+      })
+
+      const result = await setAgentStatus({ agent_key: 'content-ops', status: 'disabled' }, fetchImpl)
+
+      expect(calls[0].url).toBe('/api/v1/workforce/agents/content-ops')
+      expect(calls[0].init.method).toBe('PATCH')
+      expect(JSON.parse(String(calls[0].init.body))).toEqual({ status: 'disabled' })
+      expect(result).toEqual({ agent_key: 'content-ops', written: true, note: expect.stringMatching(/已写入后端/) })
+    })
+
+    it('详情 / 员工侧无对应口径：管理侧只读详情**如实抛"尚未接入"**', async () => {
+      await expect(fetchRegistryAgentDetail('content-ops')).rejects.toMatchObject({ failure: 'not_connected' })
+    })
+
+    it('失败分类：403 ⇒ `forbidden`（界面走无权限态，不静默空表格）', async () => {
+      const { fetchImpl } = stubFetch({
+        '/api/v1/workforce/agents': { status: 403, body: { detail: '只有超级管理员可以管理岗位与数字员工目录' } },
+      })
+
+      await expect(fetchRegistryAgents({ page: 1, pageSize: REGISTRY_PAGE_SIZE }, fetchImpl)).rejects.toMatchObject({
+        failure: 'forbidden',
+      })
+    })
   })
 
   it('岗位选项覆盖 role-templates.md 的 6 个岗位', () => {

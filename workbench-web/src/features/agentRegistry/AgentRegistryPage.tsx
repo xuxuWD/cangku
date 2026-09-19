@@ -21,7 +21,7 @@ import { AgentDetailDrawer } from './components/AgentDetailDrawer'
 import { RegistryFilters } from './components/RegistryFilters'
 import { RegistryStats } from './components/RegistryStats'
 import { LastRunCell, StatusCell, UsageCell } from './components/cells'
-import { fetchRegistryAgents, fetchRegistryStats, roleTemplateOptions, setAgentStatus } from './services/agentRegistryService'
+import { fetchRegistryAgents, fetchRegistryStats, isConnected, roleTemplateOptions, setAgentStatus } from './services/agentRegistryService'
 import type { RegistryFilters as RegistryFiltersValue, RegistryListPayload, RegistryRow, RegistryStatsPayload } from './types'
 import { NO_FILTERS, REGISTRY_PAGE_SIZE } from './types'
 
@@ -32,7 +32,8 @@ const EMPTY_STATS: RegistryStatsPayload = {
   total: 0,
   active: 0,
   disabled: 0,
-  draft: 0,
+  // 取数完成前不假装有草稿口径（真正是否就绪由服务层返回的 `draft` 决定）
+  draft: null,
   ran_last_7d: null,
 }
 
@@ -52,7 +53,8 @@ const COLUMNS: TableColumnsType<RegistryRow> = [
     title: '所属岗位',
     key: 'role_key',
     width: 152,
-    render: (_, row) => `${row.template.name}（${row.role_key}）`,
+    // 后端岗位键是自由字符串（可能不在项目级目录里）⇒ 模板缺失时如实写"模板未接入"，不编造岗位名
+    render: (_, row) => (row.template ? `${row.template.name}（${row.role_key}）` : `${row.role_key}（模板未接入）`),
   },
   { title: '创建者', dataIndex: 'created_by', key: 'created_by', width: 144 },
   { title: '状态', key: 'status', width: 96, render: (_, row) => <StatusCell row={row} /> },
@@ -61,7 +63,9 @@ const COLUMNS: TableColumnsType<RegistryRow> = [
     key: 'capability',
     width: 224,
     render: (_, row) =>
-      `Skill ${row.template.skills.length} · 知识范围 ${row.template.knowledge_scopes.length} · 自治档 ${AUTONOMY_LABEL[row.template.autonomy_level]}`,
+      row.template
+        ? `Skill ${row.template.skills.length} · 知识范围 ${row.template.knowledge_scopes.length} · 自治档 ${AUTONOMY_LABEL[row.template.autonomy_level]}`
+        : '能力包未接入（后端未下发模板）',
   },
   { title: '使用统计', key: 'usage', width: 232, render: (_, row) => <UsageCell usage={row.usage} /> },
   { title: '最近使用', key: 'last_run_at', width: 184, render: (_, row) => <LastRunCell row={row} /> },
@@ -74,6 +78,9 @@ function RegistryBoard() {
   const [detail, setDetail] = useState<RegistryRow | null>(null)
   const [statusChange, setStatusChange] = useState<{ row: RegistryRow; next: AgentStatus } | null>(null)
   const [actionNote, setActionNote] = useState<string | null>(null)
+
+  /** 是否已接后端（`http`）：决定筛选可用性、文案与"未接入"说明。 */
+  const connected = isConnected()
 
   // 查询对象只随筛选 / 分页变化 ⇒ 变化即重新取数（`deps` 显式声明何时重取）。
   const query = useMemo(() => ({ ...filters, page, pageSize: REGISTRY_PAGE_SIZE }), [filters, page])
@@ -129,8 +136,10 @@ function RegistryBoard() {
     try {
       const result = await setAgentStatus({ agent_key: target.row.agent_key, status: target.next })
       setActionNote(`已提交${verb}「${target.row.name}」；${result.note}`)
-    } catch {
-      setActionNote(`${verb}未完成：后端接口尚未接线或未通过校验，本次没有写入任何数据。`)
+    } catch (error) {
+      // 失败必须如实说清楚：优先用请求层已 sanitize 的文案，不把失败伪装成"已完成"
+      const detail = error instanceof Error ? error.message : ''
+      setActionNote(`${verb}未完成：${detail || '后端接口未通过校验'}本次没有写入任何数据。`)
     }
   }
 
@@ -139,13 +148,22 @@ function RegistryBoard() {
 
   return (
     <Space direction="vertical" size={tokens.spacing.md} style={{ width: '100%' }}>
-      {/* 诚实性标识：样例数据必须一眼可辨，不允许假装成真实数据 */}
-      <Alert
-        type="warning"
-        showIcon
-        message={SAMPLE_DATA_BADGE}
-        description="本页列表与指标均为样例数据；「最近 7 天有运行」的运行口径未接入，界面按「未验证」如实呈现。接口口径见 docs/contracts/agent-registry-api.md。"
-      />
+      {/* 诚实性标识：样例数据 / 已接后端都必须一眼可辨，不允许含糊 */}
+      {connected ? (
+        <Alert
+          type="info"
+          showIcon
+          message="已接入后端数字员工目录接口"
+          description="列表与「启用 / 停用」走真实后端接口（仅超级管理员可见）。指标由真实列表派生（后端无聚合接口）；后端 status 无「草稿」枚举，故草稿卡按「未验证」；运行与成功率口径后端未提供，一律按「未验证 / 样本不足」呈现。后端不支持按创建者 / 名称筛选，这两项已禁用（透传会被忽略，得到未筛选的假结果）。"
+        />
+      ) : (
+        <Alert
+          type="warning"
+          showIcon
+          message={SAMPLE_DATA_BADGE}
+          description="本页列表与指标均为样例数据；「最近 7 天有运行」的运行口径未接入，界面按「未验证」如实呈现。接口口径见 docs/contracts/agent-registry-api.md。"
+        />
+      )}
       {actionNote && <Alert type="info" showIcon message={actionNote} />}
 
       <RegistryStats
@@ -160,6 +178,7 @@ function RegistryBoard() {
         templates={roleTemplateOptions()}
         onChange={handleFilterChange}
         onReset={handleReset}
+        support={{ draft: !connected, created_by: !connected, keyword: !connected }}
       />
 
       <DataTable<RegistryRow>

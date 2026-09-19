@@ -38,7 +38,7 @@ describe('RegistryStats', () => {
 
     const stats = await fetchRegistryStats()
     expect(stats).toMatchObject(expected)
-    expect(stats.total).toBe(stats.active + stats.disabled + stats.draft)
+    expect(stats.total).toBe(stats.active + stats.disabled + stats.draft!)
 
     render(<RegistryStats stats={stats} />)
     const cardOf = (label: string) => screen.getByText(label).closest('.ant-pro-card') as HTMLElement

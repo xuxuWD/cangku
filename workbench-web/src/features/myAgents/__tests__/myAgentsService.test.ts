@@ -1,4 +1,5 @@
 import {
+  AGENT_PAGE_LIMIT,
   MOCK_WRITE_NOTE,
   ROLE_TEMPLATES,
   createAgent,
@@ -66,6 +67,40 @@ function collectText(value: unknown): string[] {
   return []
 }
 
+/**
+ * 最小 `fetch` 桩（与接线批 1 同形，不引 MSW）：返回收到的 `(url, init)`，
+ * 供"路径 / 方法 / 请求体逐字正确"的断言使用。**不发真实网络请求**。
+ */
+function stubFetch(routes: Record<string, { status?: number; body?: unknown }>) {
+  const calls: { url: string; init: RequestInit }[] = []
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    calls.push({ url: String(url), init })
+    const path = Object.keys(routes).find((key) => String(url).startsWith(key))
+    if (!path) throw new Error(`未预期的请求：${url}`)
+    const { status = 200, body } = routes[path]
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      text: async () => (body === undefined ? '' : JSON.stringify(body)),
+    }
+  }) as unknown as typeof fetch
+  return { fetchImpl, calls }
+}
+
+/** 后端 `DigitalEmployeeView`（`app/main.py:1399`）的实测形状：8 个键，**没有** template / last_run_at。 */
+const AGENT_VIEW = {
+  agent_key: 'content-ops',
+  name: '内容运营助手',
+  description: '负责选题与草稿。',
+  role_key: 'ops',
+  status: 'active',
+  created_by: 'acct-0001',
+  created_at: '2026-09-10T09:00:00+08:00',
+  updated_at: '2026-09-19T09:00:00+08:00',
+}
+
+const LIST_VIEW = { items: [AGENT_VIEW], total: 1, limit: AGENT_PAGE_LIMIT, offset: 0 }
+
 describe('myAgentsService 适配层', () => {
   afterEach(() => {
     setServiceMode('mock')
@@ -107,7 +142,7 @@ describe('myAgentsService 适配层', () => {
     // 能力包内联解析：员工的 role_key 必须能在模板表里找到
     for (const agent of agents.items) {
       expect(templateOf(agent.role_key)).toBeDefined()
-      expect(agent.template.role_key).toBe(agent.role_key)
+      expect(agent.template!.role_key).toBe(agent.role_key)
     }
   })
 
@@ -135,16 +170,13 @@ describe('myAgentsService 适配层', () => {
     }
   })
 
-  it('http 模式：全部取数 / 写入都抛"尚未接入"，**不静默返回空数据**', async () => {
+  it('http 模式：岗位模板 / 员工侧详情 / 创建**如实抛"尚未接入"**（后端无对应口径，不假装成功）', async () => {
     setServiceMode('http')
 
     const calls: (() => Promise<unknown>)[] = [
-      () => fetchMyAgents(),
       () => fetchRoleTemplates(),
       () => fetchAgentDetail('sample-content-ops'),
       () => createAgent({ name: 'n', role_key: 'ops', description: 'd' }),
-      () => updateAgent({ agent_key: 'k', name: 'n', description: 'd' }),
-      () => disableAgent('k'),
     ]
 
     for (const call of calls) {
@@ -152,6 +184,112 @@ describe('myAgentsService 适配层', () => {
       await expect(call()).rejects.toMatchObject({ failure: 'not_connected' })
       await expect(call()).rejects.toThrow(/尚未接入/)
     }
+  })
+
+  describe('http 模式（接线批 2：列表 / 配置 / 停用走真接口）', () => {
+    beforeEach(() => {
+      setServiceMode('http')
+      sessionStorage.removeItem('workbench.token')
+    })
+
+    it('列表：`GET /api/v1/workforce/agents`，路径与参数逐字正确，字段逐个映射且不编造', async () => {
+      const { fetchImpl, calls } = stubFetch({ '/api/v1/workforce/agents': { body: LIST_VIEW } })
+
+      const payload = await fetchMyAgents(fetchImpl)
+
+      expect(calls).toHaveLength(1)
+      expect(calls[0].url).toBe(`/api/v1/workforce/agents?limit=${AGENT_PAGE_LIMIT}&offset=0`)
+      expect(calls[0].init.method).toBe('GET')
+      // 真实数据**不得**被标成样例
+      expect(payload.sample).toBe(false)
+
+      expect(payload.items[0]).toEqual({
+        agent_key: 'content-ops',
+        name: '内容运营助手',
+        description: '负责选题与草稿。',
+        role_key: 'ops',
+        status: 'active',
+        created_by: 'acct-0001',
+        created_at: '2026-09-10T09:00:00+08:00',
+        updated_at: '2026-09-19T09:00:00+08:00',
+        // 后端目录视图**不下发运行时间** ⇒ 恒为 null，界面按"未验证"呈现（绝不给 0 / 成功）
+        last_run_at: null,
+        // 归属无法判定（拿不到当前用户标识，后端也无"共享"实体）⇒ 不编造"我创建的"
+        ownership: 'unknown',
+        // 能力包按 role_key 解析自项目级唯一目录（role-templates.md）；后端未下发 template 字段
+        template: ROLE_TEMPLATES.find((template) => template.role_key === 'ops'),
+      })
+    })
+
+    it('列表：岗位键不在项目级目录里 ⇒ `template` 为 null（不编造模板）', async () => {
+      const { fetchImpl } = stubFetch({
+        '/api/v1/workforce/agents': {
+          body: { items: [{ ...AGENT_VIEW, role_key: 'legal' }], total: 1, limit: AGENT_PAGE_LIMIT, offset: 0 },
+        },
+      })
+
+      const payload = await fetchMyAgents(fetchImpl)
+      expect(payload.items[0].role_key).toBe('legal')
+      expect(payload.items[0].template).toBeNull()
+    })
+
+    it('列表：`total` 大于单页返回 ⇒ 抛 failed（**不返回残缺列表**）', async () => {
+      const { fetchImpl } = stubFetch({
+        '/api/v1/workforce/agents': { body: { items: [AGENT_VIEW], total: 250, limit: 200, offset: 0 } },
+      })
+
+      await expect(fetchMyAgents(fetchImpl)).rejects.toMatchObject({ failure: 'failed' })
+    })
+
+    it('列表：后端返回未知状态 ⇒ 抛 failed（不误标成"已启用 / 已停用"）', async () => {
+      const { fetchImpl } = stubFetch({
+        '/api/v1/workforce/agents': {
+          body: { items: [{ ...AGENT_VIEW, status: 'archived' }], total: 1, limit: AGENT_PAGE_LIMIT, offset: 0 },
+        },
+      })
+
+      await expect(fetchMyAgents(fetchImpl)).rejects.toMatchObject({ failure: 'failed' })
+    })
+
+    it('配置：`PATCH /api/v1/workforce/agents/{agent_key}`，请求体恰为 name / description，`written` 为 true', async () => {
+      const { fetchImpl, calls } = stubFetch({
+        '/api/v1/workforce/agents/': { body: { ...AGENT_VIEW, name: '改名', description: '改范围。' } },
+      })
+
+      const result = await updateAgent({ agent_key: 'content-ops', name: '改名', description: '改范围。' }, fetchImpl)
+
+      expect(calls[0].url).toBe('/api/v1/workforce/agents/content-ops')
+      expect(calls[0].init.method).toBe('PATCH')
+      expect(JSON.parse(String(calls[0].init.body))).toEqual({ name: '改名', description: '改范围。' })
+      expect(result).toEqual({ agent_key: 'content-ops', written: true, note: expect.stringMatching(/已写入后端/) })
+    })
+
+    it('停用：`PATCH /api/v1/workforce/agents/{agent_key}`，请求体恰为 `{status:"disabled"}`', async () => {
+      const { fetchImpl, calls } = stubFetch({
+        '/api/v1/workforce/agents/': { body: { ...AGENT_VIEW, status: 'disabled' } },
+      })
+
+      const result = await disableAgent('content-ops', fetchImpl)
+
+      expect(calls[0].url).toBe('/api/v1/workforce/agents/content-ops')
+      expect(calls[0].init.method).toBe('PATCH')
+      expect(JSON.parse(String(calls[0].init.body))).toEqual({ status: 'disabled' })
+      expect(result).toEqual({ agent_key: 'content-ops', written: true, note: expect.stringMatching(/已写入后端/) })
+    })
+
+    it('失败分类：403 ⇒ `forbidden`（与其它失败分开，界面据四态区分）', async () => {
+      const { fetchImpl } = stubFetch({
+        '/api/v1/workforce/agents': { status: 403, body: { detail: '只有超级管理员可以管理岗位与数字员工目录' } },
+      })
+
+      await expect(fetchMyAgents(fetchImpl)).rejects.toMatchObject({ failure: 'forbidden' })
+    })
+
+    it('失败分类：404（目标不存在）⇒ `failed`，且不静默返回空列表', async () => {
+      const { fetchImpl } = stubFetch({ '/api/v1/workforce/agents/': { status: 404, body: { detail: '数字员工不存在' } } })
+
+      await expect(disableAgent('no-such-agent', fetchImpl)).rejects.toMatchObject({ failure: 'failed' })
+    })
   })
 
   it('详情查不到时按 failed 抛错（不返回伪造对象）', async () => {

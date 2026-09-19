@@ -41,8 +41,15 @@ export interface NavItem {
   roles: readonly Role[]
 }
 
-/** 员工与管理员都可见。 */
-const ALL_ROLES: readonly Role[] = ['employee', 'super_admin']
+/**
+ * 所有已登录角色都可见。
+ *
+ * 第 6 轮（接线批 1）：角色改由**服务端登录响应**下发，取值有 5 个
+ * （`employee / department_lead / ceo / super_admin / customer_admin`）。任何一个角色若一项都取不到，
+ * 壳里 `visibleItems[0]` 就会落空并整页崩掉，所以这里必须覆盖全部 5 个 —— 但这**只是界面可见性**，
+ * 真正的权限判定仍在服务端，且各页各自再按能力判定（如注册中心只对 `agent.manage` 开放）。
+ */
+const ALL_ROLES: readonly Role[] = ['employee', 'department_lead', 'ceo', 'super_admin', 'customer_admin']
 /** 仅管理员可见。 */
 const ADMIN_ONLY: readonly Role[] = ['super_admin']
 

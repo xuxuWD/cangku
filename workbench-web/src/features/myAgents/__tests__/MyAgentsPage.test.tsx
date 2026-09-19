@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MyAgentsPage } from '../MyAgentsPage'
 import { AppShell } from '../../../app/AppShell'
-import { useSession } from '../../../app/session'
+import { renderWithProviders, signInAs } from '../../../test/renderWithProviders'
 import { ServiceError } from '../../../utils/serviceKit'
 import { createAgent, disableAgent, fetchMyAgents, fetchRoleTemplates, setServiceMode } from '../services/myAgentsService'
 
@@ -23,7 +23,7 @@ vi.mock('../services/myAgentsService', async (importOriginal) => {
 
 describe('MyAgentsPage', () => {
   beforeEach(() => {
-    useSession.setState({ role: 'employee' })
+    signInAs('employee')
     vi.mocked(fetchMyAgents).mockImplementation(REAL.fetchMyAgents)
     vi.mocked(fetchRoleTemplates).mockImplementation(REAL.fetchRoleTemplates)
     vi.mocked(createAgent).mockImplementation(REAL.createAgent)
@@ -86,13 +86,46 @@ describe('MyAgentsPage', () => {
     expect(screen.queryByText('还没有数字员工。可以从岗位模板创建一个。')).not.toBeInTheDocument()
   })
 
-  it('mode=http：列表进入 error 态（取数抛"尚未接入"），不假装空', async () => {
+  it('mode=http：已接后端口径 —— 创建入口禁用并给原因，归属无法判定单独成区（不假装"我创建的"）', async () => {
     setServiceMode('http')
+    vi.mocked(fetchMyAgents).mockResolvedValue({
+      sample: false,
+      items: [
+        {
+          agent_key: 'content-ops',
+          name: '内容运营助手',
+          description: '负责选题与草稿。',
+          role_key: 'ops',
+          status: 'active',
+          created_by: 'acct-0001',
+          created_at: '2026-09-10T09:00:00+08:00',
+          updated_at: '2026-09-19T09:00:00+08:00',
+          last_run_at: null,
+          ownership: 'unknown',
+          template: null,
+        },
+      ],
+    })
+
     render(<MyAgentsPage />)
 
-    expect(await screen.findByText('数字员工列表加载失败，请稍后重试。')).toBeInTheDocument()
-    expect(screen.queryByText('还没有数字员工。可以从岗位模板创建一个。')).not.toBeInTheDocument()
-    expect(screen.queryByText('内容运营助手')).not.toBeInTheDocument()
+    expect(await screen.findByText('内容运营助手')).toBeInTheDocument()
+    // 已接后端必须一眼可辨（与"示例数据"标识互斥）
+    expect(screen.getByText('已接入后端数字员工目录接口')).toBeInTheDocument()
+    expect(screen.queryByText('示例数据（未接后端）')).not.toBeInTheDocument()
+
+    // 创建本批未接入 ⇒ 禁用 + 给原因（入口保留，不静默隐藏）
+    const create = screen.getByRole('button', { name: '从岗位模板创建' })
+    expect(create).toBeDisabled()
+    expect(create).toHaveAttribute('title', expect.stringContaining('创建尚未接入'))
+
+    // 归属无法判定：单独成区，**不混进"我创建的"**
+    expect(screen.getByRole('heading', { level: 3, name: /归属无法判定（1）/ })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 3, name: /我创建的/ })).not.toBeInTheDocument()
+    // 模板未接入：不编造岗位名 / 能力标签
+    expect(screen.getByText(/ops（模板未接入（后端未下发岗位模板））/)).toBeInTheDocument()
+    // 无运行记录 ⇒ 未验证（不是 0、不是成功）
+    expect(screen.getByText('暂无运行记录')).toBeInTheDocument()
   })
 
   it('共享给我的员工：配置 / 停用禁用且有原因（员工角色）', async () => {
@@ -156,7 +189,7 @@ describe('MyAgentsPage', () => {
   })
 
   it('壳里选中"我的数字员工"能渲染本页', async () => {
-    render(<AppShell />)
+    renderWithProviders(<AppShell />)
 
     await userEvent.click(screen.getByRole('menuitem', { name: /我的数字员工/ }))
 

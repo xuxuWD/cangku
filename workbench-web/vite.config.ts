@@ -3,6 +3,18 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    // 开发期把 `/api` 代理到本机后端：前端与后端**同源**，绕开后端 fail-closed 的 CORS
+    // （空配置 = 不允许跨源；开发模式仅放行 localhost）。生产期由反代做同样的事。
+    // 目标**可外置**（`VITE_DEV_PROXY_TARGET`，不设时用下方默认值）：本机 8000 常被别的服务占用，
+    // 硬编码会让 `npm run dev` 静默把请求发到**错误的后端**，排查成本很高。
+    proxy: {
+      '/api': {
+        target: process.env.VITE_DEV_PROXY_TARGET ?? 'http://127.0.0.1:8000',
+        changeOrigin: false,
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',

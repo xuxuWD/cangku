@@ -7,7 +7,7 @@
 import { Button, Space, Typography } from 'antd'
 import { EmptyState } from '../../../components'
 import type { ContentStateKind } from '../../../components'
-import { CAPABILITY_LABEL, hasCapability, ROLE_LABEL, useSession } from '../../../app/session'
+import { CAPABILITY_LABEL, hasCapability, roleLabel, useSession } from '../../../app/session'
 import { tokens } from '../../../theme/tokens'
 import type { QuickActionItem } from '../types'
 import { PanelCard } from './PanelCard'
@@ -45,7 +45,7 @@ export function QuickActions({ actions, state = 'ready', stateDescription, onRet
                 </Button>
                 {!allowed && requirement && (
                   <Typography.Text type="secondary">
-                    需要「{CAPABILITY_LABEL[requirement]}」权限，当前角色「{ROLE_LABEL[role]}」不可用（入口保留以便申请）。
+                    需要「{CAPABILITY_LABEL[requirement]}」权限，当前角色「{roleLabel(role)}」不可用（入口保留以便申请）。
                   </Typography.Text>
                 )}
               </div>

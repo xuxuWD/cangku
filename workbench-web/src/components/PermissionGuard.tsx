@@ -10,7 +10,7 @@
 import type { ReactNode } from 'react'
 import { Button } from 'antd'
 import { ContentState } from './ContentState'
-import { CAPABILITY_LABEL, hasCapability, ROLE_LABEL, useSession } from '../app/session'
+import { CAPABILITY_LABEL, hasCapability, roleLabel, useSession } from '../app/session'
 import type { Capability } from '../app/session'
 
 export interface PermissionGuardProps {
@@ -41,7 +41,7 @@ export function PermissionGuard({
       state="forbidden"
       description={
         reason ??
-        `当前角色「${ROLE_LABEL[role]}」没有「${CAPABILITY_LABEL[capability]}」权限，如需使用请联系管理员开通。`
+        `当前角色「${roleLabel(role)}」没有「${CAPABILITY_LABEL[capability]}」权限，如需使用请联系管理员开通。`
       }
       action={
         <Button type="primary" onClick={onRequestAccess}>

@@ -12,10 +12,17 @@ export type TodoSource = 'approval' | 'notification'
 
 /**
  * 待办类型（受控枚举）。
- * 前四类沿用后端 `/approvals/pending` 的 `kind`；`notification_result` 是站内通知里
- * 的结果类通知（对应 `/inbox` 的 `task.approved` / `run.failed` 等）在界面上的归一化取值。
+ * 前四类沿用后端 `/approvals/pending` 的 `kind`（`app/approvals.py:10-13`）；
+ * `notification_result` 是站内通知（`/inbox`，11 个 kind，见 `app/inbox.py:47-58`）在界面的归一化取值；
+ * `other` 是**未知 kind 的安全落点**（后端将来新增取值时如实显示"其他"，不误标成已知类型）。
  */
-export type TodoKind = 'task_approval' | 'plan_proposal' | 'run_approval' | 'notification_result'
+export type TodoKind =
+  | 'task_approval'
+  | 'plan_proposal'
+  | 'run_approval'
+  | 'account_registration'
+  | 'notification_result'
+  | 'other'
 
 export interface TodoItem {
   /** 来源接口（前端合并两个来源时的判别字段）。 */
@@ -30,6 +37,11 @@ export interface TodoItem {
   target_type: string | null
   /** 关联对象 ID：任务号 / 审批号 / 通知号（后端字段同名）。 */
   target_id: string
+  /**
+   * 站内通知 ID（`/inbox` 的 `inbox_id`）；**审批类来源为 `null`**（审批没有"已读"概念）。
+   * 只有非空时界面才提供"标记已读"，并据此调 `POST /api/v1/inbox/{inbox_id}/read`。
+   */
+  inbox_id: string | null
 }
 
 /** 最近使用的条目种类：会话或运行。 */
@@ -76,10 +88,11 @@ export interface QuickActionItem {
 }
 
 /**
- * 样例数据信封：`sample: true` 是**硬标记**。
- * 界面据此显示"示例数据（未接后端）"标识，避免假数据被当成真数据。
+ * 列表信封：`sample` 是**显式来源标记**。
+ * `true` = 开发期样例（界面必须显示「示例数据（未接后端）」）；
+ * `false` = 来自后端真实接口（接线后）。**绝不允许**把真实数据标成 sample，反之亦然。
  */
 export interface SamplePayload<T> {
-  sample: true
+  sample: boolean
   items: T[]
 }

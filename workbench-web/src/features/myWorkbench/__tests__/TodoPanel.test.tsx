@@ -19,6 +19,8 @@ const ITEMS: TodoItem[] = [
     created_at: '2026-09-19T09:20:00+08:00',
     target_type: 'task',
     target_id: 'sample-task-0001',
+    // 审批类没有"已读"概念
+    inbox_id: null,
   },
   {
     source: 'notification',
@@ -27,6 +29,7 @@ const ITEMS: TodoItem[] = [
     created_at: '2026-09-18T17:05:00+08:00',
     target_type: 'task',
     target_id: 'sample-task-0002',
+    inbox_id: 'sample-inbox-0002',
   },
 ]
 
@@ -65,7 +68,7 @@ describe('TodoPanel', () => {
 
   it('空列表：渲染明确空态文案，不渲染表格', () => {
     render(<TodoPanel items={[]} />)
-    expect(screen.getByText('当前没有待办（待审批与通知都为空）。')).toBeInTheDocument()
+    expect(screen.getByText('当前没有待办（待审批与未读通知都为空）。')).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 

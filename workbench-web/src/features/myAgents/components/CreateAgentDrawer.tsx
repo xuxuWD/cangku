@@ -89,11 +89,12 @@ export function CreateAgentDrawer({
       </Form.Item>
 
       <Form.Item name="name" label="名称" rules={[{ required: true, message: '请填写名称' }]}>
-        <Input placeholder="例如：内容运营助手" />
+        {/* 占位文案刻意**不与任何样例数据条目重名**：生产构建产物里不得出现样例数据的字样 */}
+        <Input placeholder="例如：客户线索整理助手" />
       </Form.Item>
 
       <Form.Item name="description" label="工作范围" rules={[{ required: true, message: '请填写工作范围' }]}>
-        <Input.TextArea rows={3} placeholder="例如：负责选题、草稿与发布前准备。" />
+        <Input.TextArea rows={3} placeholder="例如：负责客户线索的整理与跟进建议。" />
       </Form.Item>
 
       {picked && <CapabilityPack template={picked} />}

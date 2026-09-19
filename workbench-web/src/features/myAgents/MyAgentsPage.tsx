@@ -1,10 +1,10 @@
 /**
- * 我的数字员工（第 4 轮）：DE-01 / DE-02 / DE-03 的员工侧部分。
+ * 我的数字员工（第 4 轮；第 6 轮接线批 2 接线）。
  *
- * - 卡片式列表（**非表格**，PRD 明确要求卡片），按归属分区：我创建的 / 共享给我的；
- * - 从岗位模板创建（DE-01）：选模板 → 继承能力预览 → 填名称与工作范围 → 提交（mock，未写入后端）；
+ * - 卡片式列表（**非表格**，PRD 明确要求卡片），按归属分区：我创建的 / 共享给我的 / **归属无法判定**；
+ * - 从岗位模板创建（DE-01）：**本批未接入**（后端无员工侧创建接口）⇒ 入口保留但**禁用 + 给原因**；
  * - 卡片操作：发起任务（DE-03 跳转占位）、查看详情（只读）、配置（可改名称与工作范围）、停用（走 `DangerConfirm`）；
- * - 数据：**未接后端**，全部来自 `services/myAgentsService.ts`（样例数据），页面顶部给出统一标识。
+ * - 数据：`http` 模式来自真实后端接口（`services/myAgentsService.ts` 是唯一接线点）。
  */
 import { useState } from 'react'
 import { Alert, Button, Space } from 'antd'
@@ -19,10 +19,13 @@ import { AgentDetailDrawer } from './components/AgentDetailDrawer'
 import { AgentGrid } from './components/AgentGrid'
 import { CreateAgentDrawer } from './components/CreateAgentDrawer'
 import {
+  CREATE_AGENT_NOTE,
+  ROLE_TEMPLATE_NOTE,
   createAgent,
   disableAgent,
   fetchMyAgents,
   fetchRoleTemplates,
+  isConnected,
   updateAgent,
 } from './services/myAgentsService'
 import type { AgentItem, CreateAgentInput, RoleTemplate, UpdateAgentInput } from './types'
@@ -31,12 +34,19 @@ import type { AgentItem, CreateAgentInput, RoleTemplate, UpdateAgentInput } from
 const EMPTY_AGENTS: SamplePayload<AgentItem> = { sample: true, items: [] }
 const EMPTY_TEMPLATES: SamplePayload<RoleTemplate> = { sample: true, items: [] }
 
-/** 列表非就绪态的文案：加载态用统一加载文案；无权限与失败必须分开说清楚。 */
-const LIST_STATE_DESCRIPTION: Record<ContentStateKind, string | undefined> = {
-  loading: undefined,
-  empty: undefined,
-  error: '数字员工列表加载失败，请稍后重试。',
-  forbidden: '无权限查看数字员工列表，请确认该员工是否已共享给你，或联系管理员。',
+/**
+ * 非就绪态的文案：加载态用统一加载文案；无权限与失败必须分开说清楚。
+ * `http` 模式下无权限是**后端真实口径**（该目录接口仅超级管理员），原因不能写成"是否已共享给你"。
+ */
+function listStateDescription(connected: boolean): Record<ContentStateKind, string | undefined> {
+  return {
+    loading: undefined,
+    empty: undefined,
+    error: '数字员工列表加载失败，请稍后重试。',
+    forbidden: connected
+      ? '无权限查看数字员工列表：后端该目录接口只对超级管理员开放，当前角色不可见。'
+      : '无权限查看数字员工列表，请确认该员工是否已共享给你，或联系管理员。',
+  }
 }
 
 export function MyAgentsPage() {
@@ -49,6 +59,10 @@ export function MyAgentsPage() {
   const [disabling, setDisabling] = useState<AgentItem | null>(null)
   const [actionNote, setActionNote] = useState<string | null>(null)
 
+  /** 是否已接后端（`http`）：决定"未接入"文案与"创建"入口的可用性。 */
+  const connected = isConnected()
+  const listDescriptions = listStateDescription(connected)
+
   // 管理他人员工需要 `agent.manage` 能力（本地桩判定；真实判定在服务端）。
   const manageShared = hasCapability(role, 'agent.manage')
 
@@ -57,8 +71,10 @@ export function MyAgentsPage() {
     try {
       const result = await action()
       setActionNote(`${okText}；${result.note}`)
-    } catch {
-      setActionNote('操作未完成：后端接口尚未接线或未通过校验，本次没有写入任何数据。')
+    } catch (error) {
+      // 失败必须如实说清楚：优先用请求层已 sanitize 的文案，不把失败伪装成"已完成"
+      const detail = error instanceof Error ? error.message : ''
+      setActionNote(`操作未完成：${detail || '后端接口未通过校验'}本次没有写入任何数据。`)
     }
   }
 
@@ -82,26 +98,33 @@ export function MyAgentsPage() {
   const items = agents.data.items
   const mine = items.filter((agent) => agent.ownership === 'mine')
   const shared = items.filter((agent) => agent.ownership === 'shared')
+  // 归属无法判定的行单独成区（**不能**混进"我创建的"，那是在编造归属）
+  const unknown = items.filter((agent) => agent.ownership === 'unknown')
 
   const listBody =
     agents.state !== 'ready' ? (
       <ContentState
         state={agents.state}
-        description={LIST_STATE_DESCRIPTION[agents.state]}
+        description={listDescriptions[agents.state]}
         onRetry={agents.reload}
         boxed={false}
       />
     ) : items.length === 0 ? (
       <EmptyState
         boxed={false}
-        description="还没有数字员工。可以从岗位模板创建一个。"
-        actionText="立即创建"
+        description={
+          connected
+            ? '后端目录里还没有数字员工。创建本批未接入（需由管理员在目录中纳管）。'
+            : '还没有数字员工。可以从岗位模板创建一个。'
+        }
+        actionText={connected ? undefined : '立即创建'}
         onAction={() => setCreateOpen(true)}
       />
     ) : (
       <AgentGrid
         mine={mine}
         shared={shared}
+        unknown={unknown}
         manageShared={manageShared}
         onStartTask={(agent) =>
           setActionNote(`发起任务「${agent.name}」：DE-03 属后续轮次，本轮为跳转占位（未接路由）。`)
@@ -117,19 +140,34 @@ export function MyAgentsPage() {
       title="我的数字员工"
       description="卡片式查看我创建与被共享的数字员工，并可从岗位模板创建新员工。"
       extra={
-        <Button type="primary" onClick={() => setCreateOpen(true)}>
+        // 未接入的能力一律"禁用 + 给原因"，不静默隐藏入口
+        <Button
+          type="primary"
+          disabled={connected}
+          title={connected ? CREATE_AGENT_NOTE : undefined}
+          onClick={() => setCreateOpen(true)}
+        >
           从岗位模板创建
         </Button>
       }
     >
       <Space direction="vertical" size={tokens.spacing.md} style={{ width: '100%' }}>
-        {/* 诚实性标识：样例数据必须一眼可辨，不允许假装成真实数据 */}
-        <Alert
-          type="warning"
-          showIcon
-          message={SAMPLE_DATA_BADGE}
-          description="本页数字员工与岗位模板均为样例数据；能力包数据来源为 docs/contracts/role-templates.md，接口口径见 docs/contracts/my-agents-api.md。"
-        />
+        {/* 诚实性标识：样例数据 / 已接后端都必须一眼可辨，不允许含糊 */}
+        {connected ? (
+          <Alert
+            type="info"
+            showIcon
+            message="已接入后端数字员工目录接口"
+            description={`列表与「配置」「停用」走真实后端接口（后端为管理目录口径，仅超级管理员可见）。未接入：岗位模板列表、创建、员工侧详情；后端不下发运行记录、使用统计与当前用户标识，因此运行按「未验证」、归属按「无法判定」如实呈现。${CREATE_AGENT_NOTE}`}
+          />
+        ) : (
+          <Alert
+            type="warning"
+            showIcon
+            message={SAMPLE_DATA_BADGE}
+            description="本页数字员工与岗位模板均为样例数据；能力包数据来源为 docs/contracts/role-templates.md，接口口径见 docs/contracts/my-agents-api.md。"
+          />
+        )}
         {actionNote && <Alert type="info" showIcon message={actionNote} />}
         {listBody}
       </Space>
@@ -138,7 +176,7 @@ export function MyAgentsPage() {
         open={createOpen}
         templates={templates.data.items}
         state={templates.state}
-        stateDescription="岗位模板加载失败，请稍后重试。"
+        stateDescription={connected ? ROLE_TEMPLATE_NOTE : '岗位模板加载失败，请稍后重试。'}
         onRetry={templates.reload}
         onClose={() => setCreateOpen(false)}
         onSubmit={handleCreate}

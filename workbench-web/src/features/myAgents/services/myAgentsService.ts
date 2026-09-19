@@ -1,25 +1,47 @@
 /**
  * 「我的数字员工」适配层 —— 本模块**唯一**的接线点。
  *
- * 现状：**未接后端**。`mode = 'mock'` 时返回显式标注（`sample: true`）的样例数据。
+ * 第 6 轮（接线批 2）实测后的接线结论：
+ *  - **已接线（http 走真接口）**：
+ *    ① 列表 `GET /api/v1/workforce/agents`（后端**管理目录**口径，仅 `super_admin`；其他角色 `403`）；
+ *    ② 配置 `PATCH /api/v1/workforce/agents/{agent_key}`（请求体 `{name, description}`）；
+ *    ③ 停用 `PATCH /api/v1/workforce/agents/{agent_key}`（请求体 `{status:"disabled"}`，停用不删除）。
+ *  - **本批仍未接入（http 如实抛 `not_connected`，绝不返回空数组）**：
+ *    ① 岗位模板列表 —— 后端无模板实体（`role-templates.md` §3）；
+ *    ② 员工侧只读详情 —— 后端无员工侧详情接口（页面用列表已加载的行，不发额外请求）；
+ *    ③ 创建（从岗位模板创建）—— 见下方 `CREATE_AGENT_NOTE` 与契约 §3。
+ *
+ * 后端实测（`app/main.py:1399` 的 `DigitalEmployeeView`，8 个键）：`agent_key / name / description /
+ * role_key / status / created_by / created_at / updated_at`；**没有** `template` / `last_run_at` / `ownership`
+ * 与任何使用统计 ⇒ 这三项在本批分别是：前端静态目录解析 / 恒 `null`（未验证）/ 恒 `unknown`（无法判定）。
+ *
  * 纪律（三条，改这个文件前先读）：
- *  ① mock 分支的数据一律带 `sample: true`，界面必须显示「示例数据（未接后端）」；
- *  ② `http` 分支**必须抛错**，不得静默返回空数组 —— 静默空会伪装成"真的没有数据"；
+ *  ① mock 样例只在**开发模式**存在（`import.meta.env.DEV`），生产构建里整块被摇掉；
+ *  ② `http` 分支**必须抛错或返回真数据**，不得静默返回空数组 —— 静默空会伪装成"真的没有数据"；
  *  ③ 未来接线只改这一个文件（页面与组件都不认识 URL）。
  *
  * 岗位模板数据来源：`docs/contracts/role-templates.md`（唯一权威）。本文件里的 6 个模板
- * **逐字照抄**该文档 §2；模板的 `budget_cents` 在 §2 表格中**没有给出**，属样例值（已标注），
- * 接线轮以模板实体为准。后端模板实体待 S2 之后落地（见 `docs/contracts/my-agents-api.md` §2）。
+ * **逐字照抄**该文档 §2；模板的 `budget_cents` 在 §2 表格中**没有给出**，属样例值（已标注）。
  */
+import {
+  SAMPLE_DATA_BADGE,
+  ServiceError,
+  notConnected,
+  resolveServiceMode,
+  serviceErrorFromApi,
+  type SamplePayload,
+} from '../../../utils/serviceKit'
+import { request } from '../../../api/client'
 import type {
   AgentItem,
+  AgentOwnership,
+  AgentStatus,
   AgentWriteResult,
   CreateAgentInput,
   RoleKey,
   RoleTemplate,
   UpdateAgentInput,
 } from '../types'
-import { SAMPLE_DATA_BADGE, ServiceError, notConnected, type SamplePayload } from '../../../utils/serviceKit'
 
 export type ServiceMode = 'mock' | 'http'
 
@@ -27,15 +49,56 @@ export type ServiceMode = 'mock' | 'http'
  * 适配层唯一模式开关：本轮默认 `mock`。
  * 接线轮改为 `'http'`，或用构建期变量 `VITE_WORKBENCH_API_MODE=http` 注入。
  */
-export let mode: ServiceMode = import.meta.env.VITE_WORKBENCH_API_MODE === 'http' ? 'http' : 'mock'
+export let mode: ServiceMode = resolveServiceMode()
 
 /** 切换模式（开发 / 测试用；生产接线轮由上面的默认值或环境变量决定）。 */
 export function setServiceMode(next: ServiceMode): void {
   mode = next
 }
 
-/** 写操作的统一说明：本轮**没有**写入后端，界面必须如实告诉用户。 */
-export const MOCK_WRITE_NOTE = `本轮为${SAMPLE_DATA_BADGE}，操作未写入后端。`
+/**
+ * 当前是否已接后端（`http`）—— 页面据此决定"未接入"文案与"创建"入口是否禁用。
+ * 用函数而不是直接读 `mode`：`mode` 是模块级可变绑定，页面组件跨越 mock 边界时读到的可能是快照值。
+ */
+export function isConnected(): boolean {
+  return mode === 'http'
+}
+
+/**
+ * 写操作说明（**只在开发期样例数据下使用**，因此只在 DEV 分支存在；生产构建里为空串）。
+ * 真接口下写成功用 `WRITE_OK_NOTE`，**不**复用这句话。
+ */
+export const MOCK_WRITE_NOTE = import.meta.env.DEV ? `本轮为${SAMPLE_DATA_BADGE}，操作未写入后端。` : ''
+
+/** 真接口写成功的如实说明（后端已确认写入）。 */
+export const WRITE_OK_NOTE = '已写入后端：本次修改已提交成功。'
+
+/** 停用的如实说明（沿用后端口径：停用不删除，不影响历史任务与运行）。 */
+export const DISABLE_OK_NOTE = '已写入后端：该数字员工已停用（停用不删除，历史任务与运行记录不受影响）。'
+
+/**
+ * 创建入口的固定说明（**本批未接入**，界面禁用按钮时给出该原因，不静默隐藏入口）。
+ *
+ * 实测口径（`app/main.py:1541`）：`POST /api/v1/workforce/agents` **存在**，但
+ * ① 请求体要求**客户端自带** `agent_key`（与"标识由服务端生成"相反）；
+ * ② 仅 `super_admin` 可调用（员工侧一律 `403`）；
+ * ③ 后端无模板实体 ⇒ 没有"从岗位模板继承能力包"的服务端口径。
+ * 因此员工侧「从岗位模板创建」本批**不接入**：不生成假标识、不假装创建成功。
+ */
+export const CREATE_AGENT_NOTE =
+  '创建尚未接入：后端没有员工侧创建接口（需由管理员在目录中纳管，且标识由管理员指定），本批不会创建任何数据。'
+
+/** 岗位模板列表未接入的说明（同一处文案，页面直接引用）。 */
+export const ROLE_TEMPLATE_NOTE = '岗位模板尚未接入：后端无模板实体（接口未定义），本批不展示模板数据。'
+
+/**
+ * 归属无法判定的原因（界面必须可见，不允许把"无法判定"当成"我创建的"）。
+ */
+export const OWNERSHIP_UNKNOWN_NOTE =
+  '归属无法判定：后端不下发当前用户标识，也没有「共享」实体；本批按"他人创建"同口径处理，配置与停用需要「数字员工管理」能力。'
+
+/** http 模式下归属恒为"无法判定"（见 `OWNERSHIP_UNKNOWN_NOTE`）。 */
+const OWNERSHIP: AgentOwnership = 'unknown'
 
 /**
  * 岗位模板（能力包）—— 逐字对齐 `role-templates.md` §1 + §2。
@@ -110,8 +173,8 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
   },
 ]
 
-/** 按岗位键取模板（找不到返回 undefined，调用方不得编造模板）。 */
-export function templateOf(role_key: RoleKey): RoleTemplate | undefined {
+/** 按岗位键取模板（找不到返回 undefined，调用方不得编造模板）。参数是**自由字符串**（后端岗位键不受控）。 */
+export function templateOf(role_key: string): RoleTemplate | undefined {
   return ROLE_TEMPLATES.find((template) => template.role_key === role_key)
 }
 
@@ -122,8 +185,11 @@ function requireTemplate(role_key: RoleKey): RoleTemplate {
   return template
 }
 
-/** 样例数字员工（虚构内容；无 PII、无真实用户 ID / 租户 ID）。 */
-const MOCK_AGENTS: AgentItem[] = [
+/**
+ * 开发期样例数字员工（虚构内容；无 PII、无真实用户 ID / 租户 ID）。
+ * **只在 `import.meta.env.DEV` 分支里存在** ⇒ 生产构建里整块被摇掉（构建后 grep 应为 0 命中）。
+ */
+const MOCK_AGENTS: AgentItem[] = import.meta.env.DEV ? [
   {
     agent_key: 'sample-content-ops',
     name: '内容运营助手',
@@ -178,46 +244,163 @@ const MOCK_AGENTS: AgentItem[] = [
     template: requireTemplate('sales'),
   },
 ]
+  : []
 
-/** 我创建/共享给我的数字员工列表（`GET /api/v1/workforce/agents` 的员工侧口径，见契约 §1）。 */
-export async function fetchMyAgents(): Promise<SamplePayload<AgentItem>> {
-  if (mode === 'http') notConnected('我的数字员工列表')
-  return { sample: true, items: MOCK_AGENTS }
+/** 后端数字员工视图（`DigitalEmployeeView`，`app/main.py:1399`）—— 8 个键，**逐个点名**。 */
+export interface WorkforceAgentView {
+  agent_key: string
+  name: string
+  description: string
+  role_key: string
+  status: string
+  created_by: string
+  created_at: string | null
+  updated_at: string | null
 }
 
-/** 岗位模板列表（来源 `role-templates.md`；后端模板实体待 S2 之后落地，见契约 §2）。 */
-export async function fetchRoleTemplates(): Promise<SamplePayload<RoleTemplate>> {
-  if (mode === 'http') notConnected('岗位模板列表')
-  return { sample: true, items: ROLE_TEMPLATES }
+/** 列表响应（`DigitalEmployeeListView`）：`items / total / limit / offset`。 */
+export interface WorkforceAgentListView {
+  items: WorkforceAgentView[]
+  total: number
+  limit: number
+  offset: number
 }
 
-/** 详情（员工侧只读视图；契约 §4）。 */
-export async function fetchAgentDetail(agent_key: string): Promise<AgentItem> {
-  if (mode === 'http') notConnected('数字员工详情')
-  const found = MOCK_AGENTS.find((agent) => agent.agent_key === agent_key)
-  if (!found) throw new ServiceError(`未找到数字员工：${agent_key}`, 'failed')
-  return found
+/** 单页上限：后端 `limit` 上限 200。超出时本批**不做自动翻页**（避免把残缺列表当全量）。 */
+export const AGENT_PAGE_LIMIT = 200
+
+/** 后端状态 → 受控枚举（库列有 `CHECK (status IN ('active','disabled'))`）。 */
+const AGENT_STATUS: Record<string, AgentStatus> = { active: 'active', disabled: 'disabled' }
+
+/** 后端状态 → 受控枚举；未知取值**抛错**（不误标成"已启用 / 已停用"）。 */
+export function agentStatusOf(view: WorkforceAgentView): AgentStatus {
+  const mapped = AGENT_STATUS[view.status]
+  if (!mapped) {
+    throw new ServiceError(
+      `后端返回了界面未定义的员工状态，本批不展示该员工（${view.agent_key}）。`,
+      'failed',
+    )
+  }
+  return mapped
+}
+
+/** 岗位键 → 模板：只用项目级唯一目录；未知岗位键返回 `null`（不编造模板）。 */
+export function resolveRoleTemplate(role_key: string): RoleTemplate | null {
+  return templateOf(role_key) ?? null
 }
 
 /**
- * 创建（从岗位模板创建，DE-01）。
- * 能力包**由模板继承**（服务端读模板 → 生成绑定），客户端只提交 `name` / `role_key` / `description`。
+ * 全员目录列表（**未带筛选**，一次取满单页）—— 员工侧列表与注册中心指标共用同一处请求口径。
+ * `total` 大于单页返回 ⇒ 抛 `failed`（不返回残缺列表、不把残缺派生当准数）。
  */
-export async function createAgent(input: CreateAgentInput): Promise<AgentWriteResult> {
-  if (mode === 'http') notConnected('创建数字员工')
-  const template = templateOf(input.role_key)
-  if (!template) throw new ServiceError(`岗位模板不存在：${input.role_key}`, 'failed')
-  return { agent_key: `sample-created-${input.role_key}`, written: false, note: MOCK_WRITE_NOTE }
+export async function fetchWorkforceAgentViews(fetchImpl?: typeof fetch): Promise<WorkforceAgentView[]> {
+  try {
+    const view = await request<WorkforceAgentListView>('/api/v1/workforce/agents', {
+      query: { limit: AGENT_PAGE_LIMIT, offset: 0 },
+      fetchImpl,
+    })
+    if (view.total > view.items.length) {
+      throw new ServiceError(
+        `后端共有 ${view.total} 个数字员工，超过单页上限 ${AGENT_PAGE_LIMIT}；本批不做自动翻页，不展示残缺数据。`,
+        'failed',
+      )
+    }
+    return view.items
+  } catch (error) {
+    serviceErrorFromApi(error)
+  }
 }
 
-/** 更新（名称 / 工作范围；`agent_key` 不可改，与后端口径一致）。 */
-export async function updateAgent(input: UpdateAgentInput): Promise<AgentWriteResult> {
-  if (mode === 'http') notConnected('修改数字员工')
-  return { agent_key: input.agent_key, written: false, note: MOCK_WRITE_NOTE }
+/** 后端视图 → 界面条目（绝不编造后端没有的字段）。 */
+function agentOfView(view: WorkforceAgentView): AgentItem {
+  return {
+    agent_key: view.agent_key,
+    name: view.name,
+    description: view.description,
+    role_key: view.role_key,
+    status: agentStatusOf(view),
+    created_by: view.created_by,
+    // 视图模型声明可空（库列 `NOT NULL`）：拿到空值时如实留空串，**不编造时间**
+    created_at: view.created_at ?? '',
+    updated_at: view.updated_at ?? '',
+    // 后端目录视图不下发运行时间 ⇒ 恒为 null（界面按"未验证"呈现，绝不给 0 / 成功）
+    last_run_at: null,
+    ownership: OWNERSHIP,
+    template: resolveRoleTemplate(view.role_key),
+  }
+}
+
+/**
+ * 数字员工列表：`GET /api/v1/workforce/agents`（**后端管理目录口径，仅 super_admin**）。
+ *
+ * ⚠️ 员工侧「我创建的 ∪ 共享给我的」在后端**未定义**：本接口是管理目录，非 super_admin 会 `403`
+ * （界面进"无权限"态，与"加载失败"分开）。归属无法判定 ⇒ `ownership = 'unknown'`。
+ */
+export async function fetchMyAgents(fetchImpl?: typeof fetch): Promise<SamplePayload<AgentItem>> {
+  if (mode === 'mock') return { sample: true, items: MOCK_AGENTS }
+  return { sample: false, items: (await fetchWorkforceAgentViews(fetchImpl)).map(agentOfView) }
+}
+
+/** 岗位模板列表：后端无模板实体 ⇒ **如实抛"尚未接入"**，不返回空数组。 */
+export async function fetchRoleTemplates(): Promise<SamplePayload<RoleTemplate>> {
+  if (mode === 'mock') return { sample: true, items: ROLE_TEMPLATES }
+  notConnected('岗位模板列表')
+}
+
+/** 员工侧只读详情：后端无对应接口（页面用列表已加载的行）⇒ 如实抛"尚未接入"。 */
+export async function fetchAgentDetail(agent_key: string): Promise<AgentItem> {
+  if (mode === 'mock') {
+    const found = MOCK_AGENTS.find((agent) => agent.agent_key === agent_key)
+    if (!found) throw new ServiceError(`未找到数字员工：${agent_key}`, 'failed')
+    return found
+  }
+  notConnected('数字员工详情（员工侧）')
+}
+
+/**
+ * 创建（从岗位模板创建，DE-01）：**本批未接入**。
+ * 后端 `POST /api/v1/workforce/agents` 存在，但要求客户端自带 `agent_key` 且仅 `super_admin` 可用，
+ * 且无模板实体 ⇒ 不生成假标识、不假装创建成功（原因见 `CREATE_AGENT_NOTE`）。
+ */
+export async function createAgent(input: CreateAgentInput): Promise<AgentWriteResult> {
+  if (mode === 'mock') {
+    const template = templateOf(input.role_key)
+    if (!template) throw new ServiceError(`岗位模板不存在：${input.role_key}`, 'failed')
+    return { agent_key: `sample-created-${input.role_key}`, written: false, note: MOCK_WRITE_NOTE }
+  }
+  notConnected('创建数字员工')
+}
+
+/** 更新（名称 / 工作范围）：`PATCH /api/v1/workforce/agents/{agent_key}`，`agent_key` 不可改。 */
+export async function updateAgent(
+  input: UpdateAgentInput,
+  fetchImpl?: typeof fetch,
+): Promise<AgentWriteResult> {
+  if (mode === 'mock') return { agent_key: input.agent_key, written: false, note: MOCK_WRITE_NOTE }
+
+  try {
+    // 只发 `name` / `description`（后端 `extra="forbid"`；传 `agent_key` 直接 422）
+    const view = await request<WorkforceAgentView>(
+      `/api/v1/workforce/agents/${encodeURIComponent(input.agent_key)}`,
+      { method: 'PATCH', body: { name: input.name, description: input.description }, fetchImpl },
+    )
+    return { agent_key: view.agent_key, written: true, note: WRITE_OK_NOTE }
+  } catch (error) {
+    serviceErrorFromApi(error)
+  }
 }
 
 /** 停用（停用不删除，沿用后端口径；界面必须走危险操作二次确认）。 */
-export async function disableAgent(agent_key: string): Promise<AgentWriteResult> {
-  if (mode === 'http') notConnected('停用数字员工')
-  return { agent_key, written: false, note: MOCK_WRITE_NOTE }
+export async function disableAgent(agent_key: string, fetchImpl?: typeof fetch): Promise<AgentWriteResult> {
+  if (mode === 'mock') return { agent_key, written: false, note: MOCK_WRITE_NOTE }
+
+  try {
+    const view = await request<WorkforceAgentView>(
+      `/api/v1/workforce/agents/${encodeURIComponent(agent_key)}`,
+      { method: 'PATCH', body: { status: 'disabled' }, fetchImpl },
+    )
+    return { agent_key: view.agent_key, written: true, note: DISABLE_OK_NOTE }
+  } catch (error) {
+    serviceErrorFromApi(error)
+  }
 }

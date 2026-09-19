@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentRegistryPage } from '../AgentRegistryPage'
 import { AppShell } from '../../../app/AppShell'
-import { useSession } from '../../../app/session'
+import { renderWithProviders, signInAs } from '../../../test/renderWithProviders'
 import { ServiceError } from '../../../utils/serviceKit'
 import { ROLE_TEMPLATES } from '../../myAgents/services/myAgentsService'
 import {
@@ -28,7 +28,7 @@ vi.mock('../services/agentRegistryService', async (importOriginal) => {
 
 /** 管理角色（本页仅管理角色可见）。 */
 function asAdmin(): void {
-  useSession.setState({ role: 'super_admin' })
+  signInAs('super_admin')
 }
 
 /** 定位某一行（按名称）。 */
@@ -86,7 +86,7 @@ describe('AgentRegistryPage（数字员工注册中心）', () => {
   })
 
   it('① 无权限（员工角色）：渲染无权限态（原因 + 申请入口），**不渲染空表格、也不请求数据**', () => {
-    useSession.setState({ role: 'employee' })
+    signInAs('employee')
     render(<AgentRegistryPage />)
 
     expect(screen.getByText('无访问权限')).toBeInTheDocument()
@@ -248,17 +248,63 @@ describe('AgentRegistryPage（数字员工注册中心）', () => {
     expect(screen.queryByRole('button', { name: /保\s*存/ })).not.toBeInTheDocument()
   })
 
-  it('⑦ mode=http：列表进入 error 态（抛"尚未接入"），不假装空', async () => {
+  it('⑦ mode=http：已接后端口径 —— 不支持的筛选禁用给原因、草稿口径"未验证"、能力包不编造', async () => {
     setServiceMode('http')
+    vi.mocked(fetchRegistryAgents).mockResolvedValue({
+      sample: false,
+      items: [
+        {
+          agent_key: 'content-ops',
+          name: '内容运营助手',
+          description: '负责选题与草稿。',
+          role_key: 'ops',
+          created_by: 'acct-0001',
+          created_at: '2026-09-10T09:00:00+08:00',
+          updated_at: '2026-09-19T09:00:00+08:00',
+          last_run_at: null,
+          template: null,
+          status: 'active',
+          usage: { run_count: null, success_rate: null },
+        },
+      ],
+      total: 1,
+      limit: REGISTRY_PAGE_SIZE,
+      offset: 0,
+    })
+    vi.mocked(fetchRegistryStats).mockResolvedValue({
+      sample: false,
+      total: 1,
+      active: 1,
+      disabled: 0,
+      draft: null,
+      ran_last_7d: null,
+    })
+
     render(<AgentRegistryPage />)
 
-    expect(await screen.findByText('数字员工列表加载失败，请稍后重试。')).toBeInTheDocument()
-    expect(screen.queryByText('没有符合条件的数字员工。')).not.toBeInTheDocument()
-    expect(screen.queryByText('内容运营助手')).not.toBeInTheDocument()
+    expect(await screen.findByText('内容运营助手')).toBeInTheDocument()
+    // 已接后端必须一眼可辨（与"示例数据"标识互斥）
+    expect(screen.getByText('已接入后端数字员工目录接口')).toBeInTheDocument()
+    expect(screen.queryByText('示例数据（未接后端）')).not.toBeInTheDocument()
+
+    // 后端不支持的筛选：禁用 + 给原因（不静默忽略成"未筛选"的假结果）
+    expect(screen.getByLabelText('创建者')).toBeDisabled()
+    expect(screen.getByLabelText('名称')).toBeDisabled()
+
+    // 草稿口径后端未定义 ⇒ 草稿卡"未验证"，总数卡不再写"含草稿"（也不写 0）
+    expect(screen.getByText('全部')).toBeInTheDocument()
+    expect(screen.queryByText('全部（含草稿）')).not.toBeInTheDocument()
+
+    // 能力包 / 运行统计后端未提供 ⇒ 如实"未接入 / 未验证"，不编造岗位名与数字
+    const row = rowOf('内容运营助手')
+    expect(within(row).getByText('ops（模板未接入）')).toBeInTheDocument()
+    expect(within(row).getByText('能力包未接入（后端未下发模板）')).toBeInTheDocument()
+    expect(within(row).getByText('暂无运行记录')).toBeInTheDocument()
+    expect(within(row).getByText('暂无运行统计')).toBeInTheDocument()
   })
 
   it('壳里选中「数字员工管理」即渲染本页（并给出 6 个岗位选项）', async () => {
-    render(<AppShell />)
+    renderWithProviders(<AppShell />)
 
     await userEvent.click(screen.getByRole('menuitem', { name: /数字员工管理/ }))
 

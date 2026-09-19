@@ -48,16 +48,27 @@ export interface RoleTemplate {
 /** 数字员工状态：沿用后端目录 `status` 枚举（`active` / `disabled`，停用不删除）。 */
 export type AgentStatus = 'active' | 'disabled'
 
-/** 归属：我创建的 / 他人创建后共享给我。 */
-export type AgentOwnership = 'mine' | 'shared'
+/**
+ * 归属：我创建的 / 他人创建后共享给我 / **无法判定**。
+ *
+ * 第 6 轮接线批 2 实测：后端目录视图只下发 `created_by`（不透明账号标识），
+ * 而**前端会话只存令牌与角色**（`src/app/session.tsx`，批 1 已交付、本批不改），拿不到当前 `user_id`；
+ * 后端也没有任何"共享"实体。⇒ http 模式下归属**无法判定**，一律 `unknown`（**不编造"我创建的"**），
+ * 界面按"他人创建"同口径处理（配置 / 停用需要 `agent.manage`），并给出可见原因。
+ */
+export type AgentOwnership = 'mine' | 'shared' | 'unknown'
 
 export interface AgentItem {
   /** 数字员工标识（后端字段同名）。 */
   agent_key: string
   name: string
   description: string
-  /** 所属岗位（后端字段同名）。 */
-  role_key: RoleKey
+  /**
+   * 所属岗位（后端字段同名）。
+   * 后端是**自由字符串**（`workbench_job_roles` 的 `role_key`，员工表有外键约束），
+   * 不保证落在 `role-templates.md` 的 6 个首批岗位上 ⇒ 这里按 `string` 建模，不假装是受控枚举。
+   */
+  role_key: string
   status: AgentStatus
   /** 创建者标识（后端字段同名；**不在界面展示原始 ID**，只用于判定归属）。 */
   created_by: string
@@ -68,10 +79,14 @@ export interface AgentItem {
    * **无运行记录必须为 `null`** —— 不得填 `0`、不得造时间（状态保真，见本模块契约 §7）。
    */
   last_run_at: string | null
-  /** 归属（前端归一化：服务端下发的 `created_by` 与当前身份比较的结果）。 */
+  /** 归属（见 `AgentOwnership`；http 模式下恒为 `unknown`）。 */
   ownership: AgentOwnership
-  /** 能力包：服务端按 `role_key` 解析后随视图下发（本轮样例直接内联）。 */
-  template: RoleTemplate
+  /**
+   * 能力包：按 `role_key` 解析出的岗位模板。
+   * **后端不下发该字段**（无模板实体），本批由项目级唯一目录（`role-templates.md` → `ROLE_TEMPLATES`）解析；
+   * 岗位键不在目录里 ⇒ `null`（**不编造模板**），界面显示"模板未接入"。
+   */
+  template: RoleTemplate | null
 }
 
 /** 创建入参（表单「工作范围」→ 请求字段 `description`，沿用后端既有字段名）。 */
@@ -90,11 +105,12 @@ export interface UpdateAgentInput {
 
 /**
  * 写操作的受理结果。
- * `written` 恒为 `false`：本轮未接后端，**不允许假装写入成功**（界面据此给出如实提示）。
+ * `written` 为 `true` 表示**后端已确认写入**（`PATCH /api/v1/workforce/agents/{agent_key}` 返回 2xx）；
+ * `false` 只出现在开发期样例数据下（未接后端时**不允许假装写入成功**）。
  */
 export interface AgentWriteResult {
   agent_key: string
-  written: false
+  written: boolean
   /** 如实说明本轮发生了什么、没发生什么。 */
   note: string
 }

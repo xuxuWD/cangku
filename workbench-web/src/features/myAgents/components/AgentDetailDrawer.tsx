@@ -67,7 +67,13 @@ export function AgentDetailDrawer({ open, agent, mode = 'view', onClose, onSubmi
             style={{ marginBottom: tokens.spacing.md }}
             items={[
               { key: 'agent_key', label: '标识', children: agent.agent_key },
-              { key: 'role_key', label: '所属岗位', children: `${agent.template.name}（${agent.role_key}）` },
+              {
+                key: 'role_key',
+                label: '所属岗位',
+                children: agent.template
+                  ? `${agent.template.name}（${agent.role_key}）`
+                  : `${agent.role_key}（模板未接入）`,
+              },
               {
                 key: 'status',
                 label: '状态',
@@ -80,9 +86,19 @@ export function AgentDetailDrawer({ open, agent, mode = 'view', onClose, onSubmi
               {
                 key: 'ownership',
                 label: '归属',
-                children: agent.ownership === 'mine' ? '我创建的' : '共享给我的（他人创建）',
+                children:
+                  agent.ownership === 'mine'
+                    ? '我创建的'
+                    : agent.ownership === 'shared'
+                      ? '共享给我的（他人创建）'
+                      : '归属未判定（后端未下发当前用户标识，也没有「共享」实体）',
               },
-              { key: 'created_at', label: '创建时间', children: formatDateTime(agent.created_at) },
+              {
+                key: 'created_at',
+                label: '创建时间',
+                // 后端视图模型允许为空：为空时如实写"未提供"，**不编造时间**
+                children: agent.created_at ? formatDateTime(agent.created_at) : '未提供',
+              },
               {
                 key: 'last_run_at',
                 label: '最近使用',
@@ -108,10 +124,19 @@ export function AgentDetailDrawer({ open, agent, mode = 'view', onClose, onSubmi
           </Form.Item>
 
           <Typography.Title level={4}>能力包</Typography.Title>
-          <CapabilityPack template={agent.template} />
-          <Typography.Paragraph type="secondary" style={{ marginTop: tokens.spacing.md }}>
-            自治档：{AUTONOMY_LABEL[agent.template.autonomy_level]}；能力与所属岗位由服务端按岗位模板解析，本页不可直接编辑。
-          </Typography.Paragraph>
+          {agent.template ? (
+            <>
+              <CapabilityPack template={agent.template} />
+              <Typography.Paragraph type="secondary" style={{ marginTop: tokens.spacing.md }}>
+                自治档：{AUTONOMY_LABEL[agent.template.autonomy_level]}；能力包按所属岗位从项目级目录
+                （role-templates.md）解析，后端未下发模板字段，本页不可直接编辑。
+              </Typography.Paragraph>
+            </>
+          ) : (
+            <Typography.Paragraph type="secondary">
+              能力包未接入：该岗位键不在项目级目录里，后端也不下发岗位模板，本批不展示能力包，也不以样例模板冒充。
+            </Typography.Paragraph>
+          )}
         </>
       )}
     </FormDrawer>
