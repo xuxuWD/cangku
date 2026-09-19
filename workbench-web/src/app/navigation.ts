@@ -39,8 +39,6 @@ export interface NavItem {
   icon: ComponentType
   /** 可见角色集合。 */
   roles: readonly Role[]
-  /** 仅开发模式（`vite dev`）可见：测试与构建产物里都不出现。 */
-  devOnly?: boolean
 }
 
 /** 员工与管理员都可见。 */
@@ -48,6 +46,24 @@ const ALL_ROLES: readonly Role[] = ['employee', 'super_admin']
 /** 仅管理员可见。 */
 const ADMIN_ONLY: readonly Role[] = ['super_admin']
 
+/**
+ * 是否处于开发模式（**构建期常量**）。
+ * 用 `MODE === 'development'`（`vite dev`）而不是 `DEV`：后者在 vitest 下也为真，
+ * 会让样品页混进测试与业务导航。
+ * 生产构建时它被替换为字面量 `false`，下面那条开发期入口会**整条**（含标题字符串与图标）被摇掉 ——
+ * 所以「组件样品」不会出现在 `dist/` 里（`npm run build` 后 grep 应为 0 命中）。
+ */
+const IS_DEV_MODE = import.meta.env.MODE === 'development'
+
+/**
+ * 开发期辅助入口：组件样品页（不属业务导航，后续轮次可整体移除）。
+ * 只在开发模式**构建进表**；生产构建里这个数组为空。
+ */
+const DEV_NAV_ITEMS: readonly NavItem[] = IS_DEV_MODE
+  ? [{ key: 'components-playground', title: '组件样品', icon: ExperimentOutlined, roles: ALL_ROLES }]
+  : []
+
+/** 全部导航项（顺序即展示顺序；开发期入口排在最后）。 */
 export const NAV_ITEMS: readonly NavItem[] = [
   // 员工可见的 4 项
   { key: 'my-workbench', title: '我的工作台', icon: AppstoreOutlined, roles: ALL_ROLES },
@@ -59,18 +75,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'permissions', title: '权限配置', icon: SafetyCertificateOutlined, roles: ADMIN_ONLY },
   { key: 'skills-mcp', title: 'Skill & MCP', icon: ApiOutlined, roles: ADMIN_ONLY },
   { key: 'audit-log', title: '审计日志', icon: AuditOutlined, roles: ADMIN_ONLY },
-  // 开发期辅助入口：组件样品页，不属业务导航，后续轮次可整体移除。
-  { key: 'components-playground', title: '组件样品', icon: ExperimentOutlined, roles: ALL_ROLES, devOnly: true },
+  ...DEV_NAV_ITEMS,
 ]
 
-/**
- * 是否处于开发模式。
- * 用 `MODE === 'development'`（`vite dev`）而不是 `DEV`：后者在 vitest 下也为 true，
- * 会让样品页混进测试与业务导航。
- */
-const IS_DEV_MODE = import.meta.env.MODE === 'development'
-
-/** 按角色过滤后的导航项（顺序即展示顺序）；开发期辅助入口只在 `vite dev` 出现。 */
+/** 按角色过滤后的导航项（顺序即展示顺序）。 */
 export function navItemsForRole(role: Role): NavItem[] {
-  return NAV_ITEMS.filter((item) => item.roles.includes(role) && (!item.devOnly || IS_DEV_MODE))
+  return NAV_ITEMS.filter((item) => item.roles.includes(role))
 }

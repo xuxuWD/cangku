@@ -22,10 +22,30 @@ describe('AppShell（第 1 轮应用壳）', () => {
   it('导航定义本身是既定的 4 + 4 结构，开发辅助入口不计入业务导航', () => {
     expect(navItemsForRole('employee')).toHaveLength(4)
     expect(navItemsForRole('super_admin')).toHaveLength(8)
-    // 「组件样品」是 devOnly 入口：测试模式（MODE=test）下不得混进导航。
-    expect(NAV_ITEMS.some((item) => item.devOnly)).toBe(true)
-    expect(navItemsForRole('employee').some((item) => item.devOnly)).toBe(false)
-    expect(navItemsForRole('super_admin').some((item) => item.devOnly)).toBe(false)
+    // 「组件样品」入口是**构建期**决定的：测试模式（MODE=test）下它根本不在表里。
+    expect(NAV_ITEMS.some((item) => item.key === 'components-playground')).toBe(false)
+    expect(navItemsForRole('employee').map((item) => item.key)).toEqual([
+      'my-workbench',
+      'my-agents',
+      'knowledge',
+      'team',
+    ])
+  })
+
+  it('开发辅助入口（组件样品）只在开发模式出现；出现时可懒加载出样品页', async () => {
+    render(<AppShell />)
+    const devEntry = navItemsForRole('employee').some((item) => item.key === 'components-playground')
+
+    if (!devEntry) {
+      // 测试 / 生产模式：入口与页面都不该出现（生产产物里连代码都没有，见构建后的 grep 验收）
+      expect(screen.queryByRole('menuitem', { name: /组件样品/ })).not.toBeInTheDocument()
+      return
+    }
+
+    // 开发模式：入口可见，点进去能动态加载出样品页（React.lazy），且样品页内容确实渲染
+    await userEvent.click(screen.getByRole('menuitem', { name: /组件样品/ }))
+    expect(await screen.findByRole('heading', { level: 2, name: '组件样品（仅开发可见）' })).toBeInTheDocument()
+    expect(await screen.findByText('StatCard：数值与状态保真')).toBeInTheDocument()
   })
 
   it('员工角色只渲染 4 个导航项', () => {
