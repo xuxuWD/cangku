@@ -4,6 +4,8 @@
  *
  * 四态：`state` 非 `ready` 时，抽屉正文改为统一四态呈现，且**不提供提交按钮**
  * （加载中、加载失败、无权限时都不该让人提交）。empty 表示"没有可提交的内容"。
+ *
+ * 只读态（`readOnly`）：用于"查看详情"，表单整体禁用、只留"关闭"，关闭前不做未保存确认。
  */
 import { useState } from 'react'
 import type { ReactNode } from 'react'
@@ -20,13 +22,15 @@ export interface FormDrawerProps {
   form: FormInstance
   /** 表单内容（`Form.Item` 列表），`Form` 外壳由本组件提供。 */
   children: ReactNode
-  /** 提交回调；返回 Promise 期间视为"提交中"。 */
+  /** 提交回调；返回 Promise 期间视为"提交中"。只读态不会被调用。 */
   onSubmit: () => void | Promise<void>
   onClose: () => void
-  /** 是否有未保存改动（为 true 时关闭会二次确认）。 */
+  /** 是否有未保存改动（为 true 时关闭会二次确认；只读态忽略此项）。 */
   dirty?: boolean
   submitText?: string
   cancelText?: string
+  /** 只读态：表单禁用、不渲染提交按钮（查看详情用）。 */
+  readOnly?: boolean
   /** 默认 `ready`。 */
   state?: ContentStateKind | 'ready'
   stateDescription?: string
@@ -44,6 +48,7 @@ export function FormDrawer({
   dirty = false,
   submitText = '提交',
   cancelText = '取消',
+  readOnly = false,
   state = 'ready',
   stateDescription,
   onRetry,
@@ -73,7 +78,8 @@ export function FormDrawer({
 
   const requestClose = () => {
     if (pending) return
-    if (dirty) {
+    // 只读态没有"未保存的改动"，不需要二次确认。
+    if (dirty && !readOnly) {
       setConfirmOpen(true)
       return
     }
@@ -89,7 +95,7 @@ export function FormDrawer({
         onClose={requestClose}
         maskClosable={false}
         footer={
-          usable ? (
+          usable && !readOnly ? (
             <Space>
               <Button onClick={requestClose} disabled={pending}>
                 {cancelText}
@@ -105,12 +111,12 @@ export function FormDrawer({
       >
         {!usable && <ContentState state={state} description={stateDescription} onRetry={onRetry} boxed={false} />}
 
-        {usable && invalid && (
+        {usable && !readOnly && invalid && (
           <Alert type="error" showIcon message="请先修正表单中的错误，再提交。" style={{ marginBottom: tokens.spacing.md }} />
         )}
 
         {usable && (
-          <Form form={form} layout="vertical" disabled={pending}>
+          <Form form={form} layout="vertical" disabled={pending || readOnly}>
             {children}
           </Form>
         )}
