@@ -21,7 +21,7 @@
 | POST | `…/{version}/disable` | 停用 | `ceo` / `super_admin`（同上） |
 | POST | `/api/v1/skills/bindings` | 绑定技能到数字员工（`{skill_key, agent_key}`，`extra="forbid"`） | 仅 `super_admin`；**2026-09-20 已修复**（原恒 `500`，见 §7）：实测 `200` + 绑定形状 |
 | DELETE | `/api/v1/skills/bindings?skill_key=&agent_key=` | 解绑（`active → disabled`） | 仅 `super_admin`；实测 `200` + 绑定形状（声明与返回同形） |
-| GET | `/api/v1/skills/agents/{agent_key}/tools` | 该员工已启用技能的 `allowed-tools` ∩ 执行目录**交集**（服务端解析，fail-closed） | 登录（`SkillNotFound` / `PolicyError` ⇒ 404 / 403） |
+| GET | `/api/v1/skills/agents/{agent_key}/tools` | 该员工已启用技能的 `allowed-tools` ∩ 执行目录**交集**（服务端解析，fail-closed） | 四个业务角色可读；**`customer_admin` ⇒ `403`**（2026-09-20 第 9 轮修正：此前只看登录 ⇒ 四角色全放行，见 `skill-bindings-api.md` §7） |
 | GET | `/api/v1/skills/{skill_key}/versions/{version}/content` | 技能包**正文**（详情专用，避免拖大列表） | 本人或管理员；他人未审包按 `404`（避免探测存在性） |
 | POST | `…/{version}/memories` | 把使用经验沉淀为事实类记忆（`{content}` ≤2000；**幂等**） | 技能须对操作者可见；记忆层未接线 ⇒ **`503`**（fail-closed，不静默降级） |
 
@@ -122,6 +122,13 @@ submitted ──review(approved=true)──▶ approved ──enable──▶ en
 - 记忆层**未接线**时 `…/memories` 的 `503` 未复现（本机记忆层已接线，实测走通 `200`）。
 - ~~**`bind` 恒 500（见 §7）**：其"修复后"的正确行为未验证~~ ⇒ **已补（2026-09-20 修复后真机复测）**：
   `200` + `{skill_key, agent_key, status:"active"}`、`tools` 展开 `["fs.read"]`、员工 / `ceo` 绑定均 `403`。
+- ~~`unbind` 对不存在的绑定"未区分（也返回 200）"~~ ⇒ **2026-09-20 第 9 轮复测更正为 `404`**：
+  `DELETE /skills/bindings?skill_key=r9-nope&agent_key=agent-nope` ⇒ **`404`** `{"detail":"binding …"}`
+  —— 源码判定（内存与 PG 两条实现都抛 `SkillNotFound`）本就正确；第 8 轮那条 `200` 是**绑定行确实存在**
+  （旧 `bind` 500 缺陷在序列化前写入，已查库证实）⇒ 原备注「未区分」为**误读**。已 `disabled` 的绑定再解 ⇒ `200` 幂等（实测）。
+- **绑定面的服务端校验缺口（2026-09-20 真机实测，用户裁决本轮不改）**：`bind` **不校验**技能是否存在 / 是否 `enabled` /
+  `agent_key` 是否在目录内（三者均 `200`，可写入悬空绑定）；界面自我收敛 + 缺口登记，详见
+  [`skill-bindings-api.md`](file:///d:/徐徐AI学习/公司工作台/docs/contracts/skill-bindings-api.md) §2 / §5。
 - `ceo` 的**真机**复核 / 启停走的是**开发模式头身份**（本机无真 `ceo` 账号；造 ceo 需走注册 + 审批流程），
   生产环境不允许头身份 ⇒ 「真 ceo 账号走登录令牌复核」这一路径**未在真机验证**（API 层用例已覆盖，机制同一份判定）。
 - **前端工具键下拉是"提示集合"**（13 个键，来源 `app/tool_execution/catalog.py`）：后端新增工具键时前端须同步，

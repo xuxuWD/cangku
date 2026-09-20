@@ -212,3 +212,120 @@ export function looksLikeSemver(value: string): boolean {
 export function looksLikeSha256(value: string): boolean {
   return /^[0-9a-fA-F]{64}$/.test(value.trim())
 }
+
+/* ------------------------------------------------------------------ 绑定面（第 9 轮） */
+
+/**
+ * 绑定状态（受控枚举；后端 `BindingStatus` = `active` / `disabled`）。
+ * `unknown` 用于后端将来新增取值时**不误标**。
+ */
+export type BindingStatus = 'active' | 'disabled' | 'unknown'
+
+export const BINDING_STATUS_LABEL: Record<Exclude<BindingStatus, 'unknown'>, string> = {
+  active: '生效中',
+  disabled: '已解除',
+}
+
+/** 后端 `status` → 受控枚举（契约 §2：`active ⇄ disabled`，无第三种）。 */
+export function parseBindingStatus(raw: string): BindingStatus {
+  if (raw === 'active' || raw === 'disabled') return raw
+  return 'unknown'
+}
+
+/** 绑定关系视图（后端 `SkillBindingView`，**不含 `tenant_id`**）。 */
+export interface SkillBinding {
+  skill_key: string
+  agent_key: string
+  status: BindingStatus
+  /** 建立该绑定的操作者标识（不透明账号标识，非手机号）。 */
+  created_by: string
+  created_at: string | null
+}
+
+/** 绑定列表信封（后端 `SkillBindingListView`，**必须分页**）。 */
+export interface SkillBindingPage {
+  sample: boolean
+  items: SkillBinding[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** 绑定 / 解绑的服务端回读值（后端 `SkillBindingResponse`，逐字三键）。 */
+export interface BindingResult {
+  skill_key: string
+  agent_key: string
+  status: BindingStatus
+}
+
+/**
+ * 绑定 / 解绑受理结果。
+ * `written === true` 表示**服务端已确认写入**，`result` 是**服务端回读值**（不本地猜）；
+ * 样例模式下 `written === false` 且 `result === null` —— **绝不伪造回读值**。
+ */
+export interface BindingWriteOutcome {
+  result: BindingResult | null
+  written: boolean
+  note: string
+}
+
+/** 工具面（后端 `SkillExpandResponse`）。 */
+export interface AgentTools {
+  agent_key: string
+  tools: string[]
+}
+
+export interface AgentToolsOutcome {
+  sample: boolean
+  tools: AgentTools | null
+  note: string
+}
+
+/** 员工候选（来自数字员工目录；本模块只读 `agent_key` 与展示名）。 */
+export interface AgentCandidate {
+  agent_key: string
+  name: string
+}
+
+export interface AgentCandidatePage {
+  sample: boolean
+  items: AgentCandidate[]
+  total: number
+}
+
+/** 工具面「为什么空」的归因（**四种必须分开说明**，不允许合并成"暂无工具"）。 */
+export type AgentToolsReason = 'ready' | 'no_binding' | 'none_enabled' | 'empty_intersection'
+
+export const AGENT_TOOLS_REASON_TEXT: Record<Exclude<AgentToolsReason, 'ready'>, string> = {
+  no_binding: '该数字员工还没有绑定任何技能，因此工具面为空。',
+  none_enabled: '已绑定技能，但其中没有「已启用」的技能；启用后才会进入工具面。',
+  empty_intersection: '已启用技能声明允许的工具与执行目录没有交集，服务端按目录收窄后为空。',
+}
+
+/**
+ * 工具面归因（纯函数，便于断言）。
+ *
+ * 口径（契约 §3）：① 无绑定；② 有绑定但无「已启用」技能；③ 已启用但交集为空。
+ * `skills` 用整表（未命中该 `skill_key` 视为"查不到状态"⇒ 不算已启用，fail-closed 呈现）。
+ */
+export function agentToolsReason(input: {
+  agentKey: string
+  bindings: SkillBinding[]
+  skills: SkillSummary[]
+  tools: string[]
+}): AgentToolsReason {
+  const active = input.bindings.filter(
+    (item) => item.agent_key === input.agentKey && item.status === 'active',
+  )
+  if (active.length === 0) return 'no_binding'
+  const enabledKeys = new Set(
+    input.skills.filter((item) => item.status === 'enabled').map((item) => item.skill_key),
+  )
+  if (!active.some((item) => enabledKeys.has(item.skill_key))) return 'none_enabled'
+  return input.tools.length === 0 ? 'empty_intersection' : 'ready'
+}
+
+/** 技能候选（绑定面只允许绑「已启用」技能 —— 界面自我收敛，服务端不拦，见契约 §2 / §5）。 */
+export function enabledSkillKeys(skills: SkillSummary[]): string[] {
+  return skills.filter((item) => item.status === 'enabled').map((item) => item.skill_key)
+}

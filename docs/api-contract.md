@@ -868,9 +868,11 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 - `POST /api/v1/skills/{skill_key}/versions/{version}/review?approved=true|false`：审核（`ceo` / `super_admin`；提交人自审 `403`）。
 - `POST /api/v1/skills/{skill_key}/versions/{version}/enable`：启用（`ceo` / `super_admin`；approved/disabled→enabled；已启用幂等）。
 - `POST /api/v1/skills/{skill_key}/versions/{version}/disable`：停用（`ceo` / `super_admin`；enabled→disabled；已停用幂等）。
+- `GET /api/v1/skills/bindings?skill_key=&agent_key=&limit=&offset=`：**绑定关系列表（2026-09-20 第 9 轮新增）**。仅 `super_admin`（非管理员 `403`；匿名 `401`）；`limit` 1–200（越界 `422`）、`offset` ≥0；`skill_key` / `agent_key` 可选过滤。返回 `{"items":[{"skill_key","agent_key","status","created_by","created_at"}],"total","limit","offset"}`（**条目不含 `tenant_id`**）。
 - `POST /api/v1/skills/bindings`：绑定技能到数字员工 `{"skill_key", "agent_key"}`（管理动作，仅 `super_admin`）。返回 `{"skill_key", "agent_key", "status": "active"}`（2026-09-20 修复：该路由曾误声明响应模型为技能视图 ⇒ 序列化恒 `500`）。
-- `DELETE /api/v1/skills/bindings?skill_key=&agent_key=`：解绑（仅 `super_admin`；active→disabled），返回 `{"skill_key", "agent_key", "status": "disabled"}`。
-- `GET /api/v1/skills/agents/{agent_key}/tools`：返回该数字员工已启用技能的 `allowed-tools` 与执行目录的**交集**（服务端解析，fail-closed）。
+  ⚠️ **服务端校验缺口的当前事实（2026-09-20 真机实测，用户裁决"本轮不改"）**：绑定**不校验**技能是否存在、是否 `enabled`、`agent_key` 是否在数字员工目录内（三者实测均 `200`，可写入**悬空绑定**）；工具面展开侧仍 fail-closed（只有 `enabled` 技能参与交集）。界面按"只让选已启用技能 + 员工候选给目录"自我收敛。
+- `DELETE /api/v1/skills/bindings?skill_key=&agent_key=`：解绑（仅 `super_admin`；active→disabled），返回 `{"skill_key", "agent_key", "status": "disabled"}`。**绑定不存在 ⇒ `404`**；已 `disabled` ⇒ `200` 幂等（2026-09-20 实测）。
+- `GET /api/v1/skills/agents/{agent_key}/tools`：返回该数字员工已启用技能的 `allowed-tools` 与执行目录的**交集**（服务端解析，fail-closed）。**角色门禁（2026-09-20 起）**：四个业务角色（`employee` / `department_lead` / `ceo` / `super_admin`）可读；**`customer_admin` ⇒ `403`**（此前只看登录 ⇒ 四个角色全放行，与权限矩阵"技能域 `customer_admin` 一律 ❌"不符，本轮修正）。
 
 ## 自进化·评测集（P6a）
 

@@ -22,11 +22,14 @@ import {
   SKILLS_EMPTY_NOTE,
   SkillError,
   enableSkill,
+  fetchAgentCandidates,
+  fetchBindings,
   fetchSkillContent,
   fetchSkills,
   submitSkill,
 } from '../services/skillsService'
-import type { SkillPage, SkillSummary } from '../types'
+import { BINDING_GOVERNANCE_ONLY_NOTE, BIND_DISABLED_REASON } from '../components/BindingPanel'
+import type { SkillBindingPage, SkillPage, SkillSummary } from '../types'
 
 vi.mock('../services/skillsService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/skillsService')>()
@@ -38,6 +41,8 @@ vi.mock('../services/skillsService', async (importOriginal) => {
     reviewSkill: vi.fn(actual.reviewSkill),
     enableSkill: vi.fn(actual.enableSkill),
     disableSkill: vi.fn(actual.disableSkill),
+    fetchBindings: vi.fn(actual.fetchBindings),
+    fetchAgentCandidates: vi.fn(actual.fetchAgentCandidates),
   }
 })
 
@@ -63,6 +68,8 @@ function page(items: SkillSummary[]): SkillPage {
   return { sample: false, items, total: items.length, limit: 200, offset: 0 }
 }
 
+const EMPTY_BINDING_PAGE: SkillBindingPage = { sample: false, items: [], total: 0, limit: 200, offset: 0 }
+
 /** 表格行（按行内文本定位；列表是异步取数，必须等文本出现）。 */
 async function rowOf(text: string): Promise<HTMLElement> {
   const cell = await screen.findByText(text)
@@ -80,6 +87,8 @@ const TWO_CHAR = (text: string) => new RegExp(`^${text[0]}\\s*${text[1]}$`)
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(fetchSkills).mockResolvedValue(page([skill()]))
+  vi.mocked(fetchBindings).mockResolvedValue(EMPTY_BINDING_PAGE)
+  vi.mocked(fetchAgentCandidates).mockResolvedValue({ sample: false, items: [], total: 0 })
   vi.mocked(fetchSkillContent).mockResolvedValue({
     sample: false,
     content: { skill_key: 'summarize', version: '1.0.0', content_body: '# 正文', content_sha256: 'a'.repeat(64) },
@@ -108,6 +117,22 @@ describe('管理视图（skill.manage：ceo / super_admin）', () => {
 
     expect(await screen.findByText('summarize@1.0.0')).toBeInTheDocument()
     expect(screen.queryByText(PERMISSION_REASON)).not.toBeInTheDocument()
+  })
+
+  it('绑定块：super_admin 会请求绑定数据；ceo 只看到"由超级管理员执行"且**不请求**绑定数据', async () => {
+    signInAs('super_admin')
+    const { unmount } = renderWithProviders(<SkillsMcpPage />)
+    expect(await screen.findByText('数字员工绑定')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(vi.mocked(fetchBindings)).toHaveBeenCalled()
+    })
+
+    unmount()
+    vi.clearAllMocks()
+    signInAs('ceo')
+    renderWithProviders(<SkillsMcpPage />)
+    expect(await screen.findByText(BIND_DISABLED_REASON)).toBeInTheDocument()
+    expect(vi.mocked(fetchBindings)).not.toHaveBeenCalled()
   })
 
   it('合法前置状态：`submitted` 行可审核；`enable` 在该状态下禁用并给出原因', async () => {
@@ -216,13 +241,16 @@ describe('管理视图（skill.manage：ceo / super_admin）', () => {
   })
 
   it('取数失败：错误态可重试（重试后重新请求）', async () => {
-    vi.mocked(fetchSkills).mockRejectedValueOnce(new SkillError('服务暂时不可用，请稍后重试。', 'failed'))
+    // ⚠️ 绑定块也用 `fetchSkills` 取"已启用"候选 ⇒ 失败必须**限定在技能包列表区域**断言，
+    // 否则同一 mock 被两个消费者共用，断言会落到另一个块上（本用例曾因此假红）。
+    vi.mocked(fetchSkills).mockRejectedValue(new SkillError('服务暂时不可用，请稍后重试。', 'failed'))
     signInAs('super_admin')
     renderWithProviders(<SkillsMcpPage />)
 
-    expect(await screen.findByText('技能包列表加载失败，请稍后重试。')).toBeInTheDocument()
+    const listRegion = (await screen.findByText('技能包列表')).closest('div') as HTMLElement
+    expect(await within(listRegion).findByText('技能包列表加载失败，请稍后重试。')).toBeInTheDocument()
     vi.mocked(fetchSkills).mockResolvedValue(page([skill()]))
-    await userEvent.click(screen.getByRole('button', { name: TWO_CHAR('重试') }))
+    await userEvent.click(within(listRegion).getByRole('button', { name: TWO_CHAR('重试') }))
 
     expect(await screen.findByText('summarize@1.0.0')).toBeInTheDocument()
   })
@@ -259,6 +287,14 @@ describe('员工视图（skill.submit：employee / department_lead）', () => {
     renderWithProviders(<SkillsMcpPage />)
 
     expect(await screen.findByText(MY_SKILLS_EMPTY_NOTE)).toBeInTheDocument()
+  })
+
+  it('绑定块：员工视图只给治理面说明，且**不请求**绑定数据（不伪造空态）', async () => {
+    signInAs('employee')
+    renderWithProviders(<SkillsMcpPage />)
+
+    expect(await screen.findByText(BINDING_GOVERNANCE_ONLY_NOTE)).toBeInTheDocument()
+    expect(vi.mocked(fetchBindings)).not.toHaveBeenCalled()
   })
 
   it('提交成功：请求体逐键对齐（九个键），提示用服务端回读值，抽屉关闭', async () => {

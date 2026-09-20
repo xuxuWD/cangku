@@ -133,6 +133,7 @@ export type Capability =
   | 'knowledge.manage'
   | 'skill.manage'
   | 'skill.submit'
+  | 'skill.bind'
   | 'audit.view'
   | 'data.export'
   | 'data.delete'
@@ -146,6 +147,7 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
   'knowledge.manage': '知识库管理',
   'skill.manage': 'Skill & MCP 管理',
   'skill.submit': 'Skill 包提交',
+  'skill.bind': '技能绑定',
   'audit.view': '审计日志查看',
   'data.export': '数据导出',
   'data.delete': '数据删除',
@@ -166,6 +168,8 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
  */
 const ACCESS_ROLES: readonly Role[] = ['employee', 'department_lead', 'ceo', 'super_admin']
 const GOVERNANCE_ROLES: readonly Role[] = ['ceo', 'super_admin']
+/** 绑定 / 解绑技能：矩阵 §3 **未列**该行 ⇒ 沿用原口径，仅 `super_admin`（第 8 轮 D-026 已裁决不放开）。 */
+const BIND_ROLES: readonly Role[] = ['super_admin']
 
 /**
  * **2026-09-20 技能域对齐矩阵 §3（第 8 轮）**：`permission-matrix.md` §3「技能」两行 ⇒
@@ -183,6 +187,7 @@ const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
     'knowledge.manage',
     'skill.manage',
     'skill.submit',
+    'skill.bind',
     'audit.view',
     'data.export',
     'data.delete',
@@ -214,6 +219,7 @@ export const CAPABILITY_ROLES: Partial<Record<Capability, readonly Role[]>> = {
   'knowledge.manage': GOVERNANCE_ROLES,
   'skill.submit': ACCESS_ROLES,
   'skill.manage': GOVERNANCE_ROLES,
+  'skill.bind': BIND_ROLES,
 }
 
 /** 角色显示名（`null` = 未登录 ⇒ "未登录"）：避免各处对可空角色做下标。 */

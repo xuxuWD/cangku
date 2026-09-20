@@ -28,6 +28,14 @@
 import { ApiError, request } from '../../../api/client'
 import { SAMPLE_DATA_BADGE, ServiceError, resolveServiceMode } from '../../../utils/serviceKit'
 import type {
+  AgentCandidate,
+  AgentCandidatePage,
+  AgentTools,
+  AgentToolsOutcome,
+  BindingResult,
+  BindingWriteOutcome,
+  SkillBinding,
+  SkillBindingPage,
   SkillContent,
   SkillContentOutcome,
   SkillPage,
@@ -35,7 +43,7 @@ import type {
   SkillWriteOutcome,
   SubmitSkillInput,
 } from '../types'
-import { DEFAULT_SOURCE_KEY, parseSkillStatus } from '../types'
+import { DEFAULT_SOURCE_KEY, parseBindingStatus, parseSkillStatus } from '../types'
 
 export type ServiceMode = 'mock' | 'http'
 
@@ -352,6 +360,215 @@ export async function fetchSkillContent(
   }
 }
 
+/* ---------------------------------------------------------------- 绑定面（第 9 轮） */
+
+const BINDINGS_PATH = '/api/v1/skills/bindings'
+/** 数字员工目录（跨模块只读依赖：候选来源；该端点仅 `super_admin` 可读，与绑定面口径一致）。 */
+const WORKFORCE_AGENTS_PATH = '/api/v1/workforce/agents'
+
+/** 绑定列表空态：**解释为什么空**。 */
+export const BINDINGS_EMPTY_NOTE = '本租户还没有把任何技能绑定到数字员工。'
+
+/** 员工候选为空时的如实说明（**不阻断手动录入** —— 契约 §5-#2 裁决）。 */
+export const AGENT_CANDIDATE_EMPTY_NOTE =
+  '数字员工目录里还没有「启用」状态的员工；你可以在下方直接填写员工标识。'
+
+/** 员工候选来源说明（口径必须写清：候选来自目录，目录不是唯一来源）。 */
+export const MANUAL_AGENT_NOTE =
+  '员工候选来自「数字员工管理」目录；如需绑定目录之外的标识，可直接填写（服务端不校验目录，见契约 §2）。'
+
+/** 已选技能提示（界面自我收敛：只让选「已启用」技能）。 */
+export const BIND_SKILL_HINT = '只能绑定「已启用」的技能包；技能包需先审核并启用。'
+export const BIND_NO_ENABLED_SKILL_NOTE =
+  '当前没有「已启用」的技能包可以绑定；请先审核并启用技能包。'
+
+/** 解绑的二次确认文案（解绑会**立即**把该技能移出该员工的工具面）。 */
+export const UNBIND_CONFIRM_TITLE = '解除该绑定？'
+export const UNBIND_CONFIRM_DESCRIPTION =
+  '解除后该技能会立即移出该数字员工的工具面（绑定记录保留为「已解除」，可再次绑定恢复）。'
+
+/** 「尚未接入」口径下样例模式的绑定写说明（**只在开发期存在**）。 */
+export const MOCK_BINDING_WRITE_NOTE: string = import.meta.env.DEV
+  ? '当前为示例数据（未接后端），本次操作没有改变任何绑定。'
+  : ''
+
+/** 样例模式下工具面的如实说明（**只在开发期存在** ⇒ 生产构建里为空串，"示例数据"字样不进产物）。 */
+export const MOCK_AGENT_TOOLS_NOTE: string = import.meta.env.DEV
+  ? '示例数据（未接后端）：没有可展示的工具面。'
+  : ''
+
+/** 形状不符统一文案（与技能包面同一句）。 */
+function toBinding(raw: unknown): SkillBinding {
+  const value = raw as Partial<SkillBinding> | null
+  if (!value || typeof value.skill_key !== 'string' || typeof value.agent_key !== 'string') {
+    throw new SkillError(SHAPE_ERROR, 'failed')
+  }
+  return {
+    skill_key: value.skill_key,
+    agent_key: value.agent_key,
+    status: parseBindingStatus(typeof value.status === 'string' ? value.status : ''),
+    created_by: typeof value.created_by === 'string' ? value.created_by : '',
+    created_at: value.created_at ?? null,
+  }
+}
+
+function toBindings(raw: unknown): SkillBinding[] {
+  const items = (raw as { items?: unknown } | null)?.items
+  if (!Array.isArray(items)) throw new SkillError(SHAPE_ERROR, 'failed')
+  return items.map(toBinding)
+}
+
+/** 绑定 / 解绑回读值 → 受控结构（三键齐备才算成功）。 */
+function toBindingResult(raw: unknown): BindingResult {
+  const value = raw as Partial<BindingResult> | null
+  if (!value || typeof value.skill_key !== 'string' || typeof value.agent_key !== 'string') {
+    throw new SkillError(SHAPE_ERROR, 'failed')
+  }
+  return {
+    skill_key: value.skill_key,
+    agent_key: value.agent_key,
+    status: parseBindingStatus(typeof value.status === 'string' ? value.status : ''),
+  }
+}
+
+/** 工具面视图 → 受控结构（`tools` 必须是非空数组；缺失即抛错，不编造工具）。 */
+function toAgentTools(raw: unknown): AgentTools {
+  const value = raw as Partial<AgentTools> | null
+  if (!value || typeof value.agent_key !== 'string' || !Array.isArray(value.tools)) {
+    throw new SkillError(SHAPE_ERROR, 'failed')
+  }
+  return {
+    agent_key: value.agent_key,
+    tools: value.tools.filter((item): item is string => typeof item === 'string'),
+  }
+}
+
+/** 员工候选（只取 `agent_key` 与展示名；其余字段本模块不用）。 */
+function toAgentCandidates(raw: unknown): AgentCandidate[] {
+  const items = (raw as { items?: unknown } | null)?.items
+  if (!Array.isArray(items)) throw new SkillError(SHAPE_ERROR, 'failed')
+  return items
+    .map((item) => item as Partial<AgentCandidate> | null)
+    .filter((item): item is Partial<AgentCandidate> => !!item && typeof item.agent_key === 'string')
+    .map((item) => ({
+      agent_key: item.agent_key as string,
+      name: typeof item.name === 'string' ? item.name : '',
+    }))
+}
+
+/** 绑定关系列表（**仅 `super_admin`**；`agent_key` / `skill_key` 可选过滤；分页）。 */
+export async function fetchBindings(
+  params: { agent_key?: string; skill_key?: string; limit?: number; offset?: number } = {},
+  fetchImpl?: typeof fetch,
+): Promise<SkillBindingPage> {
+  if (mode === 'mock') {
+    const items = MOCK_BINDINGS.filter(
+      (item) =>
+        (!params.agent_key || item.agent_key === params.agent_key) &&
+        (!params.skill_key || item.skill_key === params.skill_key),
+    )
+    return { sample: true, items, total: items.length, limit: SKILLS_LIMIT, offset: 0 }
+  }
+
+  try {
+    const raw = await request<unknown>(BINDINGS_PATH, {
+      query: {
+        ...(params.skill_key ? { skill_key: params.skill_key } : {}),
+        ...(params.agent_key ? { agent_key: params.agent_key } : {}),
+        limit: params.limit ?? SKILLS_LIMIT,
+        offset: params.offset ?? 0,
+      },
+      fetchImpl,
+    })
+    const view = raw as { total?: unknown; limit?: unknown; offset?: unknown }
+    const items = toBindings(raw)
+    return {
+      sample: false,
+      items,
+      total: typeof view.total === 'number' ? view.total : items.length,
+      limit: typeof view.limit === 'number' ? view.limit : SKILLS_LIMIT,
+      offset: typeof view.offset === 'number' ? view.offset : 0,
+    }
+  } catch (error) {
+    readError(error)
+  }
+}
+
+/** 绑定技能到数字员工（UPSERT `active`，幂等）。成功返回**服务端回读值**。 */
+export async function bindAgentSkill(
+  skill_key: string,
+  agent_key: string,
+  fetchImpl?: typeof fetch,
+): Promise<BindingWriteOutcome> {
+  if (mode === 'mock') return { result: null, written: false, note: MOCK_BINDING_WRITE_NOTE }
+
+  try {
+    const raw = await request<unknown>(BINDINGS_PATH, {
+      method: 'POST',
+      // 后端 `extra="forbid"`：请求体只有这两个键
+      body: { skill_key, agent_key },
+      fetchImpl,
+    })
+    return { result: toBindingResult(raw), written: true, note: WRITE_OK_NOTE }
+  } catch (error) {
+    writeError(error)
+  }
+}
+
+/** 解绑（`active → disabled`；已 `disabled` 幂等；绑定不存在 ⇒ `404`）。 */
+export async function unbindAgentSkill(
+  skill_key: string,
+  agent_key: string,
+  fetchImpl?: typeof fetch,
+): Promise<BindingWriteOutcome> {
+  if (mode === 'mock') return { result: null, written: false, note: MOCK_BINDING_WRITE_NOTE }
+
+  try {
+    const raw = await request<unknown>(BINDINGS_PATH, {
+      method: 'DELETE',
+      query: { skill_key, agent_key },
+      fetchImpl,
+    })
+    return { result: toBindingResult(raw), written: true, note: WRITE_OK_NOTE }
+  } catch (error) {
+    writeError(error)
+  }
+}
+
+/** 某数字员工的工具面（已启用技能 `allowed-tools` 并集 ∩ 执行目录；服务端 fail-closed）。 */
+export async function fetchAgentTools(agent_key: string, fetchImpl?: typeof fetch): Promise<AgentToolsOutcome> {
+  if (mode === 'mock') return { sample: true, tools: { agent_key, tools: [] }, note: MOCK_CONTENT_NOTE }
+
+  try {
+    const raw = await request<unknown>(`${SKILLS_PATH}/agents/${encodeURIComponent(agent_key)}/tools`, { fetchImpl })
+    return { sample: false, tools: toAgentTools(raw), note: '' }
+  } catch (error) {
+    readError(error)
+  }
+}
+
+/**
+ * 数字员工候选（只读目录，**不作为绑定校验依据** —— 服务端不校验目录，见契约 §2）。
+ * 目录为空是**正常状态**（本机测试租户实测 `total: 0`）⇒ 返回空列表，不视为错误。
+ */
+export async function fetchAgentCandidates(fetchImpl?: typeof fetch): Promise<AgentCandidatePage> {
+  if (mode === 'mock') {
+    return { sample: true, items: MOCK_AGENT_CANDIDATES, total: MOCK_AGENT_CANDIDATES.length }
+  }
+
+  try {
+    const raw = await request<unknown>(WORKFORCE_AGENTS_PATH, {
+      query: { status: 'active', limit: SKILLS_LIMIT, offset: 0 },
+      fetchImpl,
+    })
+    const items = toAgentCandidates(raw)
+    const total = (raw as { total?: unknown }).total
+    return { sample: false, items, total: typeof total === 'number' ? total : items.length }
+  } catch (error) {
+    readError(error)
+  }
+}
+
 /**
  * 开发期样例数据（虚构内容，无 PII：不含手机号 / 用户 ID / 租户 ID / 密钥）。
  * **只在 `import.meta.env.DEV` 分支里存在** ⇒ 生产构建里整块被摇掉（构建后 grep 应为 0 命中）。
@@ -429,6 +646,38 @@ const MOCK_SKILLS: SkillSummary[] = import.meta.env.DEV
         created_at: '2026-08-30T02:00:00Z',
         updated_at: '2026-08-31T02:00:00Z',
       },
+    ]
+  : []
+
+/**
+ * 开发期样例绑定（虚构内容，无 PII）。刻意覆盖两种状态（`active` / `disabled`），
+ * 且**有一个 `active` 绑定的技能是 `enabled`**（`sample-report`）⇒ 工具面预览用例能走到"就绪"分支。
+ * **只在 `import.meta.env.DEV` 分支里存在** ⇒ 生产构建整块被摇掉。
+ */
+const MOCK_BINDINGS: SkillBinding[] = import.meta.env.DEV
+  ? [
+      {
+        skill_key: 'sample-report',
+        agent_key: 'sample-ops-content',
+        status: 'active',
+        created_by: '示例操作者 01',
+        created_at: '2026-09-18T06:00:00Z',
+      },
+      {
+        skill_key: 'sample-legacy',
+        agent_key: 'sample-rd-spec',
+        status: 'disabled',
+        created_by: '示例操作者 01',
+        created_at: '2026-09-02T06:00:00Z',
+      },
+    ]
+  : []
+
+/** 开发期样例员工候选（与第 5 轮注册中心的样例键同名，便于人工对照）。 */
+const MOCK_AGENT_CANDIDATES: AgentCandidate[] = import.meta.env.DEV
+  ? [
+      { agent_key: 'sample-ops-content', name: '内容运营助手' },
+      { agent_key: 'sample-rd-spec', name: '研发需求助理' },
     ]
   : []
 

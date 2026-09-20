@@ -167,6 +167,25 @@ def ensure_can_bind(context: UserContext) -> None:
         raise PolicyError("只有超级管理员可以绑定或解绑技能")
 
 
+# 可读取「数字员工工具面」的岗位 = 四个业务角色（`customer_admin` ❌）。
+# 依据：`permission-matrix.md` §3 末列「技能域 customer_admin 一律 ❌」。
+# 2026-09-20 第 9 轮真机复测抓到：该端点原先**只看登录**，实测四个角色**全放行**（含 `customer_admin`）
+# ⇒ 「前端整页无权限、接口照给数据」= 只靠界面隐藏，撞宪法「安全校验不得只做在前端」。
+# 本轮修正为「四个业务角色可读」（不新收紧业务角色，只排除受限客户角色）。
+AGENT_TOOLS_ROLES = SUBMIT_ROLES
+
+
+def can_view_agent_tools(context: UserContext) -> bool:
+    """是否可读某数字员工的工具面（四个业务角色；`customer_admin` ❌）。"""
+    return context.role in AGENT_TOOLS_ROLES
+
+
+def ensure_can_view_agent_tools(context: UserContext) -> None:
+    """工具面前置判定：四个业务角色可读；`customer_admin` ⇒ 403。"""
+    if not can_view_agent_tools(context):
+        raise PolicyError("当前岗位不能查看数字员工的工具面")
+
+
 def skill_visible_to(context: UserContext, skill: Skill) -> bool:
     """技能包是否对当前操作者可见（§2.2 / §2.3）。
 

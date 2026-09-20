@@ -5,6 +5,7 @@
 """
 
 from .models import (
+    AGENT_TOOLS_ROLES,
     BIND_ROLES,
     BindingStatus,
     InvalidSkillPackage,
@@ -25,9 +26,11 @@ from .models import (
     can_bind,
     can_review,
     can_submit,
+    can_view_agent_tools,
     ensure_can_bind,
     ensure_can_review,
     ensure_can_submit,
+    ensure_can_view_agent_tools,
     normalize_license,
     normalize_skill_key,
     normalize_status,
@@ -40,6 +43,7 @@ from .store import InMemorySkillStore, PostgresSkillStore, SkillStore
 from .validator import SkillPackageSpec, SkillPackageValidator
 
 __all__ = [
+    "AGENT_TOOLS_ROLES",
     "BIND_ROLES",
     "BindingStatus",
     "InvalidSkillPackage",
@@ -60,9 +64,11 @@ __all__ = [
     "can_bind",
     "can_review",
     "can_submit",
+    "can_view_agent_tools",
     "ensure_can_bind",
     "ensure_can_review",
     "ensure_can_submit",
+    "ensure_can_view_agent_tools",
     "normalize_license",
     "normalize_skill_key",
     "normalize_status",

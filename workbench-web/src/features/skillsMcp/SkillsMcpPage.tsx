@@ -26,6 +26,7 @@ import { usePanelData } from '../../utils/panelData'
 import { SAMPLE_DATA_BADGE } from '../../utils/serviceKit'
 import { tokens } from '../../theme/tokens'
 import { McpPanel } from './components/McpPanel'
+import { BINDING_GOVERNANCE_ONLY_NOTE, BindingPanel } from './components/BindingPanel'
 import { SkillDetailDrawer } from './components/SkillDetailDrawer'
 import { SkillListPanel } from './components/SkillListPanel'
 import { SubmitSkillDrawer } from './components/SubmitSkillDrawer'
@@ -153,8 +154,18 @@ function SubmitBlock({ onSubmitted }: { onSubmitted?: () => void }) {
   )
 }
 
+/** 绑定面限定块：**只给说明，不发任何请求**（无权读的块不伪造空态，也不静默隐藏）。 */
+function BindingOnlyBlock() {
+  return (
+    <div>
+      <Typography.Title level={3}>数字员工绑定</Typography.Title>
+      <ContentState state="forbidden" description={BINDING_GOVERNANCE_ONLY_NOTE} boxed={false} />
+    </div>
+  )
+}
+
 /** 管理视图（`skill.manage`：`ceo` / `super_admin`）。 */
-function SkillsBoard({ currentUserId }: { currentUserId: string | null }) {
+function SkillsBoard({ currentUserId, canBind }: { currentUserId: string | null; canBind: boolean }) {
   const connected = isConnected()
   const skills = usePanelData(() => fetchSkills(), EMPTY_SKILLS)
 
@@ -221,6 +232,8 @@ function SkillsBoard({ currentUserId }: { currentUserId: string | null }) {
         />
       </div>
 
+      <BindingPanel canBind={canBind} />
+
       <McpPanel />
 
       <SkillDetailDrawer skill={detail} onClose={() => setDetail(null)} />
@@ -275,6 +288,8 @@ function SkillMemberView({ currentUserId }: { currentUserId: string | null }) {
         readOnly
       />
 
+      <BindingOnlyBlock />
+
       <McpPanel />
 
       <SkillDetailDrawer skill={detail} onClose={() => setDetail(null)} />
@@ -287,6 +302,7 @@ export function SkillsMcpPage() {
   const userId = useSession((state) => state.userId)
   const canManage = hasCapability(role, 'skill.manage')
   const canSubmit = hasCapability(role, 'skill.submit')
+  const canBind = hasCapability(role, 'skill.bind')
 
   const description = canManage
     ? '审核、启用与停用本租户的技能包，并可查看技能包正文；技能包由员工提交后进入这里。'
@@ -295,7 +311,7 @@ export function SkillsMcpPage() {
   return (
     <PageContainer title="Skill & MCP" description={description}>
       {canManage ? (
-        <SkillsBoard currentUserId={userId} />
+        <SkillsBoard currentUserId={userId} canBind={canBind} />
       ) : canSubmit ? (
         <SkillMemberView currentUserId={userId} />
       ) : (

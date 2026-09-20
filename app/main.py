@@ -2749,6 +2749,27 @@ class SkillExpandResponse(BaseModel):
     tools: list[str]
 
 
+class SkillBindingView(BaseModel):
+    """绑定关系视图（第 9 轮新增读端点用）。
+
+    **刻意不含 `tenant_id`**（最小化，与 `SkillView` 同口径）：租户由服务端注入，
+    没必要在响应里回显。
+    """
+
+    skill_key: str
+    agent_key: str
+    status: str
+    created_by: str
+    created_at: datetime | None = None
+
+
+class SkillBindingListView(BaseModel):
+    items: list[SkillBindingView]
+    total: int
+    limit: int
+    offset: int
+
+
 def _skill_view(skill: Skill) -> SkillView:
     return SkillView(
         skill_key=skill.skill_key,
@@ -2763,6 +2784,16 @@ def _skill_view(skill: Skill) -> SkillView:
         reviewed_by=skill.reviewed_by,
         created_at=skill.created_at,
         updated_at=skill.updated_at,
+    )
+
+
+def _binding_view(binding: SkillBinding) -> SkillBindingView:
+    return SkillBindingView(
+        skill_key=binding.skill_key,
+        agent_key=binding.agent_key,
+        status=binding.status.value if hasattr(binding.status, "value") else str(binding.status),
+        created_by=binding.created_by,
+        created_at=binding.created_at,
     )
 
 
@@ -2863,6 +2894,31 @@ def disable_skill(skill_key: str, version: str, context: UserContext = Depends(c
     except (SkillNotFound, SkillStateConflict, PolicyError) as exc:
         _raise_skill_http(exc)
     return _skill_view(skill)
+
+
+@app.get("/api/v1/skills/bindings", response_model=SkillBindingListView)
+def list_skill_bindings(
+    skill_key: str | None = Query(default=None),
+    agent_key: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> SkillBindingListView:
+    """绑定关系列表（第 9 轮新增；**仅 super_admin**，必须分页）。
+
+    ⚠️ 为什么门禁是 `ensure_can_bind`：`SkillService.list_bindings` 原先**零角色判定**
+    （仓储只按租户过滤）⇒ 若这里只看"已登录"，任何角色都能读到本租户全部绑定关系。
+    判定放在服务层（fail-closed），本路由只需把 `PolicyError` 映射成 403。
+    """
+    try:
+        items, total = skills_service.list_bindings(
+            context, agent_key=agent_key, skill_key=skill_key, limit=limit, offset=offset
+        )
+    except (InvalidSkillPackage, SkillNotFound, PolicyError) as exc:
+        _raise_skill_http(exc)
+    return SkillBindingListView(
+        items=[_binding_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
 
 
 @app.post("/api/v1/skills/bindings", response_model=SkillBindingResponse)

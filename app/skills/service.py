@@ -25,6 +25,7 @@ from .models import (
     ensure_can_bind,
     ensure_can_review,
     ensure_can_submit,
+    ensure_can_view_agent_tools,
     normalize_status,
 )
 from .store import SkillStore
@@ -227,6 +228,13 @@ class SkillService:
     def list_bindings(
         self, context: UserContext, *, agent_key: str | None = None, skill_key: str | None = None, limit: int = 50, offset: int = 0
     ) -> tuple[list[SkillBinding], int]:
+        """绑定关系列表（**仅 `super_admin`**）。
+
+        2026-09-20 第 9 轮：本方法原先**只转发仓储**（零角色判定，仓储仅按租户过滤）
+        ⇒ 任何调用方若忘了在路由加闸门，就会把本租户全部"技能 ↔ 员工"绑定关系裸给任意登录角色。
+        现按 fail-closed 口径在**服务层**也判一次（与绑定 / 解绑同一判定函数）。
+        """
+        ensure_can_bind(context)
         return self.store.list_bindings(context, agent_key=agent_key, skill_key=skill_key, limit=limit, offset=offset)
 
     def list_enabled_for_agent(self, context: UserContext, agent_key: str) -> list[Skill]:
@@ -237,7 +245,11 @@ class SkillService:
 
         §2.4 / §1.2 D：**取交集、fail-closed**——目录可升级，技能允许集随目录收窄；
         目录外的键一律不展开。返回排序元组。
+
+        2026-09-20 第 9 轮：补岗位闸门 —— 原先只看登录（真机实测四角色全放行，含 `customer_admin`），
+        与矩阵 §3 末列「技能域 `customer_admin` 一律 ❌」不符；现为四个业务角色可读、`customer_admin` ⇒ 403。
         """
+        ensure_can_view_agent_tools(context)
         skills = self.store.list_enabled_for_agent(context, agent_key)
         union: set[str] = set()
         for skill in skills:

@@ -42,6 +42,9 @@
 | D-026 | 2026-09-20 | **第 8 轮「Skill & MCP」（AD-03）已交付 + 同轮修复两处缺口**：① **矩阵对齐**——`permission-matrix.md` §3「技能：复核/启用/停用 = `ceo` ✅」与实现不符（`REVIEW_ROLES` 原仅 `{super_admin}`，`ceo` 一律 `403`；与第 7 轮知识域 P0 同一类）⇒ **实现向矩阵对齐**：`REVIEW_ROLES` 扩为 `{ceo, super_admin}`，文案改「只有企业负责人或超级管理员可以审核或启用技能包」；② **`bind` 恒 `500` 修复**——`POST /api/v1/skills/bindings` 误声明 `response_model=SkillView`（返回绑定形状 ⇒ 序列化 `ResponseValidationError`）⇒ 新增 `SkillBindingResponse(skill_key, agent_key, status)` 并在 `POST`/`DELETE` 两处声明，**业务逻辑零改动**；③ **绑定口径刻意不动**——矩阵 §3 **未列**「绑定」行 ⇒ 新增独立 `BIND_ROLES`（仍仅 `super_admin`），**不随复核对齐顺带放开**；④ 前端交付 `workbench-web/src/features/skillsMcp/**`（管理视图 = 列表 + 审核/启停 + 详情正文；员工视图 = 提交表单 + 只读列表；MCP 如实「尚未接入」；四态齐备、非法动作禁用 + 原因、**自审按"提交人 = 自己"预置禁用**）、导航四角色可见、能力分档 `skill.manage` + `skill.submit`、会话新增本人账号标识（`workbench.user`）；⑤ 门禁：后端 `2527 passed / 0 failed` + `compileall` 0；前端 `tsc` 0 / `vitest` 300 / `build` 成功 + 产物 grep（本模块样例键 0、`console.log` 0）；⑥ 反假 5 组（回退 `REVIEW_ROLES` ⇒ 2 红；去 owner 闸门 ⇒ 2 红；回退 `response_model` ⇒ 复现 500；导航回退 `ADMIN_ONLY` ⇒ 3 红；去自审预置 ⇒ 2 红）；⑦ 真机（`127.0.0.1:18112` + 真库 `wiring-evidence`）：`bind 200` + `tools ["fs.read"]` + 员工 / ceo 绑定 `403` + ceo 复核 / 启停 `200` + 查库与审计逐条对上 + 浏览器走查两角色（员工**看不到**他人未审包 ⇒ 可见性收敛生效） | 用户 2026-09-20 四项裁决（契约已确认 / 对齐矩阵 / 员工入口同轮开放 / `bind` 本轮修）；契约 `docs/contracts/skills-mcp-api.md` §1/§6/§7/§8；后端契约真源 `docs/api-contract.md` 同步更正 | ✅ 已交付（自跑复核：后端/前端门禁全绿 + 真机取证 + 反假 5 组） |
 | D-027 | 2026-09-20 | **第 8 轮口径限制（如实登记，不得读成已验）**：① `ceo` 的**真机**复核 / 启停走的是**开发模式头身份**（`X-User-Role: ceo`，本机**无真 `ceo` 账号**——造 ceo 需走注册 + 审批流程；**生产环境不允许**头身份）⇒ 「真 ceo 走登录令牌」路径未在真机验证（API 层用例覆盖同一份角色判定）；② 前端工具键下拉是**提示集合**（13 键取自 `app/tool_execution/catalog.py`），后端新增键时需前端同步，**该同步缺口未自动化**；③ 产物「示例数据」字样命中 1 处来自第 6 轮 `permissionsService.SAMPLE_DESCRIPTION`（未做 DEV 门控）——**既有缺口，D-023 已登记待整改，本轮未动该文件（`git diff` 空）** | 本轮真机与门禁实测；`skills-mcp-api.md` §6 | ✅ 已登记（待裁决；②③ 不属本模块范围） |
 
+| D-028 | 2026-09-20 | **第 9 轮「技能 ↔ 数字员工绑定」已交付**（契约先行 → 四项裁决 → 真机复测 → 先红后绿 → 反假 → 门禁 → 走查）：① **后端新增读端点** `GET /api/v1/skills/bindings`（此前后端只有 `POST` / `DELETE`，界面无法列出绑定关系），形状 `{items[{skill_key,agent_key,status,created_by,created_at}],total,limit,offset}`（**不含 `tenant_id`**）、`skill_key`/`agent_key` 可选过滤、分页 1–200；② **安全加固**：`SkillService.list_bindings` 原先**零角色判定**（仓储只按租户过滤）⇒ 补 `ensure_can_bind`（服务层 + 路由双层 fail-closed），实测四个非超管角色一律 `403`；③ **同轮修复相邻缺口**：`GET /skills/agents/{agent_key}/tools` 原**只看登录**（实测四角色全放行，含 `customer_admin`）⇒ 新增 `AGENT_TOOLS_ROLES`（四个业务角色）+ `ensure_can_view_agent_tools`，`customer_admin` ⇒ `403`；④ **绑定口径不动**（矩阵 §3 未列该行，仍仅 `super_admin`）；⑤ 前端 `BindingPanel`（技能候选**仅 `enabled`** + 员工候选**目录 ∪ 手动录入** + 解绑**二次确认** + 工具面预览**三种空因分开**）、能力 `skill.bind`、`ceo` 视禁用 + 原因、员工视只给治理面说明且**不请求数据**；⑥ 门禁：后端 `2545 passed / 0 failed`（+18 用例）+ `compileall` 0；前端 `tsc` 0 / `vitest` **333** / `build` + 产物 grep（本模块样例键与 `console.log` = 0）；⑦ 反假四组；⑧ 真机 10 项 + 浏览器走查（4 张截图）—— 并为第 8 轮一处**备注误读**更正：`unbind` 不存在的绑定实测 **`404`**（原记"也返回 200、未区分"） | 用户 2026-09-20 四项范围裁决 + 工具面门禁第五问裁决；契约 `docs/contracts/skill-bindings-api.md`（v2 已交付）；矩阵补登记 `permission-matrix.md` §13；后端真源 `docs/api-contract.md` 同步更正 | ✅ 已交付（自跑复核：门禁全绿 + 反假四组 + 真机 10 项 + 走查） |
+| D-029 | 2026-09-20 | **第 9 轮如实登记的三项"未解决/未验证"（不得读成已验）**：① **`bind` 服务端校验缺口仍在**——实测"技能不存在 / 未启用 / 员工键不在目录"三者**均 `200`**，可写入**悬空绑定**（查库确认）；用户裁决**本轮不改**（属业务逻辑改动，超出"读端点 + 界面"范围）⇒ 界面自我收敛（技能候选只给已启用、员工候选给目录）+ 契约 §2/§5 登记，**待专项**；② 未测并发 / 压测；跨租户绑定可见性真机未构造（仅源码判定按 `tenant_id` 过滤）；③ 目录面与绑定面**无联动逻辑**（员工 / 岗位停用不连带解绑），后端无该能力，"修复后行为"无从验证。**另：本轮顺带核实**第 8 轮走查遗留项——退出登录时浏览器报 `ERR_ABORTED`，但**后端日志实测 `POST /api/v1/auth/logout → 204 No Content`** ⇒ 服务端登出**确实完成**，该报错是客户端侧产物 | 本轮真机实测（`tmp/r9-bindings-probe.py` / `r9-bindings-verify.py`）+ 后端访问日志 | ✅ 已登记（待裁决） |
+
 > **⚠️ 第 7 轮取证副作用（如实登记，承接 D-023）**：执行 `review?approved=true` 探针时，`probe-admin-1` 由 `draft` **被置为 `published`**
 > （`owner_id` 仍为空），真库指标随之变为 `published=2 / archived=1 / total=3 / freshness_ratio≈0.667`。
 > 后端**无"取消发布/回到草稿"接口**（`archived` 为终态），本轮**未做**任何补偿性写入；处置待你裁决（保留现状 / 归档该行 / DB 重置由你在服务器执行）。
@@ -67,6 +70,19 @@
   `%TEMP%\r8-*`（旧探针载荷与令牌文件）不入库，随系统清理 —— 其中令牌文件为**旧会话令牌**（时效 15 分钟，早已过期）。
 - **旧令牌文件建议清理（待你确认）**：`%TEMP%\r8-admin.txt` / `%TEMP%\r8-emp.txt`（旧探针登录令牌；**已过期**，
   但按纪律不擅自删除，等你点头后我删）。
+- **真库技能绑定层探针数据（第 9 轮取证产生；后端无删除接口 ⇒ 本轮未物理删除，处置待你裁决）**：
+  `workbench_skill_bindings` 现共 **5 行**（全部租户 `wiring-evidence`、`created_by = acct-1339f8b340df`）——
+  `probe-agent ↔ r8-probe-skill`（`active`，第 8 轮旧 500 缺陷写入）、
+  `probe-agent ↔ r8-self-probe`（`active`，本轮 §6-#4 边界探针：绑**未启用**技能）、
+  `probe-agent ↔ r9-ghost-skill`（`active`，本轮 §6-#3 边界探针：绑**不存在**技能 ⇒ **悬空绑定**）、
+  `agent-ghost ↔ r8-probe-skill`（`disabled`，本轮 §6-#5 边界探针：员工键**不在目录** + §6-#6 解绑幂等）、
+  `agent-r9 ↔ r8-probe-skill`（`disabled`，本轮 §6-#10 写路径闭环探针：绑定 → 工具面 → 解绑）。
+  **技能包行**：`r9-ghost-skill` **并不存在**（正是悬空绑定的证据）；技能包共 3 行（`r8-probe-skill` `enabled`、
+  `r8-ceo-probe` `approved`、`r8-self-probe` `submitted`）。**审计**：绑定 / 解绑各落 `skill.enabled` / `skill.disabled`
+  （`detail` 含 `agent_key`），可逐条核对。
+- **第 9 轮临时物（建议保留为走查证据）**：`tmp/r9-bindings-probe.py`（复测清单脚本）、`tmp/r9-bindings-verify.py`（交付核对脚本）
+  —— 两者令牌只在本进程内存、**不落盘**（第 8 轮的 `%TEMP%` 令牌文件问题本轮未再出现）；
+  `docs/screenshots/ui-v2-r9-bindings/`（4 张：绑定块 / 已解除行禁用 / 工具面预览 / 员工视角）。
 
 ## 测试等待上限（两处，均只放宽等待、不放宽断言）
 
