@@ -1,8 +1,14 @@
 /**
- * 知识库（第 7 轮）—— 把占位页换成**可用的知识治理台 + 检索入口**。
+ * 知识库（第 7 轮建立 · **2026-09-19 按矩阵 §3 分视图**）。
  *
  * 一页四块：① 治理指标 ② 文档列表（含登记） ③ 可检索文档（含到期扫描） ④ 知识检索。
- * 四态：加载 / 空 / 错误（可重试）/ 无权限；**无权限时整页只呈现无权限态，不请求数据、不渲染任何编辑控件**。
+ * 四态：加载 / 空 / 错误（可重试）/ 无权限。
+ *
+ * **视图按能力分流**（P0 修复：实现回到 `permission-matrix.md` §3「知识」四行）：
+ *  - `knowledge.manage`（ceo / super_admin）⇒ **治理台**：四块齐备，含发布 / 归档 / 复核与治理读；
+ *  - `knowledge.register` / `knowledge.search`（employee / department_lead）⇒ **员工视图**：
+ *    可登记、可按**本人角色**检索；治理三块明确「无权限」且**不请求任何数据**（不伪造空态）；
+ *  - 都没有（`customer_admin`）⇒ 整页无权限态 + 原因。
  *
  * 纪律：
  *  - 本页**只做呈现**：隐藏 / 禁用 / 无权限态都只是体验，真正的判定在服务端（每个请求都会再判一次）；
@@ -12,8 +18,10 @@
  *  - 检索的 `empty_whitelist` / `no_binding` / `no_hits` / 「服务未接入」**四种情形分开呈现**。
  */
 import { useState } from 'react'
-import { Alert, Button, Space } from 'antd'
-import { DangerConfirm, PageContainer, PermissionGuard } from '../../components'
+import { Alert, Button, Space, Typography } from 'antd'
+import { hasCapability, useSession } from '../../app/session'
+import type { Role } from '../../app/session'
+import { ContentState, DangerConfirm, PageContainer } from '../../components'
 import type { ContentStateKind } from '../../components'
 import { usePanelData } from '../../utils/panelData'
 import { SAMPLE_DATA_BADGE } from '../../utils/serviceKit'
@@ -58,22 +66,29 @@ const EMPTY_ELIGIBLE: EligiblePage = { sample: true, items: [], total: 0 }
 const DOCS_STATE_TEXT: Record<Exclude<ContentStateKind, 'loading'>, string> = {
   empty: DOCUMENTS_EMPTY_NOTE,
   error: '文档列表加载失败，请稍后重试。',
-  forbidden: '无权限查看文档列表：只有超级管理员可以管理知识库。',
+  forbidden: '无权限查看文档列表：只有企业负责人与超级管理员可以查看。',
 }
 const METRICS_STATE_TEXT: Record<Exclude<ContentStateKind, 'loading'>, string> = {
   empty: DOCUMENTS_EMPTY_NOTE,
   error: '治理指标加载失败，请稍后重试。',
-  forbidden: '无权限查看治理指标：只有超级管理员可以查看。',
+  forbidden: '无权限查看治理指标：只有企业负责人与超级管理员可以查看。',
 }
 const ELIGIBLE_STATE_TEXT: Record<Exclude<ContentStateKind, 'loading'>, string> = {
   empty: ELIGIBLE_EMPTY_NOTE,
   error: '可检索清单加载失败，请稍后重试。',
-  forbidden: '无权限查看可检索清单：只有超级管理员可以查看。',
+  forbidden: '无权限查看可检索清单：只有企业负责人与超级管理员可以查看。',
 }
 
-/** 无权限原因（与契约 §5 引用同族文案）。 */
+/**
+ * 无权限原因（`customer_admin` 等无任何知识能力的角色）。
+ * 措辞逐条对应 `permission-matrix.md` §3「知识」四行，不夸大也不含糊。
+ */
 export const PERMISSION_REASON =
-  '无权限管理知识库：只有超级管理员可以登记、发布、归档、复核与检索知识文档。'
+  '知识库不向客户管理员开放：登记与检索面向员工、部门负责人、企业负责人与超级管理员；发布、归档、复核与治理指标仅企业负责人与超级管理员可用。'
+
+/** 员工视图里治理三块的说明（**不请求数据**、也不静默隐藏）。 */
+export const GOVERNANCE_ONLY_BLOCK_NOTE =
+  '该项属于知识治理面，仅企业负责人与超级管理员可用；你当前角色可以使用上方「登记文档」与下方「知识检索」。'
 
 /** 状态标签文案（未知状态不误标）。 */
 function statusLabel(status: DocumentStatus): string {
@@ -100,7 +115,67 @@ function messageOf(error: unknown): string {
   return error instanceof Error && error.message.length > 0 ? error.message : WRITE_FAILURE_HINT.failed
 }
 
-/** 表格区域（hooks 都在这里；权限门在外层，避免条件调用 hooks）。 */
+/**
+ * 「登记文档」块（治理台与员工视图**共用**；差异只在受理后要不要刷新治理读）。
+ * 成功只用**服务端回读值**提示；失败就地呈现、抽屉不关闭、不假装成功。
+ */
+function RegisterBlock({ onRegistered }: { onRegistered?: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState<RegisterDrawerError | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const handleRegister = async (input: RegisterInput) => {
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await registerDocument(input)
+      setOpen(false)
+      if (result.written && result.doc) {
+        // 提示只用**服务端回读值**（标题与状态都取自响应）
+        setNotice(`已登记：「${result.doc.title}」（当前状态：${statusLabel(result.doc.status)}）。`)
+        onRegistered?.()
+      } else {
+        // 样例模式：没有写入任何数据，也就没有可刷新的服务端变化（如实说明，不假装已保存）
+        setNotice(result.note)
+      }
+    } catch (caught) {
+      // 失败就地呈现、抽屉留在原地（不关抽屉、不假装成功）
+      setError({ message: messageOf(caught), hint: failureHint(caught) })
+    }
+  }
+
+  return (
+    <>
+      {notice && <Alert type="info" showIcon message={notice} />}
+      <div style={{ marginBottom: tokens.spacing.sm }}>
+        <Button type="primary" onClick={() => setOpen(true)}>
+          登记文档
+        </Button>
+      </div>
+      <RegisterDrawer
+        open={open}
+        error={error}
+        onClose={() => {
+          setOpen(false)
+          setError(null)
+        }}
+        onSubmit={handleRegister}
+      />
+    </>
+  )
+}
+
+/** 治理面限定块：**只给说明，不发任何请求**（无权读的块不伪造空态，也不静默隐藏）。 */
+function GovernanceOnlyBlock({ title }: { title: string }) {
+  return (
+    <div>
+      <Typography.Title level={3}>{title}</Typography.Title>
+      <ContentState state="forbidden" description={GOVERNANCE_ONLY_BLOCK_NOTE} boxed={false} />
+    </div>
+  )
+}
+
+/** 治理台（`knowledge.manage`：ceo / super_admin）。 */
 function KnowledgeBoard() {
   /** 是否已接真实数据：决定顶部标识与文案（样例与真实**互斥**，不允许含糊）。 */
   const connected = isConnected()
@@ -109,8 +184,6 @@ function KnowledgeBoard() {
   const metrics = usePanelData(() => fetchMetrics(), EMPTY_METRICS)
   const eligible = usePanelData(() => fetchEligible(), EMPTY_ELIGIBLE)
 
-  const [registerOpen, setRegisterOpen] = useState(false)
-  const [registerError, setRegisterError] = useState<RegisterDrawerError | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [actionError, setActionError] = useState<{ message: string; hint: string } | null>(null)
   const [pending, setPending] = useState<{ document_id: string; action: DocAction } | null>(null)
@@ -123,27 +196,6 @@ function KnowledgeBoard() {
     docs.reload()
     metrics.reload()
     eligible.reload()
-  }
-
-  const handleRegister = async (input: RegisterInput) => {
-    setRegisterError(null)
-    setNotice(null)
-    setActionError(null)
-    try {
-      const result = await registerDocument(input)
-      setRegisterOpen(false)
-      if (result.written && result.doc) {
-        // 提示只用**服务端回读值**（标题与状态都取自响应）
-        setNotice(`已登记：「${result.doc.title}」（当前状态：${statusLabel(result.doc.status)}）。`)
-        refreshAll()
-      } else {
-        // 样例模式：没有写入任何数据，也就没有可刷新的服务端变化（如实说明，不假装已保存）
-        setNotice(result.note)
-      }
-    } catch (error) {
-      // 失败就地呈现、抽屉留在原地（不关抽屉、不假装成功）
-      setRegisterError({ message: messageOf(error), hint: failureHint(error) })
-    }
   }
 
   const runAction = async (action: Exclude<DocAction, 'archive'>, doc: KnowledgeDoc) => {
@@ -250,11 +302,7 @@ function KnowledgeBoard() {
       />
 
       <div>
-        <div style={{ marginBottom: tokens.spacing.sm }}>
-          <Button type="primary" onClick={() => setRegisterOpen(true)}>
-            登记文档
-          </Button>
-        </div>
+        <RegisterBlock onRegistered={refreshAll} />
         <DocumentPanel
           docs={docs.data.items}
           state={docsState}
@@ -278,16 +326,6 @@ function KnowledgeBoard() {
 
       <SearchPanel />
 
-      <RegisterDrawer
-        open={registerOpen}
-        error={registerError}
-        onClose={() => {
-          setRegisterOpen(false)
-          setRegisterError(null)
-        }}
-        onSubmit={handleRegister}
-      />
-
       <DangerConfirm
         open={archiveTarget !== null}
         title={`归档「${archiveTarget?.title ?? ''}」？`}
@@ -301,16 +339,61 @@ function KnowledgeBoard() {
   )
 }
 
-export function KnowledgePage() {
+/**
+ * 员工视图（`knowledge.register` / `knowledge.search`：employee / department_lead）。
+ *
+ * 与治理台的三点差异：① 不做治理读（那三块由后端 403，故界面**直接说明原因、不发请求**）；
+ * ② 检索**自限于本人角色**（`fixedRoleKey`）；③ 登记成功后无需刷新治理读。
+ */
+function KnowledgeMemberView({ role }: { role: Role }) {
+  const connected = isConnected()
+
   return (
-    <PageContainer
-      title="知识库"
-      description="登记知识文档并管理其发布、复核与归档；可检索范围由已发布文档决定，检索范围按岗位或数字员工解析。"
-    >
-      {/* 无权限时渲染"无权限态（原因 + 申请入口）"，不请求数据、也不渲染任何编辑控件 */}
-      <PermissionGuard capability="knowledge.manage" reason={PERMISSION_REASON}>
+    <Space direction="vertical" size={tokens.spacing.lg} style={{ width: '100%' }}>
+      {connected ? (
+        <Alert type="info" showIcon message={CONNECTED_NOTICE} description={CONNECTED_DESCRIPTION} />
+      ) : (
+        <Alert type="warning" showIcon message={SAMPLE_DATA_BADGE} description={SAMPLE_DESCRIPTION} />
+      )}
+
+      <div>
+        <RegisterBlock />
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          登记后以「草稿」存在；发布由企业负责人或超级管理员完成，发布后才进入可检索范围。
+        </Typography.Paragraph>
+      </div>
+
+      <SearchPanel fixedRoleKey={role} />
+
+      <GovernanceOnlyBlock title="治理指标" />
+      <GovernanceOnlyBlock title="文档列表" />
+      <GovernanceOnlyBlock title="可检索文档" />
+    </Space>
+  )
+}
+
+export function KnowledgePage() {
+  const role = useSession((state) => state.role)
+  const canManage = hasCapability(role, 'knowledge.manage')
+  const canRegister = hasCapability(role, 'knowledge.register')
+  const canSearch = hasCapability(role, 'knowledge.search')
+
+  const description = canManage
+    ? '登记知识文档并管理其发布、复核与归档；可检索范围由已发布文档决定，检索范围按岗位或数字员工解析。'
+    : '登记知识文档并按本人角色检索；发布、归档、复核与治理指标由企业负责人或超级管理员负责。'
+
+  return (
+    <PageContainer title="知识库" description={description}>
+      {canManage ? (
         <KnowledgeBoard />
-      </PermissionGuard>
+      ) : canRegister || canSearch ? (
+        role ? (
+          <KnowledgeMemberView role={role} />
+        ) : null
+      ) : (
+        /* 无任何知识能力（如 customer_admin）：整页无权限态 + 原因，不请求数据、不渲染编辑控件 */
+        <ContentState state="forbidden" description={PERMISSION_REASON} />
+      )}
     </PageContainer>
   )
 }

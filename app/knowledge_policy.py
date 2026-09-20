@@ -104,8 +104,16 @@ class KnowledgeAccessRegistry:
 
     @staticmethod
     def _ensure_admin(context: UserContext) -> None:
-        if context.role != "super_admin":
-            raise PolicyError("只有超级管理员可以调整知识库范围")
+        """授权绑定（写）与绑定清单 / 变更记录（读）的闸门。
+
+        2026-09-19 **P0 修复**：按 `permission-matrix.md` §3「知识：授权绑定」行，`ceo` 亦允许
+        （原为「仅 super_admin」）。角色集合单一来源在 `app.knowledge_governance.models`，
+        这里刻意**不在本文件重新定义角色字面量**（避免两处漂移）。
+        """
+        from .knowledge_governance.models import can_manage
+
+        if not can_manage(context):
+            raise PolicyError("只有企业负责人或超级管理员可以调整知识库范围")
 
 
 class PostgresKnowledgeAccessRegistry:

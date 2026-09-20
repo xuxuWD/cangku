@@ -109,6 +109,8 @@ export function clearSession(): void {
 export type Capability =
   | 'agent.manage'
   | 'permission.manage'
+  | 'knowledge.search'
+  | 'knowledge.register'
   | 'knowledge.manage'
   | 'skill.manage'
   | 'audit.view'
@@ -119,6 +121,8 @@ export type Capability =
 export const CAPABILITY_LABEL: Record<Capability, string> = {
   'agent.manage': '数字员工管理',
   'permission.manage': '权限配置',
+  'knowledge.search': '知识检索',
+  'knowledge.register': '知识文档登记',
   'knowledge.manage': '知识库管理',
   'skill.manage': 'Skill & MCP 管理',
   'audit.view': '审计日志查看',
@@ -132,19 +136,45 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
  * 高权角色集合含 `department_lead` / `ceo` / `super_admin`（`app/domain.py:139`）；
  * 管理类接口一律要求 `super_admin`（如 `app/capabilities.py:48`）。
  * `customer_admin` 是受限客户角色（多处显式排除，如 `app/bootstrap.py:1093`）⇒ 不授予管理能力。
+ *
+ * **2026-09-19 知识域对齐矩阵（P0 修复）**：`permission-matrix.md` §3「知识」四行 ⇒
+ * 检索与登记对 `employee` / `department_lead` / `ceo` / `super_admin` 开放（⚠️ 检索按绑定），
+ * 发布 / 归档 / 复核 / 治理读（列表·指标·可检索清单）仅 `ceo` + `super_admin`，
+ * `customer_admin` 在知识域一律 ❌。后端同一口径见
+ * `app/knowledge_governance/models.py` 的 `SEARCH_ROLES` / `REGISTER_ROLES` / `GOVERNANCE_ROLES`。
  */
+const ACCESS_ROLES: readonly Role[] = ['employee', 'department_lead', 'ceo', 'super_admin']
+const GOVERNANCE_ROLES: readonly Role[] = ['ceo', 'super_admin']
+
 const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
-  super_admin: ['agent.manage', 'permission.manage', 'knowledge.manage', 'skill.manage', 'audit.view', 'data.export', 'data.delete'],
-  ceo: ['audit.view', 'data.export'],
-  department_lead: ['data.export'],
-  employee: [],
+  super_admin: [
+    'agent.manage',
+    'permission.manage',
+    'knowledge.search',
+    'knowledge.register',
+    'knowledge.manage',
+    'skill.manage',
+    'audit.view',
+    'data.export',
+    'data.delete',
+  ],
+  ceo: ['knowledge.search', 'knowledge.register', 'knowledge.manage', 'audit.view', 'data.export'],
+  department_lead: ['knowledge.search', 'knowledge.register', 'data.export'],
+  employee: ['knowledge.search', 'knowledge.register'],
   customer_admin: [],
 }
 
-/** 判断某角色是否具备某能力（`role` 为 `null` = 未登录 ⇒ 一律 false）。 */
+/** 角色是否具备某能力（`role` 为 `null` = 未登录 ⇒ 一律 false）。 */
 export function hasCapability(role: Role | null, capability: Capability): boolean {
   if (!role) return false
   return ROLE_CAPABILITIES[role].includes(capability)
+}
+
+/** 具备某能力的全部角色（给"哪些角色能用"这类说明文案用；顺序即展示顺序）。 */
+export const CAPABILITY_ROLES: Partial<Record<Capability, readonly Role[]>> = {
+  'knowledge.search': ACCESS_ROLES,
+  'knowledge.register': ACCESS_ROLES,
+  'knowledge.manage': GOVERNANCE_ROLES,
 }
 
 /** 角色显示名（`null` = 未登录 ⇒ "未登录"）：避免各处对可空角色做下标。 */

@@ -175,13 +175,22 @@ def test_review_judgement_archives(service: KnowledgeGovernanceService) -> None:
 
 # ------------------------------------------------------------ 临界 / 异常与非法输入
 
-def test_non_admin_forbidden(service: KnowledgeGovernanceService) -> None:
-    """普通员工登记 / 发布 / 改状态 / 复核 / 读指标 → PolicyError。"""
+def test_role_gates_by_matrix(service: KnowledgeGovernanceService) -> None:
+    """岗位门禁按 `permission-matrix.md` §3（2026-09-19 P0 修复后）：
+
+    - **登记行**：`employee` 等四个角色 ✅（故员工登记**不再**抛 PolicyError）；
+    - **管理行 / 治理读**：非管理角色 ❌ —— 发布 / 列表 / 指标仍抛 PolicyError。
+    """
     employee = _actor()
+    # 登记行 ✅：员工可登记（结果是 draft，不进入可检索白名单）
+    draft = service.register_document(
+        employee, document_id="doc-x", title="x", owner_id="o", version="1", source_key="manual"
+    )
+    assert draft.status is KnowledgeDocStatus.DRAFT
+
+    # 管理行 / 治理读 ❌：登记 ≠ 发布
     with pytest.raises(PolicyError):
-        service.register_document(
-            employee, document_id="doc-x", title="x", owner_id="o", version="1", source_key="manual"
-        )
+        service.publish_document(employee, "doc-x", owner_id="acct-owner")
     with pytest.raises(PolicyError):
         service.list_documents(employee)
     with pytest.raises(PolicyError):
@@ -552,11 +561,20 @@ def test_api_register_and_status_codes(service: KnowledgeGovernanceService) -> N
     assert resp.status_code == 201, resp.text
     assert resp.json()["status"] == "draft"
 
-    # 普通员工 → 403
+    # 员工登记：矩阵 §3 登记行 ✅（P0 修复后不再 403）⇒ 结果停在 draft
     resp = client.post(
         "/api/v1/knowledge/documents",
         headers=headers(role="employee", user_id=ALICE),
         json={"document_id": "api-doc-2", "title": "x", "owner_id": "o"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["status"] == "draft"
+
+    # `customer_admin` 在知识域一律 ❌（矩阵 §3 末列）
+    resp = client.post(
+        "/api/v1/knowledge/documents",
+        headers=headers(role="customer_admin", user_id="acct-customer"),
+        json={"document_id": "api-doc-2b", "title": "x", "owner_id": "o"},
     )
     assert resp.status_code == 403
 

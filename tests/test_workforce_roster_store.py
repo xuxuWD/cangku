@@ -48,12 +48,21 @@ def test_list_bindings_groups_by_type_and_scopes_tenant() -> None:
     assert bindings == {"role": {"content-operator": ["kb-1", "kb-2"]}, "agent": {"content-writer": ["kb-3"]}}
 
 
-def test_list_bindings_requires_super_admin() -> None:
+def test_list_bindings_role_gates() -> None:
+    """`list_bindings` 属**知识治理读**：`ceo` + `super_admin`（矩阵 §3 授权绑定行，2026-09-19 对齐）。
+
+    非管理角色一律 PolicyError；`ceo` 可读（治理读与授权绑定同档）。
+    """
     registry = KnowledgeAccessRegistry()
     registry.bind_role(ADMIN, "content-operator", {"kb-1"})
 
-    with pytest.raises(PolicyError):
-        registry.list_bindings(UserContext("t-1", "ceo-1", "ceo"))
+    assert registry.list_bindings(UserContext("t-1", "ceo-1", "ceo")) == {
+        "role": {"content-operator": ["kb-1"]},
+        "agent": {},
+    }
+    for role in ("employee", "department_lead", "customer_admin"):
+        with pytest.raises(PolicyError):
+            registry.list_bindings(UserContext("t-1", "u-1", role))
 
 
 def test_list_bindings_is_empty_without_data() -> None:
@@ -111,11 +120,14 @@ def test_postgres_list_bindings_groups_rows() -> None:
     assert bindings == {"role": {"content-operator": ["kb-1", "kb-2"]}, "agent": {"writer": ["kb-3"]}}
 
 
-def test_postgres_list_bindings_requires_super_admin() -> None:
+def test_postgres_list_bindings_role_gates() -> None:
+    """PG 侧同口径：`ceo` 可读（空绑定 ⇒ 空结构），非管理角色 PolicyError。"""
     registry = PostgresKnowledgeAccessRegistry(RecordingConnection([[]]))
 
-    with pytest.raises(PolicyError):
-        registry.list_bindings(UserContext("t-1", "ceo-1", "ceo"))
+    assert registry.list_bindings(UserContext("t-1", "ceo-1", "ceo")) == {"role": {}, "agent": {}}
+    for role in ("employee", "department_lead", "customer_admin"):
+        with pytest.raises(PolicyError):
+            registry.list_bindings(UserContext("t-1", "u-1", role))
 
 
 # ------------------------------------------------------------ 任务数聚合

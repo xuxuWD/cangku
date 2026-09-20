@@ -103,9 +103,9 @@ describe('AppShell（第 1 轮应用壳）', () => {
     renderWithProviders(<AppShell />)
     await userEvent.click(screen.getByRole('menuitem', { name: /知识库/ }))
     expect(pageTitle()).toHaveTextContent('知识库')
-    // 第 7 轮起「知识库」是真实页面（占位页已被替换）：员工没有该能力 ⇒ 呈现无权限态、不请求数据。
-    expect(await screen.findByRole('heading', { level: 2, name: '知识库' })).toBeInTheDocument()
-    expect(await screen.findByText('无访问权限')).toBeInTheDocument()
+    // 第 7 轮起「知识库」是真实页面（占位页已被替换）；2026-09-19 起按矩阵 §3 分视图：
+    // 员工可「登记 + 本人角色检索」，治理三块只给原因（不请求数据，见 KnowledgePage 用例）。
+    expect(await screen.findByRole('heading', { level: 3, name: '知识检索' })).toBeInTheDocument()
     expect(screen.queryByText('「知识库」尚未接入（第 4 轮实现）。')).not.toBeInTheDocument()
   })
 

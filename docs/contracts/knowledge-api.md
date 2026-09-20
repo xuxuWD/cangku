@@ -8,19 +8,27 @@
 > 与 `docs/api-contract.md`（后端契约真源）的关系是**只引用、不修改**。字段名与 `src/features/knowledge/types.ts` **逐字一致**。
 > **所有形状与状态码均为 2026-09-19 真机实测**（本机工作树 `uvicorn` + 真库 + 本地 WeKnora 实例，`governance=true`；非生产）。
 
-## 1. 接口清单与**实测角色门禁**
+## 1. 接口清单与**角色门禁**（2026-09-19 按矩阵 §3 对齐，见 §11）
 
-| 方法 | 路径 | 用途 | 实测（员工 / 超管） |
+| 方法 | 路径 | 用途 | 角色门禁（`permission-matrix.md` §3） |
 | --- | --- | --- | --- |
-| GET | `/api/v1/knowledge/documents` | 文档列表（`status` 可选、`limit` 1–200、`offset`） | **`403`** / `200` |
-| POST | `/api/v1/knowledge/documents` | 登记（`document_id`/`title`/`owner_id?`/`version?`/`source_key?`；**幂等**） | **`403`** / `201` |
-| POST | `/api/v1/knowledge/documents/{id}/publish` | 发布（`draft` → `published`） | `403` / `200` |
-| POST | `/api/v1/knowledge/documents/{id}/archive` | 归档（→ `archived`，**终态，不物理删**） | `403` / `200` |
-| POST | `/api/v1/knowledge/documents/{id}/review?approved=<bool>` | 复核（人工事件；**`approved` 是必填 query**） | `403` / `200` |
-| POST | `/api/v1/knowledge/review-scan` | 触发到期扫描（`published` 且过期 ⇒ `needs_review`） | `403` / `200` |
-| GET | `/api/v1/knowledge/metrics` | 治理指标（Freshness Index） | `403` / `200` |
-| GET | `/api/v1/knowledge/governance/eligible` | 可检索（已发布）清单 | `403` / `200` |
-| POST | `/api/v1/knowledge/search` | 检索（**需 WeKnora 配置 + 治理开关**；未配置 ⇒ `503`） | `403` / `200` |
+| GET | `/api/v1/knowledge/documents` | 文档列表（`status` 可选、`limit` 1–200、`offset`） | **治理读**：`ceo` / `super_admin` |
+| POST | `/api/v1/knowledge/documents` | 登记（`document_id`/`title`/`owner_id?`/`version?`/`source_key?`；**幂等**） | **登记行**：`employee` / `department_lead` / `ceo` / `super_admin` |
+| POST | `/api/v1/knowledge/documents/{id}/publish` | 发布（`draft` → `published`） | **管理行**：`ceo` / `super_admin` |
+| POST | `/api/v1/knowledge/documents/{id}/archive` | 归档（→ `archived`，**终态，不物理删**） | `ceo` / `super_admin` |
+| POST | `/api/v1/knowledge/documents/{id}/review?approved=<bool>` | 复核（人工事件；**`approved` 是必填 query**） | `ceo` / `super_admin` |
+| POST | `/api/v1/knowledge/review-scan` | 触发到期扫描（`published` 且过期 ⇒ `needs_review`） | `ceo` / `super_admin` |
+| GET | `/api/v1/knowledge/metrics` | 治理指标（Freshness Index） | `ceo` / `super_admin` |
+| GET | `/api/v1/knowledge/governance/eligible` | 可检索（已发布）清单 | `ceo` / `super_admin` |
+| POST | `/api/v1/knowledge/search` | 检索（**需 WeKnora 配置 + 治理开关**；未配置 ⇒ `503`） | **检索行**：`employee` / `department_lead` / `ceo` / `super_admin`（⚠️ 非管理角色**自限于自身角色**）；`customer_admin` ❌ |
+
+**登记 ≠ 发布**：登记行对四个角色开放，但发布 / 归档 / 复核仍是管理行（`ceo` / `super_admin`）
+⇒ 低权角色登记出的文档只停在 `draft`，**不进入可检索白名单**。
+
+**检索行的自限（P0 安全要件，2026-09-19）**：`KnowledgeAccessRegistry.resolve` **不校验调用者身份**
+（只按租户取绑定）⇒ 非管理角色强制 `role_key == 自身角色`、**不开放** `agent_key` 通道；
+无绑定 ⇒ `200 items=[] reason="no_binding"`（fail-closed，**不请求上游**）。
+管理角色不受限（治理台需按任意岗位 / 数字员工核查检索效果）。
 
 **响应形状（实测，逐键点名）**
 - 列表 / eligible：`{ items: KnowledgeDoc[], total, limit, offset }`
@@ -36,33 +44,34 @@
 | --- | --- | --- | --- | --- |
 | `draft` | ✅ → `published`（并置 `review_due_at = 发布时刻 + 宽限天数`，默认 30d） | ✅ → `archived` | ❌ `409`「当前状态不能进入该复核结果」 | ❌ `409` |
 | `published` | ❌ `409`「当前状态不能发布（仅 draft 可发布）」 | ✅ → `archived` | ❌ `409`（复核只针对 `needs_review`） | ❌ `409` |
-| `needs_review` | ❌ `409` | ✅ → `archived` | ✅ → `published` + **刷新** `last_reviewed_at` 与 `review_due_at` | ✅ → `archived` |
+| `needs_review` | ❌ `409` | ✅ → `archived` | ✅ → `published` + **刷新** `last_reviewed_at` 与 `review_due_at`（**owner 空 ⇒ `422`**，见 §2.1） | ✅ → `archived` |
 | `archived` | ❌ **`409`（实测）** | ❌ `409` | ❌ **`409`（实测）** | ❌ `409` |
 
 - **到期扫描实测**：把某一篇 `review_due_at` 置为过去 ⇒ `POST /review-scan` 返回 `{"reviewed_due":1}` 且该篇 `published → needs_review`；复跑不再置位（幂等）。
 - **`approved` 缺省即 `422`**（实测：不带该 query 参数调用 ⇒ `422`，属请求校验失败，**不是**状态冲突）。
 - 发布还要求**已指定负责人**（`owner`）；未指定 ⇒ `InvalidKnowledgeDoc`（服务端文案「发布必须指定负责人（owner）」）。
 
-### 2.1 第 7 轮交付时的**实测补正**（2026-09-19，推翻本表一行）
+### 2.1 P1 缺口与修复（2026-09-19 · **已修复，本表恢复成立**）
 
-**实测：`draft` + `review?approved=true` ⇒ `200` → `published`**（**不是**本表写的 `409`）。
+**原缺口（第 7 轮实测登记）**：`draft` + `review?approved=true` ⇒ **`200` → `published`**，且 `owner_id` 可为空。
+根因：状态机 `transition_allowed` 允许 `draft → published`（该边本为「发布」而设），
+而 `review_document` 只查状态边、**不查 owner 闸门** ⇒ **复核通道可代替发布并跳过「发布必须指定负责人」**。
+（另实测：`review?approved=false` 在任意非终态也 ⇒ `200 → archived`，即复核退回等价于归档。）
 
-- 根因（只读源码）：状态机 `transition_allowed` 允许 `draft → published`（该边本为「发布」而设），
-  而 `review_document` 只查状态边、**不查 owner 闸门** ⇒ 复核通道**绕过了「发布必须指定负责人」**。
-- 实测证据：对 `owner_id=""` 的 `probe-admin-1`（`draft`）调用 `review?approved=true` ⇒ `200`，
-  回读 `status=published` 且 `owner_id` 仍为空。
-- **本模块处置（保守）**：界面仍按本表**禁用** `draft` 的复核按钮（复核只对 `needs_review` 开放），
-  即**不通过界面放大**该后端行为 ⇒ 该缺口按 P1 登记（见 §6 与 `permission-matrix.md` §11），本轮不改后端。
-- 同时 `archived` + `review` 实测 `409`（本表该行正确）。
+**修复（用户 2026-09-19 裁决「双管」）**，两处均在 `app/knowledge_governance/service.py::review_document`：
 
-**补正二（收口验收 2026-09-19 追加）：`review?approved=false` 在任意非终态 ⇒ `200 → archived`。**
-- 依据：复核的目标态只有两个（`true ⇒ published`、`false ⇒ archived`），而 `archived` 是**任意非终态**的合法边
-  ⇒ `draft` / `published` / `needs_review` 的「复核退回」都直接落到 `archived`，本表 `draft` / `published` 两行写的 `409` **不成立**。
-- **真机实测（收口探针 B）**：`published` + `review?approved=false` ⇒ **`200`**，回读 `status=archived`（查库核对一致）。
-- `draft` + `review?approved=false` ⇒ **同一机制**（目标 `archived` + 合法边），未单独真机复验，按**代码判定**登记
-  （`review_document` 只查状态边、`update_status` 无附加闸门 —— 只读 `app/knowledge_governance/{models,service,store}.py`）。
-- 影响面：`review?approved=false` 等价于「归档」端点，**不引入超出 `archive` 的新能力**；
-  界面仍只在 `needs_review` 启用复核按钮（保守，不放大）。
+1. **前置状态收窄**：只有 `needs_review` / `under_review` 可复核（`REVIEWABLE_STATES`）；
+   其它状态（含 `draft` / `published`）⇒ **`409`**「只有待复核（needs_review）或复核中（under_review）的文档可以复核」。
+2. **owner 闸门**：`approved=True` 进 `published` 的**任何路径**都要求 owner 非空；
+   为空 ⇒ **`422`**「复核通过必须指定负责人（owner）」（与发布闸门同口径，纵深兜底历史 / 迁移数据）。
+
+⇒ 本表 §2 的 `draft` / `published` 两行「复核」列的 `409` **重新成立**（此前曾实测为 `200`，见下方沿革）；
+`needs_review` + 通过仍需 owner 非空（来自 published 的文档必有 owner，故正常路径不受影响）。
+**回归证据**：`tests/test_knowledge_role_matrix.py` 的三条 P1 用例（收窄 / owner 闸门 / 合法路径不受影响）。
+
+> **沿革（不删旧记录）**：2026-09-19 第 7 轮交付时曾按实测登记「补正一」（`draft` + 复核通过 ⇒ `200 → published`）
+> 与「补正二」（复核退回任意非终态 ⇒ `200 → archived`）；两者描述的**修复前**行为，
+> 修复后由本节的收窄闸门取代 —— 旧结论**不再成立**，保留于此仅供追溯。
 
 ## 2.2 状态机 → 界面按钮规则（实现口径，逐条可查）
 
@@ -110,7 +119,7 @@
 | 文档级**四级 ACL** | `knowledge-acl.md` 字段未落库（属 Schema 线） |
 | 批量登记 / 批量操作 | 后端无批量端点（`review-scan` 是唯一的批量动作） |
 | 取消归档 / 复活 | `archived` 为终态（实测 `publish` 返回 `409`） |
-| **复核通道绕过 owner 闸门（P1 缺口，本轮只登记）** | `draft` + `review?approved=true` 实测 `200 → published`（`owner_id` 可为空），即"复核"可代替"发布"且跳过负责人闸门；界面**不暴露**该路径，后端未改（§2.1） |
+| ~~**复核通道绕过 owner 闸门（P1 缺口）**~~ | ✅ **已修复（2026-09-19）**：复核前置状态收窄为 `needs_review` / `under_review` + 通过路径补 owner 闸门（见 §2.1）。原缺口：`draft` + `review?approved=true` 实测 `200 → published`（`owner_id` 可为空） |
 
 ## 7. 未验证（不得读成已验）
 
@@ -131,6 +140,10 @@
   §7 增补"本轮未验证"；实现与契约的差异逐条见 §9。
 - 2026-09-19：**收口验收回写**——§2.1 追加「补正二」（`review?approved=false` 非终态 ⇒ `200 → archived`，探针 B 实测）；
   §7 更新（走查已补 + 新增冷启动 `504` 观察）；新增 §10（收口验收证据清单）。
+- 2026-09-19：**两个缺口修复回写**——§1 换为「按矩阵 §3 的角色门禁」+ 自限口径；§2 表 `needs_review` 行补 owner 闸门；
+  §2.1 由「实测补正」改写为「P1 缺口与修复（已修复）」并保留旧结论作沿革；§6 标记 P1 已修复；新增 §11。
+  **注**：`permission-matrix.md` §3 是权限口径唯一权威，本次是**实现向矩阵对齐**（非改矩阵口径），
+  仅同步了该表两处「现状描述」（检索行不再标注"现为唯一可用角色"、登记行去掉 🆕）。
 
 ## 9. 实施落地口径（第 7 轮交付 · 逐条可查）
 
@@ -188,3 +201,52 @@
 
 **⚠️ 验收新增数据（待清）**：`r7-reviewer-a`（`draft`）/ `r7-reviewer-b`（`archived`，`owner=acct-reviewer-probe`）；
 连同交付期 `probe-admin-1`（被复核探针置为 `published`）一并见 [`decision-log.md`](file:///d:/徐徐AI学习/公司工作台/docs/contracts/decision-log.md) 清理清单。
+
+> **时效说明**：以上走查（§10）执行于 **P0 修复之前**（当时"员工 ⇒ 整页无权限"是事实）。
+> P0 修复后员工侧改为「登记 + 自限检索 + 治理三块给原因」视图，**该条走查结论已被 §11 取代**，
+> 保留于此仅供追溯；P0 之后的新走查证据见 §11。
+
+## 11. 两个已登记缺口的修复记录（2026-09-19 · 用户裁决后实施）
+
+**背景**：第 7 轮登记两项须修缺口（`permission-matrix.md` §11 缺口表 / `decision-log.md` D-022）。
+用户 2026-09-19 裁决：P0 **全量对齐矩阵**、P1 **双管（owner 闸门 + 收窄前置状态）**、**界面同轮对齐**、
+非管理角色检索**自身角色自限**；顺序 = **先修缺口、再开第 8 轮模块**。
+
+### 11.1 P0：知识端点角色门禁对齐矩阵 §3
+
+| 项 | 内容 |
+| --- | --- |
+| 角色档位（单一来源） | `app/knowledge_governance/models.py`：`SEARCH_ROLES` / `REGISTER_ROLES`（四个角色）、`GOVERNANCE_ROLES`（`ceo` + `super_admin`）；`MANAGE_ROLES` 保留为 `GOVERNANCE_ROLES` 别名 |
+| 闸门拆分 | 新增 `ensure_can_search` / `ensure_can_register`；`ensure_can_manage` / `ensure_can_read_metrics` 改为 `GOVERNANCE_ROLES`；`register_document` 改走登记闸门 |
+| 绑定面 | `app/knowledge_policy.py::_ensure_admin` 与 `app/main.py::_ensure_knowledge_admin` 委派同一角色集合（`ceo` 亦允许） |
+| **安全要件（自限）** | `app/main.py::_ensure_search_scope_self_limited`：非管理角色强制 `role_key == 自身角色`、**不开放** `agent_key`；否则填任意岗位键即可读到他人知识范围 |
+| 报文变化 | 403 文案：管理面 →「只有企业负责人或超级管理员可以管理知识文档治理」；检索 →「当前角色不能检索知识文档」；登记 →「当前角色不能登记知识文档」；绑定 →「只有企业负责人或超级管理员可以调整知识库范围」 |
+
+### 11.2 P1：复核通道不再绕过 owner 闸门
+
+见 §2.1：前置状态收窄（`REVIEWABLE_STATES`）+ 通过路径 owner 非空（422）。
+
+### 11.3 界面同轮对齐
+
+- `src/app/session.tsx`：新增能力 `knowledge.search` / `knowledge.register`（四个角色）与 `knowledge.manage`（`ceo` + `super_admin`）；
+  **未**把 `permission.manage` 开给 `ceo`（其依赖的岗位目录接口仍仅超管，见 11.4）。
+- `src/features/knowledge/KnowledgePage.tsx`：按能力分三视图 —— 治理台（四块齐备）/ 员工视图（登记 + 自限检索 + 治理三块**只给原因、不请求数据**）/ 无能力（整页无权限 + 原因）。
+- `SearchPanel`：新增 `fixedRoleKey`，非管理角色**不渲染身份选择**，请求体只带本人角色。
+
+### 11.4 残留缺口（本轮**登记**，待专项裁决）
+
+| 缺口 | 事实 | 影响 |
+| --- | --- | --- |
+| 矩阵 §3「知识：授权绑定」对 `ceo` 标注 ✅，但 `ceo` 实际**不可写**绑定 | 知识域闸门已放开，但写路径还要过**岗位目录**闸门（`app/workforce/store.py::_ensure_admin`，仍仅 `super_admin`） | 该行对 `ceo` 仅有"读"可达；处置（放开目录 / 修订该行 / 维持）待裁决 |
+| 无 user→岗位 / 数字员工 归属链 | 平台无该映射（ADR-0004 未落部门 / 岗位实体） | 非管理角色的检索只能"按自身角色键"命中绑定；真正"按岗位"需等 Schema / 岗位实体线 |
+
+### 11.5 验证
+
+| 验证 | 结果 |
+| --- | --- |
+| 新增门禁锚点 | `tests/test_knowledge_role_matrix.py`（逐行钉矩阵 §3 + P1 三例 + fail-closed 自限）——**先红后绿**（修复前 14 条红） |
+| 旧用例修正 | `test_knowledge_governance.py`（登记行改 ✅）、`test_knowledge_search_api.py`（改名与口径：他人 `role_key` ⇒ 403）、`test_workforce_roster_store.py`（`ceo` 可读绑定）、`test_knowledge_access_directory_gate.py`（ceo 被目录闸门拦 = 残留缺口事实钉住） |
+| 后端全量 | `pytest -q`：**2503 passed / 0 failed / 140 skipped（既有跳过）**，退出码 `0`；`compileall` 退出码 `0` |
+| 前端 | `tsc --noEmit` 退出码 0；`vitest run` **265/265**（原 262 + 新增 3：员工视图 / 自限检索请求体 / ceo 治理台）；`build` 成功；产物样例字样 / `console.log` `0` 命中 |
+| **真机交叉验证**（工作树后端 + 真库 `workbench_test`；超管 `13600000001` / 员工 `13600000002`；**本机未配 WeKnora**，故检索落到 `503`） | ① 员工：治理读 `403` / **登记 `201`** / 发布 `403` / 指标 `403` —— 与矩阵 §3 逐行一致；② 员工填**他人** `role_key` ⇒ `403`「非管理角色只能检索与自身角色对应的知识范围」；填 `agent_key` ⇒ `403`「非管理角色不能按数字员工检索知识…」；**填本人 `role_key` ⇒ `503`**（越过闸门，仅因未配检索服务）✓ 自限生效；③ 超管填任意 `role_key` ⇒ `503`（管理角色不受限）✓；④ **P1**：`draft` + `review?approved=true` ⇒ **`409`**（原为 `200 → published`）；`published` + `review?approved=false` ⇒ **`409`**（原为 `200 → archived`）；**查库核对：两次被拒后该行状态未被改写** ✓ |
+| 反假（3 组，均"改坏 → 必红 → 还原"） | ① `SEARCH_ROLES` 收回仅 `super_admin` ⇒ 检索行 5 条红；② 停用 `_ensure_search_scope_self_limited` ⇒ 3 条红（**且响应为 `200` 并真的读到他人范围**——正是要防的洞）；③ 停用复核前置状态收窄 ⇒ `test_review_rejected_for_non_reviewable_state` 红。三处还原后复绿，源码无探针残留（`grep 反假探针` = 0） |

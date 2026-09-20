@@ -10,7 +10,7 @@ WeKnora 仍是检索唯一事实源（D1），本表只是**文档级元数据�
 under_review → needs_review → published/archived` 为可选中间态）；`archived` 终态。
 发布闸门（§1.2 C / §3.2）在 service 层强制 owner 非空；本模块只做长度 / 字符串归一。
 权限判定刻意放在本模块，供仓储 / 服务 / 接口层共用（沿用记忆层 / 技能层手法）：
-登记 / 改状态 / 复核 / 读指标均仅 `super_admin` 可执行。
+登记 / 检索 / 发布 / 复核 / 治理读分四档，**逐行对齐 `permission-matrix.md` §3**（见下方 `*_ROLES` 常量注释）。
 """
 
 from __future__ import annotations
@@ -32,8 +32,28 @@ MAX_SOURCE_KEY_LENGTH = 32
 SOURCE_KEY_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,31}$"
 _SOURCE_KEY_RE = re.compile(SOURCE_KEY_PATTERN)
 
-# 可管理 / 可读指标本租户知识文档的岗位（§2.4 / §3.2：登记 / 发布 / 改状态 / 读指标仅超级管理员）。
-MANAGE_ROLES = frozenset({"super_admin"})
+# 可检索 / 可登记 / 可管理本租户知识文档的岗位（**逐行对齐 `permission-matrix.md` §3 的「知识」四行**）。
+#
+# 2026-09-19（P0 缺口修复，用户裁决「全量对齐矩阵」）：本模块原先把检索 / 登记 / 管理 / 治理读**全部**
+# 收在 `super_admin` 之下，与矩阵 §3 冲突。矩阵是权限口径的**唯一权威**且自定「实现与本文冲突时以本文为准」
+# ⇒ 按矩阵拆成四档。**不改矩阵口径**，只让实现回到矩阵。
+#
+# | 资源 · 动作 | employee | department_lead | ceo | super_admin | customer_admin |
+# | --- | --- | --- | --- | --- | --- |
+# | 知识：检索 | ⚠️ 按绑定 | ⚠️ 按绑定 | ⚠️ 按绑定 | ✅ | ❌ |
+# | 知识：上传/登记 | ✅ | ✅ | ✅ | ✅ | ❌ |
+# | 知识：发布 / 归档 / 复核 | ❌ | ❌ | ✅ | ✅ | ❌ |
+# | 知识：授权绑定 | ❌ | ❌ | ✅ | ✅ | ❌ |
+#
+# **「按绑定」的落地**（见 `ensure_can_search` 与 `app/main.py` 的自限判定）：非管理角色的 `role_key`
+# 必须等于**自身角色**，且不开放 `agent_key` 通道 —— 否则员工可在请求体里填任意岗位键读到别人的知识范围
+# （矩阵 §8 第 4 条「不静默返回他人文档」+ 宪法「数据归属」红线）。
+SEARCH_ROLES = frozenset({"employee", "department_lead", "ceo", "super_admin"})
+REGISTER_ROLES = frozenset({"employee", "department_lead", "ceo", "super_admin"})
+# 发布 / 归档 / 复核 + 授权绑定 + 治理读（文档列表 / 指标 / 可检索清单）同属管理面。
+GOVERNANCE_ROLES = frozenset({"ceo", "super_admin"})
+# 兼容既有引用（发布 / 归档 / 复核 / 到期扫描 / 治理读均为管理面）。
+MANAGE_ROLES = GOVERNANCE_ROLES
 
 
 class KnowledgeDocStatus(StrEnum):
@@ -129,26 +149,55 @@ def transition_allowed(current: KnowledgeDocStatus, target: KnowledgeDocStatus) 
 # ------------------------------------------------------------ 访问权限（跨层共用）
 
 
+def can_search(context: UserContext) -> bool:
+    """是否可发起知识检索（矩阵 §3 检索行：四个角色 ✅/⚠️，`customer_admin` ❌）。"""
+    return context.role in SEARCH_ROLES
+
+
+def ensure_can_search(context: UserContext) -> None:
+    """检索入口前置判定；否则 403。
+
+    ⚠️ 本判定**只管"能不能进检索入口"**；非管理角色的**范围自限**（`role_key` 必须等于自身角色、
+    不开放 `agent_key`）在接口层完成 —— 因为那需要读请求体，而本层刻意不依赖请求模型。
+    """
+    if not can_search(context):
+        raise PolicyError("当前角色不能检索知识文档")
+
+
+def can_register(context: UserContext) -> bool:
+    """是否可登记知识文档（矩阵 §3 登记行：四个角色 ✅，`customer_admin` ❌）。"""
+    return context.role in REGISTER_ROLES
+
+
+def ensure_can_register(context: UserContext) -> None:
+    """登记前置判定；否则 403。"""
+    if not can_register(context):
+        raise PolicyError("当前角色不能登记知识文档")
+
+
 def can_manage(context: UserContext) -> bool:
-    """是否可管理知识治理（登记 / 发布 / 改状态 / 复核）：仅超级管理员。"""
+    """是否可管理知识治理（发布 / 归档 / 复核 / 到期扫描 / 治理读 / 授权绑定）。
+
+    矩阵 §3：仅 `ceo` 与 `super_admin`。
+    """
     return context.role in MANAGE_ROLES
 
 
 def ensure_can_manage(context: UserContext) -> None:
-    """管理前置判定：仅超级管理员可管理与复核；否则 403。"""
+    """管理前置判定：仅企业负责人或超级管理员可管理；否则 403。"""
     if not can_manage(context):
-        raise PolicyError("只有超级管理员可以管理知识文档治理")
+        raise PolicyError("只有企业负责人或超级管理员可以管理知识文档治理")
 
 
 def can_read_metrics(context: UserContext) -> bool:
-    """是否可读 Freshness 指标（§2.4）：仅超级管理员。"""
+    """是否可读 Freshness 指标（§2.4）：治理读，与 `can_manage` 同档（ceo + super_admin）。"""
     return context.role in MANAGE_ROLES
 
 
 def ensure_can_read_metrics(context: UserContext) -> None:
-    """读指标前置判定：仅超级管理员可读；否则 403。"""
+    """读指标前置判定：仅企业负责人或超级管理员可读；否则 403。"""
     if not can_read_metrics(context):
-        raise PolicyError("只有超级管理员可以阅读知识治理指标")
+        raise PolicyError("只有企业负责人或超级管理员可以阅读知识治理指标")
 
 
 # ------------------------------------------------------------ 输入归一化

@@ -209,9 +209,11 @@ describe('MyWorkbenchPage', () => {
     expect(screen.getByRole('heading', { level: 2, name: '我的工作台' })).toBeInTheDocument()
     expect(await screen.findByText('待审批：整理本周选题')).toBeInTheDocument()
 
-    // 切走再切回，本页仍然可渲染
+    // 切走再切回，本页仍然可渲染。
+    // （2026-09-19 起「知识库」对员工不再是整页无权限，而是按矩阵 §3 分视图 ⇒ 这里断言真实块渲染，
+    //   不再断言"样例标识消失"——员工视图同样带样例标识，那是如实呈现。）
     await userEvent.click(screen.getByRole('menuitem', { name: /知识库/ }))
-    expect(screen.queryByText(SAMPLE_DATA_BADGE)).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 3, name: '知识检索' })).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('menuitem', { name: /我的工作台/ }))
     expect(await screen.findByText('待审批：整理本周选题')).toBeInTheDocument()

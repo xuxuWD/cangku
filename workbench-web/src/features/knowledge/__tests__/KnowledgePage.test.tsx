@@ -13,12 +13,15 @@ import userEvent from '@testing-library/user-event'
 import { AppShell } from '../../../app/AppShell'
 import { ServiceError } from '../../../utils/serviceKit'
 import { renderWithProviders, signInAs, signOutForTest } from '../../../test/renderWithProviders'
-import { KnowledgePage } from '../KnowledgePage'
+import { GOVERNANCE_ONLY_BLOCK_NOTE, KnowledgePage, PERMISSION_REASON } from '../KnowledgePage'
+import { SEARCH_SELF_SCOPED_NOTE } from '../components/SearchPanel'
 import {
   DOCUMENTS_EMPTY_NOTE,
   ELIGIBLE_EMPTY_NOTE,
   KnowledgeError,
   SEARCH_EMPTY_WHITELIST_NOTE,
+  SEARCH_LIMIT,
+  SEARCH_NO_BINDING_NOTE,
   SEARCH_NOT_CONFIGURED_NOTE,
   SEARCH_NO_HITS_NOTE,
   fetchDocuments,
@@ -238,19 +241,75 @@ describe('KnowledgePage（知识库）', () => {
     expect(vi.mocked(fetchDocuments).mock.calls.length).toBeGreaterThan(before)
   })
 
-  it('④ 无权限（员工）：整页无权限态，不请求数据、不渲染任何编辑控件', () => {
+  it('④ 员工（employee）：按矩阵 §3 呈"可登记 + 自限检索"，治理三块只给原因且**不请求治理数据**', async () => {
     signInAs('employee')
 
     renderWithProviders(<KnowledgePage />)
 
-    expect(screen.getByText('无访问权限')).toBeInTheDocument()
-    expect(screen.getByText(/只有超级管理员/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '登记文档' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('table')).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { level: 3, name: '文档列表' })).not.toBeInTheDocument()
+    // 登记行 ✅：员工可登记（矩阵 §3）
+    expect(await screen.findByRole('button', { name: '登记文档' })).toBeInTheDocument()
+    // 检索行 ⚠️：可检索，但**没有**「以谁的身份检索」选择器（范围自限于本人角色）
+    expect(screen.getByRole('heading', { level: 3, name: '知识检索' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('身份标识')).not.toBeInTheDocument()
+    expect(screen.getByText(SEARCH_SELF_SCOPED_NOTE)).toBeInTheDocument()
+    // 治理三块：明确"无权限"（不静默隐藏），且**不发任何治理读请求**
+    expect(screen.getByRole('heading', { level: 3, name: '治理指标' })).toBeInTheDocument()
+    expect(screen.getAllByText(GOVERNANCE_ONLY_BLOCK_NOTE)).toHaveLength(3)
     expect(vi.mocked(fetchDocuments)).not.toHaveBeenCalled()
     expect(vi.mocked(fetchMetrics)).not.toHaveBeenCalled()
     expect(vi.mocked(fetchEligible)).not.toHaveBeenCalled()
+    // 治理表与治理动作都不渲染
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /发\s*布/ })).not.toBeInTheDocument()
+  })
+
+  it('④b 员工检索：请求体只带**本人角色**（服务端自限口径的界面侧）', async () => {
+    vi.mocked(searchKnowledge).mockResolvedValue({ items: [], truncated: false, reason: 'no_binding' })
+    signInAs('employee')
+
+    renderWithProviders(<KnowledgePage />)
+    await screen.findByRole('button', { name: '登记文档' })
+
+    await userEvent.type(screen.getByLabelText('检索关键词'), '合规')
+    await userEvent.click(screen.getByRole('button', { name: /检\s*索/ }))
+
+    await waitFor(() => {
+      expect(vi.mocked(searchKnowledge)).toHaveBeenCalledWith({
+        query: '合规',
+        role_key: 'employee',
+        limit: SEARCH_LIMIT,
+      })
+    })
+    // 无绑定 ⇒ 如实给"先配知识范围"的指引（不是"没查到"）
+    expect(await screen.findByText(SEARCH_NO_BINDING_NOTE)).toBeInTheDocument()
+  })
+
+  it('④c customer_admin：整页无权限态 + 原因，不渲染任何编辑控件', () => {
+    signInAs('customer_admin')
+
+    renderWithProviders(<KnowledgePage />)
+
+    expect(screen.getByText('无访问权限')).toBeInTheDocument()
+    expect(screen.getByText(PERMISSION_REASON)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '登记文档' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 3, name: '知识检索' })).not.toBeInTheDocument()
+    expect(vi.mocked(fetchDocuments)).not.toHaveBeenCalled()
+  })
+
+  it('⑪ ceo：可进治理台（矩阵 §3 管理行 ✅），四块齐备', async () => {
+    readyReads()
+    signInAs('ceo')
+
+    renderWithProviders(<KnowledgePage />)
+
+    expect(await screen.findByRole('heading', { level: 3, name: '治理指标' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: '文档列表' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: '可检索文档' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: '知识检索' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '登记文档' })).toBeInTheDocument()
+    // 治理台保留了身份选择（治理需要按任意岗位 / 数字员工核查检索效果）
+    expect(screen.getByLabelText('身份标识')).toBeInTheDocument()
+    expect(vi.mocked(fetchDocuments)).toHaveBeenCalled()
   })
 
   it('⑤ 登记成功：参数逐字正确 → 用服务端回读值提示 → 关闭抽屉 → 重新取数', async () => {

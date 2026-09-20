@@ -25,10 +25,27 @@ import type { SearchOutcome } from '../types'
 /** 空结果但服务端未给出归因时的中性文案（**不臆测**成"没查到"或"未发布"）。 */
 export const SEARCH_UNATTRIBUTED_EMPTY_NOTE = '没有检索到内容。'
 
+/**
+ * 自限检索的说明（非管理角色）。
+ *
+ * 后端口径（`app/main.py` 的 `_ensure_search_scope_self_limited`）：非管理角色的 `role_key`
+ * 必须等于**自身角色**，且不开放 `agent_key` 通道 —— 否则就能填任意岗位键读到别人的知识范围。
+ * 界面据此**不提供身份选择**，如实说明"按你本人的角色范围检索"。
+ */
+export const SEARCH_SELF_SCOPED_NOTE = '检索范围按你本人的角色解析（服务端限定，不能代他人检索）。'
+
 interface SearchFormValues {
   kind: 'role' | 'agent'
   key: string
   query: string
+}
+
+export interface SearchPanelProps {
+  /**
+   * 自限检索：给定后**不渲染**「以谁的身份检索」，一律按该角色检索（非管理角色传入自身角色）。
+   * 管理角色（ceo / super_admin）不传 ⇒ 保留身份选择（治理台需要按岗位 / 数字员工核查检索效果）。
+   */
+  fixedRoleKey?: string
 }
 
 type SearchState =
@@ -38,9 +55,10 @@ type SearchState =
   | { kind: 'error'; message: string }
   | { kind: 'done'; outcome: SearchOutcome }
 
-export function SearchPanel() {
+export function SearchPanel({ fixedRoleKey }: SearchPanelProps = {}) {
   const [form] = Form.useForm<SearchFormValues>()
   const [state, setState] = useState<SearchState>({ kind: 'idle' })
+  const selfScoped = typeof fixedRoleKey === 'string' && fixedRoleKey.length > 0
 
   const handleSubmit = async () => {
     const values = form.getFieldsValue()
@@ -50,7 +68,12 @@ export function SearchPanel() {
     try {
       const outcome = await searchKnowledge({
         query,
-        ...(values.kind === 'agent' ? { agent_key: key } : { role_key: key }),
+        // 自限检索：只发送**本人角色**，不发 agent_key（后端对非管理角色关闭该通道）
+        ...(selfScoped
+          ? { role_key: fixedRoleKey }
+          : values.kind === 'agent'
+            ? { agent_key: key }
+            : { role_key: key }),
         limit: SEARCH_LIMIT,
       })
       setState({ kind: 'done', outcome })
@@ -70,7 +93,9 @@ export function SearchPanel() {
     <div>
       <Typography.Title level={3}>知识检索</Typography.Title>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        按岗位或数字员工的可检索范围检索；范围由服务端解析，本页不选择知识库。
+        {selfScoped
+          ? SEARCH_SELF_SCOPED_NOTE
+          : '按岗位或数字员工的可检索范围检索；范围由服务端解析，本页不选择知识库。'}
       </Typography.Paragraph>
 
       <Form<SearchFormValues>
@@ -78,19 +103,23 @@ export function SearchPanel() {
         layout="inline"
         style={{ marginTop: tokens.spacing.sm, rowGap: tokens.spacing.sm }}
       >
-        <Form.Item name="kind" label="以谁的身份检索" initialValue="role">
-          <Radio.Group>
-            <Radio.Button value="role">岗位</Radio.Button>
-            <Radio.Button value="agent">数字员工</Radio.Button>
-          </Radio.Group>
-        </Form.Item>
-        <Form.Item
-          name="key"
-          label="身份标识"
-          rules={[{ required: true, message: '请填写岗位或数字员工标识' }, { max: 64, message: '标识最长 64 个字符' }]}
-        >
-          <Input placeholder="岗位标识或数字员工标识" style={{ width: 200 }} autoComplete="off" />
-        </Form.Item>
+        {!selfScoped && (
+          <>
+            <Form.Item name="kind" label="以谁的身份检索" initialValue="role">
+              <Radio.Group>
+                <Radio.Button value="role">岗位</Radio.Button>
+                <Radio.Button value="agent">数字员工</Radio.Button>
+              </Radio.Group>
+            </Form.Item>
+            <Form.Item
+              name="key"
+              label="身份标识"
+              rules={[{ required: true, message: '请填写岗位或数字员工标识' }, { max: 64, message: '标识最长 64 个字符' }]}
+            >
+              <Input placeholder="岗位标识或数字员工标识" style={{ width: 200 }} autoComplete="off" />
+            </Form.Item>
+          </>
+        )}
         <Form.Item
           name="query"
           label="检索关键词"

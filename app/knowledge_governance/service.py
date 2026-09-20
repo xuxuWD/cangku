@@ -3,8 +3,8 @@
 口径见 `docs/superpowers/specs/2026-09-15-knowledge-governance-design.md` §2。
 职责边界：发布闸门（§1.2 C，owner 非空 + status 合法）、状态机迁移（`transition_allowed`）、
 检索谓词守卫白名单（§2.3 pre-filter）、Freshness 指标（§2.4）、审计落点。
-仓储层的租户隔离保留（双保险，与记忆 / 技能层一致）；管理动作统一走 `ensure_can_manage`，
-读指标走 `ensure_can_read_metrics`（均仅 super_admin）。
+仓储层的租户隔离保留（双保险，与记忆 / 技能层一致）；动作闸门按 `permission-matrix.md` §3 分档：
+登记走 `ensure_can_register`（四角色），发布 / 归档 / 复核 / 扫描 / 治理读走 `ensure_can_manage`（ceo + super_admin）。
 
 ⚠️ 动作码（"knowledge.doc.registered" / "knowledge.doc.published" /
 "knowledge.doc.archived" / "knowledge.doc.reviewed" / "knowledge.doc.review_due"）
@@ -26,6 +26,7 @@ from .models import (
     KnowledgeDocStateConflict,
     ensure_can_manage,
     ensure_can_read_metrics,
+    ensure_can_register,
     normalize_document_id,
     normalize_owner_id,
     normalize_source_key,
@@ -44,9 +45,14 @@ _ACTION_REVIEW_DUE = AuditAction.KNOWLEDGE_DOC_REVIEW_DUE
 
 # worker 系统路径的操作者标识（beat 任务没有用户；审计按租户逐条写，actor 恒为它）。
 # 刻意**不**伪装成超级管理员：该上下文只用于租户作用域与审计记录，若被误用到权限判定路径
-# 会直接 fail-closed（"system" 不在 MANAGE_ROLES）。
+# 会直接 fail-closed（"system" 不在任何 `*_ROLES` 档位里）。
 SYSTEM_ACTOR_ID = "system:worker"
 SYSTEM_ROLE = "system"
+
+# 可复核的**前置状态**（P1 收窄，2026-09-19）：复核只针对已进入复核周期的文档。
+# 刻意不含 `draft` —— `draft → published` 是「发布」专用的合法边（`_TRANSITIONS`），
+# 若允许复核复用它，「复核」就能代替「发布」并跳过 owner 闸门（第 7 轮实测登记的真缺口）。
+REVIEWABLE_STATES = frozenset({KnowledgeDocStatus.NEEDS_REVIEW, KnowledgeDocStatus.UNDER_REVIEW})
 
 
 def _utcnow() -> datetime:
@@ -80,11 +86,14 @@ class KnowledgeGovernanceService:
         version: str = "1",
         source_key: str = "manual",
     ) -> KnowledgeDoc:
-        """登记文档：管理动作 → 字段归一 → status=draft 入注册表 → 审计。
+        """登记文档：**登记闸门**（矩阵 §3 登记行：employee / department_lead / ceo / super_admin）
+        → 字段归一 → status=draft 入注册表 → 审计。
 
         §3.1 正常流程 1：登记即 `draft`，owner 此刻可空（发布闸门在发布时才强制）。
+        ⚠️ 登记**不等于**发布：发布 / 归档 / 复核仍是 `ensure_can_manage`（ceo + super_admin），
+        故低权角色登记出的文档只会停在 `draft`，不进入可检索白名单。
         """
-        ensure_can_manage(context)
+        ensure_can_register(context)
         clean = KnowledgeDoc(
             tenant_id=context.tenant_id,
             document_id=normalize_document_id(document_id),
@@ -178,12 +187,26 @@ class KnowledgeGovernanceService:
         *,
         approved: bool,
     ) -> KnowledgeDoc:
-        """人工复核（§2.2）：under_review / needs_review → published（通过）或 archived（判废）。
+        """人工复核（§2.2）：needs_review / under_review → published（通过）或 archived（判废）。
 
         通过时刷新 `last_reviewed_at` 并把 `review_due_at` 顺延 `review_grace_days`；判废走 archived。
+
+        ⚠️ **两道闸门（2026-09-19 P1 修复，用户裁决「双管」）**：
+        1. **前置状态收窄**：只有 `needs_review` / `under_review` 可复核。原先只查 `transition_allowed`，
+           而 `draft → published` 是「发布」专用的合法边 ⇒ `draft` + `review?approved=true` 实测
+           `200 → published`，即**复核可代替发布并跳过 owner 闸门**（第 7 轮实测登记）；
+        2. **owner 闸门**：`approved=True` 进 `published` 的**任何路径**都要求 owner 非空，
+           与 `publish_document` 的发布闸门同口径（纵深兜底：需求态文档来自 published、理论上有 owner，
+           但历史 / 迁移数据可能为空）。
         """
         ensure_can_manage(context)
         doc = self.store.get_document(context, document_id)
+        if doc.status not in REVIEWABLE_STATES:
+            raise KnowledgeDocStateConflict(
+                "只有待复核（needs_review）或复核中（under_review）的文档可以复核"
+            )
+        if approved and not doc.owner_id.strip():
+            raise InvalidKnowledgeDoc("复核通过必须指定负责人（owner）")
         target = KnowledgeDocStatus.PUBLISHED if approved else KnowledgeDocStatus.ARCHIVED
         if not transition_allowed(doc.status, target):
             raise KnowledgeDocStateConflict("当前状态不能进入该复核结果")

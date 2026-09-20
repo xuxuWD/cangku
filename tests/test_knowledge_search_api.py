@@ -5,8 +5,9 @@
 
 - 正常流程：只返回白名单内文档；`knowledge_ids` 确实下传；`agent_key` 走数字员工绑定。
 - 临界值：query/limit 边界；无绑定与白名单空两种「空结果」**都不请求上游**（fail-closed）。
-- 异常与非法输入：身份缺失 401 / 非管理员 403 / 未知字段 422 / 互斥校验 422 / 未配置 503 /
-  治理关闭 503 / 上游超时 504 / 上游失败 502（且**不回显上游地址与密钥**）。
+- 异常与非法输入：身份缺失 401 / 越权（非管理角色填他人 `role_key`）403 / 未知字段 422 / 互斥校验 422 /
+  未配置 503 / 治理关闭 503 / 上游超时 504 / 上游失败 502（且**不回显上游地址与密钥**）。
+  （2026-09-19 P0 修复后「能不能调」按矩阵 §3：见 `tests/test_knowledge_role_matrix.py`。）
 - 反假锚点：见各用例 docstring（改坏对应实现必须变红）。
 """
 
@@ -313,9 +314,15 @@ def test_unknown_fields_rejected(monkeypatch, governance, registry, audit) -> No
     assert upstream.requests == []
 
 
-def test_non_admin_403_and_no_upstream(monkeypatch, governance, registry, audit) -> None:
-    """仅 super_admin 可调（反假锚点：去掉管理闸门 ⇒ 本用例必红）。"""
-    _bind_role(registry)
+def test_non_admin_using_other_role_key_403_and_no_upstream(monkeypatch, governance, registry, audit) -> None:
+    """非管理角色**不得**填别人的 `role_key`（数据归属红线）。
+
+    2026-09-19 P0 修复后，检索**对 employee / department_lead 开放**，但范围**自限于自身角色**
+    （`_ensure_search_scope_self_limited`）⇒ 员工填别的岗位键仍 403 且不请求上游。
+    **反假锚点**：删掉范围自限判定 ⇒ 本用例必红（会 200 并真的打到上游）。
+    完整角色矩阵见 `tests/test_knowledge_role_matrix.py`。
+    """
+    _bind_role(registry)  # 绑定的是 ROLE_KEY（content-operator），不是 employee
     _publish(governance, "doc-pub")
     upstream = _wire(monkeypatch, governance=governance, registry=registry, audit=audit)
 

@@ -162,7 +162,9 @@ from .knowledge_governance.models import (
     KnowledgeDoc,
     KnowledgeDocNotFound,
     KnowledgeDocStateConflict,
+    can_manage as can_manage_knowledge,
     ensure_can_read_metrics as ensure_knowledge_metrics_read,
+    ensure_can_search as ensure_knowledge_search_available,
 )
 from .knowledge_governance.scoped_search import build_scoped_search
 from .knowledge_governance.service import KnowledgeGovernanceService
@@ -1296,8 +1298,13 @@ def replay_dead_letter(event_id: str, context: UserContext = Depends(current_use
 
 
 def _ensure_knowledge_admin(context: UserContext) -> None:
-    if context.role != "super_admin":
-        raise PolicyError("只有超级管理员可以调整知识库范围")
+    """知识**授权绑定 / 治理读**闸门（`permission-matrix.md` §3：ceo + super_admin）。
+
+    2026-09-19 **P0 修复**：原为「仅 super_admin」，与矩阵 §3「知识：授权绑定 = `ceo` ✅」冲突。
+    现委派 `knowledge_governance.models.can_manage`（**角色集合单一来源**，避免两处各写一套）。
+    """
+    if not can_manage_knowledge(context):
+        raise PolicyError("只有企业负责人或超级管理员可以调整知识库范围")
 
 
 class WorkforceRosterItem(BaseModel):
@@ -3581,6 +3588,25 @@ def _audit_blocked_search(context: UserContext, payload: KnowledgeSearchRequest,
         logger.warning("知识检索拦截审计写入失败：%s", exc)
 
 
+def _ensure_search_scope_self_limited(context: UserContext, payload: KnowledgeSearchRequest) -> None:
+    """非管理角色的**范围自限**（P0 安全要件，2026-09-19 用户裁决「自身角色自限」）。
+
+    为什么必需：`KnowledgeAccessRegistry.resolve` **不校验调用者身份**（只按租户取绑定），
+    因此一旦只做「能不能进」的角色判定，「员工就能在请求体里填任意 `role_key` / `agent_key`」
+    从而读到别人的知识范围 —— 撞矩阵 §8 第 4 条「不静默返回他人文档」与宪法「数据归属」红线。
+
+    ⇒ 非管理角色（employee / department_lead）：`role_key` 必须等于**自身角色**，且**不开放**
+    `agent_key` 通道（平台尚无 user→数字员工 归属链，只能 fail-closed）。
+    管理角色（ceo / super_admin）不受限：治理台需要按任意岗位 / 数字员工核查检索效果。
+    """
+    if can_manage_knowledge(context):
+        return
+    if payload.agent_key is not None:
+        raise PolicyError("非管理角色不能按数字员工检索知识，请使用本人角色对应的知识范围")
+    if (payload.role_key or "").strip().lower() != context.role:
+        raise PolicyError("非管理角色只能检索与自身角色对应的知识范围")
+
+
 @app.post("/api/v1/knowledge/search", response_model=KnowledgeSearchResponse)
 def knowledge_search(
     payload: KnowledgeSearchRequest,
@@ -3589,14 +3615,18 @@ def knowledge_search(
     """知识检索（治理层唯一生产入口，规格 §2.3）：谓词守卫在请求 WeKnora **前**完成文档级 pre-filter。
 
     口径：
-    - **仅 super_admin**；范围由服务端按 `role_key` / `agent_key` 解析（客户端不得自带租户/知识库）；
+    - **角色按矩阵 §3 检索行**（2026-09-19 P0 修复）：`employee` / `department_lead` / `ceo` /
+      `super_admin` 可调，**`customer_admin` ❌**；非管理角色的范围**自限于自身角色**
+      （见 `_ensure_search_scope_self_limited`）。
+    - 范围由服务端按 `role_key` / `agent_key` 解析（客户端不得自带租户/知识库）；
     - 未配置 WeKnora 或治理开关关闭 ⇒ **503**（不提供「无守卫的检索入口」，避免造旁路）；
     - 无绑定 / 白名单空 ⇒ **不请求上游**（fail-closed）并落 `knowledge.search.blocked` 审计；
     - 上游超时 ⇒ 504、其余上游失败 ⇒ 502（`_raise_knowledge_search_http`）；
     - `limit` 只做**服务端截断**（上游 `top_k` 语义未核实，不臆造）。
     """
     try:
-        _ensure_knowledge_admin(context)
+        ensure_knowledge_search_available(context)
+        _ensure_search_scope_self_limited(context, payload)
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if weknora_search_runtime is None or not settings.knowledge_governance_enabled:

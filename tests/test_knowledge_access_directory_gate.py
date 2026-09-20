@@ -165,12 +165,28 @@ def test_agent_binding_accepts_managed_agent() -> None:
 
 
 def test_permission_check_wins_over_directory_gate() -> None:
-    # 未纳管 + 越权：必须 403，不能泄露「这个标识还没纳管」
-    for role in ("ceo", "customer_admin", "employee", "department_lead"):
+    """权限优先于闸门：**无知识绑定权**的角色一律 403，且响应不泄露「这个标识还没纳管」。"""
+    for role in ("customer_admin", "employee", "department_lead"):
         assert put_role("content-operator", ["kb-1"], role=role).status_code == 403
         assert put_agent("content-writer", ["kb-1"], role=role).status_code == 403
+        assert (
+            put_role("content-operator", ["kb-1"], role=role).json()["detail"]
+            == "只有企业负责人或超级管理员可以调整知识库范围"
+        )
 
-    assert put_role("content-operator", ["kb-1"], role="ceo").json()["detail"] == "只有超级管理员可以调整知识库范围"
+
+def test_ceo_passes_knowledge_gate_but_directory_gate_still_blocks() -> None:
+    """**残留缺口（2026-09-19 登记，待专项裁决）**。
+
+    矩阵 §3「知识：授权绑定」写 `ceo` ✅，知识域闸门已按矩阵放开；
+    但写路径还要过**岗位目录**闸门（`app/workforce/store.py::_ensure_admin`，仅 `super_admin`）
+    ⇒ `ceo` 仍**不可写**绑定。本用例钉住**当前事实**（不假装已达标），
+    缺口处置（放开目录 / 修订矩阵该行 / 维持）需单独裁决。
+    """
+    response = put_role("content-operator", ["kb-1"], role="ceo")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "只有超级管理员可以管理岗位与数字员工目录"
 
 
 def test_gate_does_not_apply_to_reads() -> None:
