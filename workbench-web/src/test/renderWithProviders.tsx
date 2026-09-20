@@ -23,9 +23,12 @@ export function renderWithProviders(ui: ReactElement): RenderResult {
   return render(<Providers>{ui}</Providers>)
 }
 
-/** 测试登录：把会话置为"已认证"（令牌/角色均为测试值，不触达网络）。 */
-export function signInAs(role: Role): void {
-  useSession.getState().signIn({ token: 'test-token', role })
+/**
+ * 测试登录：把会话置为"已认证"（令牌 / 角色 / 账号标识均为测试值，不触达网络）。
+ * `userId` 默认 `acct-self`：技能域用例需要"提交人 = 自己"的判定（契约 §3 预置禁用自审）。
+ */
+export function signInAs(role: Role, userId = 'acct-self'): void {
+  useSession.getState().signIn({ token: 'test-token', role, userId })
 }
 
 /** 测试登出：清会话与 `sessionStorage`，避免用例之间互相污染。 */

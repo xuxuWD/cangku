@@ -37,10 +37,15 @@ _SEMVER_RE = re.compile(SEMVER_PATTERN)
 SKILL_KEY_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
 _SKILL_KEY_RE = re.compile(SKILL_KEY_PATTERN)
 
-# 可审核 / 管理本租户技能包的岗位（§2.3：人工审核仅超级管理员）。
-REVIEW_ROLES = frozenset({"super_admin"})
+# 可审核 / 管理本租户技能包的岗位。**口径 = `permission-matrix.md` §3「技能：复核/启用/停用」行**
+# （`ceo` ✅ / `super_admin` ✅ / 其余 ❌）。2026-09-20 第 8 轮：实现原只收 `super_admin`，
+# 与矩阵冲突（与第 7 轮知识域 P0 同一类），按「实现向矩阵对齐、不改矩阵口径」修复。
+REVIEW_ROLES = frozenset({"ceo", "super_admin"})
 # 可提交技能包的岗位（§2.3：customer_admin 不参与技能申报，参照对话层 CONVERSING_ROLES 思路）。
 SUBMIT_ROLES = frozenset({"employee", "department_lead", "ceo", "super_admin"})
+# 可绑定 / 解绑技能到数字员工的岗位。矩阵 §3 **未列**「绑定」行 ⇒ 沿用原口径不动（仅 `super_admin`）：
+# 本轮只对齐矩阵已列的三动作（复核 / 启用 / 停用），**不顺手放开绑定**（超范围即越界）。
+BIND_ROLES = frozenset({"super_admin"})
 
 
 class SkillStatus(StrEnum):
@@ -141,14 +146,25 @@ def ensure_can_submit(context: UserContext) -> None:
 
 
 def can_review(context: UserContext) -> bool:
-    """是否可审核 / 管理本租户技能包（仅超级管理员）。"""
+    """是否可审核 / 启用 / 停用本租户技能包（矩阵 §3 管理行：`ceo` + `super_admin`）。"""
     return context.role in REVIEW_ROLES
 
 
 def ensure_can_review(context: UserContext) -> None:
-    """审核前置判定：仅超级管理员可审核；否则 403。"""
+    """审核 / 启停前置判定：仅企业负责人或超级管理员；否则 403（与知识治理同口径文案）。"""
     if not can_review(context):
-        raise PolicyError("只有超级管理员可以审核或启用技能包")
+        raise PolicyError("只有企业负责人或超级管理员可以审核或启用技能包")
+
+
+def can_bind(context: UserContext) -> bool:
+    """是否可绑定 / 解绑技能到数字员工（契约 §1：仅 `super_admin`）。"""
+    return context.role in BIND_ROLES
+
+
+def ensure_can_bind(context: UserContext) -> None:
+    """绑定 / 解绑前置判定：仅超级管理员；否则 403。"""
+    if not can_bind(context):
+        raise PolicyError("只有超级管理员可以绑定或解绑技能")
 
 
 def skill_visible_to(context: UserContext, skill: Skill) -> bool:

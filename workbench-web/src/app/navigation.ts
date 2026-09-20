@@ -1,7 +1,8 @@
 /**
  * 导航定义（第 1 轮只定义入口，不接业务）。
  *
- * 员工可见 4 项；管理员在员工这 4 项之外**额外**可见 4 项（合计 8 项）。
+ * 员工可见 5 项（第 8 轮起「Skill & MCP」对四个业务角色开放，见下 SKILL_ROLES）；
+ * 管理员在其之外**额外**可见 3 项（合计 8 项）。
  * 每项带 `roles` 可见角色集合，界面按当前角色过滤 —— 这只是界面自适应，
  * 真实权限必须由服务端校验（前端隐藏入口不算权限控制）。
  */
@@ -54,6 +55,16 @@ const ALL_ROLES: readonly Role[] = ['employee', 'department_lead', 'ceo', 'super
 const ADMIN_ONLY: readonly Role[] = ['super_admin']
 
 /**
+ * 「Skill & MCP」入口的可见角色（**第 8 轮矩阵 §3 裁决**）。
+ *
+ * 矩阵 §3「技能：提交（自带 Skill 包）」= 四个角色 ✅ / `customer_admin` ❌；
+ * 「技能：复核/启用/停用」= `ceo` + `super_admin` ✅。
+ * ⇒ 该入口对四个业务角色开放（**同轮开放员工侧提交入口**，此前是 `ADMIN_ONLY`）；
+ * `customer_admin` 没有任何技能能力，入口**不显示**（页面另有整页无权限态兜底）。
+ */
+const SKILL_ROLES: readonly Role[] = ['employee', 'department_lead', 'ceo', 'super_admin']
+
+/**
  * 是否处于开发模式（**构建期常量**）。
  * 用 `MODE === 'development'`（`vite dev`）而不是 `DEV`：后者在 vitest 下也为真，
  * 会让样品页混进测试与业务导航。
@@ -72,15 +83,15 @@ const DEV_NAV_ITEMS: readonly NavItem[] = IS_DEV_MODE
 
 /** 全部导航项（顺序即展示顺序；开发期入口排在最后）。 */
 export const NAV_ITEMS: readonly NavItem[] = [
-  // 员工可见的 4 项
+  // 员工可见的 5 项（第 8 轮起含「Skill & MCP」）
   { key: 'my-workbench', title: '我的工作台', icon: AppstoreOutlined, roles: ALL_ROLES },
   { key: 'my-agents', title: '我的数字员工', icon: RobotOutlined, roles: ALL_ROLES },
   { key: 'knowledge', title: '知识库', icon: BookOutlined, roles: ALL_ROLES },
+  { key: 'skills-mcp', title: 'Skill & MCP', icon: ApiOutlined, roles: SKILL_ROLES },
   { key: 'team', title: '团队协作', icon: TeamOutlined, roles: ALL_ROLES },
-  // 管理员额外可见的 4 项
+  // 管理员额外可见的 3 项
   { key: 'agent-admin', title: '数字员工管理', icon: DeploymentUnitOutlined, roles: ADMIN_ONLY },
   { key: 'permissions', title: '权限配置', icon: SafetyCertificateOutlined, roles: ADMIN_ONLY },
-  { key: 'skills-mcp', title: 'Skill & MCP', icon: ApiOutlined, roles: ADMIN_ONLY },
   { key: 'audit-log', title: '审计日志', icon: AuditOutlined, roles: ADMIN_ONLY },
   ...DEV_NAV_ITEMS,
 ]

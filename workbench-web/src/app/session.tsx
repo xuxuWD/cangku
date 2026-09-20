@@ -31,6 +31,14 @@ export const ROLE_LABEL: Record<Role, string> = {
 export const TOKEN_STORAGE_KEY = 'workbench.token'
 /** 角色提示键：仅用于**界面呈现**（刷新后仍能画出正确的导航）；安全边界在服务端。 */
 export const ROLE_STORAGE_KEY = 'workbench.role'
+/**
+ * 本人账号标识键（第 8 轮新增）：登录响应里的 `user_id`。
+ *
+ * 为什么要存：技能域契约 §3 要求「不能审核自己提交的包」在界面上按"提交人 = 自己"**预置禁用 + 给原因**
+ * （服务端仍会再判一次 `403`）。此前会话只存令牌与角色，界面无法知道自己是谁。
+ * 它只是**呈现用**的不透明标识（非手机号），不进 URL、不进日志。
+ */
+export const USER_STORAGE_KEY = 'workbench.user'
 
 function sessionStore(): Storage | null {
   try {
@@ -51,12 +59,18 @@ export function readStoredRole(): Role | null {
   return raw && raw in ROLE_LABEL ? (raw as Role) : null
 }
 
+/** 读存下来的本人账号标识（刷新后恢复"是不是自己提交的"判断用）。 */
+export function readStoredUserId(): string | null {
+  return sessionStore()?.getItem(USER_STORAGE_KEY) ?? null
+}
+
 /** 写本地会话（登录成功后调用）。 */
-export function persistSession(token: string, role: Role): void {
+export function persistSession(token: string, role: Role, userId: string): void {
   const store = sessionStore()
   if (!store) return
   store.setItem(TOKEN_STORAGE_KEY, token)
   store.setItem(ROLE_STORAGE_KEY, role)
+  store.setItem(USER_STORAGE_KEY, userId)
 }
 
 /** 清本地会话（登出 / 401 / 令牌失效）。 */
@@ -65,35 +79,40 @@ export function clearStoredSession(): void {
   if (!store) return
   store.removeItem(TOKEN_STORAGE_KEY)
   store.removeItem(ROLE_STORAGE_KEY)
+  store.removeItem(USER_STORAGE_KEY)
 }
 
 export interface SessionState {
   status: 'anonymous' | 'authenticated'
   token: string | null
   role: Role | null
+  /** 本人账号标识（服务端登录响应 `user_id`；仅界面呈现用，安全边界在服务端）。 */
+  userId: string | null
   /** 顶栏展示名：用角色名（后端未返回展示名，**不编造姓名**）。 */
   displayName: string
   /** 登录成功：令牌已落 sessionStorage。 */
-  signIn: (input: { token: string; role: Role }) => void
+  signIn: (input: { token: string; role: Role; userId: string }) => void
   /** 本地登出（服务端登出由 `authService.logout` 负责）。 */
   signOut: () => void
 }
 
 const initialToken = readToken()
 const initialRole = readStoredRole()
+const initialUserId = readStoredUserId()
 
 export const useSession = create<SessionState>((set) => ({
   status: initialToken ? 'authenticated' : 'anonymous',
   token: initialToken,
   role: initialRole,
+  userId: initialUserId,
   displayName: initialRole ? ROLE_LABEL[initialRole] : '',
-  signIn: ({ token, role }) => {
-    persistSession(token, role)
-    set({ status: 'authenticated', token, role, displayName: ROLE_LABEL[role] })
+  signIn: ({ token, role, userId }) => {
+    persistSession(token, role, userId)
+    set({ status: 'authenticated', token, role, userId, displayName: ROLE_LABEL[role] })
   },
   signOut: () => {
     clearStoredSession()
-    set({ status: 'anonymous', token: null, role: null, displayName: '' })
+    set({ status: 'anonymous', token: null, role: null, userId: null, displayName: '' })
   },
 }))
 
@@ -113,6 +132,7 @@ export type Capability =
   | 'knowledge.register'
   | 'knowledge.manage'
   | 'skill.manage'
+  | 'skill.submit'
   | 'audit.view'
   | 'data.export'
   | 'data.delete'
@@ -125,6 +145,7 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
   'knowledge.register': '知识文档登记',
   'knowledge.manage': '知识库管理',
   'skill.manage': 'Skill & MCP 管理',
+  'skill.submit': 'Skill 包提交',
   'audit.view': '审计日志查看',
   'data.export': '数据导出',
   'data.delete': '数据删除',
@@ -146,6 +167,13 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
 const ACCESS_ROLES: readonly Role[] = ['employee', 'department_lead', 'ceo', 'super_admin']
 const GOVERNANCE_ROLES: readonly Role[] = ['ceo', 'super_admin']
 
+/**
+ * **2026-09-20 技能域对齐矩阵 §3（第 8 轮）**：`permission-matrix.md` §3「技能」两行 ⇒
+ * 提交（自带 Skill 包）对四个角色开放，复核 / 启用 / 停用仅 `ceo` + `super_admin`，
+ * `customer_admin` 在技能域一律 ❌（不授予任何能力，导航也不显示入口）。
+ * 后端同一口径见 `app/skills/models.py` 的 `SUBMIT_ROLES` / `REVIEW_ROLES`
+ * （复核行本轮由 `{super_admin}` 扩为 `{ceo, super_admin}`；**绑定不在此列**，后端仍仅 `super_admin`）。
+ */
 const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
   super_admin: [
     'agent.manage',
@@ -154,13 +182,22 @@ const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
     'knowledge.register',
     'knowledge.manage',
     'skill.manage',
+    'skill.submit',
     'audit.view',
     'data.export',
     'data.delete',
   ],
-  ceo: ['knowledge.search', 'knowledge.register', 'knowledge.manage', 'audit.view', 'data.export'],
-  department_lead: ['knowledge.search', 'knowledge.register', 'data.export'],
-  employee: ['knowledge.search', 'knowledge.register'],
+  ceo: [
+    'knowledge.search',
+    'knowledge.register',
+    'knowledge.manage',
+    'skill.manage',
+    'skill.submit',
+    'audit.view',
+    'data.export',
+  ],
+  department_lead: ['knowledge.search', 'knowledge.register', 'skill.submit', 'data.export'],
+  employee: ['knowledge.search', 'knowledge.register', 'skill.submit'],
   customer_admin: [],
 }
 
@@ -175,6 +212,8 @@ export const CAPABILITY_ROLES: Partial<Record<Capability, readonly Role[]>> = {
   'knowledge.search': ACCESS_ROLES,
   'knowledge.register': ACCESS_ROLES,
   'knowledge.manage': GOVERNANCE_ROLES,
+  'skill.submit': ACCESS_ROLES,
+  'skill.manage': GOVERNANCE_ROLES,
 }
 
 /** 角色显示名（`null` = 未登录 ⇒ "未登录"）：避免各处对可空角色做下标。 */

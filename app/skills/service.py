@@ -22,6 +22,7 @@ from .models import (
     SkillBinding,
     SkillError,
     SkillStatus,
+    ensure_can_bind,
     ensure_can_review,
     ensure_can_submit,
     normalize_status,
@@ -145,7 +146,7 @@ class SkillService:
         return saved
 
     def review_skill(self, context: UserContext, skill_key: str, version: str, *, approved: bool) -> Skill:
-        """人工审核（仅 super_admin）：提交人不能审核自己提交的包（生成者 ≠ 评审者，§2.3）。"""
+        """人工审核（矩阵 §3 管理行：`ceo` / `super_admin`）：提交人不能审核自己提交的包（生成者 ≠ 评审者，§2.3）。"""
         ensure_can_review(context)
         skill = self.store.get(context, skill_key, version)
         if skill.owner_id == context.user_id:
@@ -160,7 +161,7 @@ class SkillService:
         return reviewed
 
     def enable_skill(self, context: UserContext, skill_key: str, version: str) -> Skill:
-        """启用技能（管理动作，仅 super_admin）；`enabled ⇄ disabled` 可回退。"""
+        """启用技能（管理动作，矩阵 §3：`ceo` / `super_admin`）；`enabled ⇄ disabled` 可回退。"""
         ensure_can_review(context)
         saved = self.store.enable(context, skill_key, version)
         self._record(
@@ -172,7 +173,7 @@ class SkillService:
         return saved
 
     def disable_skill(self, context: UserContext, skill_key: str, version: str) -> Skill:
-        """停用技能（管理动作，仅 super_admin）。"""
+        """停用技能（管理动作，矩阵 §3：`ceo` / `super_admin`）。"""
         ensure_can_review(context)
         saved = self.store.disable(context, skill_key, version)
         self._record(
@@ -184,8 +185,12 @@ class SkillService:
         return saved
 
     def bind_skill(self, context: UserContext, agent_key: str, skill_key: str, *, created_by: str | None = None) -> SkillBinding:
-        """把已登记技能绑定到某数字员工（UPSERT active）。"""
-        ensure_can_review(context)
+        """把已登记技能绑定到某数字员工（UPSERT active）。
+
+        角色口径**独立于复核**：矩阵 §3 未列「绑定」行 ⇒ 仅 `super_admin`（`ensure_can_bind`），
+        不随本轮 `ceo` 的复核 / 启停对齐一起放开。
+        """
+        ensure_can_bind(context)
         binding = self.store.bind_skill(
             context, agent_key, skill_key, created_by=created_by or context.user_id
         )
@@ -198,8 +203,8 @@ class SkillService:
         return binding
 
     def unbind_skill(self, context: UserContext, agent_key: str, skill_key: str) -> SkillBinding:
-        """解除某员工对该技能的绑定（active → disabled）。"""
-        ensure_can_review(context)
+        """解除某员工对该技能的绑定（active → disabled）；角色口径同绑定（仅 `super_admin`）。"""
+        ensure_can_bind(context)
         binding = self.store.unbind_skill(context, agent_key, skill_key)
         self._record(
             context,

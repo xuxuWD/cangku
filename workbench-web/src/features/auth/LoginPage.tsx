@@ -45,7 +45,7 @@ export function LoginPage({ externalNotice = null }: { externalNotice?: string |
         password: values.password,
         totp_code: values.totp_code?.trim() || undefined,
       })
-      signIn({ token: session.access_token, role: session.role })
+      signIn({ token: session.access_token, role: session.role, userId: session.user_id })
       if (session.scope === TOTP_ENROLLMENT_SCOPE) {
         // 如实告知：受限会话（动态验证码登记中），不能假装是完整会话
         setNotice('当前为动态验证码登记会话，可用范围受限；完成登记后请重新登录。')

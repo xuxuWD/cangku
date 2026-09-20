@@ -39,7 +39,10 @@
 | D-024 | 2026-09-19 | **第 7 轮两项缺口修复（用户裁决后实施）**：① **P0**「知识端点对 `employee` 全量 `403`」⇒ 裁决**全量对齐矩阵 §3**，落地三档角色集合（`SEARCH_ROLES`/`REGISTER_ROLES` = 四角色；`GOVERNANCE_ROLES` = `ceo`+`super_admin`）+ `register_document` 改走登记闸门 + 绑定面委派同一集合；**安全要件**：非管理角色检索**自身角色自限**（`role_key == 自身角色`、`agent_key` 不开放）——因 `resolve` 不校验调用者身份，否则可读他人知识范围；② **P1**「`draft` + 复核绕过 owner 闸门」⇒ 裁决**双管**：复核前置状态收窄为 `needs_review`/`under_review`（`draft`/`published` ⇒ `409`）+ 通过路径 owner 非空（空 ⇒ `422`）；③ **界面同轮对齐**（能力分档 + 知识页三视图 + 自限检索不渲染身份选择） | 用户 2026-09-19 四项裁决（模块 / P0 档位 / P1 方式 / 开工顺序）+ 「自身角色自限」「界面同轮对齐」两问；矩阵 §3 为唯一权威（本次是实现对齐、非改口径）；证据见 `knowledge-api.md` §11、`permission-matrix.md` §12 | ✅ 已实施（后端 `pytest` 退出码 0、前端 tsc 0 + vitest 265/265，反假三组） |
 | D-025 | 2026-09-19 | **残留缺口（P0 修复带出的跨面依赖）已裁决：维持现状 + 改矩阵标注**。事实：矩阵 §3「知识：授权绑定」对 `ceo` 标 ✅，但写路径还要过**岗位目录**闸门（`app/workforce/store.py::_ensure_admin`，仍仅 `super_admin`）⇒ `ceo` 实际**只能读、不能写**绑定。**裁决（用户 2026-09-19）**：不放宽目录闸门（属 OP-01 岗位目录面的权限模型，**另立专项**），§3 该行按当前事实改标「⚠️ 读可、写待目录放开」，待该面放宽后恢复 ✅。**另一处结构性缺口（登记）**：无 user→岗位 / 数字员工 归属链 ⇒ 非管理角色只能"按自身角色键"命中绑定（"真正按岗位"需等 Schema / 岗位实体线，ADR-0004） | 实施中发现（`tests/test_knowledge_access_directory_gate.py::test_ceo_passes_knowledge_gate_but_directory_gate_still_blocks` 钉住事实）；依据 `app/workforce/store.py:107-109`；用户 2026-09-19 裁决 | ✅ 已裁决（标注见 `permission-matrix.md` §3 脚注 2 / §12） |
 
-> **⚠️ 本轮取证副作用（如实登记）**：执行 `review?approved=true` 探针时，`probe-admin-1` 由 `draft` **被置为 `published`**
+| D-026 | 2026-09-20 | **第 8 轮「Skill & MCP」（AD-03）已交付 + 同轮修复两处缺口**：① **矩阵对齐**——`permission-matrix.md` §3「技能：复核/启用/停用 = `ceo` ✅」与实现不符（`REVIEW_ROLES` 原仅 `{super_admin}`，`ceo` 一律 `403`；与第 7 轮知识域 P0 同一类）⇒ **实现向矩阵对齐**：`REVIEW_ROLES` 扩为 `{ceo, super_admin}`，文案改「只有企业负责人或超级管理员可以审核或启用技能包」；② **`bind` 恒 `500` 修复**——`POST /api/v1/skills/bindings` 误声明 `response_model=SkillView`（返回绑定形状 ⇒ 序列化 `ResponseValidationError`）⇒ 新增 `SkillBindingResponse(skill_key, agent_key, status)` 并在 `POST`/`DELETE` 两处声明，**业务逻辑零改动**；③ **绑定口径刻意不动**——矩阵 §3 **未列**「绑定」行 ⇒ 新增独立 `BIND_ROLES`（仍仅 `super_admin`），**不随复核对齐顺带放开**；④ 前端交付 `workbench-web/src/features/skillsMcp/**`（管理视图 = 列表 + 审核/启停 + 详情正文；员工视图 = 提交表单 + 只读列表；MCP 如实「尚未接入」；四态齐备、非法动作禁用 + 原因、**自审按"提交人 = 自己"预置禁用**）、导航四角色可见、能力分档 `skill.manage` + `skill.submit`、会话新增本人账号标识（`workbench.user`）；⑤ 门禁：后端 `2527 passed / 0 failed` + `compileall` 0；前端 `tsc` 0 / `vitest` 300 / `build` 成功 + 产物 grep（本模块样例键 0、`console.log` 0）；⑥ 反假 5 组（回退 `REVIEW_ROLES` ⇒ 2 红；去 owner 闸门 ⇒ 2 红；回退 `response_model` ⇒ 复现 500；导航回退 `ADMIN_ONLY` ⇒ 3 红；去自审预置 ⇒ 2 红）；⑦ 真机（`127.0.0.1:18112` + 真库 `wiring-evidence`）：`bind 200` + `tools ["fs.read"]` + 员工 / ceo 绑定 `403` + ceo 复核 / 启停 `200` + 查库与审计逐条对上 + 浏览器走查两角色（员工**看不到**他人未审包 ⇒ 可见性收敛生效） | 用户 2026-09-20 四项裁决（契约已确认 / 对齐矩阵 / 员工入口同轮开放 / `bind` 本轮修）；契约 `docs/contracts/skills-mcp-api.md` §1/§6/§7/§8；后端契约真源 `docs/api-contract.md` 同步更正 | ✅ 已交付（自跑复核：后端/前端门禁全绿 + 真机取证 + 反假 5 组） |
+| D-027 | 2026-09-20 | **第 8 轮口径限制（如实登记，不得读成已验）**：① `ceo` 的**真机**复核 / 启停走的是**开发模式头身份**（`X-User-Role: ceo`，本机**无真 `ceo` 账号**——造 ceo 需走注册 + 审批流程；**生产环境不允许**头身份）⇒ 「真 ceo 走登录令牌」路径未在真机验证（API 层用例覆盖同一份角色判定）；② 前端工具键下拉是**提示集合**（13 键取自 `app/tool_execution/catalog.py`），后端新增键时需前端同步，**该同步缺口未自动化**；③ 产物「示例数据」字样命中 1 处来自第 6 轮 `permissionsService.SAMPLE_DESCRIPTION`（未做 DEV 门控）——**既有缺口，D-023 已登记待整改，本轮未动该文件（`git diff` 空）** | 本轮真机与门禁实测；`skills-mcp-api.md` §6 | ✅ 已登记（待裁决；②③ 不属本模块范围） |
+
+> **⚠️ 第 7 轮取证副作用（如实登记，承接 D-023）**：执行 `review?approved=true` 探针时，`probe-admin-1` 由 `draft` **被置为 `published`**
 > （`owner_id` 仍为空），真库指标随之变为 `published=2 / archived=1 / total=3 / freshness_ratio≈0.667`。
 > 后端**无"取消发布/回到草稿"接口**（`archived` 为终态），本轮**未做**任何补偿性写入；处置待你裁决（保留现状 / 归档该行 / DB 重置由你在服务器执行）。
 
@@ -52,6 +55,18 @@
 - **真库残留行（第 7 轮取证产生，后端无删除接口；**处置待你裁决**：保留现状 / 归档 / 由你在服务器执行 DB 重置）**：`workbench_knowledge_documents` 3 行 —— `probe-admin-1`（交付探针，被复核探针置为 `published`、`owner_id` 空）、`r7-reviewer-a`（收口登记探针，`draft`、`owner_id` 空）、`r7-reviewer-b`（收口全流程探针，`archived`、`owner=acct-reviewer-probe`）；另有 WeKnora 侧 2 篇取证文档与 5 个 `wk-*` 容器随实例一并清理（清单见 `knowledge-module-plan.md` §8.4）。
 - **真库新增 1 行（P0/P1 真机验证产生，2026-09-19）**：`r8-p1-probe`（`published`，`owner=acct-owner-probe`）—— 用于验证「`draft` 复核 ⇒ `409`」与「`published` 复核退回 ⇒ `409`」；两次被拒**未改写其状态**（查库已核对）。处置同上一行（待裁决）。
 - **第 7 轮临时物（建议保留为走查证据）**：`tmp/r7-knowledge-walkthrough.mjs`（凭据只走环境变量）、`docs/screenshots/ui-v2-r7-knowledge/`（5 张）；系统临时目录内的探针请求 / 响应文件（`%TEMP%\r7-*`、`kb-probe-*`）不入库，随系统清理。
+- **真库技能层探针数据（第 8 轮取证产生；后端无删除接口 ⇒ 本轮未物理删除，处置待你裁决：保留 / 由你在服务器执行 DB 重置）**：
+  `workbench_skills` 3 行 —— `r8-probe-skill@1.0.0`（本轮被启用 ⇒ 现为 **`enabled`**；另有绑定行，见下）、
+  `r8-self-probe@1.0.0`（`submitted`，超管自提交、**故意留作"不能自审"的界面演示数据**）、
+  `r8-ceo-probe@1.0.0`（**本轮新增**：员工提交 → ceo 复核 `approved`，用于核对 ceo 复核闸门）；
+  `workbench_skill_bindings` 1 行 —— `probe-agent ↔ r8-probe-skill`（`active`；由**旧的 `bind` 500 缺陷**在序列化前写入，
+  本轮修复前查库已确认存在、修复后走幂等返回同一行）。**审计留痕**：`skill.submitted / approved / enabled / disabled`
+  对应行均已落 `workbench_audit_log`（target_type=`skill`，含 `acct-ceo-probe` 的三条）。
+- **第 8 轮临时物（建议保留为走查证据）**：`tmp/r8-bind-verify.py`（真机核对脚本，令牌只在本进程内存、**不落盘**）、
+  `docs/screenshots/ui-v2-r8-skills/`（3 张：管理视图列表 / 详情正文 / 员工只读视图）；
+  `%TEMP%\r8-*`（旧探针载荷与令牌文件）不入库，随系统清理 —— 其中令牌文件为**旧会话令牌**（时效 15 分钟，早已过期）。
+- **旧令牌文件建议清理（待你确认）**：`%TEMP%\r8-admin.txt` / `%TEMP%\r8-emp.txt`（旧探针登录令牌；**已过期**，
+  但按纪律不擅自删除，等你点头后我删）。
 
 ## 测试等待上限（两处，均只放宽等待、不放宽断言）
 

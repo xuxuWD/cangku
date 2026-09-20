@@ -22,27 +22,37 @@ function menuItems(): HTMLElement[] {
 }
 
 describe('AppShell（第 1 轮应用壳）', () => {
-  it('导航定义本身是既定的 4 + 4 结构，开发辅助入口不计入业务导航', () => {
-    expect(navItemsForRole('employee')).toHaveLength(4)
+  it('导航定义本身是既定的 5 + 3 结构，开发辅助入口不计入业务导航', () => {
+    expect(navItemsForRole('employee')).toHaveLength(5)
     expect(navItemsForRole('super_admin')).toHaveLength(8)
     // 「组件样品」入口是**构建期**决定的：测试模式（MODE=test）下它根本不在表里。
     expect(NAV_ITEMS.some((item) => item.key === 'components-playground')).toBe(false)
+    // 第 8 轮起「Skill & MCP」对四个业务角色开放（矩阵 §3「技能：提交」含 employee ✅）
     expect(navItemsForRole('employee').map((item) => item.key)).toEqual([
+      'my-workbench',
+      'my-agents',
+      'knowledge',
+      'skills-mcp',
+      'team',
+    ])
+    // 第 6 轮起角色由服务端下发（共 5 个）：任何一个角色都得至少取到一项，
+    // 否则壳里 `visibleItems[0]` 落空会整页崩掉。
+    for (const role of ['department_lead', 'ceo'] as const) {
+      expect(navItemsForRole(role).map((item) => item.key)).toEqual([
+        'my-workbench',
+        'my-agents',
+        'knowledge',
+        'skills-mcp',
+        'team',
+      ])
+    }
+    // `customer_admin` 在技能域一律 ❌ ⇒ 入口不显示（页面另有整页无权限态兜底）
+    expect(navItemsForRole('customer_admin').map((item) => item.key)).toEqual([
       'my-workbench',
       'my-agents',
       'knowledge',
       'team',
     ])
-    // 第 6 轮起角色由服务端下发（共 5 个）：任何一个角色都得至少取到一项，
-    // 否则壳里 `visibleItems[0]` 落空会整页崩掉。
-    for (const role of ['department_lead', 'ceo', 'customer_admin'] as const) {
-      expect(navItemsForRole(role).map((item) => item.key)).toEqual([
-        'my-workbench',
-        'my-agents',
-        'knowledge',
-        'team',
-      ])
-    }
   })
 
   it('开发辅助入口（组件样品）只在开发模式出现；出现时可懒加载出样品页', async () => {
@@ -62,15 +72,21 @@ describe('AppShell（第 1 轮应用壳）', () => {
     expect(await screen.findByText('StatCard：数值与状态保真')).toBeInTheDocument()
   })
 
-  it('员工角色只渲染 4 个导航项', () => {
+  it('员工角色渲染 5 个导航项（第 8 轮起含 Skill & MCP）', () => {
     signInAs('employee')
     renderWithProviders(<AppShell />)
     const items = menuItems()
-    expect(items).toHaveLength(4)
-    expect(items.map((item) => item.textContent)).toEqual(['我的工作台', '我的数字员工', '知识库', '团队协作'])
+    expect(items).toHaveLength(5)
+    expect(items.map((item) => item.textContent)).toEqual([
+      '我的工作台',
+      '我的数字员工',
+      '知识库',
+      'Skill & MCP',
+      '团队协作',
+    ])
   })
 
-  it('管理员渲染 8 个导航项（角色自适应，含 4 个管理员专有项）', () => {
+  it('管理员渲染 8 个导航项（角色自适应，含 3 个管理员专有项）', () => {
     signInAs('super_admin')
     renderWithProviders(<AppShell />)
     const items = menuItems()
@@ -79,10 +95,10 @@ describe('AppShell（第 1 轮应用壳）', () => {
       '我的工作台',
       '我的数字员工',
       '知识库',
+      'Skill & MCP',
       '团队协作',
       '数字员工管理',
       '权限配置',
-      'Skill & MCP',
       '审计日志',
     ])
   })
@@ -117,7 +133,7 @@ describe('AppShell（第 1 轮应用壳）', () => {
 
     // 第 6 轮起角色切换只能来自服务端（重登）；这里直接改写会话，验证壳的回落逻辑没坏。
     act(() => signInAs('employee'))
-    expect(menuItems()).toHaveLength(4)
+    expect(menuItems()).toHaveLength(5)
     expect(pageTitle()).toHaveTextContent('我的工作台')
   })
 

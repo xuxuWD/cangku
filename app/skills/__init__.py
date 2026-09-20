@@ -5,6 +5,7 @@
 """
 
 from .models import (
+    BIND_ROLES,
     BindingStatus,
     InvalidSkillPackage,
     LICENSE_ALLOWLIST,
@@ -21,8 +22,10 @@ from .models import (
     SkillStateConflict,
     SkillStatus,
     SUBMIT_ROLES,
+    can_bind,
     can_review,
     can_submit,
+    ensure_can_bind,
     ensure_can_review,
     ensure_can_submit,
     normalize_license,
@@ -37,6 +40,7 @@ from .store import InMemorySkillStore, PostgresSkillStore, SkillStore
 from .validator import SkillPackageSpec, SkillPackageValidator
 
 __all__ = [
+    "BIND_ROLES",
     "BindingStatus",
     "InvalidSkillPackage",
     "LICENSE_ALLOWLIST",
@@ -53,8 +57,10 @@ __all__ = [
     "SkillStateConflict",
     "SkillStatus",
     "SUBMIT_ROLES",
+    "can_bind",
     "can_review",
     "can_submit",
+    "ensure_can_bind",
     "ensure_can_review",
     "ensure_can_submit",
     "normalize_license",

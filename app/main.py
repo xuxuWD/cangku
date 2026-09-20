@@ -2731,6 +2731,19 @@ class SkillBindRequest(BaseModel):
     agent_key: str = Field(min_length=1, max_length=64)
 
 
+class SkillBindingResponse(BaseModel):
+    """绑定 / 解绑响应（契约 §1：`{skill_key, agent_key, status}`）。
+
+    2026-09-20 缺陷修复：`POST /api/v1/skills/bindings` 原先误声明 `response_model=SkillView`，
+    而处理函数返回的是本形状 ⇒ FastAPI 序列化阶段抛 `ResponseValidationError`（缺 7 个字段）⇒ 恒 `500`。
+    本模型与 `DELETE`（同形状、原先未声明）逐字一致。
+    """
+
+    skill_key: str
+    agent_key: str
+    status: str
+
+
 class SkillExpandResponse(BaseModel):
     agent_key: str
     tools: list[str]
@@ -2852,28 +2865,32 @@ def disable_skill(skill_key: str, version: str, context: UserContext = Depends(c
     return _skill_view(skill)
 
 
-@app.post("/api/v1/skills/bindings", response_model=SkillView)
-def bind_skill(payload: SkillBindRequest, context: UserContext = Depends(current_user)) -> dict[str, str]:
-    """绑定技能到数字员工（管理动作）。"""
+@app.post("/api/v1/skills/bindings", response_model=SkillBindingResponse)
+def bind_skill(payload: SkillBindRequest, context: UserContext = Depends(current_user)) -> SkillBindingResponse:
+    """绑定技能到数字员工（管理动作，仅 super_admin）。"""
     try:
         skills_service.bind_skill(context, payload.agent_key, payload.skill_key)
     except (InvalidSkillPackage, SkillNotFound, SkillStateConflict, PolicyError) as exc:
         _raise_skill_http(exc)
-    return {"skill_key": payload.skill_key, "agent_key": payload.agent_key, "status": "active"}
+    return SkillBindingResponse(
+        skill_key=payload.skill_key, agent_key=payload.agent_key, status="active"
+    )
 
 
-@app.delete("/api/v1/skills/bindings")
+@app.delete("/api/v1/skills/bindings", response_model=SkillBindingResponse)
 def unbind_skill(
     skill_key: str = Query(...),
     agent_key: str = Query(...),
     context: UserContext = Depends(current_user),
-) -> dict[str, str]:
-    """解绑技能（管理动作）：active → disabled。"""
+) -> SkillBindingResponse:
+    """解绑技能（管理动作，仅 super_admin）：active → disabled。"""
     try:
         skills_service.unbind_skill(context, agent_key, skill_key)
     except (InvalidSkillPackage, SkillNotFound, SkillStateConflict, PolicyError) as exc:
         _raise_skill_http(exc)
-    return {"skill_key": skill_key, "agent_key": agent_key, "status": "disabled"}
+    return SkillBindingResponse(
+        skill_key=skill_key, agent_key=agent_key, status="disabled"
+    )
 
 
 @app.get("/api/v1/skills/agents/{agent_key}/tools", response_model=SkillExpandResponse)
