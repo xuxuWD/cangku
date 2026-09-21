@@ -31,6 +31,7 @@ import type {
   BindingType,
   DirectoryStatus,
   KnowledgeAuditEntry,
+  KnowledgeBaseCandidateList,
   KnowledgeBinding,
   ScopePage,
   ScopeRow,
@@ -72,11 +73,28 @@ export const MOCK_WRITE_NOTE: string = import.meta.env.DEV
   : ''
 
 /**
- * 候选来源的固定说明（**界面必须写明**，契约 §3 要求）。
- * 用业务措辞表达"后端暂无枚举接口"这一事实，不出现开发术语。
+ * 候选来源的固定说明（**清单取到时**，第 15 轮起）。
+ *
+ * 口径变更（2026-09-21）：此前候选只能取"现有绑定并集"、且后端无枚举接口（旧文案"平台暂无可选清单"）；
+ * 本轮接上 `GET /api/v1/knowledge/bases`（上游知识库清单）⇒ 候选有真源，但**平台仍不校验手输值**，
+ * 这句话必须留着（诚实告知，不承诺平台能拦住配错）。
  */
 export const CANDIDATE_NOTE =
-  '候选来自现有绑定；新库标识需手动录入（平台暂无可选清单，已登记待补）。'
+  '候选来自知识库清单；也可直接输入标识 —— 平台无法校验标识是否存在，请与知识库的实际标识保持一致。'
+
+/** 清单**没取到**（服务端降级）时的如实说明：说"没取到"，**绝不**说"没有知识库"。 */
+export const CANDIDATE_UNAVAILABLE_NOTE =
+  '未能获取知识库清单，以下为已绑定过的标识；可直接输入标识。'
+
+/** 清单请求**失败**（网络 / 权限 / 服务错误）时的说明：同样只说"没取到"，可继续手输。 */
+export const CANDIDATE_ERROR_NOTE = '未能获取知识库清单；可直接输入标识。'
+
+/** 清单加载中。 */
+export const CANDIDATE_LOADING_NOTE = '正在获取知识库清单…'
+
+/** 手输 / 已绑定但不在清单里的标识 ⇒ 黄色提醒文案（**不阻断保存**）。 */
+export const CANDIDATE_UNKNOWN_NOTE =
+  '该标识未出现在知识库清单中，请再确认拼写；保存后若知识库里不存在该标识，检索将无结果。'
 
 /** 「角色知识范围」空态：解释**为什么空**，而不是显示"0 条绑定"。 */
 export const ROLE_EMPTY_NOTE =
@@ -92,7 +110,7 @@ export const AUDIT_EMPTY_NOTE = '暂无变更记录。'
 /** 已接入真实数据时的说明（与「示例数据」标识互斥，避免含糊）。 */
 export const CONNECTED_NOTICE = '已接入真实数据'
 export const CONNECTED_DESCRIPTION =
-  '岗位、数字员工与知识范围均来自服务端；候选标识来自现有绑定，新库标识需手动录入（平台暂无可选清单）。'
+  '岗位、数字员工与知识范围均来自服务端；候选标识来自知识库清单，也可直接输入标识。'
 
 /** 样例模式下的说明。 */
 export const SAMPLE_DESCRIPTION = '本页岗位、数字员工与变更记录均为示例数据，不会写入任何数据。'
@@ -145,6 +163,9 @@ function bindingPath(kind: BindingType, key: string): string {
 
 /** 变更记录路径。 */
 const AUDIT_PATH = '/api/v1/knowledge-access/audits'
+
+/** 知识库候选清单路径（第 15 轮新增，只读）。 */
+const KNOWLEDGE_BASES_PATH = '/api/v1/knowledge/bases'
 
 /** 目录条目视图（后端 `JobRoleView` / `DigitalEmployeeView` 的公共键）。 */
 interface DirectoryItemView {
@@ -261,6 +282,42 @@ export async function fetchAudits(
 }
 
 /**
+ * 知识库候选清单：`GET /api/v1/knowledge/bases`（**只读**，第 15 轮）。
+ *
+ * 契约要点（`docs/api-contract.md`「企业知识检索」节）：
+ *  - `upstream_available === false` ⇒ **降级**（清单没取到），此时 `note` **必带**原因、
+ *    `items` 只是"本租户已绑定过的标识"——界面据此如实提示，**绝不**读成「没有知识库」；
+ *  - 形状不符 / 降级却不带 `note` ⇒ **抛错**（不展示臆测内容，也不静默返回空清单）。
+ *
+ * ⚠️ 该端点上游侧**未实调**（无可用上游实例）⇒ 本机真机走的一定是降级分支，
+ * 这是**如实**的结果，不是缺陷；实调补验方式见 `docs/contracts/permissions-fake-entry-plan.md` §11。
+ */
+export async function listKnowledgeBases(fetchImpl?: typeof fetch): Promise<KnowledgeBaseCandidateList> {
+  if (mode === 'mock') return MOCK_KNOWLEDGE_BASES
+
+  try {
+    const list = await request<KnowledgeBaseCandidateList>(KNOWLEDGE_BASES_PATH, { fetchImpl })
+    const shaped =
+      typeof list?.upstream_available === 'boolean' &&
+      (list.source === 'upstream' || list.source === 'local_only') &&
+      Array.isArray(list.items) &&
+      list.items.every(
+        (item) => typeof item?.knowledge_base_id === 'string' && item.knowledge_base_id.length > 0,
+      )
+    if (!shaped) {
+      throw new ServiceError('知识库清单返回的形状不符合约定，本模块不展示臆测内容。', 'failed')
+    }
+    if (!list.upstream_available && typeof list.note !== 'string') {
+      // 降级却不说明原因 ⇒ 会被界面读成"没有知识库"（正是本轮要消掉的谎报）⇒ 直接判为失败
+      throw new ServiceError('知识库清单未能取到，且服务端没有说明原因，本模块不臆测。', 'failed')
+    }
+    return list
+  } catch (error) {
+    serviceErrorFromApi(error)
+  }
+}
+
+/**
  * 保存某行（角色 / 数字员工）的知识范围：`PUT /api/v1/knowledge-access/{roles|agents}/{key}`。
  *
  * - 请求体**只有** `knowledge_base_ids`（后端 `extra="forbid"`，多字段直接 `422`）；
@@ -329,3 +386,24 @@ const MOCK_AUDITS: KnowledgeAuditEntry[] = import.meta.env.DEV
       },
     ]
   : []
+
+/**
+ * 开发期样例知识库清单（虚构内容，无 PII）。**只在 `import.meta.env.DEV` 分支里存在** ⇒
+ * 生产构建里整块被摇掉（构建后 grep 应为 0 命中）。
+ * 刻意含一条 `binding_only`（绑定里有、清单没返回），用于断言"配错 / 库已删"会被提醒出来。
+ */
+const MOCK_KNOWLEDGE_BASES: KnowledgeBaseCandidateList = import.meta.env.DEV
+  ? {
+      upstream_available: true,
+      source: 'upstream',
+      items: [
+        { knowledge_base_id: 'kb-ops-handbook', name: '运营手册', origin: 'upstream' },
+        { knowledge_base_id: 'kb-brand-assets', name: '品牌素材', origin: 'upstream' },
+        { knowledge_base_id: 'kb-tech-docs', name: '研发文档', origin: 'upstream' },
+        { knowledge_base_id: 'kb-finance-policy', name: '财务制度', origin: 'upstream' },
+        { knowledge_base_id: 'kb-api-contract', name: null, origin: 'upstream' },
+        { knowledge_base_id: 'kb-legacy-sample', name: null, origin: 'binding_only' },
+      ],
+      note: null,
+    }
+  : { upstream_available: false, source: 'local_only', items: [], note: '' }

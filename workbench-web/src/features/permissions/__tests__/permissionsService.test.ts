@@ -9,7 +9,7 @@
  *  - 样例模式：**不伪造服务端回读值**（`binding === null`）、`written === false`。
  */
 import { ServiceError } from '../../../utils/serviceKit'
-import { MAX_KNOWLEDGE_BASE_IDS, collectCandidates, normalizeIds, validateIds } from '../types'
+import { MAX_KNOWLEDGE_BASE_IDS, normalizeIds, unknownCandidateIds, validateIds } from '../types'
 import {
   MOCK_WRITE_NOTE,
   ScopeWriteError,
@@ -17,6 +17,7 @@ import {
   fetchAgentScopes,
   fetchAudits,
   fetchRoleScopes,
+  listKnowledgeBases,
   saveScopeBinding,
   setServiceMode,
 } from '../services/permissionsService'
@@ -291,28 +292,89 @@ describe('permissionsService（写路径）', () => {
   })
 })
 
-describe('知识库标识的候选合并与校验（纯函数）', () => {
-  const rows = [
-    { binding_type: 'role' as const, binding_key: 'ops', name: '运营', status: 'active' as const, knowledge_base_ids: ['kb-a', 'kb-b'] },
-    { binding_type: 'agent' as const, binding_key: 'content-ops', name: '助手', status: 'active' as const, knowledge_base_ids: ['kb-b', 'kb-c'] },
-  ]
-  const audits = [
-    {
-      binding_type: 'role' as const,
-      binding_key: 'ops',
-      old_knowledge_base_ids: ['kb-old'],
-      new_knowledge_base_ids: ['kb-a'],
-      actor_id: 'acct-0001',
-      occurred_at: '2026-09-19T10:25:43Z',
-    },
-  ]
-
-  it('候选 = 现有绑定（角色 + 数字员工）∪ 变更记录出现过的标识，去重后排序', () => {
-    expect(collectCandidates(rows, audits)).toEqual(['kb-a', 'kb-b', 'kb-c', 'kb-old'])
+describe('知识库候选清单 listKnowledgeBases（第 15 轮新增端点）', () => {
+  beforeEach(() => {
+    setServiceMode('http')
+  })
+  afterEach(() => {
+    setServiceMode('mock')
   })
 
+  it('请求路径逐字正确，形状合规时原样返回', async () => {
+    const { calls, fetchImpl } = stubFetch({
+      '/api/v1/knowledge/bases': {
+        body: {
+          upstream_available: true,
+          source: 'upstream',
+          items: [{ knowledge_base_id: 'kb-a', name: '知识库 A', origin: 'upstream' }],
+          note: null,
+        },
+      },
+    })
+
+    const list = await listKnowledgeBases(fetchImpl)
+
+    expect(calls[0].url).toContain('/api/v1/knowledge/bases')
+    expect(list.items).toEqual([{ knowledge_base_id: 'kb-a', name: '知识库 A', origin: 'upstream' }])
+  })
+
+  it('降级（upstream_available=false）带 note ⇒ 原样返回（界面据此如实提示）', async () => {
+    const { fetchImpl } = stubFetch({
+      '/api/v1/knowledge/bases': {
+        body: {
+          upstream_available: false,
+          source: 'local_only',
+          items: [{ knowledge_base_id: 'kb-old', name: null, origin: 'binding_only' }],
+          note: '未能获取知识库清单（未配置知识库服务），以下为本租户已绑定过的标识；可直接输入标识。',
+        },
+      },
+    })
+
+    const list = await listKnowledgeBases(fetchImpl)
+
+    expect(list.upstream_available).toBe(false)
+    expect(list.note).toMatch(/未能获取知识库清单/)
+  })
+
+  it('降级却不带 note ⇒ 抛错（不静默返回空清单冒充"没有知识库"）', async () => {
+    const { fetchImpl } = stubFetch({
+      '/api/v1/knowledge/bases': {
+        body: { upstream_available: false, source: 'local_only', items: [], note: null },
+      },
+    })
+
+    await expect(listKnowledgeBases(fetchImpl)).rejects.toBeInstanceOf(ServiceError)
+  })
+
+  it('形状不符（缺 knowledge_base_id）⇒ 抛错（不展示臆测内容）', async () => {
+    const { fetchImpl } = stubFetch({
+      '/api/v1/knowledge/bases': {
+        body: {
+          upstream_available: true,
+          source: 'upstream',
+          items: [{ name: '没有标识', origin: 'upstream' }],
+          note: null,
+        },
+      },
+    })
+
+    await expect(listKnowledgeBases(fetchImpl)).rejects.toBeInstanceOf(ServiceError)
+  })
+})
+
+describe('知识库标识的候选校验（纯函数）', () => {
   it('规范化：去空白 + 去重（保持首次出现顺序）', () => {
     expect(normalizeIds([' kb-a ', 'kb-a', '', 'kb-b'])).toEqual(['kb-a', 'kb-b'])
+  })
+
+  it('"不在清单里"只认 upstream 项：binding_only 与手输值都要被提醒出来', () => {
+    const items = [
+      { knowledge_base_id: 'kb-a', name: null, origin: 'upstream' as const },
+      { knowledge_base_id: 'kb-old', name: null, origin: 'binding_only' as const },
+    ]
+
+    // kb-a 在清单里 ⇒ 不提醒；kb-old（绑定里有、清单没返回）与 kb-new（全新手输）都要提醒
+    expect(unknownCandidateIds(['kb-a', 'kb-old', ' kb-new ', 'kb-new'], items)).toEqual(['kb-old', 'kb-new'])
   })
 
   it('校验：空项被拒；超过 100 项被拒（服务端 max_length=100）；100 项通过', () => {

@@ -35,10 +35,10 @@ import {
   fetchAudits,
   fetchRoleScopes,
   isConnected,
+  listKnowledgeBases,
   saveScopeBinding,
 } from './services/permissionsService'
-import { collectCandidates } from './types'
-import type { ScopeRow } from './types'
+import type { CandidateView, ScopeRow } from './types'
 
 type PanelViewState = ContentStateKind | 'ready'
 
@@ -107,15 +107,27 @@ function PermissionsBoard() {
     queryFn: () => fetchAudits(AUDIT_LIMIT),
   })
 
-  // 候选 = 现有绑定（两块）∪ 变更记录里出现过的标识；新标识仍需手动录入
-  const candidates = useMemo(
-    () =>
-      collectCandidates(
-        [...(roles.data?.rows ?? []), ...(agents.data?.rows ?? [])],
-        audits.data?.items ?? [],
-      ),
-    [roles.data, agents.data, audits.data],
-  )
+  // 候选真源（第 15 轮）：只读的知识库清单。**打开抽屉时才请求**（契约：不做缓存，一次即可）；
+  // 清单没取到时后端会降级并给 `note`，界面据此如实提示（**绝不**读成"没有知识库"）。
+  const bases = useQuery({
+    queryKey: ['permissions', 'knowledge-bases'],
+    queryFn: () => listKnowledgeBases(),
+    enabled: target !== null,
+  })
+
+  const candidates: CandidateView = useMemo(() => {
+    if (target === null) return { state: 'ready', items: [], note: null, upstreamAvailable: false }
+    if (bases.isPending) return { state: 'loading', items: [], note: null, upstreamAvailable: false }
+    if (bases.isError || !bases.data) {
+      return { state: 'error', items: [], note: null, upstreamAvailable: false }
+    }
+    return {
+      state: 'ready',
+      items: bases.data.items,
+      note: bases.data.note,
+      upstreamAvailable: bases.data.upstream_available,
+    }
+  }, [target, bases.isPending, bases.isError, bases.data])
 
   const roleState = panelState(roles)
   const agentState = panelState(agents)

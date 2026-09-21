@@ -87,6 +87,42 @@ export interface ScopeWriteResult {
 }
 
 /**
+ * 候选知识库标识的来源（第 15 轮起由 `GET /api/v1/knowledge/bases` 提供）：
+ * - `upstream`：出现在**知识库清单**里（真源）；
+ * - `binding_only`：**只在本租户绑定里出现过、清单未返回** ⇒ 「标识配错 / 库已被删」的可见化，
+ *   界面据此给黄色提醒（**不阻断保存** —— 平台无权替操作者判定）。
+ */
+export type KnowledgeBaseOrigin = 'upstream' | 'binding_only'
+
+/** 候选知识库（`GET /api/v1/knowledge/bases` 的 `items` 元素）。`name` 可为 `null` ⇒ 界面回落显示标识。 */
+export interface KnowledgeBaseCandidate {
+  knowledge_base_id: string
+  name: string | null
+  origin: KnowledgeBaseOrigin
+}
+
+/**
+ * 候选清单信封。`upstream_available === false` ⇒ **降级**（清单没取到），此时 `note` 必带原因，
+ * 且 `items` 只是"本租户已绑定过的标识"——**界面不得读成「没有知识库」**。
+ */
+export interface KnowledgeBaseCandidateList {
+  upstream_available: boolean
+  source: 'upstream' | 'local_only'
+  items: KnowledgeBaseCandidate[]
+  note: string | null
+}
+
+/** 抽屉用的候选视图（含加载 / 取不到两态；取不到时如实说明，**不冒充空清单**）。 */
+export interface CandidateView {
+  state: 'loading' | 'ready' | 'error'
+  items: KnowledgeBaseCandidate[]
+  /** 服务端给的降级原因（`null` = 清单正常）。 */
+  note: string | null
+  /** 清单是否真的取到（决定"能不能对手输值给出提醒"）。 */
+  upstreamAvailable: boolean
+}
+
+/**
  * 规范化标识列表：去首尾空白、丢弃空项、**去重**（保持首次出现顺序）。
  * 前端**只做这三件事**，合法性（该库是否存在）一律以服务端为准。
  */
@@ -118,18 +154,18 @@ export function validateIds(ids: readonly string[]): string | null {
 }
 
 /**
- * 候选知识库标识 = **所有已加载绑定**（角色块 ∪ 数字员工块）与**变更记录**里出现过的标识，
- * 去重后排序；界面再允许**手动录入**新标识（后端无枚举接口，见契约 §4）。
+ * 当前填写的标识里，**不在知识库清单里**的那些（界面据此给黄色提醒，**不阻断保存**）。
+ *
+ * 只把 `origin === 'upstream'` 的项当作"清单里真有"：`binding_only` 是后端告诉我们
+ * "绑定里有、清单却没返回"的项，本身就属于要提醒的范畴。
+ * 清单没取到时（`upstream_available === false`）调用方**不应**调用本函数 —— 无从判断，不能误报。
  */
-export function collectCandidates(
-  rows: readonly ScopeRow[],
-  audits: readonly KnowledgeAuditEntry[],
+export function unknownCandidateIds(
+  ids: readonly string[],
+  items: readonly KnowledgeBaseCandidate[],
 ): string[] {
-  const ids = new Set<string>()
-  for (const row of rows) for (const id of row.knowledge_base_ids) ids.add(id)
-  for (const audit of audits) {
-    for (const id of audit.old_knowledge_base_ids) ids.add(id)
-    for (const id of audit.new_knowledge_base_ids) ids.add(id)
-  }
-  return [...ids].sort()
+  const known = new Set(
+    items.filter((item) => item.origin === 'upstream').map((item) => item.knowledge_base_id),
+  )
+  return normalizeIds(ids).filter((id) => !known.has(id))
 }

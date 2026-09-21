@@ -9,7 +9,7 @@ import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import NoReturn
+from typing import Literal, NoReturn
 from uuid import uuid4
 
 import httpx
@@ -182,6 +182,7 @@ from .knowledge_governance.models import (
 )
 from .knowledge_governance.scoped_search import build_scoped_search
 from .knowledge_governance.service import KnowledgeGovernanceService
+from .knowledge import UpstreamShapeError
 from .conversation import (
     Conversation,
     ConversationMessage,
@@ -3149,6 +3150,121 @@ def get_agent_knowledge_access(agent_key: str, context: UserContext = Depends(cu
     except PolicyError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return _knowledge_access_view("agent", agent_key, knowledge_access_registry.resolve(context, agent_key, agent_key))
+
+
+# ------------------------------------------------------------ 知识库候选清单（第 15 轮）
+# 口径：`docs/contracts/permissions-fake-entry-plan.md` §9（方案 B2′）+ `docs/api-contract.md`「企业知识检索」节。
+#
+# 为什么需要它（本轮要消掉的"假入口"）：本模块此前**没有任何知识库真源** ⇒ 界面的候选只能取
+# "现有绑定并集"，新库标识必须手输，而后端 `knowledge_policy._normalize` **只去空白、不校验存在性**
+# ⇒ 输错也保存成功、回读一致、检索时静默无结果（操作者从界面上看不出配错）。本端点把上游
+# 知识库清单接进来当候选真源，并把"手输过、上游却查不到"的标识显式暴露为 `origin="binding_only"`。
+
+_KNOWLEDGE_BASES_DEGRADE_NOTE = (
+    "未能获取知识库清单（{reason}），以下为本租户已绑定过的标识；可直接输入标识。"
+)
+_KNOWLEDGE_BASES_EMPTY_NOTE = "知识库清单服务未返回任何知识库。"
+
+
+class KnowledgeBaseCandidate(BaseModel):
+    """候选知识库：`origin` 区分"上游清单里真有"与"只在本租户绑定里出现过"。"""
+
+    knowledge_base_id: str
+    name: str | None = None
+    origin: Literal["upstream", "binding_only"]
+
+
+class KnowledgeBaseCandidateList(BaseModel):
+    """候选清单信封。**降级时必须带 `note`**，绝不返回空数组冒充"没有知识库"。"""
+
+    upstream_available: bool
+    source: Literal["upstream", "local_only"]
+    items: list[KnowledgeBaseCandidate]
+    note: str | None = None
+
+
+def _tenant_bound_knowledge_base_ids(context: UserContext) -> set[str]:
+    """本租户**已绑定过**的知识库标识并集（岗位 ∪ 数字员工）。
+
+    跨租户过滤由 `list_bindings` 在 store 层按 `tenant_id` 完成（第 11 轮教训：不要在路由层另写一套过滤）。
+    """
+    bindings = knowledge_access_registry.list_bindings(context)
+    return {kb_id for groups in bindings.values() for ids in groups.values() for kb_id in ids}
+
+
+@app.get("/api/v1/knowledge/bases", response_model=KnowledgeBaseCandidateList)
+def list_knowledge_bases(context: UserContext = Depends(current_user)) -> KnowledgeBaseCandidateList:
+    """知识库候选清单（**只读**）：上游清单 ∪ 本租户已绑定标识。
+
+    判定复用知识范围管理闸门（与 `PUT/GET /api/v1/knowledge-access/...` 同一集合：`ceo` + `super_admin`），
+    **`403` 在任何上游动作之前判定**（越权请求不产生上游调用，不泄露上游存在性）。其余口径见契约。
+
+    ⚠️ 上游 `GET /api/v1/knowledge-bases` **未实调**（本机无可用上游实例），元素字段名按多键兼容解析；
+    形状异常一律**降级**（`upstream_available=false` + `note`），**不崩、不臆测**。
+    """
+    try:
+        _ensure_knowledge_admin(context)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    bound_ids = _tenant_bound_knowledge_base_ids(context)
+    upstream_items: tuple = ()
+    degraded_reason: str | None = None
+
+    if weknora_search_runtime is None:
+        degraded_reason = "未配置知识库服务"
+    else:
+        # 只读：适配器只暴露 GET 列表；不传 `knowledge_base_ids` 做范围限制（清单是"空间内全部"）。
+        adapter = weknora_search_runtime.adapter_for(
+            tenant_id=context.tenant_id, knowledge_base_ids=bound_ids
+        )
+        try:
+            upstream_items = adapter.list_knowledge_bases(context)
+        except PolicyError:
+            raise
+        except httpx.TimeoutException as exc:
+            logger.warning("知识库清单上游超时：%s", exc)
+            degraded_reason = "请求超时"
+        except httpx.HTTPError as exc:
+            logger.warning("知识库清单上游失败：%s", exc)
+            degraded_reason = "服务暂不可用"
+        except (UpstreamShapeError, ValueError) as exc:
+            logger.warning("知识库清单上游响应无法识别：%s", exc)
+            degraded_reason = "服务返回内容无法识别"
+        except RuntimeError as exc:
+            logger.warning("知识库清单上游未完成：%s", exc)
+            degraded_reason = "服务暂不可用"
+
+    # 降级：**只给本租户已绑定标识**，并写明原因（不谎报"没有知识库"）
+    if degraded_reason is not None:
+        return KnowledgeBaseCandidateList(
+            upstream_available=False,
+            source="local_only",
+            items=[
+                KnowledgeBaseCandidate(knowledge_base_id=kb_id, name=None, origin="binding_only")
+                for kb_id in sorted(bound_ids)
+            ],
+            note=_KNOWLEDGE_BASES_DEGRADE_NOTE.format(reason=degraded_reason),
+        )
+
+    upstream_ids = {item.knowledge_base_id for item in upstream_items}
+    items = [
+        KnowledgeBaseCandidate(
+            knowledge_base_id=item.knowledge_base_id, name=item.name, origin="upstream"
+        )
+        for item in upstream_items
+    ]
+    # 绑定里出现过、清单却没返回 ⇒ `binding_only`（这正是"标识配错 / 库已被删"的可见化）
+    items.extend(
+        KnowledgeBaseCandidate(knowledge_base_id=kb_id, name=None, origin="binding_only")
+        for kb_id in sorted(bound_ids - upstream_ids)
+    )
+    return KnowledgeBaseCandidateList(
+        upstream_available=True,
+        source="upstream",
+        items=items,
+        note=None if upstream_items else _KNOWLEDGE_BASES_EMPTY_NOTE,
+    )
 
 
 # ------------------------------------------------------------ P6a 自进化·评测集（规格 2026-09-16-self-evolution-p6-design.md §2.2/§2.3）

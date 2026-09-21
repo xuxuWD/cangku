@@ -42,6 +42,40 @@ class KnowledgeDocumentPage:
 MAX_PAGE_SIZE = 200
 
 
+class UpstreamShapeError(RuntimeError):
+    """上游响应形状不符合我方预期（未实调端点的兼容解析失败）⇒ 调用方按**降级**处理，不臆测。"""
+
+
+@dataclass(frozen=True)
+class KnowledgeBaseSummary:
+    """上游知识库清单的一项（`GET /api/v1/knowledge-bases`）。
+
+    ⚠️ 该端点**未经实调**（本机无可用上游实例）：元素里知识库标识 / 名称的**确切键名未实测确认**
+    ⇒ 解析走多键兼容（见 `KNOWLEDGE_BASE_ID_KEYS` / `KNOWLEDGE_BASE_NAME_KEYS`），不假定单一形状。
+    """
+
+    knowledge_base_id: str
+    name: str | None = None
+
+
+# 上游元素字段名的候选键（顺序即优先级）。依据见 `docs/contracts/permissions-fake-entry-plan.md` §7.2：
+# 官方文档只确证接口存在与响应是 `{success, data:[…]}`，元素内层键名未实测 ⇒ 多键兼容。
+KNOWLEDGE_BASE_ID_KEYS = ("id", "knowledge_base_id", "kb_id")
+KNOWLEDGE_BASE_NAME_KEYS = ("name", "title")
+
+
+def _first_text(item: dict, keys: tuple[str, ...]) -> str:
+    """按优先级取第一个非空字符串值（找不到 ⇒ 空串；**不编造**）。"""
+    for key in keys:
+        value = item.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
 class WeKnoraKnowledgeAdapter:
     """Read-only WeKnora bridge with tenant and knowledge-base scoping.
 
@@ -190,6 +224,50 @@ class WeKnoraKnowledgeAdapter:
             page_size=int(body.get("page_size") or page_size),
             total=int(body.get("total") or len(items)),
         )
+
+    def list_knowledge_bases(self, context: UserContext) -> tuple[KnowledgeBaseSummary, ...]:
+        """读上游**知识库清单**（只读，只发 `GET`）——「权限配置」页候选的唯一真源。
+
+        上游契约（官方 `docs/api/knowledge-base.md`，**未经实调**，见 §7.2）：路径
+        `GET /api/v1/knowledge-bases`（"获取知识库列表：返回当前空间拥有的全部知识库"）；
+        头 `X-API-Key`；Query 仅 `agent_id`（可选，本轮不传）；响应
+        `{"success": true, "data": [<知识库>...]}`，元素字段结构同 `POST /knowledge-bases` 响应。
+
+        **fail-closed**：上游未 2xx / `success:false` / 形状异常（`data` 非数组、元素非对象、元素缺标识）
+        一律**抛错**（`httpx.HTTPError` / `RuntimeError`），由调用方降级成"取不到 + 说明原因"；
+        **绝不**把上游失败静默读成"没有知识库"（那正是本专项要消掉的谎报）。
+        多键兼容解析见 `KNOWLEDGE_BASE_ID_KEYS` / `KNOWLEDGE_BASE_NAME_KEYS`。
+
+        ⚠️ 只读边界：本方法**只发 GET**，不写入、不改上游配置；`api_key` 只进请求头，绝不进返回值。
+        """
+        if context.tenant_id != self.tenant_id:
+            raise PolicyError("知识库租户范围不匹配")
+        response = self.client.get(
+            f"{self.base_url}/api/v1/knowledge-bases",
+            headers={"X-API-Key": self.api_key, "Accept": "application/json"},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("success") is False:
+            raise RuntimeError("WeKnora 知识库清单读取未完成")
+        data = body.get("data")
+        if not isinstance(data, list):
+            raise UpstreamShapeError("WeKnora 知识库清单响应形状异常")
+        summaries: list[KnowledgeBaseSummary] = []
+        for item in data:
+            if not isinstance(item, dict):
+                raise UpstreamShapeError("WeKnora 知识库清单响应形状异常")
+            knowledge_base_id = _first_text(item, KNOWLEDGE_BASE_ID_KEYS)
+            if not knowledge_base_id:
+                raise UpstreamShapeError("WeKnora 知识库清单响应缺少知识库标识")
+            summaries.append(
+                KnowledgeBaseSummary(
+                    knowledge_base_id=knowledge_base_id,
+                    name=_first_text(item, KNOWLEDGE_BASE_NAME_KEYS) or None,
+                )
+            )
+        return tuple(summaries)
 
     def _document_from_item(self, item: dict, *, fallback_document_id: str = "") -> KnowledgeDocument:
         """把上游文档对象映射成 `KnowledgeDocument`，并**逐条**复验租户与知识库归属。"""

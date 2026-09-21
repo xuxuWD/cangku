@@ -372,3 +372,26 @@
 超限 `422` / 每次成功导出留痕 +1）。
 **本轮额外收益**：契约覆盖守卫（`tests/test_frontend_audit_labels.py`）在门禁中**抓到前端标签表缺 `audit.exported`**
 （前端会回落显示动作码）⇒ 补 `admin-web/src/features/auditLog/types.ts` 标签 ⇒ 复绿。
+
+## 18. 第 15 轮交付记录（permissions 假入口专项，2026-09-21）
+
+**主题**：§3「知识：授权绑定（角色/员工 ↔ 库）」相关的**读候选面**新增只读端点 —— 消解 D-036④（`permissions` 模块"假入口"）。
+
+**① 角色口径零改动（本行是唯一依据）**：新端点 `GET /api/v1/knowledge/bases` **复用**知识范围管理闸门
+（`app/knowledge_governance/models.py::can_manage` = `ceo` + `super_admin`，与 `PUT/GET /api/v1/knowledge-access/...` 同一集合）
+—— **未新造口径、未放宽、未新增角色**。真机实测：`ceo` `200`、员工/`department_lead`/`customer_admin` `403`、匿名 `401`。
+
+**② 判定顺序**：`403`（越权）**早于任何上游动作**（真机与用例钉住"员工请求时上游零调用"），不泄露上游存在性。
+
+**③ 本轮与 D-036④ 的关系（定性更正）**：原登记写「能填、**必拒**」 —— **不准**；实为「能填、无人校验、
+写错静默无效」（写路径只 `strip()`、不校验存在性）。本轮把它**可见化**（上游清单 ∪ 本租户绑定，
+`origin="binding_only"` 现形 + 不阻断黄色提醒），**仍不阻断写入**（保留手输，避免"从未绑定过的租户无法首次绑定"的死锁）。
+
+**④ 降级语义（非协商）**：上游不可用 ⇒ `upstream_available=false` + `source="local_only"` + `items`=本租户绑定并集 +
+`note` 写原因；**绝不返回空数组冒充"没有知识库"**。
+
+**验证**：后端全量 `pytest` exit 0（`--collect-only` **2783**）+ `compileall` 0；前端 `typecheck` 0 / `vitest` **378 passed** /
+`build` 成功 + 产物 grep（本模块样例键与 `kb-00000001`）**0 命中**；**反假 2 组**（降级改返回空列表 ⇒ **8 红** /
+去掉 `binding_only` 合并 ⇒ **1 红**）；**真机 30/30**（`tmp/r15-bases-verify.py`）。
+**⚠️ 未验证**（详见 D-041）：上游端点**未实调**（形状取自上游官方文档 + 本机桩上游）、真库路径无真库用例、
+界面渲染层未走查。

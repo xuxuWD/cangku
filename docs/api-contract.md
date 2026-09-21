@@ -353,6 +353,24 @@ Mock Runtime 使用规范化素材和固定模板生成可重复结果，输入�
 
 超级管理员查看当前租户的知识范围变更记录，包含岗位/数字员工标识、修改前后知识库列表、操作者和时间。审计记录只读，其他角色返回 403。
 
+`GET /api/v1/knowledge/bases`（**2026-09-21 第 15 轮新增**）
+
+知识库候选清单（**只读**），供「权限配置」页的编辑抽屉填充候选。判定沿用知识范围管理闸门（与 `PUT/GET /api/v1/knowledge-access/...` **同一角色集合**：`ceo` + `super_admin`），其余角色 `403`、未认证 `401`；**`403` 在任何上游动作之前判定**，越权请求不产生上游调用。无请求参数（未知查询参数不参与判定）。
+
+响应：
+
+- `upstream_available`：知识库清单**是否真的取到**（`true` = 取到；`false` = 未配置 / 超时 / 非 2xx / 返回内容无法识别）；
+- `source`：`upstream`（清单取自知识库服务）｜`local_only`（**降级**：清单未取到，只给本租户已绑定过的标识）；
+- `items[]`：`knowledge_base_id`、`name`（**可为 `null`**，界面回落显示标识）、`origin` = `upstream`（出现在知识库清单里）｜`binding_only`（**本租户绑定里出现过、清单未返回** —— 这是「标识配错 / 库已被删」的可见化）；
+- `note`：**降级原因说明**（`null` = 无特殊说明）。
+
+**非协商口径**：
+
+- 知识库清单不可用时**绝不**返回空数组冒充「没有知识库」：`upstream_available=false` + `source="local_only"` + `items` = 本租户绑定并集（`origin="binding_only"`）+ `note` 写明原因；清单取到但为空时 `note` 同样写明原因；
+- 响应**不含** API Key、上游主机名、base_url、堆栈（上游失败原文只进服务端日志）；
+- 只发 `GET`（**不写上游、不改上游配置**）；不做缓存（打开抽屉时请求一次即可）；
+- 上游 `GET /api/v1/knowledge-bases` 的**元素字段名未经实调确认**（本机无可用上游实例）⇒ 实现按 `id`/`knowledge_base_id`/`kb_id` 与 `name`/`title` **多键兼容解析**；响应形状异常一律按**降级**处理（`upstream_available=false` + `note`），**不臆测、不 500**。该端点的实调状态与补验方式见 `docs/contracts/permissions-fake-entry-plan.md` §7.2 / §11（**当前登记为「未实调」**）。
+
 ## 知识治理（知识生命周期 + 检索谓词守卫）
 
 口径：`docs/superpowers/specs/2026-09-15-knowledge-governance-design.md`。治理表 `workbench_knowledge_documents`（迁移 032）是**文档级元数据守卫**：登记 Who 拥有 / 同步到什么状态 / 何时复核；**不复制正文、不重建索引**（WeKnora 仍是检索唯一事实源，D1）。
