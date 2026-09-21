@@ -102,6 +102,17 @@
   **另一条环境事实（如实登记）**：长驻的 `127.0.0.1:18112` 后端是 02:18 启动的、加载**闸门前**代码 ⇒ 下轮真机核对须**新起进程**（本轮临时用 `18113`，核对完已停）。
   **长期保留项**：`scripts/repair_dangling_skill_bindings.py` 与 `tests/test_skill_binding_repair_script.py` 属**正式交付物**（非一次性调试脚本），**不列入清理**。
 
+### 清理执行记录（2026-09-21，用户确认后执行）
+
+**已删除（均在本机 `tmp/`，`.gitignore` 第 20 行已排除 ⇒ 不入仓库、不影响任何提交）**：
+
+- 第 11 轮：`tmp/r11-bind-gate-probe.py`、`tmp/r11-bind-gate-verify.py`、`tmp/r11-collect.txt`、`tmp/r11-pytest-full.txt`、`tmp/r11-probe-summary.txt`、`tmp/r11-junit.xml`、`tmp/r11-commit-msg.txt`、`tmp/r10-commit-msg.txt`；
+- 历史探针脚本（第 7–10 轮，本轮登记为"建议保留为走查证据"，经用户确认后删除）：`tmp/r7-knowledge-walkthrough.mjs`、`tmp/r8-bind-verify.py`、`tmp/r9-bindings-probe.py`、`tmp/r9-bindings-verify.py`、`tmp/r10-audit-probe.py`、`tmp/r10-audit-verify.py`、`tmp/r8-commit-msg.txt`、`tmp/r9-commit-msg.txt`（后两者为提交信息草稿，与已删的 `r10`/`r11` 同类）。
+
+**证据不受影响**：上述脚本的**结果**（修复前 `200/200/200` → 修复后 `404/409/仍 200`、越权 `403`、`5 → 5` 零新增、门禁 `tests=2730 / failures=0 / errors=0 / skipped=140`、反假红数）已落在 D-030 ~ D-033 与 `skill-binding-gate-plan.md` §9/§10、`audit-log-api.md`、`api-contract.md`，**按文档即可复核**；删的只是脚本本体与一次性输出。
+
+**未动（按纪律保留）**：正式交付物（`scripts/repair_dangling_skill_bindings.py`、`tests/test_skill_binding_*`）；走查截图 `docs/screenshots/ui-v2-r7-knowledge/`、`ui-v2-r8-skills/`、`ui-v2-r9-bindings/`、`ui-v2-r10-audit/`（已入库，属交付证据）；`tmp/` 下**其他工作线**的脚本（`b1-*` / `b23-*` / `b4-*` / `s1-*` / `s2-*` / `m3-*` / `*044*` 等）**不在本次范围**，未触碰。
+
 ## 测试等待上限（两处，均只放宽等待、不放宽断言）
 
 - `src/test/setup.ts`：`configure({ asyncUtilTimeout: 5000 })`（`findBy*` 默认仅 1s，负载下假红）；
