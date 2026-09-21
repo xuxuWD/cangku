@@ -107,7 +107,7 @@
   **另一条环境事实（如实登记）**：长驻的 `127.0.0.1:18112` 后端是 02:18 启动的、加载**闸门前**代码 ⇒ 下轮真机核对须**新起进程**（本轮临时用 `18113`，核对完已停）。
   **长期保留项**：`scripts/repair_dangling_skill_bindings.py` 与 `tests/test_skill_binding_repair_script.py` 属**正式交付物**（非一次性调试脚本），**不列入清理**。
 
-- **第 12 轮临时物**：`tmp/r12-bind-gap-probe.py`（只读现状复核）、`tmp/r12-bind-gate-verify.py`（交付核对脚本，含最小写入）、`tmp/r12-junit.xml`（门禁计数）——令牌只在本进程内存、**不落盘**；**建议随系统清理**（同前几轮口径）。
+- **第 12 轮临时物**：`tmp/r12-bind-gap-probe.py`（只读现状复核）、`tmp/r12-bind-gate-verify.py`（交付核对脚本，含最小写入）、`tmp/r12-junit.xml`（门禁计数）——令牌只在本进程内存、**不落盘**；**已于 2026-09-21 按用户确认删除**（见下「清理执行记录」）。
   **真库新增（第 12 轮为验证闸门而产生；**用户 2026-09-21 裁决：保留**）**：`workbench_digital_employees` **1 行** `probe-agent-r12`（`active`，挂既有岗位 `evidence-ops`）
   + `workbench_skill_bindings` **1 行** `probe-agent-r12 ↔ r8-probe-skill`（`active`）。**⚠️ 注意**：加第 ③ 条目录闸门后，
   本机"绑定"**必须有已纳管员工才可用**（目录原本 0 员工）⇒ 若清掉这行，真机绑定会重新变成不可用。
@@ -122,6 +122,10 @@
 **证据不受影响**：上述脚本的**结果**（修复前 `200/200/200` → 修复后 `404/409/仍 200`、越权 `403`、`5 → 5` 零新增、门禁 `tests=2730 / failures=0 / errors=0 / skipped=140`、反假红数）已落在 D-030 ~ D-033 与 `skill-binding-gate-plan.md` §9/§10、`audit-log-api.md`、`api-contract.md`，**按文档即可复核**；删的只是脚本本体与一次性输出。
 
 **未动（按纪律保留）**：正式交付物（`scripts/repair_dangling_skill_bindings.py`、`tests/test_skill_binding_*`）；走查截图 `docs/screenshots/ui-v2-r7-knowledge/`、`ui-v2-r8-skills/`、`ui-v2-r9-bindings/`、`ui-v2-r10-audit/`（已入库，属交付证据）；`tmp/` 下**其他工作线**的脚本（`b1-*` / `b23-*` / `b4-*` / `s1-*` / `s2-*` / `m3-*` / `*044*` 等）**不在本次范围**，未触碰。
+
+**追记（2026-09-21，第 12 轮收尾，用户确认后执行）**：删除 `tmp/r12-bind-gap-probe.py`、`tmp/r12-bind-gate-verify.py`、`tmp/r12-junit.xml`
+（均为第 12 轮一次性脚本 / 计数输出；结论已落在 `skill-binding-gate-plan.md` §11.6 与 D-035/D-036）。
+**真库那 2 行探针数据不动**（用户裁决"保留"）。
 
 ## 测试等待上限（两处，均只放宽等待、不放宽断言）
 
