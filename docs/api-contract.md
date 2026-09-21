@@ -602,16 +602,18 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 把已落库的审计记录（写入侧的明细白名单与递归敏感键校验见「错误」章节与审计模块）变成可查证据。接口**只读**，不接受任何写动作。
 
-`GET /api/v1/audits`
+`GET /api/v1/audits`（**2026-09-20 按权限矩阵 §3「审计：查询」分档**）
 
-- **权限**：仅 `ceo` / `super_admin`；其他角色 `403`「只有 CEO 或超级管理员可以查看审计日志」；未认证 `401`。
+- **权限（四档）**：`employee` ⚠️**仅本人相关**、`department_lead` / `ceo` / `super_admin` ✅本租户；`customer_admin` ⇒ `403`「当前岗位不能查看审计日志」；未认证 `401`。
+  - `employee` **自限由服务端强制**：无论是否传 `actor_id`，一律按 `actor_id = 调用者` 过滤；**显式传他人 `actor_id` ⇒ `403`**「只能查看本人的审计记录，不能按他人筛选」（刻意显式拒绝，不静默忽略——静默忽略会让调用方以为筛选生效，也掩盖越权尝试）。
+  - 判定实现：`app/audit/models.py` 的 `AUDIT_READ_ROLES` / `AUDIT_SELF_SCOPED_ROLES` / `resolve_actor_filter`（`tests/test_audit_role_matrix.py` 逐档钉死）。
 - **租户隔离**：只返回 `tenant_id` 等于调用者租户的记录；`tenant_id` 为空的全局记录（如启动引导）**不返回**。
 - 查询参数：
 
 | 参数 | 说明 |
 | --- | --- |
 | `action` | 可重复（`?action=a&action=b`），取值必须是已登记的审计动作；未知动作码返回 `422` |
-| `target_type` / `target_id` / `actor_id` | 精确匹配，可选 |
+| `target_type` / `target_id` / `actor_id` | 精确匹配，可选（`actor_id` 对 `employee` 受上款自限约束） |
 | `since` / `until` | ISO 8601 时间，**必须带时区**（无时区返回 `422`）；`until` 为闭区间上界。客户端应使用 `Z` 形式——URL 里的 `+00:00` 会被解码成空格而解析失败 |
 | `limit` | 默认 `50`，范围 `1`~`200`，越界 `422` |
 | `offset` | 默认 `0`，`>= 0`，越界 `422` |
@@ -619,6 +621,13 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 - 响应：`{"items": [...], "total": <命中总数>, "limit": <本次 limit>, "offset": <本次 offset>}`；`items` 按时间**倒序**（新 → 旧），每项字段 `record_id`、`action`、`actor_id`、`target_type`、`target_id`、`phone_masked`、`detail`、`occurred_at`（**不含 `tenant_id`**，恒等于调用者租户）。
 - `detail` 直接返回落库内容：写入侧已按白名单 + 递归敏感键校验处理，此处不二次加工。
 - **已知限制**：`offset` 分页在翻页期间有新写入时可能跳过/重复个别记录（用时间范围或动作筛选可规避）；`total` 为额外 `COUNT` 查询；不支持导出与 `detail` 模糊搜索。
+
+`GET /api/v1/audits/actions`（**2026-09-20 新增**）
+
+- 返回**审计动作码全集**（供界面做动作筛选；`AuditAction` 有 90+ 项且随功能新增 ⇒ 前端不复制一份，避免漂移）。
+- **权限**：与「审计：查询」同档（四个业务角色可读；`customer_admin` ⇒ `403`「当前岗位不能查看审计日志」；未认证 `401`）。
+- 响应：`{"items": ["account.login.succeeded", ...], "total": <动作码条数>}`（`items` 为**码值**，不含中文标签 —— 标签不在后端枚举内，界面按码值原样呈现）。
+- **审计导出**：矩阵要求 `super_admin` 可导出，但当前版本**后端零实现**（无端点）⇒ 界面不给导出入口，如实标注「尚未接入」。
 
 ## 运行指标（子项目②）
 
@@ -870,7 +879,8 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 - `POST /api/v1/skills/{skill_key}/versions/{version}/disable`：停用（`ceo` / `super_admin`；enabled→disabled；已停用幂等）。
 - `GET /api/v1/skills/bindings?skill_key=&agent_key=&limit=&offset=`：**绑定关系列表（2026-09-20 第 9 轮新增）**。仅 `super_admin`（非管理员 `403`；匿名 `401`）；`limit` 1–200（越界 `422`）、`offset` ≥0；`skill_key` / `agent_key` 可选过滤。返回 `{"items":[{"skill_key","agent_key","status","created_by","created_at"}],"total","limit","offset"}`（**条目不含 `tenant_id`**）。
 - `POST /api/v1/skills/bindings`：绑定技能到数字员工 `{"skill_key", "agent_key"}`（管理动作，仅 `super_admin`）。返回 `{"skill_key", "agent_key", "status": "active"}`（2026-09-20 修复：该路由曾误声明响应模型为技能视图 ⇒ 序列化恒 `500`）。
-  ⚠️ **服务端校验缺口的当前事实（2026-09-20 真机实测，用户裁决"本轮不改"）**：绑定**不校验**技能是否存在、是否 `enabled`、`agent_key` 是否在数字员工目录内（三者实测均 `200`，可写入**悬空绑定**）；工具面展开侧仍 fail-closed（只有 `enabled` 技能参与交集）。界面按"只让选已启用技能 + 员工候选给目录"自我收敛。
+  服务端闸门（**2026-09-20 第 11 轮补齐域内两条**）：技能必须**存在**（本租户内，否则 `404`）；技能必须**已启用**（有版本但无 `enabled` 版本 ⇒ `409`「只有已启用的技能包可以绑定」）。判定顺序：`403`（越权）→ `404`（不存在）→ `409`（未启用）；被拒请求**不写审计**。**行为变化**：闸门在幂等判定**之前** ⇒ 绑定行虽已存在、但该技能此后被停用 / 消失时，重复 `bind` 得 `409` / `404`（原先一律 `200`）。
+  ⚠️ **仍缺的一条（如实登记，2026-09-20 第 11 轮真机实测）**：**不校验** `agent_key` 是否在数字员工目录内（绑不在目录的键仍 `200`）——第 ③ 条闸门**本轮暂缓**（与第 9 轮「员工键可手动录入」的裁决直接冲突，待裁决）；界面侧仍按"目录候选 + 手动录入"自我收敛。工具面展开侧恒 fail-closed（只有 `enabled` 技能参与交集）。
 - `DELETE /api/v1/skills/bindings?skill_key=&agent_key=`：解绑（仅 `super_admin`；active→disabled），返回 `{"skill_key", "agent_key", "status": "disabled"}`。**绑定不存在 ⇒ `404`**；已 `disabled` ⇒ `200` 幂等（2026-09-20 实测）。
 - `GET /api/v1/skills/agents/{agent_key}/tools`：返回该数字员工已启用技能的 `allowed-tools` 与执行目录的**交集**（服务端解析，fail-closed）。**角色门禁（2026-09-20 起）**：四个业务角色（`employee` / `department_lead` / `ceo` / `super_admin`）可读；**`customer_admin` ⇒ `403`**（此前只看登录 ⇒ 四个角色全放行，与权限矩阵"技能域 `customer_admin` 一律 ❌"不符，本轮修正）。
 

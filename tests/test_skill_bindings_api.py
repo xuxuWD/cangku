@@ -257,40 +257,38 @@ def test_unbind_is_idempotent_for_disabled_binding(skills_service) -> None:
     assert first.json() == second.json() == {"skill_key": "bind-idem", "agent_key": AGENT, "status": "disabled"}
 
 
-# ------------------------------------------------------------ 边界如实钉住（现状 = 已知缺口，非期望行为）
+# ------------------------------------------------------------ 绑定闸门（第 11 轮落地；原"已知缺口"用例已翻转）
 
 
-def test_bind_accepts_nonexistent_skill_known_gap(skills_service) -> None:
-    """**已知缺口（钉住现状）**：`bind` 不校验技能是否存在 ⇒ 写入**指向不存在技能的悬空绑定**。
+def test_bind_rejects_nonexistent_skill(skills_service) -> None:
+    """**第 11 轮闸门（已落地）**：`bind` 不存在的技能 ⇒ `404`，不再写入悬空绑定。
 
-    真机复测（2026-09-20）：`POST bindings {"skill_key":"r9-ghost-skill"}` ⇒ `200`，查库确认新增该行。
-    用户 2026-09-20 裁决：**本轮不改后端校验**（属业务逻辑改动，超出"新增读端点 + 绑定界面"范围），
-    界面自我收敛（技能候选只给 `enabled`）。将来补闸门时**本用例应随之改为断言被拒**。
+    本用例原为 `test_bind_accepts_nonexistent_skill_known_gap`（钉住旧事实、并写明"将来补闸门时应改为断言被拒"）——
+    第 11 轮专项按该约定翻转。逐条闸门细节见 `tests/test_skill_binding_gates.py`。
     """
     response = client.post(BINDINGS, json={"skill_key": "ghost-skill", "agent_key": AGENT}, headers=headers())
 
-    assert response.status_code == 200, response.text
+    assert response.status_code == 404, response.text
     listed = client.get(BINDINGS, params={"skill_key": "ghost-skill"}, headers=headers()).json()
-    assert listed["total"] == 1  # 悬空绑定确实落库
+    assert listed["total"] == 0  # 悬空绑定不再产生
 
 
-def test_bind_accepts_not_enabled_skill_known_gap(skills_service) -> None:
-    """**已知缺口（钉住现状）**：`submitted` 技能也能绑定；但**工具面不放大**（展开侧 fail-closed）。"""
+def test_bind_rejects_not_enabled_skill(skills_service) -> None:
+    """**第 11 轮闸门（已落地）**：`submitted` 技能不可绑定 ⇒ `409`（工具面本就 fail-closed，现连绑定也收口）。"""
     assert _submit("bind-submitted").status_code == 201  # 停在 submitted
 
     bound = client.post(BINDINGS, json={"skill_key": "bind-submitted", "agent_key": AGENT}, headers=headers())
-    tools = client.get(f"/api/v1/skills/agents/{AGENT}/tools", headers=headers())
 
-    assert bound.status_code == 200, bound.text
-    assert tools.status_code == 200
-    assert tools.json() == {"agent_key": AGENT, "tools": []}  # 未启用技能的 allowed-tools 不参与交集
+    assert bound.status_code == 409, bound.text
+    assert bound.json()["detail"] == "只有已启用的技能包可以绑定"
 
 
 def test_bind_accepts_agent_key_outside_directory_known_gap(skills_service) -> None:
-    """**已知缺口（钉住现状）**：绑定不校验 `agent_key` 是否在数字员工目录内（目录校验不在技能域）。
+    """**员工目录闸门（第 ③ 条）本轮暂缓** —— 本用例钉住这一决定（现状：目录外键仍可绑 ⇒ `200`）。
 
-    真机依据（2026-09-20）：`GET /workforce/agents` 返回 `total: 0`（本租户目录为空），
-    而绑定键 `probe-agent` 早已存在 ⇒ "不在目录的员工键"是真实存在的数据形态。
+    暂缓理由（专项方案 `skill-binding-gate-plan.md` §7）：第 9 轮已裁决「员工键 = 目录候选 **∪ 手动录入**」，
+    而目录闸门会让"手动录入目录外的标识"**必然被拒**（本机测试租户目录实测 `total: 0` ⇒ 正向路径也不可构造）；
+    两者需一并定夺。一旦裁决"加目录闸门"，本用例应改为断言 `409`（与上两条同一翻转手法）。
     """
     _enable("bind-outside")
 

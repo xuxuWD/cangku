@@ -21,6 +21,8 @@ from .models import (
     Skill,
     SkillBinding,
     SkillError,
+    SkillNotFound,
+    SkillStateConflict,
     SkillStatus,
     ensure_can_bind,
     ensure_can_review,
@@ -190,8 +192,23 @@ class SkillService:
 
         角色口径**独立于复核**：矩阵 §3 未列「绑定」行 ⇒ 仅 `super_admin`（`ensure_can_bind`），
         不随本轮 `ceo` 的复核 / 启停对齐一起放开。
+
+        **第 11 轮闸门**（专项 `skill-binding-gate-plan.md` §3）：绑定必须指向**真实存在**且**已启用**的技能包 ——
+        原先三条校验全缺（第 9 轮真机实测：技能不存在 / 未启用 / 员工键不在目录都能绑，可写入**悬空绑定**）。
+        本轮落地域内两条：
+        - 该 `skill_key` 在本租户**没有任何版本** ⇒ `SkillNotFound`（404）；
+        - 有版本但**无 `enabled` 版本** ⇒ `SkillStateConflict`（409）「只有已启用的技能包可以绑定」。
+
+        **闸门刻意放在幂等判定之前**：否则"已存在的绑定行"会成为绕过闸门的后门
+        （技能停用后重复 `bind` 必须被拒，而不是继续返回 200 —— 这是本轮的行为变化，已登记）。
+        **员工目录闸门（第 ③ 条）暂缓**：与第 9 轮「员工键可手动录入」的裁决冲突，需单独定夺。
         """
         ensure_can_bind(context)
+        versions = self.store.list_versions(context, skill_key)
+        if not versions:
+            raise SkillNotFound(skill_key)
+        if not any(item.status is SkillStatus.ENABLED for item in versions):
+            raise SkillStateConflict("只有已启用的技能包可以绑定")
         binding = self.store.bind_skill(
             context, agent_key, skill_key, created_by=created_by or context.user_id
         )

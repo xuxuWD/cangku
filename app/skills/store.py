@@ -61,6 +61,12 @@ class SkillStore(Protocol):
 
     def list(self, context, *, status=None, limit=50, offset=0) -> tuple[list[Skill], int]: ...
 
+    def list_versions(self, context, skill_key: str) -> list[Skill]:
+        """该 `skill_key` 在本租户的**全部版本**（第 11 轮新增：绑定闸门判"技能是否存在/是否已启用"）。
+
+        刻意**不做可见性过滤**（与 `_get_raw` 同口径）：调用方（服务层）自行判定可见性与状态。
+        """
+
     def review(self, context, skill_key, version, *, approved) -> Skill: ...
 
     def enable(self, context, skill_key, version) -> Skill: ...
@@ -124,6 +130,17 @@ class InMemorySkillStore:
         if not skill_visible_to(context, skill):
             raise SkillNotFound(f"{skill_key}@{version}")
         return skill
+
+    def list_versions(self, context, skill_key: str) -> list[Skill]:
+        """该 `skill_key` 在本租户的全部版本（第 11 轮：绑定闸门用；不做可见性过滤）。"""
+        with self._lock:
+            matched = [
+                skill
+                for (tid, key, _version), skill in self._skills.items()
+                if tid == context.tenant_id and key == skill_key
+            ]
+        matched.sort(key=lambda item: item.version)
+        return matched
 
     def list(self, context, *, status=None, limit=50, offset=0) -> tuple[list[Skill], int]:
         clean_status = None
@@ -425,6 +442,18 @@ class PostgresSkillStore:
                 cursor.execute(f"SELECT COUNT(*) FROM workbench_skills WHERE {where}", tuple(params))
                 count_row = cursor.fetchone()
         return [self._hydrate_skill(row) for row in rows], int(count_row[0]) if count_row is not None else 0
+
+    def list_versions(self, context, skill_key: str) -> list[Skill]:
+        """该 `skill_key` 在本租户的全部版本（第 11 轮：绑定闸门用；不做可见性过滤）。"""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT {self._SKILL_COLUMNS} FROM workbench_skills "
+                    "WHERE tenant_id = %s AND skill_key = %s ORDER BY version ASC",
+                    (context.tenant_id, skill_key),
+                )
+                rows = cursor.fetchall()
+        return [self._hydrate_skill(row) for row in rows]
 
     def _update_status(self, context, skill_key, version, *, new_status, allowed_if):
         with self._connection() as connection:
