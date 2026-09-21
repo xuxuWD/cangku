@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import atexit
+import csv
 import hashlib
+import io
 import json
 import logging
 import time
@@ -17,7 +19,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .audit.logging import configure_audit_logging
-from .audit.models import AuditAction, ensure_can_read_audits, resolve_actor_filter
+from .audit.models import (
+    AUDIT_EXPORT_DEFAULT_ROWS,
+    AUDIT_EXPORT_FORMATS,
+    AUDIT_EXPORT_MAX_ROWS,
+    AuditAction,
+    ensure_can_export_audits,
+    ensure_can_read_audits,
+    resolve_actor_filter,
+)
 from .audit.redaction import mask_phone
 from .bootstrap import allowed_tool_names, build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_member_store, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_acceptance_decision_store, build_run_promotion_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store, registered_model_keys
 from .events import EventEnvelope
@@ -3880,6 +3890,173 @@ def list_audit_actions(context: UserContext = Depends(current_user)) -> AuditAct
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     actions = sorted(action.value for action in AuditAction)
     return AuditActionListView(items=actions, total=len(actions))
+
+
+# ------------------------------------------------------------ 审计导出（第 13 轮，契约 audit-export-plan.md）
+
+_AUDIT_EXPORT_COLUMNS = (
+    "record_id",
+    "action",
+    "actor_id",
+    "target_type",
+    "target_id",
+    "phone_masked",
+    "detail",
+    "occurred_at",
+)
+
+
+def _audit_export_filters_text(
+    *,
+    actions: list[AuditAction] | None,
+    target_type: str | None,
+    target_id: str | None,
+    actor_id: str | None,
+    since: datetime | None,
+    until: datetime | None,
+) -> str:
+    """把**生效的**筛选条件折成一个字符串（只进审计明细，不参与过滤；不落记录内容）。"""
+    parts = [f"action={item.value}" for item in (actions or [])]
+    if target_type:
+        parts.append(f"target_type={target_type}")
+    if target_id:
+        parts.append(f"target_id={target_id}")
+    if actor_id:
+        parts.append(f"actor_id={actor_id}")
+    if since:
+        parts.append(f"since={since.isoformat()}")
+    if until:
+        parts.append(f"until={until.isoformat()}")
+    return "&".join(parts)
+
+
+def _audit_export_body(records: list, fmt: str, *, exported_at: datetime) -> bytes:
+    """按格式生成文件内容。
+
+    - CSV：**带 UTF-8 BOM**（Excel 打开中文不乱码）；`detail` 序列化为 JSON 字符串放进单元格
+      （用 `csv` 模块处理逗号 / 引号 / 换行的转义）；空值写空串（CSV 没有 null）。
+    - JSON：`{"items":[…],"total":N,"exported_at":…}`，字段与列表端点逐字一致（空值仍是 `null`）。
+    """
+    if fmt == "json":
+        payload = {
+            "items": [
+                {
+                    "record_id": record.record_id,
+                    "action": record.action.value,
+                    "actor_id": record.actor_id,
+                    "target_type": record.target_type,
+                    "target_id": record.target_id,
+                    "phone_masked": record.phone_masked,
+                    "detail": record.detail,
+                    "occurred_at": record.occurred_at.isoformat(),
+                }
+                for record in records
+            ],
+            "total": len(records),
+            "exported_at": exported_at.isoformat(),
+        }
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(_AUDIT_EXPORT_COLUMNS)
+    for record in records:
+        writer.writerow(
+            [
+                record.record_id,
+                record.action.value,
+                record.actor_id or "",
+                record.target_type or "",
+                record.target_id or "",
+                record.phone_masked or "",
+                json.dumps(record.detail, ensure_ascii=False, sort_keys=True),
+                record.occurred_at.isoformat(),
+            ]
+        )
+    return ("\ufeff" + buffer.getvalue()).encode("utf-8")
+
+
+@app.get("/api/v1/audits/export")
+def export_audits(
+    action: list[str] | None = Query(default=None),
+    target_type: str | None = None,
+    target_id: str | None = None,
+    actor_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    format: str = Query(default="csv"),
+    limit: int = Query(default=AUDIT_EXPORT_DEFAULT_ROWS, ge=1, le=AUDIT_EXPORT_MAX_ROWS),
+    context: UserContext = Depends(current_user),
+) -> Response:
+    """导出本租户审计记录（第 13 轮新增；契约 `docs/contracts/audit-export-plan.md`）。
+
+    **仅 `super_admin`**（矩阵 §3「审计：导出」该行其余四列全 ❌）——与「查询」不同档：
+    `ceo` / `department_lead` 能查本租户但**不能导出**。判定顺序：`403`（越权，**先于任何参数校验**）
+    → `422`（`format` / 动作码 / 时间带时区 / `limit` 越界）→ `422`（**命中数 > limit ⇒ 拒绝，不静默截断**）。
+
+    安全口径：租户只从鉴权上下文取（跨租户导出不可能）；`phone_masked` 已是掩码列；`detail` 入库即受白名单约束；
+    成功后写 1 条 `audit.exported`（明细 `format` / `rows` / `filters`），**被拒的请求不写审计**；
+    同步生成、不在服务端留临时文件（不做异步任务与导出包管理）。
+    """
+    try:
+        ensure_can_export_audits(context)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if format not in AUDIT_EXPORT_FORMATS:
+        raise HTTPException(
+            status_code=422, detail=f"format 只能是 {' 或 '.join(sorted(AUDIT_EXPORT_FORMATS))}"
+        )
+    actions = _parse_audit_actions(action)
+    since_aware = _require_aware(since, name="since")
+    until_aware = _require_aware(until, name="until")
+
+    records, total = audit_service.query(
+        context.tenant_id,
+        actions=actions,
+        target_type=target_type,
+        target_id=target_id,
+        actor_id=actor_id,
+        since=since_aware,
+        until=until_aware,
+        limit=limit,
+        offset=0,
+    )
+    if total > limit:
+        raise HTTPException(
+            status_code=422,
+            detail=f"命中 {total} 条，超过单次导出上限 {limit} 条；请缩小时间范围后重试",
+        )
+
+    exported_at = datetime.now(UTC)
+    body = _audit_export_body(records, format, exported_at=exported_at)
+    audit_service.record(
+        AuditAction.AUDIT_EXPORTED,
+        tenant_id=context.tenant_id,
+        actor_id=context.user_id,
+        target_type="audit",
+        detail={
+            "format": format,
+            "rows": len(records),
+            "filters": _audit_export_filters_text(
+                actions=actions,
+                target_type=target_type,
+                target_id=target_id,
+                actor_id=actor_id,
+                since=since_aware,
+                until=until_aware,
+            ),
+        },
+    )
+    media_type = "text/csv; charset=utf-8" if format == "csv" else "application/json"
+    filename = f"audit-{context.tenant_id}-{exported_at.strftime('%Y%m%dT%H%M%SZ')}.{format}"
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Exported-Rows": str(len(records)),
+        },
+    )
 
 
 @app.get("/api/v1/audits", response_model=AuditListView)

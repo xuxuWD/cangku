@@ -136,6 +136,7 @@ export type Capability =
   | 'skill.bind'
   | 'audit.view'
   | 'audit.scope.tenant'
+  | 'audit.export'
   | 'data.export'
   | 'data.delete'
 
@@ -151,6 +152,7 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
   'skill.bind': '技能绑定',
   'audit.view': '审计日志查看',
   'audit.scope.tenant': '审计全租户范围',
+  'audit.export': '审计日志导出',
   'data.export': '数据导出',
   'data.delete': '数据删除',
 }
@@ -174,6 +176,10 @@ const GOVERNANCE_ROLES: readonly Role[] = ['ceo', 'super_admin']
 const BIND_ROLES: readonly Role[] = ['super_admin']
 /** 审计「本租户全量」档：矩阵 §3「审计：查询」里 `employee` 只到「仅本人相关」⇒ 不含在内。 */
 const AUDIT_TENANT_ROLES: readonly Role[] = ['department_lead', 'ceo', 'super_admin']
+/** 审计导出：矩阵 §3「审计：导出」**仅 `super_admin` ✅**（该行其余四列全 ❌）——
+ *  注意与查询**不同档**：`ceo` / `department_lead` 能查本租户但**不能导出**。
+ *  后端同一口径见 `app/audit/models.py` 的 `AUDIT_EXPORT_ROLES`（第 13 轮）。 */
+const AUDIT_EXPORT_ROLES: readonly Role[] = ['super_admin']
 
 /**
  * **2026-09-20 技能域对齐矩阵 §3（第 8 轮）**：`permission-matrix.md` §3「技能」两行 ⇒
@@ -200,6 +206,7 @@ const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
     'skill.bind',
     'audit.view',
     'audit.scope.tenant',
+    'audit.export',
     'data.export',
     'data.delete',
   ],
@@ -241,6 +248,7 @@ export const CAPABILITY_ROLES: Partial<Record<Capability, readonly Role[]>> = {
   'skill.bind': BIND_ROLES,
   'audit.view': ACCESS_ROLES,
   'audit.scope.tenant': AUDIT_TENANT_ROLES,
+  'audit.export': AUDIT_EXPORT_ROLES,
 }
 
 /** 角色显示名（`null` = 未登录 ⇒ "未登录"）：避免各处对可空角色做下标。 */

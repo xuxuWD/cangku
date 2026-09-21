@@ -11,15 +11,18 @@
 import {
   AUDITS_EMPTY_NOTE,
   AUDITS_NO_MATCH_NOTE,
-  AUDIT_EXPORT_NOT_CONNECTED_NOTE,
+  AUDIT_EXPORT_HINT,
+  AUDIT_EXPORT_ONLY_ADMIN_NOTE,
   AUDIT_PERMISSION_REASON,
   AuditError,
   CONNECTED_DESCRIPTION,
   CONNECTED_NOTICE,
+  MOCK_EXPORT_NOTE,
   MY_AUDITS_EMPTY_NOTE,
   MY_AUDITS_NO_MATCH_NOTE,
   SAMPLE_DESCRIPTION,
   SELF_SCOPE_NOTE,
+  exportAudits,
   fetchAuditActions,
   fetchAudits,
   setServiceMode,
@@ -198,7 +201,9 @@ describe('界面文案（真机走查修正的回归钉，2026-09-21）', () => 
     ['MY_AUDITS_EMPTY_NOTE', MY_AUDITS_EMPTY_NOTE],
     ['MY_AUDITS_NO_MATCH_NOTE', MY_AUDITS_NO_MATCH_NOTE],
     ['SELF_SCOPE_NOTE', SELF_SCOPE_NOTE],
-    ['AUDIT_EXPORT_NOT_CONNECTED_NOTE', AUDIT_EXPORT_NOT_CONNECTED_NOTE],
+    ['AUDIT_EXPORT_HINT', AUDIT_EXPORT_HINT],
+    ['AUDIT_EXPORT_ONLY_ADMIN_NOTE', AUDIT_EXPORT_ONLY_ADMIN_NOTE],
+    ['MOCK_EXPORT_NOTE', MOCK_EXPORT_NOTE],
     ['AUDIT_PERMISSION_REASON', AUDIT_PERMISSION_REASON],
   ]
 
@@ -211,5 +216,113 @@ describe('界面文案（真机走查修正的回归钉，2026-09-21）', () => 
 
   it('强调用「」而不是 Markdown（员工档说明的既定写法）', () => {
     expect(SELF_SCOPE_NOTE).toContain('「你自己」')
+  })
+})
+
+describe('审计导出（第 13 轮）', () => {
+  afterEach(() => {
+    setServiceMode('mock')
+  })
+
+  /** 文件下载的桩：要 `headers.get` 与 `blob()`，与普通 JSON 桩不同。 */
+  function stubExport(headers: Record<string, string>, body = 'record_id,action\n1,skill.enabled\n') {
+    const calls: string[] = []
+    const fetchImpl = (async (url: string) => {
+      calls.push(String(url))
+      return {
+        status: 200,
+        ok: true,
+        headers: { get: (name: string) => headers[name] ?? null },
+        blob: async () => new Blob([body]),
+        text: async () => body,
+      }
+    }) as unknown as typeof fetch
+    return { calls, fetchImpl }
+  }
+
+  it('空条件：默认 csv + 上限 5000', async () => {
+    setServiceMode('http')
+    const { calls, fetchImpl } = stubExport({
+      'Content-Disposition': 'attachment; filename="audit-t-1-20260921T000000Z.csv"',
+      'X-Exported-Rows': '7',
+    })
+
+    const outcome = await exportAudits({ actions: [] }, {}, fetchImpl)
+
+    expect(calls[0]).toBe('/api/v1/audits/export?format=csv&limit=5000')
+    expect(outcome.downloaded).toBe(true)
+    expect(outcome.rows).toBe(7)
+    expect(outcome.filename).toBe('audit-t-1-20260921T000000Z.csv')
+    expect(outcome.blob).not.toBeNull()
+  })
+
+  it('筛选与格式逐字拼进查询串（动作多选走**重复键**）', async () => {
+    setServiceMode('http')
+    const { calls, fetchImpl } = stubExport({})
+
+    await exportAudits(
+      {
+        actions: ['skill.enabled', 'skill.disabled'],
+        target_type: 'skill',
+        actor_id: 'acct-1',
+        since: '2026-09-01T00:00:00.000Z',
+      },
+      { format: 'json', limit: 20 },
+      fetchImpl,
+    )
+
+    expect(calls[0]).toBe(
+      '/api/v1/audits/export?action=skill.enabled&action=skill.disabled&target_type=skill' +
+        '&actor_id=acct-1&since=2026-09-01T00%3A00%3A00.000Z&format=json&limit=20',
+    )
+  })
+
+  it('缺响应头时：行数回落 0、文件名回落默认值（不编造）', async () => {
+    setServiceMode('http')
+    const { fetchImpl } = stubExport({})
+
+    const outcome = await exportAudits({ actions: [] }, {}, fetchImpl)
+
+    expect(outcome.rows).toBe(0)
+    expect(outcome.filename).toBe('audit-export.csv')
+  })
+
+  it('403 ⇒ forbidden；超限 422 ⇒ 保留服务端原文（failed）', async () => {
+    setServiceMode('http')
+    const forbidden = (async () => ({
+      status: 403,
+      ok: false,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ detail: '只有超级管理员可以导出审计日志' }),
+    })) as unknown as typeof fetch
+    await expect(exportAudits({ actions: [] }, {}, forbidden)).rejects.toMatchObject({
+      kind: 'forbidden',
+      message: '只有超级管理员可以导出审计日志',
+    })
+
+    const overflow = (async () => ({
+      status: 422,
+      ok: false,
+      headers: { get: () => null },
+      text: async () =>
+        JSON.stringify({ detail: '命中 5821 条，超过单次导出上限 5000 条；请缩小时间范围后重试' }),
+    })) as unknown as typeof fetch
+    await expect(exportAudits({ actions: [] }, {}, overflow)).rejects.toMatchObject({
+      kind: 'failed',
+      message: '命中 5821 条，超过单次导出上限 5000 条；请缩小时间范围后重试',
+    })
+  })
+
+  it('样例模式：不发任何请求，也不假装成功', async () => {
+    setServiceMode('mock')
+    const fetchImpl = (async () => {
+      throw new Error('样例模式不应发请求')
+    }) as unknown as typeof fetch
+
+    const outcome = await exportAudits({ actions: [] }, {}, fetchImpl)
+
+    expect(outcome.downloaded).toBe(false)
+    expect(outcome.blob).toBeNull()
+    expect(outcome.note).toBe(MOCK_EXPORT_NOTE)
   })
 })

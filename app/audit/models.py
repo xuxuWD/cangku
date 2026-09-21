@@ -132,6 +132,10 @@ class AuditAction(StrEnum):
     # P2c-6 会话协作：成员增删（只记标识与授权档，**不记**正文 / 姓名 / 手机号）
     CONVERSATION_MEMBER_ADDED = "conversation.member.added"
     CONVERSATION_MEMBER_REMOVED = "conversation.member.removed"
+    # 第 13 轮（契约 docs/contracts/audit-export-plan.md §4）：**审计导出本身留痕** ——
+    # 导出审计记录是敏感动作（谁 / 何时 / 导了什么范围），必须可追溯；明细只记
+    # `format` / `rows` / `filters`（筛选条件是**字符串**，不落记录内容）。
+    AUDIT_EXPORTED = "audit.exported"
 
 
 class AuditDetailNotAllowed(ValueError):
@@ -243,6 +247,10 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "stream_state_count",
         "idempotency_count",
         "truncated",
+        # 第 13 轮（审计导出留痕，契约 §4）：只记形式与计数 + 筛选条件字符串，不落记录内容。
+        "format",
+        "rows",
+        "filters",
         # P2c-6 会话协作：成员标识 / 授权档 / 是否发起人（均为服务端声明的受控值，不含姓名与手机号）
         "member_id",
         "permission",
@@ -345,3 +353,25 @@ def resolve_actor_filter(context: UserContext, requested: str | None) -> str | N
     if requested is not None and requested != context.user_id:
         raise PolicyError("只能查看本人的审计记录，不能按他人筛选")
     return context.user_id
+
+
+# ------------------------------------------------------------ 审计导出的角色与上限（第 13 轮）
+
+# 口径 = `permission-matrix.md` §3「审计：导出」行：**仅 `super_admin` ✅**（其余四列全 ❌）。
+# 注意与「审计：查询」**不同档** —— `ceo` / `department_lead` 能查本租户，但**不能导出**。
+AUDIT_EXPORT_ROLES = frozenset({"super_admin"})
+# 单次导出上限（同步导出：不做异步任务/生成包，超限一律如实拒绝，见契约 §3 / §7-#3）。
+AUDIT_EXPORT_MAX_ROWS = 5000
+AUDIT_EXPORT_DEFAULT_ROWS = 1000
+AUDIT_EXPORT_FORMATS = frozenset({"csv", "json"})
+
+
+def can_export_audits(context: UserContext) -> bool:
+    """是否可导出审计记录（仅 `super_admin`；矩阵 §3「审计：导出」）。"""
+    return context.role in AUDIT_EXPORT_ROLES
+
+
+def ensure_can_export_audits(context: UserContext) -> None:
+    """审计导出前置判定；否则 403（**先于任何参数校验**，越权者拿不到校验细节）。"""
+    if not can_export_audits(context):
+        raise PolicyError("只有超级管理员可以导出审计日志")

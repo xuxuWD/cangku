@@ -14,7 +14,8 @@
  * 纪律：
  *  - 本页**只做呈现**：真正的范围判定在服务端（`employee` 的 `actor_id` 由服务端注入，传他人 ⇒ 403）；
  *  - 时间参数一律 `toISOString()`（`Z` 形态）—— 实测 naive ⇒ 422、URL 里字面 `+00:00` ⇒ 422；
- *  - 写侧无任何入口（审计是**追加型不可变日志**），导出**后端零实现** ⇒ 只给说明、不放按钮；
+ *  - 写侧无任何入口（审计是**追加型不可变日志**）；**导出（第 13 轮已接入）**：仅 `super_admin`
+ *    渲染「导出」按钮（按当前筛选条件下载 CSV），其余档位**不给按钮但说明原因**（不静默隐藏）；
  *  - 空 / 错误 / 无权限三态分别呈现，**不得**把失败说成"没有记录"。
  */
 import { useState } from 'react'
@@ -28,7 +29,8 @@ import { formatDateTime } from '../../utils/format'
 import { usePanelData } from '../../utils/panelData'
 import { AuditDetailDrawer, NOT_SET_TEXT } from './components/AuditDetailDrawer'
 import {
-  AUDIT_EXPORT_NOT_CONNECTED_NOTE,
+  AUDIT_EXPORT_HINT,
+  AUDIT_EXPORT_ONLY_ADMIN_NOTE,
   AUDITS_EMPTY_NOTE,
   AUDITS_LIMIT,
   AUDITS_NO_MATCH_NOTE,
@@ -40,9 +42,11 @@ import {
   SAMPLE_DATA_BADGE,
   SAMPLE_DESCRIPTION,
   SELF_SCOPE_NOTE,
+  exportAudits,
   fetchAuditActions,
   fetchAudits,
   isConnected,
+  triggerDownload,
 } from './services/auditService'
 import { isBlankQuery } from './types'
 import type { AuditActionCatalog, AuditPage, AuditQuery, AuditRecord } from './types'
@@ -85,6 +89,7 @@ export function AuditLogPage() {
   const role = useSession((state) => state.role)
   const canView = hasCapability(role, 'audit.view')
   const tenantWide = hasCapability(role, 'audit.scope.tenant')
+  const canExport = hasCapability(role, 'audit.export')
 
   if (!canView) {
     return (
@@ -98,23 +103,26 @@ export function AuditLogPage() {
     )
   }
 
-  return <AuditBoard tenantWide={tenantWide} showExportNote={role === 'super_admin'} />
+  return <AuditBoard tenantWide={tenantWide} canExport={canExport} />
 }
 
 interface AuditBoardProps {
   /** 是否"本租户全量"档（`employee` 为 `false` ⇒ 不渲染操作人筛选）。 */
   tenantWide: boolean
-  /** 是否提示"审计导出尚未接入"（矩阵把导出给 `super_admin`，其余角色不提）。 */
-  showExportNote: boolean
+  /** 是否可导出（能力 `audit.export`：矩阵 §3「审计：导出」仅 `super_admin`）。 */
+  canExport: boolean
 }
 
-function AuditBoard({ tenantWide, showExportNote }: AuditBoardProps) {
+function AuditBoard({ tenantWide, canExport }: AuditBoardProps) {
   const connected = isConnected()
   const [form] = Form.useForm<FilterValues>()
   const [applied, setApplied] = useState<AuditQuery>(BLANK_QUERY)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [detail, setDetail] = useState<AuditRecord | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportNotice, setExportNotice] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<{ message: string; hint: string } | null>(null)
 
   const offset = (page - 1) * pageSize
   const audits = usePanelData(
@@ -158,6 +166,30 @@ function AuditBoard({ tenantWide, showExportNote }: AuditBoardProps) {
     form.resetFields()
     setApplied(BLANK_QUERY)
     setPage(1)
+  }
+
+  /** 导出**当前筛选条件**下的记录（第 13 轮；仅 `super_admin` 有按钮、服务端再判一次）。 */
+  const handleExport = async () => {
+    setExportNotice(null)
+    setExportError(null)
+    setExporting(true)
+    try {
+      const outcome = await exportAudits(applied)
+      if (outcome.downloaded) {
+        if (outcome.blob) triggerDownload(outcome.blob, outcome.filename)
+        // 提示只用服务端给的条数（`X-Exported-Rows`），不编造
+        setExportNotice(`已导出 ${outcome.rows} 条：${outcome.filename}`)
+      } else {
+        setExportNotice(outcome.note)
+      }
+    } catch (error) {
+      setExportError({
+        message: `未能导出：${error instanceof Error && error.message ? error.message : '导出失败，请稍后重试。'}`,
+        hint: '本次没有生成任何文件；可缩小时间范围后重试。',
+      })
+    } finally {
+      setExporting(false)
+    }
   }
 
   const columns: TableColumnsType<AuditRecord> = [
@@ -217,7 +249,16 @@ function AuditBoard({ tenantWide, showExportNote }: AuditBoardProps) {
         )}
 
         {!tenantWide && <Alert type="info" showIcon message={SELF_SCOPE_NOTE} />}
-        {showExportNote && <Alert type="info" showIcon message={AUDIT_EXPORT_NOT_CONNECTED_NOTE} />}
+        {/* 导出说明（第 13 轮）：可导出档给"导出什么/上限"，不可导出档**如实说明为什么没有按钮**。 */}
+        <Alert
+          type="info"
+          showIcon
+          message={canExport ? AUDIT_EXPORT_HINT : AUDIT_EXPORT_ONLY_ADMIN_NOTE}
+        />
+        {exportNotice && <Alert type="success" showIcon message={exportNotice} />}
+        {exportError && (
+          <Alert type="error" showIcon message={exportError.message} description={exportError.hint} />
+        )}
 
         <Form<FilterValues> form={form} layout="inline" onFinish={handleSearch}>
           <Form.Item label="动作" name="actions">
@@ -249,6 +290,13 @@ function AuditBoard({ tenantWide, showExportNote }: AuditBoardProps) {
                 查询
               </Button>
               <Button onClick={handleReset}>重置</Button>
+              {/* 导出（第 13 轮）：矩阵 §3「审计：导出」仅 super_admin ⇒ 其余档位**不渲染按钮**，
+                  但仍在上方给出"仅超级管理员可用"的说明（不静默隐藏）。 */}
+              {canExport && (
+                <Button onClick={() => void handleExport()} loading={exporting}>
+                  导出
+                </Button>
+              )}
             </Space>
           </Form.Item>
         </Form>

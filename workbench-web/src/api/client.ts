@@ -105,6 +105,27 @@ export interface RequestOptions {
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const response = await performRequest(path, options, 'application/json')
+  if (response.status === 204) return undefined as T
+  return parseBody(await response.text()) as T
+}
+
+/**
+ * **原始响应**（第 13 轮新增）：给"不能走 JSON 解析"的请求用（目前只有**审计导出**的文件下载）。
+ *
+ * 与 `request` **共用同一份** 令牌注入 / 超时 / 错误映射（`performRequest`）——
+ * 本文件仍是全前端**唯一**发 HTTP 的地方，调用方不得自己 `fetch`。
+ */
+export async function requestRaw(path: string, options: RequestOptions = {}): Promise<Response> {
+  return performRequest(path, options, '*/*')
+}
+
+/** 发请求 + 统一错误映射：`request` 与 `requestRaw` 的唯一实现。 */
+async function performRequest(
+  path: string,
+  options: RequestOptions,
+  accept: string,
+): Promise<Response> {
   const { method = 'GET', body, query } = options
   const doFetch = options.fetchImpl ?? globalThis.fetch
   const token = readToken()
@@ -118,7 +139,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     const response = await doFetch(buildUrl(path, query), {
       method,
       headers: {
-        Accept: 'application/json',
+        Accept: accept,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
@@ -127,13 +148,12 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       credentials: 'same-origin',
     })
 
-    if (response.status === 204) return undefined as T
+    if (!response.ok) {
+      const text = await response.text()
+      throw toApiError(response.status, parseBody(text))
+    }
 
-    const text = await response.text()
-    if (!response.ok) throw toApiError(response.status, parseBody(text))
-
-    const parsed = parseBody(text)
-    return parsed as T
+    return response
   } catch (error) {
     if (error instanceof ApiError) throw error
     // 网络失败 / 超时 / 中止：一律"服务不可达"，不暴露底层错误原文

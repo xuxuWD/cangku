@@ -620,14 +620,28 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 - 响应：`{"items": [...], "total": <命中总数>, "limit": <本次 limit>, "offset": <本次 offset>}`；`items` 按时间**倒序**（新 → 旧），每项字段 `record_id`、`action`、`actor_id`、`target_type`、`target_id`、`phone_masked`、`detail`、`occurred_at`（**不含 `tenant_id`**，恒等于调用者租户）。
 - `detail` 直接返回落库内容：写入侧已按白名单 + 递归敏感键校验处理，此处不二次加工。
-- **已知限制**：`offset` 分页在翻页期间有新写入时可能跳过/重复个别记录（用时间范围或动作筛选可规避）；`total` 为额外 `COUNT` 查询；不支持导出与 `detail` 模糊搜索。
+- **已知限制**：`offset` 分页在翻页期间有新写入时可能跳过/重复个别记录（用时间范围或动作筛选可规避）；`total` 为额外 `COUNT` 查询；本端点**不做导出**（导出见下方 `GET /api/v1/audits/export`）与 `detail` 模糊搜索。
 
 `GET /api/v1/audits/actions`（**2026-09-20 新增**）
 
 - 返回**审计动作码全集**（供界面做动作筛选；`AuditAction` 有 90+ 项且随功能新增 ⇒ 前端不复制一份，避免漂移）。
 - **权限**：与「审计：查询」同档（四个业务角色可读；`customer_admin` ⇒ `403`「当前岗位不能查看审计日志」；未认证 `401`）。
 - 响应：`{"items": ["account.login.succeeded", ...], "total": <动作码条数>}`（`items` 为**码值**，不含中文标签 —— 标签不在后端枚举内，界面按码值原样呈现）。
-- **审计导出**：矩阵要求 `super_admin` 可导出，但当前版本**后端零实现**（无端点）⇒ 界面不给导出入口，如实标注「尚未接入」。
+
+`GET /api/v1/audits/export`（**2026-09-21 第 13 轮新增**）
+
+- 作用：把**当前筛选条件下**的本租户审计记录导出为文件（同步生成、直接回给调用方，**不在服务端留临时文件**）。
+- **权限：仅 `super_admin`**（矩阵 §3「审计：导出」）；`ceo` / `department_lead` / `employee` / `customer_admin` ⇒ **一律 `403`**「只有超级管理员可以导出审计日志」；匿名 `401`。**越权判定先于任何参数校验**（`ceo` 传非法 `format` 仍 `403`）。
+- 查询参数：与 `GET /api/v1/audits` **同名同义**（`action` 可重复 / `target_type` / `target_id` / `actor_id` / `since` / `until`，时间**必须带时区**，否则 `422`）；另加：
+  - `format`：`csv`（默认）| `json`，非法值 ⇒ `422`；
+  - `limit`：默认 **1000**、上限 **5000**（越界 ⇒ `422`）。
+- **超限 ⇒ `422`（不静默截断）**：命中数 > `limit` 时报错，文案含**命中数**与**上限**（例：「命中 5821 条，超过单次导出上限 5000 条；请缩小时间范围后重试」）。
+- 响应：CSV ⇒ `text/csv; charset=utf-8`（**带 UTF-8 BOM**，Excel 中文可直接打开）；JSON ⇒ `application/json`（`{"items":[…],"total":N,"exported_at":…}`）。两者都带：
+  - `Content-Disposition: attachment; filename="audit-<tenant>-<UTC时间戳>.<csv|json>"`；
+  - `X-Exported-Rows: <N>`（前端据此提示"已导出 N 条"）。
+- **字段口径**与列表逐字一致（`phone_masked` 已是掩码列；`detail` 过同一份统一脱敏器）；顺序**新 → 旧**；不接受排序参数。
+- **导出动作本身留审计**：成功 ⇒ 1 条 `audit.exported`，明细 `{format, rows, filters}`（`filters` 为筛选条件**字符串**）；被拒（`403` / `422`）**不写审计**。
+- 已知限制：**同步导出**，单次 ≤ 5000 行；更大规模需缩小时间范围（异步导出与导出包管理**未实现**，未立项）。
 
 ## 运行指标（子项目②）
 

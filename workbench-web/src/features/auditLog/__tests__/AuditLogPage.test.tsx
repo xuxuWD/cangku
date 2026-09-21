@@ -8,7 +8,9 @@
  *  - 空态**区分**"没有记录"与"筛选未命中"，且员工档文案不同；
  *  - 筛选提交后**重新取数**（断言传给适配层的条件）；分页按服务端语义传 `offset`；
  *  - 详情抽屉呈现元数据 + `detail` 键值对（无明细时给如实文案）；
- *  - **导出后端零实现** ⇒ 超管视图只给"尚未接入"说明、**没有导出按钮**；其余角色不提导出；
+ *  - **导出（第 13 轮接入）**：`super_admin` 有「导出」按钮 ⇒ 按**当前筛选条件**调 `exportAudits` + 触发下载
+ *    + 用服务端条数提示；`ceo` / `department_lead` / `employee` **无按钮但给"仅超级管理员可用"说明**（不静默隐藏）；
+ *    超限 `422` 与失败各自如实呈现、且**不假装成功**；
  *  - 错误态可重试、403 ⇒ 无权限态（两者分开）。
  */
 import { screen, waitFor } from '@testing-library/react'
@@ -17,16 +19,19 @@ import { renderWithProviders, signInAs, signOutForTest } from '../../../test/ren
 import { AuditLogPage } from '../AuditLogPage'
 import { NOT_SET_TEXT } from '../components/AuditDetailDrawer'
 import {
-  AUDIT_EXPORT_NOT_CONNECTED_NOTE,
+  AUDIT_EXPORT_HINT,
+  AUDIT_EXPORT_ONLY_ADMIN_NOTE,
   AUDITS_EMPTY_NOTE,
   AUDITS_NO_MATCH_NOTE,
   AuditError,
   MY_AUDITS_EMPTY_NOTE,
   SELF_SCOPE_NOTE,
+  exportAudits,
   fetchAuditActions,
   fetchAudits,
 } from '../services/auditService'
 import type { AuditActionCatalog, AuditPage, AuditRecord } from '../types'
+import type { AuditExportOutcome } from '../services/auditService'
 
 vi.mock('../services/auditService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/auditService')>()
@@ -34,6 +39,7 @@ vi.mock('../services/auditService', async (importOriginal) => {
     ...actual,
     fetchAudits: vi.fn(actual.fetchAudits),
     fetchAuditActions: vi.fn(actual.fetchAuditActions),
+    exportAudits: vi.fn(actual.exportAudits),
   }
 })
 
@@ -141,13 +147,103 @@ describe('本租户视图（department_lead / ceo / super_admin）', () => {
     expect(await screen.findByText('共 140 条记录，本页显示 1 条（单页上限 200 条，请用分页查看）。')).toBeInTheDocument()
   })
 
-  it('导出：超管只看到「尚未接入」说明，**没有任何导出按钮**', async () => {
+  it('导出：超管有按钮，点击后按**当前筛选条件**导出并提示服务端条数', async () => {
+    vi.mocked(exportAudits).mockResolvedValue({
+      downloaded: true,
+      rows: 3,
+      filename: 'audit-t-1-20260921T000000Z.csv',
+      blob: null,
+      note: '',
+    } as AuditExportOutcome)
     signInAs('super_admin')
     renderWithProviders(<AuditLogPage />)
+    await screen.findByText('skill.enabled')
 
-    expect(await screen.findByText(AUDIT_EXPORT_NOT_CONNECTED_NOTE)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /导\s*出/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /下载/ })).not.toBeInTheDocument()
+    expect(screen.getByText(AUDIT_EXPORT_HINT)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /导\s*出/ }))
+
+    // 无筛选时导出的就是"全量"（空条件），条数提示取自服务端回读值
+    await waitFor(() => {
+      expect(vi.mocked(exportAudits)).toHaveBeenCalledWith({ actions: [] })
+    })
+    expect(await screen.findByText(/已导出 3 条：audit-t-1-20260921T000000Z\.csv/)).toBeInTheDocument()
+  })
+
+  it('导出：筛选后导出带当前条件（不是忽略筛选导全量）', async () => {
+    vi.mocked(exportAudits).mockResolvedValue({
+      downloaded: true,
+      rows: 1,
+      filename: 'audit-t-1-20260921T000001Z.csv',
+      blob: null,
+      note: '',
+    } as AuditExportOutcome)
+    signInAs('super_admin')
+    renderWithProviders(<AuditLogPage />)
+    await screen.findByText('skill.enabled')
+
+    await userEvent.type(screen.getByLabelText('目标类型'), 'skill')
+    await userEvent.click(screen.getByRole('button', { name: /查\s*询/ }))
+    await waitFor(() => {
+      expect(vi.mocked(fetchAudits).mock.calls.length).toBeGreaterThan(1)
+    })
+    await userEvent.click(screen.getByRole('button', { name: /导\s*出/ }))
+
+    await waitFor(() => {
+      expect(vi.mocked(exportAudits)).toHaveBeenCalledWith(
+        expect.objectContaining({ target_type: 'skill' }),
+      )
+    })
+  })
+
+  it('导出超限（422）：如实呈现服务端原文 + 「没有生成任何文件」，不假装成功', async () => {
+    vi.mocked(exportAudits).mockRejectedValue(
+      new AuditError('命中 5821 条，超过单次导出上限 5000 条；请缩小时间范围后重试', 'failed'),
+    )
+    signInAs('super_admin')
+    renderWithProviders(<AuditLogPage />)
+    await screen.findByText('skill.enabled')
+
+    await userEvent.click(screen.getByRole('button', { name: /导\s*出/ }))
+
+    expect(
+      await screen.findByText(/未能导出：命中 5821 条，超过单次导出上限 5000 条；请缩小时间范围后重试/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/本次没有生成任何文件/)).toBeInTheDocument()
+    expect(screen.queryByText(/已导出 /)).not.toBeInTheDocument()
+  })
+
+  it('导出失败（网络类）：可重试，且不写成"没有记录"', async () => {
+    vi.mocked(exportAudits).mockRejectedValueOnce(new AuditError('服务不可达：请检查网络后重试。', 'failed'))
+    signInAs('super_admin')
+    renderWithProviders(<AuditLogPage />)
+    await screen.findByText('skill.enabled')
+
+    await userEvent.click(screen.getByRole('button', { name: /导\s*出/ }))
+    expect(await screen.findByText(/未能导出：服务不可达/)).toBeInTheDocument()
+
+    vi.mocked(exportAudits).mockResolvedValue({
+      downloaded: true,
+      rows: 2,
+      filename: 'audit-t-1-20260921T000002Z.csv',
+      blob: null,
+      note: '',
+    } as AuditExportOutcome)
+    await userEvent.click(screen.getByRole('button', { name: /导\s*出/ }))
+
+    expect(await screen.findByText(/已导出 2 条/)).toBeInTheDocument()
+  })
+
+  it('导出：非超管（能查不能导）**无按钮但给"仅超级管理员可用"的说明**（不静默隐藏）', async () => {
+    for (const role of ['ceo', 'department_lead', 'employee'] as const) {
+      signOutForTest()
+      signInAs(role)
+      const { unmount } = renderWithProviders(<AuditLogPage />)
+      await screen.findByText('skill.enabled')
+
+      expect(screen.getByText(AUDIT_EXPORT_ONLY_ADMIN_NOTE)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /导\s*出/ })).not.toBeInTheDocument()
+      unmount()
+    }
   })
 
   it('错误态可重试（与"没有记录"分开）', async () => {
@@ -199,8 +295,9 @@ describe('我的操作视图（employee：矩阵 ⚠️ 仅本人相关）', () 
       .join('')
     expect(rendered).not.toContain('**')
     expect(rendered).toContain('「你自己」')
-    // 导出（矩阵给 super_admin）在员工视图**不出现**，避免暗示自己有该能力
-    expect(screen.queryByText(AUDIT_EXPORT_NOT_CONNECTED_NOTE)).not.toBeInTheDocument()
+    // 导出（矩阵给 super_admin）在员工视图**不给按钮**，但如实说明"仅超级管理员可用"
+    expect(screen.getByText(AUDIT_EXPORT_ONLY_ADMIN_NOTE)).toBeInTheDocument()
+    expect(screen.queryByText(AUDIT_EXPORT_HINT)).not.toBeInTheDocument()
   })
 
   it('空态用"我的"口径文案', async () => {

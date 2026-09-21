@@ -142,6 +142,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   // P2c-6（2026-09-17）：会话协作——成员添加 / 撤销（只记标识与授权档，不含姓名与手机号）。
   'conversation.member.added': '会话成员已添加',
   'conversation.member.removed': '会话成员已撤销',
+  // 第 13 轮（2026-09-21）：审计导出留痕（契约 docs/contracts/audit-export-plan.md §4）。
+  'audit.exported': '审计日志已导出',
 }
 
 // 取不到标签时回落显示动作码本身，避免出现空白。
