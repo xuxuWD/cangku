@@ -4,7 +4,8 @@
  * 覆盖口径（见 `docs/contracts/skill-bindings-api.md` §2 / §3）：
  *  - 列表：`active` / `disabled` 状态如实呈现；**已解除的绑定不能重复解绑**（禁用 + 原因）；
  *  - 解绑走**二次确认**（输入确认词才能执行），成功提示只用**服务端回读值**并重新取数；
- *  - 绑定表单：技能候选**只含「已启用」技能**（界面自我收敛，服务端不拦）；员工支持**手动录入**；
+ *  - 绑定表单：技能候选**只含「已启用」技能**（界面自我收敛）；员工候选**只含目录项**
+ *    （第 12 轮 ③A 起取消手动录入，服务端要求已纳管且启用）；
  *  - 写失败**就地呈现服务端原文 + "没有写入任何数据"**，不假装成功；
  *  - 工具面预览：**四种归因分开**（就绪 / 无绑定 / 无已启用技能 / 交集为空）；
  *  - `canBind=false`（`ceo`）：**不请求任何数据**，控件禁用并给原因（不静默隐藏）。
@@ -191,9 +192,9 @@ describe('解绑（二次确认）', () => {
 })
 
 describe('绑定表单', () => {
-  it('技能候选只含「已启用」技能；员工可手动录入；提交请求体逐键正确', async () => {
+  it('技能候选只含「已启用」技能；员工候选只含目录项；提交请求体逐键正确', async () => {
     vi.mocked(bindAgentSkill).mockResolvedValue({
-      result: { skill_key: 'summarize', agent_key: 'agent-9', status: 'active' },
+      result: { skill_key: 'summarize', agent_key: 'agent-1', status: 'active' },
       written: true,
       note: '操作已受理。',
     })
@@ -206,24 +207,35 @@ describe('绑定表单', () => {
     expect(screen.queryByTitle('draft-skill@1.0.0')).not.toBeInTheDocument()
     await userEvent.click(screen.getByTitle('summarize@1.0.0'))
 
-    // 员工候选来自目录，且允许手动录入目录之外的标识
-    await userEvent.type(screen.getByLabelText('数字员工标识'), 'agent-9{enter}')
+    // 员工候选来自目录（第 12 轮 ③A 起**不可手动录入** ⇒ 只能选目录项）
+    await userEvent.click(screen.getByLabelText('数字员工标识'))
+    expect(await screen.findByTitle('内容运营助手（agent-1）')).toBeInTheDocument()
+    await userEvent.click(screen.getByTitle('内容运营助手（agent-1）'))
     await userEvent.click(screen.getByRole('button', { name: /绑\s*定/ }))
 
     await waitFor(() => {
-      expect(vi.mocked(bindAgentSkill)).toHaveBeenCalledWith('summarize', 'agent-9')
+      expect(vi.mocked(bindAgentSkill)).toHaveBeenCalledWith('summarize', 'agent-1')
     })
-    expect(await screen.findByText(/已绑定：summarize → agent-9（状态：生效中）。/)).toBeInTheDocument()
+    expect(await screen.findByText(/已绑定：summarize → agent-1（状态：生效中）。/)).toBeInTheDocument()
   })
 
-  it('员工候选为空：给出如实说明（目录为空是正常状态），且不阻断手动录入', async () => {
+  it('员工候选为空：给出"先去纳管"的引导，且**不再提供手动录入**（自由输入不产生值）', async () => {
     vi.mocked(fetchAgentCandidates).mockResolvedValue({ sample: false, items: [], total: 0 })
     renderWithProviders(<BindingPanel canBind />)
     await screen.findByText('summarize')
 
-    await userEvent.click(screen.getByLabelText('数字员工标识'))
-
+    const select = screen.getByLabelText('数字员工标识')
+    await userEvent.click(select)
     expect(await screen.findByText(AGENT_CANDIDATE_EMPTY_NOTE)).toBeInTheDocument()
+
+    // 目录为空时**不能**靠"直接填写"绕过：自由输入不落值 ⇒ 必填校验拦下，且不发写请求
+    await userEvent.type(select, 'agent-9{enter}')
+    await userEvent.click(screen.getByLabelText('技能包'))
+    await userEvent.click(await screen.findByTitle('summarize@1.0.0'))
+    await userEvent.click(screen.getByRole('button', { name: /绑\s*定/ }))
+
+    expect(await screen.findByText('请选择要绑定的数字员工')).toBeInTheDocument()
+    expect(vi.mocked(bindAgentSkill)).not.toHaveBeenCalled()
   })
 
   it('绑定失败：就地呈现服务端原文 + 「没有写入任何数据」，不假装成功', async () => {
@@ -233,7 +245,8 @@ describe('绑定表单', () => {
 
     await userEvent.click(screen.getByLabelText('技能包'))
     await userEvent.click(await screen.findByTitle('summarize@1.0.0'))
-    await userEvent.type(screen.getByLabelText('数字员工标识'), 'agent-9{enter}')
+    await userEvent.click(screen.getByLabelText('数字员工标识'))
+    await userEvent.click(await screen.findByTitle('内容运营助手（agent-1）'))
     await userEvent.click(screen.getByRole('button', { name: /绑\s*定/ }))
 
     expect(await screen.findByText(/未能完成绑定：只有超级管理员可以绑定或解绑技能/)).toBeInTheDocument()

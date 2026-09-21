@@ -125,6 +125,9 @@ from .workforce import (
     RoleNotAvailable,
     WorkforceDirectoryService,
 )
+# 目录键的**唯一**归一化实现（去空白 + 小写 + 字符集校验）：绑定面第 12 轮复用同一份，
+# 避免"技能面按原样键存、目录面按小写键判"两套口径（专项方案 §11 裁决 ④A）。
+from .workforce.models import normalize_key
 from .memory.models import (
     InvalidMemory,
     MemoryBudgetExceeded,
@@ -142,6 +145,7 @@ from .skills.models import (
     SkillNotFound,
     SkillSourceDenied,
     SkillStateConflict,
+    ensure_can_bind,
 )
 from .skills.service import SkillService
 from .evolution.models import (
@@ -2923,13 +2927,32 @@ def list_skill_bindings(
 
 @app.post("/api/v1/skills/bindings", response_model=SkillBindingResponse)
 def bind_skill(payload: SkillBindRequest, context: UserContext = Depends(current_user)) -> SkillBindingResponse:
-    """绑定技能到数字员工（管理动作，仅 super_admin）。"""
+    """绑定技能到数字员工（管理动作，仅 super_admin）。
+
+    **第 12 轮补齐两道**（专项方案 §11，用户裁决 ③A / ④A / ⑦维持）：
+    - ④ **键归一化 + 字符集校验**：复用目录域同一份 `normalize_key`（去空白 + 小写 + 字符集），非法 ⇒ `422`；
+    - ③ **员工必须已纳管且启用**：复用目录面 `ensure_agent_binding_available`（**路由层**闸门，
+      与「知识范围」写路径同一先例）⇒ `409`；**界面同轮取消"手动录入"**，员工键只能从目录选。
+
+    **判定顺序**：`403`（越权）→ `422`（标识非法）→ `404`（技能不存在）→ `409`（技能未启用）→ `409`（员工未纳管）。
+    **越权者永远拿 `403`**，不通过任何错误码探测技能 / 员工是否存在。
+    """
     try:
-        skills_service.bind_skill(context, payload.agent_key, payload.skill_key)
+        ensure_can_bind(context)
+        agent_key = normalize_key(payload.agent_key)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except InvalidDirectoryKey as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        workforce_directory_service.ensure_agent_binding_available(context, agent_key)
+        skills_service.bind_skill(context, agent_key, payload.skill_key)
+    except DirectoryNotManaged as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (InvalidSkillPackage, SkillNotFound, SkillStateConflict, PolicyError) as exc:
         _raise_skill_http(exc)
     return SkillBindingResponse(
-        skill_key=payload.skill_key, agent_key=payload.agent_key, status="active"
+        skill_key=payload.skill_key, agent_key=agent_key, status="active"
     )
 
 
@@ -2939,7 +2962,20 @@ def unbind_skill(
     agent_key: str = Query(...),
     context: UserContext = Depends(current_user),
 ) -> SkillBindingResponse:
-    """解绑技能（管理动作，仅 super_admin）：active → disabled。"""
+    """解绑技能（管理动作，仅 super_admin）：active → disabled。
+
+    **第 12 轮**：与 `bind` 同样做键归一化（否则用大写 / 带空白的变体解绑会打不中同一行 ⇒ `404`）；
+    **但解绑刻意不设目录闸门** —— 它是清理通道，必须能回收"员工此后被停用 / 移出目录"的历史行。
+    **历史非规范键行**（本轮真机实测为 0 行）需用规范键解绑，必要时由
+    `scripts/repair_dangling_skill_bindings.py` 兜底。
+    """
+    try:
+        ensure_can_bind(context)
+        agent_key = normalize_key(agent_key)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except InvalidDirectoryKey as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         skills_service.unbind_skill(context, agent_key, skill_key)
     except (InvalidSkillPackage, SkillNotFound, SkillStateConflict, PolicyError) as exc:

@@ -1,6 +1,6 @@
 # 「技能绑定校验」专项方案（第 11 轮）
 
-> 状态：**v2 · 2026-09-20 · 已交付（域内两条闸门落地；第 ③ 条按 §7-#1 暂缓，见 §9 交付记录）**。
+> 状态：**v4 · 2026-09-21 · 第 12 轮已交付（③A / ④A / ⑥A 落地 + ⑦ 维持；见 §11.6 交付记录）**。
 > **唯一权威在别处**：权限口径 = [`permission-matrix.md`](file:///d:/徐徐AI学习/公司工作台/docs/contracts/permission-matrix.md)（§3「技能」两行 + §13 绑定面补登记）；
 > 绑定面契约 = [`skill-bindings-api.md`](file:///d:/徐徐AI学习/公司工作台/docs/contracts/skill-bindings-api.md)（§2 三条服务端事实 / §5-#1 待裁决 / §7 安全要件）；
 > 后端契约真源 = `docs/api-contract.md`（**改接口先改它**）。
@@ -130,3 +130,73 @@
 2. **行为变化待确认**：技能停用后重复 `bind` 由 `200` ⇒ `409`（含历史合规行）。若你要求"幂等优先、不受技能状态影响"，需改为**先判幂等再判闸门**（代价：停用技能后仍能"成功"重复绑定）。
 3. **真库 2 行 `active` 违规行未修**（`probe-agent ↔ r9-ghost-skill`（技能不存在）、`probe-agent ↔ r8-self-probe`（`submitted`））——脚本已就绪，**执行权在你**。
 4. **未验证**：未测并发 / 压测；**跨租户**（另一租户的技能键）真机未构造（仅源码判定按 `tenant_id` 过滤）；`list_versions` 的可见性口径"不过滤"在多租户真机上未构造反例。
+
+## 11. 第 12 轮续做（bind 校验缺口专项·第二批）
+
+> 用户指令：`继续下一轮：bind 校验缺口专项`。本批**先出契约、再等裁决**（不静默改）。
+> **证据级别**：源码判定 + **2026-09-21 只读真机实测**（`tmp/r12-bind-gap-probe.py`，全程 `GET`、零写入）。
+
+### 11.1 只读取证（现状事实）
+
+| # | 事实 | 实测 / 源码 |
+| --- | --- | --- |
+| 1 | 数字员工目录**为空**，但**岗位目录已有 1 个 active 岗位** | `GET /workforce/agents` ⇒ `total = 0`；`GET /workforce/roles` ⇒ `total = 1`（`evidence-ops`，`active`） |
+| 2 | 绑定行 5 条，键全是规范形态（无大写 / 无空白） | `GET /skills/bindings` ⇒ `agent-r9` / `agent-ghost` / `probe-agent` |
+| 3 | **幂等 `bind` 每次都写审计**（同 target 多条 `skill.enabled`） | `GET /audits?action=skill.enabled&limit=100` ⇒ `r8-probe-skill@probe-agent` **8 条**、`r8-self-probe@probe-agent` 3 条、`r9-ghost-skill@probe-agent` 3 条、`r8-probe-skill@1.0.0` 3 条 |
+| 4 | `agent_key` **无归一化 / 无字符集校验**（`SkillBindRequest` 仅 `min_length=1, max_length=64`） | 源码：`SkillService.bind_skill` 原样透传；而目录面 `normalize_key` 做 `strip()+lower()+` 字符集校验 |
+| 5 | 第 ③ 条闸门**可复用的实现已存在** | `app/workforce/service.py:143` `ensure_agent_binding_available` ⇒ `DirectoryNotManaged`（`409`「该标识尚未纳入目录，请先在「数字员工设置」中纳管」），已用于会话入口 `app/main.py:3089` |
+| 6 | 自动纳管的**前置条件**：需 `agent_key + name + role_key`，且 `role_key` 必须已 `active`；目录写路径仅 `super_admin`（与 `bind` 同角色） | `create_employee` + `_require_active_role` + `_ensure_admin`（`app/workforce/store.py:108`） |
+
+### 11.2 候选修复项（四项）
+
+| # | 缺口 | 方案 A | 方案 B | 影响面 |
+| --- | --- | --- | --- | --- |
+| ③ | `agent_key` 未纳管也能绑（实测 `200`） | **加闸门**（路由层，复用 `ensure_agent_binding_available`）⇒ `409`；**界面同轮取消"手动录入"**（`mode="tags"` ⇒ 只读目录候选），目录为空时给"先去纳管"的引导 | 加闸门 + **自动纳管**（绑定顺手在目录建员工） | A：**真机当前 0 个员工 ⇒ 加闸门后"绑定"须先用「数字员工管理」建 1 个员工**（岗位已有，只差员工）；**翻转第 9 轮「手动录入」裁决（需你确认）**；前端 1 处 + 用例。**B 需扩 `SkillBindRequest` 加 `role_key`/`name`** ⇒ 把绑定接口变成目录写接口（一个接口又读又写），且要重定目录写的审计/权限口径 ⇒ **不建议** |
+| ④ | `agent_key` 无归一化 ⇒ `"Probe-Agent"` 与 `probe-agent` 是**两行**，目录面按小写比对 ⇒ 绑定"看不见" | **加**：`bind` / `unbind` 前走目录域同一份 `normalize_key`（去空白 + 小写 + 字符集校验）；非法 ⇒ `422` | 不加（维持原样键） | A：与**目录域**口径一致（`agent_key` 属目录域）；**历史 5 行已全规范 ⇒ 无需迁移**；`skill_key` **不动**（技能域既定口径就是只限长度，且有第 11 轮存在性闸门兜底） |
+| ⑥ | 幂等 `bind` 每次都写 `skill.enabled`（实测重复最多 **8 条**） | **收敛**：只有"新建"或"`disabled` 翻回 `active`"时写；幂等命中**不写** | 维持（如实记录每次调用） | A：实现为"先读既有绑定状态再决定写不写"（写路径是幂等 UPSERT ⇒ 争用下最坏少写一条审计，不产生错误状态）；需同步既有断言；前端无影响 |
+| ⑦ | 行为变化：技能停用后重复 `bind` 由 `200` ⇒ `409`（第 11 轮已实现） | **维持**（闸门在幂等之前） | 改"幂等优先" | 维持 = 已交付，不改；改则要把两条闸门移到幂等之后 ⇒ 会重新打开"已存在绑定行"这个后门 |
+
+### 11.3 本轮明确不做（边界）
+
+- **不做**目录面与绑定面的联动（停用员工 / 停用岗位 ⇒ 自动解绑）：`decision-log` D-029 已登记另立；
+- **不做**"绑定即纳管"以外的目录写能力（建岗位 / 改岗位）；
+- **不改**技能域既有的 `skill_key` 口径（只限长度）；
+- **不动**真库现有 5 行绑定（含 2 行 `active` 违规行）——用户已裁决"保留现状"。
+
+### 11.4 待裁决（四项）
+
+1. **第 ③ 条**：A 加闸门 + 取消手动录入（推荐；代价：真机须先建 1 个员工）／B 加闸门 + 自动纳管（需扩接口字段，不建议）／C 维持暂缓；
+2. **第 ④ 条（键归一化）**：A 加（推荐）／B 不加；
+3. **第 ⑥ 条（审计噪音）**：A 收敛（推荐）／B 维持；
+4. **第 ⑦ 条（行为变化）**：确认维持（推荐）／改幂等优先。
+
+### 11.5 复测清单（裁决后按此执行）
+
+1. 单元（③）：未纳管 ⇒ `409`；已纳管且员工 `active`（岗位 `active`）⇒ `200`；员工 `disabled` ⇒ `409`；岗位停用连带 ⇒ `409`；被拒**不写审计**；
+2. 单元（④）：`" Probe-Agent "` / `"PROBE-AGENT"` ⇒ 归一化后与 `probe-agent` **同一行**（幂等命中，不新增行）；非法字符 ⇒ `422`；`unbind` 同样归一化；
+3. 单元（⑥）：首次 `bind` ⇒ 1 条审计；重复 `bind` ⇒ **审计条数不变**；`unbind → bind`（状态翻转）⇒ 新增 1 条；
+4. 真机（零写入或最小写入）：③ 未纳管键 ⇒ `409`；④ 归一化命中幂等 ⇒ **绑定行数不变**；⑥ 连续两次 `bind` ⇒ 审计条数不变；
+5. 前端：③ 取消手动录入后，目录为空时给"先去纳管"的引导（不是空白下拉）；写入失败**原样呈现服务端 `409` 文案**。
+
+### 11.6 交付记录（v4，2026-09-21）
+
+**已落地**（用户裁决 `③A / ④A / ⑥A / ⑦维持`）：
+
+| 项 | 落地位置 | 说明 |
+| --- | --- | --- |
+| ③ 员工必须已纳管且启用 | **路由层** `app/main.py::bind_skill` | 复用 `workforce_directory_service.ensure_agent_binding_available`（与「知识范围」写路径同一先例）⇒ `409`；**不落在服务层**（避免 SkillsService 反向依赖 workforce 面，与第 11 轮同一理由） |
+| ④ 键归一化 + 字符集校验 | **路由层** `bind_skill` / `unbind_skill` | 复用目录域同一份 `normalize_key`（`app/workforce/models.py`，main.py 直接 import）⇒ 非法 `422`；`skill_key` **不动**（技能域既定口径）；`unbind` 同样归一化，**但不设目录闸门**（清理通道） |
+| ⑥ 幂等调用不重复写审计 | **服务层** `app/skills/service.py` | `bind_skill` / `unbind_skill` 先读既有绑定状态（`_binding_of`）⇒ 仅"新建 / 状态翻转"时 `_record`；读-判-写不会产生错误状态（写路径本身是幂等 UPSERT） |
+| ⑦ 闸门先于幂等 | 不变 | 技能停用后重复 `bind` 仍 `409`（行为变化维持） |
+| 界面（③A 配套） | `BindingPanel.tsx` + `skillsService.ts` | 员工键**取消 `mode="tags"` 手动录入**，只给目录候选；目录为空给"先去「数字员工管理」纳管"的引导（`AGENT_CANDIDATE_EMPTY_NOTE`）、并把口径写进 `AGENT_DIRECTORY_ONLY_NOTE` |
+
+**先红后绿**：测试先写 ⇒ **9 红**（未纳管 / 员工停用 / 岗位停用连带 / 归一化 / 非法标识 / 解绑归一化 / 幂等 bind 审计 / 幂等 unbind 审计 / 绑定面翻转用例）⇒ 实现后全绿。
+既有用例的**兼容性改动**：第 11 轮"钉住第 ③ 条暂缓"的两条用例**翻转为断言被拒**；`test_skill_bindings_api` / `test_skills_role_matrix` / `test_skill_binding_gates` 三个文件加 `managed_directory` 夹具（先把用到的员工键纳管，幂等 `409` 视为成功）。
+
+**反假（4 组，均实测）**：去路由层目录闸门 ⇒ **4 红**；去 `normalize_key` ⇒ **3 红**（含"非法键落到 409 而非 422"—正是两套口径的危害）；去审计收敛的前置读取（bind 侧）⇒ **1 红**、（unbind 侧）⇒ **2 红**；前端把员工 Select 改回 `mode="tags"` ⇒ **3 红**。以上均还原复绿。
+
+**真机（2026-09-21，最小写入）**：未纳管键 ⇒ `409` 且**行数不变**（`5 → 5`）；纳管 1 个探针员工后，`"  PROBE-AGENT-R12  "` ⇒ `200` 且**回读规范键** `probe-agent-r12`（行数 `5 → 6`，只 1 行）；连续两次重复 `bind` ⇒ 该 target 的 `skill.enabled` 条数 **1 → 1**（未新增）；非法键 ⇒ `422`；`employee` + 非法键 / 未纳管键 ⇒ 一律 `403`（越权优先）。
+
+**写入面（**用户 2026-09-21 裁决：保留**；因本机"绑定"依赖它才可用——目录原本 0 员工）**：`workbench_digital_employees` 新增 **1 行**探针员工 `probe-agent-r12`（挂既有岗位 `evidence-ops`，`active`）；`workbench_skill_bindings` 新增 **1 行** `probe-agent-r12 ↔ r8-probe-skill`（`active`）。
+
+**本轮边界（未做）**：目录面与绑定面的联动（停用员工 / 岗位 ⇒ 自动解绑）仍另立；技能域 `skill_key` 口径不改；真库 5 行既有绑定未动。

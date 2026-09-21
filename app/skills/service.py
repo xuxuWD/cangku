@@ -18,6 +18,7 @@ from typing import Sequence
 from ..audit.models import AuditAction
 from ..domain import PolicyError, UserContext
 from .models import (
+    BindingStatus,
     Skill,
     SkillBinding,
     SkillError,
@@ -201,7 +202,10 @@ class SkillService:
 
         **闸门刻意放在幂等判定之前**：否则"已存在的绑定行"会成为绕过闸门的后门
         （技能停用后重复 `bind` 必须被拒，而不是继续返回 200 —— 这是本轮的行为变化，已登记）。
-        **员工目录闸门（第 ③ 条）暂缓**：与第 9 轮「员工键可手动录入」的裁决冲突，需单独定夺。
+
+        **第 12 轮 ⑥A（审计收敛）**：幂等命中时**不再重复写审计**（真机实测同一 target 最多重复 8 条
+        `skill.enabled`）。**目录闸门（③）不在这里**——它由路由层复用目录面 `ensure_agent_binding_available`
+        落地（避免 SkillsService 反向依赖 workforce 面）；故本方法对直接调用方仍只保证"技能侧"两条。
         """
         ensure_can_bind(context)
         versions = self.store.list_versions(context, skill_key)
@@ -209,6 +213,9 @@ class SkillService:
             raise SkillNotFound(skill_key)
         if not any(item.status is SkillStatus.ENABLED for item in versions):
             raise SkillStateConflict("只有已启用的技能包可以绑定")
+        existing = self._binding_of(context, agent_key, skill_key)
+        if existing is not None and existing.status is BindingStatus.ACTIVE:
+            return existing  # 幂等：不重复写审计（第 12 轮 ⑥A）
         binding = self.store.bind_skill(
             context, agent_key, skill_key, created_by=created_by or context.user_id
         )
@@ -221,16 +228,31 @@ class SkillService:
         return binding
 
     def unbind_skill(self, context: UserContext, agent_key: str, skill_key: str) -> SkillBinding:
-        """解除某员工对该技能的绑定（active → disabled）；角色口径同绑定（仅 `super_admin`）。"""
+        """解除某员工对该技能的绑定（active → disabled）；角色口径同绑定（仅 `super_admin`）。
+
+        **第 12 轮 ⑥A**：只有"`active` → `disabled` 真实翻转"才写审计；对已 `disabled` 行的幂等解绑
+        （`200`）**不重复写**（与绑定侧同一收敛口径）。
+        """
         ensure_can_bind(context)
+        existing = self._binding_of(context, agent_key, skill_key)
         binding = self.store.unbind_skill(context, agent_key, skill_key)
-        self._record(
-            context,
-            _ACTION_DISABLED,  # 解绑 = 移出该员工工具面，复用 disabled 动作码（明细区分）。
-            f"{skill_key}@{agent_key}",
-            {"skill_key": skill_key, "agent_key": agent_key},
-        )
+        if existing is not None and existing.status is BindingStatus.ACTIVE:
+            self._record(
+                context,
+                _ACTION_DISABLED,  # 解绑 = 移出该员工工具面，复用 disabled 动作码（明细区分）。
+                f"{skill_key}@{agent_key}",
+                {"skill_key": skill_key, "agent_key": agent_key},
+            )
         return binding
+
+    def _binding_of(self, context: UserContext, agent_key: str, skill_key: str) -> SkillBinding | None:
+        """本租户内这对键的现存绑定行（含 `disabled`）；仅用于"是否已 `active`"的判定。
+
+        用途：幂等命中时**不重复写审计**（第 12 轮 ⑥A）。写路径本身是幂等 UPSERT，
+        故"读-判-写"即使遇并发也只会最多少写一条审计，不会产生错误状态。
+        """
+        items, _ = self.store.list_bindings(context, agent_key=agent_key, skill_key=skill_key, limit=1)
+        return items[0] if items else None
 
     # ------------------------------------------------------------ 查询转发
 

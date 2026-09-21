@@ -1,14 +1,21 @@
-"""技能绑定闸门（第 11 轮专项）：**绑定必须指向真实存在且已启用的技能包**。
+"""技能绑定闸门（第 11 轮建立 · 第 12 轮补齐第 ③ 条）。
 
-背景（第 9 轮真机实测登记 + 第 11 轮复核）：`POST /api/v1/skills/bindings` 原先**三条校验全缺**——
+背景（第 9 轮真机实测登记 + 第 11/12 轮复核）：`POST /api/v1/skills/bindings` 原先**三条校验全缺**——
 ① 技能不存在也 `200`（写入**悬空绑定**）；② 技能 `submitted` / `disabled` 也能绑；③ 员工键不在目录也能绑。
-本轮按专项方案 [`skill-binding-gate-plan.md`](file:///d:/徐徐AI学习/公司工作台/docs/contracts/skill-binding-gate-plan.md) 落地
-**域内两条闸门**（技能存在 ⇒ `404`；技能已启用 ⇒ `409`）；**第 ③ 条（员工目录闸门）暂缓**，
-原因见该文件 §7（与第 9 轮已裁决的「员工键可手动录入」冲突，需单独定夺），本文件用末尾一例**显式钉住该决定**。
 
-**顺序**：权限优先（越权 ⇒ `403`，不泄露技能是否存在）→ 存在性（`404`）→ 已启用（`409`）。
+- **第 11 轮**：落地**域内两条**（技能存在 ⇒ `404`；技能已启用 ⇒ `409`），第 ③ 条按用户裁决暂缓；
+- **第 12 轮**（用户按专项方案 §11 裁决 **③A / ④A / ⑥A / ⑦维持**）：补齐
+  - **③ 员工必须已纳管且启用**（**路由层**闸门，复用 `ensure_agent_binding_available`）⇒ `409`；
+  - **④ `agent_key` 归一化 + 字符集校验**（与目录域同一份 `normalize_key`）⇒ 非法 `422`；
+  - **⑥ 幂等调用不重复写审计**（仅"新建 / 状态翻转"时写）；
+  - ⑦ 维持"闸门先于幂等判定"（技能停用后重复 `bind` 仍 `409`）。
 
-**反假锚点**：去掉 `list_versions` 存在性判定 ⇒ 用例 1 / 5 必红；去掉 enabled 判定 ⇒ 用例 2 / 3 必红。
+**判定顺序**：权限优先（越权 ⇒ `403`，不泄露任何存在性）→ 标识合法性（`422`）→ 技能存在（`404`）
+→ 技能已启用（`409`）→ 员工已纳管（`409`）。
+
+**反假锚点**：去掉 `list_versions` 存在性判定 ⇒ 用例「技能不存在」必红；去掉 enabled 判定 ⇒ 「未启用」必红；
+去掉路由层目录闸门 ⇒ 「未纳管」必红；去掉 `normalize_key` ⇒ 「非法标识」与「归一化」必红；
+去掉审计收敛的前置读取 ⇒ 「幂等不重复写审计」必红。
 """
 
 from __future__ import annotations
@@ -35,6 +42,16 @@ SOURCE = "manual"
 BODY = "# 绑定闸门探针\n\n用于核对绑定闸门。"
 BINDINGS = "/api/v1/skills/bindings"
 AGENT = "agent-gate"
+ROLE = "gate-ops"
+# 「员工被停用」「岗位被停用」两例各用**独立**岗位 / 员工：内存目录是进程级单例，
+# 若用同一个岗位去停用，会连带把后续用例的 AGENT 一起变成不可用（用例间互相污染）。
+AGENT_OFF = "agent-gate-off"
+ROLE_OFF = "gate-ops-off"
+AGENT_ROLE_OFF = "agent-gate-role-off"
+UNMANAGED = "agent-not-in-directory"
+
+WORKFORCE_ROLES = "/api/v1/workforce/roles"
+WORKFORCE_AGENTS = "/api/v1/workforce/agents"
 
 
 def headers(role: str = "super_admin", user_id: str | None = None, tenant_id: str = TENANT) -> dict[str, str]:
@@ -56,6 +73,39 @@ def skills_service(monkeypatch) -> SkillService:
     )
     monkeypatch.setattr(main, "skills_service", service)
     return service
+
+
+# ------------------------------------------------------------ 目录侧辅助（第 12 轮）
+
+
+def _ensure_role(role_key: str) -> None:
+    """建岗位（幂等：已存在 ⇒ `409` 视为成功）。"""
+    status = client.post(
+        WORKFORCE_ROLES, json={"role_key": role_key, "name": "闸门岗位"}, headers=headers()
+    ).status_code
+    assert status in (201, 409), status
+
+
+def _ensure_agent(agent_key: str, role_key: str = ROLE) -> None:
+    """纳管数字员工（幂等：已存在 ⇒ `409` 视为成功）。"""
+    _ensure_role(role_key)
+    status = client.post(
+        WORKFORCE_AGENTS,
+        json={"agent_key": agent_key, "name": "闸门员工", "role_key": role_key},
+        headers=headers(),
+    ).status_code
+    assert status in (201, 409), status
+
+
+@pytest.fixture(autouse=True)
+def managed_directory() -> None:
+    """把 `AGENT` 纳管（岗位 + 员工均 `active`）。
+
+    多数用例考的是**技能侧**闸门（404 / 409）与幂等 / 审计，不应被目录闸门挡住 ⇒ 缺省把 `AGENT` 纳管。
+    目录闸门自身的用例用 `UNMANAGED` 或不纳管的键。
+    """
+    _ensure_agent(AGENT)
+
 
 
 def _submit(key: str, *, content: str = BODY) -> str:
@@ -237,17 +287,176 @@ def test_rejected_bind_writes_no_audit(skills_service) -> None:
     assert records == []
 
 
-def test_agent_directory_gate_is_deferred_by_decision(skills_service) -> None:
-    """**第 ③ 条闸门（员工键必须在数字员工目录内）本轮暂缓** —— 本用例钉住这一决定。
+# ------------------------------------------------------------ 闸门三：员工必须已纳管且启用（409，第 12 轮）
 
-    暂缓理由（专项方案 §7）：第 9 轮已裁决「员工键 = 目录候选 **∪ 手动录入**」，
-    而目录闸门会让"手动录入目录外的标识"**必然被拒**（且本机测试租户目录实测 `total = 0` ⇒ 正向路径不可构造）。
-    两者需一并定夺，故本轮**只做域内两条**；一旦裁决"加目录闸门"，本用例应改为断言 `409`。
+
+def test_bind_rejects_unmanaged_agent_key(skills_service) -> None:
+    """**第 12 轮 ③A 落地**：员工键不在数字员工目录 ⇒ `409`（原先 `200`，可写"幽灵员工"绑定）。
+
+    文案沿用目录域既有口径（与知识范围写路径闸门同一条），`detail` 里给出纳管去处。
     """
-    _enable("gate-outside-dir")
+    _enable("gate-outside-dir-2")
 
     response = client.post(
-        BINDINGS, json={"skill_key": "gate-outside-dir", "agent_key": "agent-not-in-directory"}, headers=headers()
+        BINDINGS, json={"skill_key": "gate-outside-dir-2", "agent_key": UNMANAGED}, headers=headers()
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "该标识尚未纳入目录，请先在「数字员工设置」中纳管"
+    # 被拒不写任何行、不写审计
+    assert client.get(BINDINGS, params={"agent_key": UNMANAGED}, headers=headers()).json()["total"] == 0
+    assert [i for i in skills_service.audit.store.list_recent(TENANT) if i.detail.get("agent_key") == UNMANAGED] == []
+
+
+def test_bind_rejects_disabled_employee(skills_service) -> None:
+    """员工被**停用** ⇒ `409`（`agent_is_active` 的口径：员工自身须 `active`）。"""
+    _ensure_agent(AGENT_OFF)
+    assert (
+        client.patch(f"{WORKFORCE_AGENTS}/{AGENT_OFF}", json={"status": "disabled"}, headers=headers()).status_code
+        == 200
+    )
+    _enable("gate-off-employee")
+
+    response = client.post(
+        BINDINGS, json={"skill_key": "gate-off-employee", "agent_key": AGENT_OFF}, headers=headers()
+    )
+
+    assert response.status_code == 409, response.text
+
+
+def test_bind_rejects_agent_whose_role_disabled(skills_service) -> None:
+    """员工所在**岗位**被停用 ⇒ 连带 `409`（岗位停用约束其员工）。"""
+    _ensure_agent(AGENT_ROLE_OFF, role_key=ROLE_OFF)
+    assert (
+        client.patch(f"{WORKFORCE_ROLES}/{ROLE_OFF}", json={"status": "disabled"}, headers=headers()).status_code
+        == 200
+    )
+    _enable("gate-off-role")
+
+    response = client.post(
+        BINDINGS, json={"skill_key": "gate-off-role", "agent_key": AGENT_ROLE_OFF}, headers=headers()
+    )
+
+    assert response.status_code == 409, response.text
+
+
+def test_bind_accepts_managed_active_agent(skills_service) -> None:
+    """正向路径：员工**已纳管且启用** + 技能已启用 ⇒ `200`（不误伤）。
+
+    注：`managed_directory` 夹具已把 `AGENT` 纳管，故其余用例同样跑在"已纳管"前提上；
+    本用例显式核对"目录闸门不会挡住合法绑定"。
+    """
+    _enable("gate-managed")
+
+    response = client.post(BINDINGS, json={"skill_key": "gate-managed", "agent_key": AGENT}, headers=headers())
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"skill_key": "gate-managed", "agent_key": AGENT, "status": "active"}
+
+
+# ------------------------------------------------------------ 键归一化与字符集（422，第 12 轮 ④A）
+
+
+def test_bind_normalizes_agent_key(skills_service) -> None:
+    """`" Agent-Gate "` / `"AGENT-GATE"` 归一化后与 `agent-gate` **同一行**（幂等命中，不新增行）。"""
+    _enable("gate-normalize")
+
+    first = client.post(
+        BINDINGS, json={"skill_key": "gate-normalize", "agent_key": f"  {AGENT.upper()}  "}, headers=headers()
+    )
+    second = client.post(
+        BINDINGS, json={"skill_key": "gate-normalize", "agent_key": AGENT.upper()}, headers=headers()
+    )
+
+    assert first.status_code == 200, first.text
+    assert first.json() == {"skill_key": "gate-normalize", "agent_key": AGENT, "status": "active"}
+    assert second.status_code == 200, second.text
+    # 归一化后是同一对 ⇒ 只有一行
+    listed = client.get(BINDINGS, params={"skill_key": "gate-normalize"}, headers=headers()).json()
+    assert listed["total"] == 1
+    assert listed["items"][0]["agent_key"] == AGENT
+
+
+def test_bind_rejects_illegal_agent_key(skills_service) -> None:
+    """非法标识（空格 / 大写以外还含其它字符）⇒ `422`（与目录域 `normalize_key` 同一份校验）。"""
+    _enable("gate-illegal")
+
+    response = client.post(
+        BINDINGS, json={"skill_key": "gate-illegal", "agent_key": "bad key!"}, headers=headers()
+    )
+
+    assert response.status_code == 422, response.text
+    assert "只能包含" in response.json()["detail"]
+
+
+def test_unbind_normalizes_agent_key(skills_service) -> None:
+    """解绑同样归一化：绑 `Agent-Gate`、用 `AGENT-GATE` 解绑 ⇒ 命中同一行（`disabled`）。"""
+    _enable("gate-unbind-normalize")
+    assert (
+        client.post(
+            BINDINGS, json={"skill_key": "gate-unbind-normalize", "agent_key": AGENT.capitalize()}, headers=headers()
+        ).status_code
+        == 200
+    )
+
+    response = client.delete(
+        BINDINGS, params={"skill_key": "gate-unbind-normalize", "agent_key": AGENT.upper()}, headers=headers()
     )
 
     assert response.status_code == 200, response.text
+    assert response.json() == {"skill_key": "gate-unbind-normalize", "agent_key": AGENT, "status": "disabled"}
+
+
+def test_permission_check_wins_over_normalization(skills_service) -> None:
+    """越权者传**非法标识** ⇒ 仍 `403`（不是 `422`）⇒ 越权者拿不到任何校验细节。"""
+    response = client.post(
+        BINDINGS,
+        json={"skill_key": "gate-illegal-2", "agent_key": "bad key!"},
+        headers=headers("employee", user_id="acct-employee"),
+    )
+
+    assert response.status_code == 403, response.text
+
+
+# ------------------------------------------------------------ 审计收敛（第 12 轮 ⑥A）
+
+
+def _binding_audits(skills_service, action: str) -> list:
+    """按 `detail.agent_key` 过滤：技能启停也复用 `skill.enabled`/`skill.disabled` 动作码。"""
+    return [
+        item
+        for item in skills_service.audit.store.list_recent(TENANT)
+        if item.action.value == action and item.detail.get("agent_key") == AGENT
+    ]
+
+
+def test_idempotent_rebind_writes_audit_once(skills_service) -> None:
+    """幂等重复 `bind` ⇒ **审计只落一条**（原先每次调用都落一条，真机实测同一 target 最多 8 条）。"""
+    _enable("gate-audit-once")
+
+    assert client.post(BINDINGS, json={"skill_key": "gate-audit-once", "agent_key": AGENT}, headers=headers()).status_code == 200
+    assert client.post(BINDINGS, json={"skill_key": "gate-audit-once", "agent_key": AGENT}, headers=headers()).status_code == 200
+
+    assert len(_binding_audits(skills_service, "skill.enabled")) == 1
+
+
+def test_idempotent_unbind_writes_audit_once(skills_service) -> None:
+    """幂等重复 `unbind` ⇒ `skill.disabled` 只落一条。"""
+    _enable("gate-audit-unbind-once")
+    client.post(BINDINGS, json={"skill_key": "gate-audit-unbind-once", "agent_key": AGENT}, headers=headers())
+
+    client.delete(BINDINGS, params={"skill_key": "gate-audit-unbind-once", "agent_key": AGENT}, headers=headers())
+    client.delete(BINDINGS, params={"skill_key": "gate-audit-unbind-once", "agent_key": AGENT}, headers=headers())
+
+    assert len(_binding_audits(skills_service, "skill.disabled")) == 1
+
+
+def test_state_flip_writes_audit_again(skills_service) -> None:
+    """**状态翻转仍要留痕**：`bind → unbind → bind` ⇒ `enabled` 2 条、`disabled` 1 条。"""
+    _enable("gate-audit-flip")
+    client.post(BINDINGS, json={"skill_key": "gate-audit-flip", "agent_key": AGENT}, headers=headers())
+    client.delete(BINDINGS, params={"skill_key": "gate-audit-flip", "agent_key": AGENT}, headers=headers())
+    client.post(BINDINGS, json={"skill_key": "gate-audit-flip", "agent_key": AGENT}, headers=headers())
+
+    assert len(_binding_audits(skills_service, "skill.enabled")) == 2
+    assert len(_binding_audits(skills_service, "skill.disabled")) == 1

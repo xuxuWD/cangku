@@ -878,10 +878,16 @@ AgentScope 适配器只承接受控执行，以下均为外部服务协议：`PO
 - `POST /api/v1/skills/{skill_key}/versions/{version}/enable`：启用（`ceo` / `super_admin`；approved/disabled→enabled；已启用幂等）。
 - `POST /api/v1/skills/{skill_key}/versions/{version}/disable`：停用（`ceo` / `super_admin`；enabled→disabled；已停用幂等）。
 - `GET /api/v1/skills/bindings?skill_key=&agent_key=&limit=&offset=`：**绑定关系列表（2026-09-20 第 9 轮新增）**。仅 `super_admin`（非管理员 `403`；匿名 `401`）；`limit` 1–200（越界 `422`）、`offset` ≥0；`skill_key` / `agent_key` 可选过滤。返回 `{"items":[{"skill_key","agent_key","status","created_by","created_at"}],"total","limit","offset"}`（**条目不含 `tenant_id`**）。
-- `POST /api/v1/skills/bindings`：绑定技能到数字员工 `{"skill_key", "agent_key"}`（管理动作，仅 `super_admin`）。返回 `{"skill_key", "agent_key", "status": "active"}`（2026-09-20 修复：该路由曾误声明响应模型为技能视图 ⇒ 序列化恒 `500`）。
-  服务端闸门（**2026-09-20 第 11 轮补齐域内两条**）：技能必须**存在**（本租户内，否则 `404`）；技能必须**已启用**（有版本但无 `enabled` 版本 ⇒ `409`「只有已启用的技能包可以绑定」）。判定顺序：`403`（越权）→ `404`（不存在）→ `409`（未启用）；被拒请求**不写审计**。**行为变化**：闸门在幂等判定**之前** ⇒ 绑定行虽已存在、但该技能此后被停用 / 消失时，重复 `bind` 得 `409` / `404`（原先一律 `200`）。
-  ⚠️ **仍缺的一条（如实登记，2026-09-20 第 11 轮真机实测）**：**不校验** `agent_key` 是否在数字员工目录内（绑不在目录的键仍 `200`）——第 ③ 条闸门**本轮暂缓**（与第 9 轮「员工键可手动录入」的裁决直接冲突，待裁决）；界面侧仍按"目录候选 + 手动录入"自我收敛。工具面展开侧恒 fail-closed（只有 `enabled` 技能参与交集）。
-- `DELETE /api/v1/skills/bindings?skill_key=&agent_key=`：解绑（仅 `super_admin`；active→disabled），返回 `{"skill_key", "agent_key", "status": "disabled"}`。**绑定不存在 ⇒ `404`**；已 `disabled` ⇒ `200` 幂等（2026-09-20 实测）。
+- `POST /api/v1/skills/bindings`：绑定技能到数字员工 `{"skill_key", "agent_key"}`（管理动作，仅 `super_admin`）。返回 `{"skill_key", "agent_key", "status": "active"}`（2026-09-20 修复：该路由曾误声明响应模型为技能视图 ⇒ 序列化恒 `500`；**`agent_key` 回读为归一化后的键**）。
+  **服务端校验（判定顺序：`403` → `422` → `404` → `409` → `409`）**：
+  ① `403` 越权（非 `super_admin`）——**永远最早**，越权者拿不到任何校验细节；
+  ② `422` **标识非法**：`agent_key` 走目录域同一份 `normalize_key`（去空白 + 转小写 + 字符集 `[a-z0-9][a-z0-9._-]{0,63}`），非法 ⇒ `422`「标识只能包含小写字母、数字、点、下划线与短横线…」（**2026-09-21 第 12 轮新增**）；
+  ③ `404` 技能**不存在**（本租户内无任何版本）；
+  ④ `409` 技能**未启用**（有版本但无 `enabled` 版本）「只有已启用的技能包可以绑定」；
+  ⑤ `409` 员工**未纳管 / 已停用 / 所在岗位已停用** ⇒「该标识尚未纳入目录，请先在「数字员工设置」中纳管」（**2026-09-21 第 12 轮新增**，复用目录面 `ensure_agent_binding_available`，与「知识范围」写路径同一先例）。
+  **幂等与审计**：闸门在幂等判定**之前** ⇒ 绑定行虽已存在、但技能此后被停用 / 消失时，重复 `bind` 得 `409` / `404`（原先一律 `200`，行为变化已登记）；**幂等命中不重复写审计**（第 12 轮收敛，真机实测原先同一 target 最多重复 8 条 `skill.enabled`）；被拒请求**一律不写审计**。
+  **界面口径（第 12 轮 ③A）**：员工键**只能从「数字员工管理」目录选**（取消"手动录入"——服务端已不允许目录外的键）。
+- `DELETE /api/v1/skills/bindings?skill_key=&agent_key=`：解绑（仅 `super_admin`；active→disabled），返回 `{"skill_key", "agent_key", "status": "disabled"}`。**绑定不存在 ⇒ `404`**；已 `disabled` ⇒ `200` 幂等。`agent_key` 同样归一化（第 12 轮；否则用大写 / 带空白变体解绑会打不中同一行）；**解绑不设目录闸门**——它是清理通道，必须能回收"员工此后被停用 / 移出目录"的历史行。仅"`active` → `disabled` 真实翻转"写审计（第 12 轮收敛）。
 - `GET /api/v1/skills/agents/{agent_key}/tools`：返回该数字员工已启用技能的 `allowed-tools` 与执行目录的**交集**（服务端解析，fail-closed）。**角色门禁（2026-09-20 起）**：四个业务角色（`employee` / `department_lead` / `ceo` / `super_admin`）可读；**`customer_admin` ⇒ `403`**（此前只看登录 ⇒ 四个角色全放行，与权限矩阵"技能域 `customer_admin` 一律 ❌"不符，本轮修正）。
 
 ## 自进化·评测集（P6a）

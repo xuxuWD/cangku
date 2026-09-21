@@ -69,6 +69,36 @@ def skills_service(monkeypatch) -> SkillService:
     return service
 
 
+# ------------------------------------------------------------ 目录侧前置（第 12 轮 ③A：绑定要求员工已纳管）
+
+WORKFORCE_ROLES = "/api/v1/workforce/roles"
+WORKFORCE_AGENTS = "/api/v1/workforce/agents"
+ROLE_DIR = "bind-ops"
+# 本文件用到的全部数字员工键（列表 / 分页用例会用 `agent-0/1/2`）。
+MANAGED_AGENTS = (AGENT, "agent-0", "agent-1", "agent-2")
+
+
+@pytest.fixture(autouse=True)
+def managed_directory() -> None:
+    """把本文件用到的数字员工键全部纳管（岗位 + 员工均 `active`）。
+
+    `bind` 自第 12 轮起要求 `agent_key` 已在数字员工目录内且启用（专项方案 §11 裁决 ③A）；
+    本文件的用例考的是**绑定面接口**（视图 / 分页 / 权限 / 审计），故缺省把这些键纳管，
+    目录闸门自身的用例见 `tests/test_skill_binding_gates.py`。
+    """
+    role_status = client.post(
+        WORKFORCE_ROLES, json={"role_key": ROLE_DIR, "name": "绑定面岗位"}, headers=headers()
+    ).status_code
+    assert role_status in (201, 409), role_status
+    for agent_key in MANAGED_AGENTS:
+        agent_status = client.post(
+            WORKFORCE_AGENTS,
+            json={"agent_key": agent_key, "name": "绑定面员工", "role_key": ROLE_DIR},
+            headers=headers(),
+        ).status_code
+        assert agent_status in (201, 409), (agent_key, agent_status)
+
+
 def _submit(key: str, *, role: str = "employee", version: str = "1.0.0", tools: list[str] | None = None):
     return client.post(
         "/api/v1/skills",
@@ -283,12 +313,11 @@ def test_bind_rejects_not_enabled_skill(skills_service) -> None:
     assert bound.json()["detail"] == "只有已启用的技能包可以绑定"
 
 
-def test_bind_accepts_agent_key_outside_directory_known_gap(skills_service) -> None:
-    """**员工目录闸门（第 ③ 条）本轮暂缓** —— 本用例钉住这一决定（现状：目录外键仍可绑 ⇒ `200`）。
+def test_bind_rejects_agent_key_outside_directory(skills_service) -> None:
+    """**第 ③ 条闸门（第 12 轮落地）**：员工键不在数字员工目录 ⇒ `409`（原先 `200`，可写"幽灵员工"绑定）。
 
-    暂缓理由（专项方案 `skill-binding-gate-plan.md` §7）：第 9 轮已裁决「员工键 = 目录候选 **∪ 手动录入**」，
-    而目录闸门会让"手动录入目录外的标识"**必然被拒**（本机测试租户目录实测 `total: 0` ⇒ 正向路径也不可构造）；
-    两者需一并定夺。一旦裁决"加目录闸门"，本用例应改为断言 `409`（与上两条同一翻转手法）。
+    第 9 轮曾裁决"员工键可手动录入"并因此暂缓该闸门；第 12 轮用户按专项方案 §11 裁决 **③A**
+    （加闸门 + 界面取消手动录入）⇒ 本用例由「钉住暂缓」**翻转为断言被拒**（与上两条同一手法）。
     """
     _enable("bind-outside")
 
@@ -296,8 +325,8 @@ def test_bind_accepts_agent_key_outside_directory_known_gap(skills_service) -> N
         BINDINGS, json={"skill_key": "bind-outside", "agent_key": "agent-not-in-directory"}, headers=headers()
     )
 
-    assert response.status_code == 200, response.text
-    assert response.json()["agent_key"] == "agent-not-in-directory"
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "该标识尚未纳入目录，请先在「数字员工设置」中纳管"
 
 
 # ------------------------------------------------------------ 审计留痕

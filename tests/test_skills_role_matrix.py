@@ -66,6 +66,33 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+WORKFORCE_ROLES = "/api/v1/workforce/roles"
+WORKFORCE_AGENTS = "/api/v1/workforce/agents"
+ROLE_DIR = "rm-ops"
+# 本文件绑定用例用到的数字员工键（第 12 轮起 `bind` 要求员工已纳管且启用，裁决 ③A）。
+MANAGED_AGENTS = ("agent-rm", "agent-rm-idem", "agent-unbind")
+
+
+@pytest.fixture(autouse=True)
+def managed_directory() -> None:
+    """把绑定用例用到的数字员工键纳管（岗位 + 员工均 `active`）。
+
+    第 12 轮裁决 ③A：`bind` 的员工键必须已在数字员工目录内且启用 ⇒ 本文件考的是
+    "绑定形状 / 幂等 / 角色闸门"，故先把这些键纳管（幂等：已存在 ⇒ `409` 视为成功）。
+    """
+    role_status = client.post(
+        WORKFORCE_ROLES, json={"role_key": ROLE_DIR, "name": "角色矩阵岗位"}, headers=headers()
+    ).status_code
+    assert role_status in (201, 409), role_status
+    for agent_key in MANAGED_AGENTS:
+        agent_status = client.post(
+            WORKFORCE_AGENTS,
+            json={"agent_key": agent_key, "name": "角色矩阵员工", "role_key": ROLE_DIR},
+            headers=headers(),
+        ).status_code
+        assert agent_status in (201, 409), (agent_key, agent_status)
+
+
 @pytest.fixture(autouse=True)
 def skills_service(monkeypatch) -> SkillService:
     """内存技能服务（与生产装配同参：来源白名单 + 真实工具目录键集）。"""

@@ -6,8 +6,9 @@
  * 纪律（逐条对应契约）：
  *  - **读端点仅 `super_admin`**（§1/§7）：非 `super_admin`（`ceo`）**不请求绑定数据**，
  *    只给"由超级管理员执行"的原因 + 禁用控件（不静默隐藏）；
- *  - **界面自我收敛**：技能候选**只给 `enabled`**（服务端不拦未启用 / 不存在的技能，见 §2 / §5-#1）；
- *    员工候选来自目录，**并允许手动录入**（§5-#2 裁决；本机目录实测为空，是唯一可行路径）；
+ *  - **界面自我收敛**：技能候选**只给 `enabled`**；员工候选**只给目录**——
+ *    **第 12 轮 ③A 起取消"手动录入"**（服务端要求员工键已纳管且启用，目录外的键 ⇒ `409`），
+ *    目录为空时给出"先去纳管"的引导而不是留一个能输入的下拉；
  *  - **解绑走二次确认**（会立即移出工具面），绑定为新增放行、不二次确认；
  *  - 写成功只用**服务端回读值**提示；写失败**就地呈现服务端原文**并说明"没有改变任何绑定"；
  *  - 工具面「为什么空」**三种归因分开说明**（§3），不允许合并成"暂无工具"。
@@ -21,10 +22,10 @@ import { formatDateTime } from '../../../utils/format'
 import { usePanelData } from '../../../utils/panelData'
 import {
   AGENT_CANDIDATE_EMPTY_NOTE,
+  AGENT_DIRECTORY_ONLY_NOTE,
   BINDINGS_EMPTY_NOTE,
   BIND_NO_ENABLED_SKILL_NOTE,
   BIND_SKILL_HINT,
-  MANUAL_AGENT_NOTE,
   MOCK_AGENT_TOOLS_NOTE,
   UNBIND_CONFIRM_DESCRIPTION,
   UNBIND_CONFIRM_TITLE,
@@ -77,8 +78,8 @@ function messageOf(error: unknown): string {
 }
 
 interface BindFormValues {
-  /** `Select mode="tags"`：候选 ∪ 手动录入 ⇒ 值恒为数组（本处要求恰一项）。 */
-  agent_key?: string[]
+  /** 第 12 轮起员工键**只能从目录选**（服务端要求已纳管且启用）⇒ 单选值。 */
+  agent_key?: string
   skill_key?: string
 }
 
@@ -124,7 +125,7 @@ export function BindingPanel({ canBind }: BindingPanelProps) {
   }
 
   const handleBind = async (values: BindFormValues) => {
-    const agentKey = (values.agent_key ?? [])[0]?.trim() ?? ''
+    const agentKey = (values.agent_key ?? '').trim()
     setNotice(null)
     setWriteError(null)
     setPending(true)
@@ -240,21 +241,12 @@ export function BindingPanel({ canBind }: BindingPanelProps) {
         <Form.Item
           label="数字员工标识"
           name="agent_key"
-          rules={[
-            {
-              validator: (_, value: string[] | undefined) =>
-                (value ?? []).filter((item) => item.trim()).length === 1
-                  ? Promise.resolve()
-                  : Promise.reject(new Error('请填写恰一个数字员工标识')),
-            },
-          ]}
-          extra={MANUAL_AGENT_NOTE}
+          rules={[{ required: true, message: '请选择要绑定的数字员工' }]}
+          extra={AGENT_DIRECTORY_ONLY_NOTE}
         >
           <Select
-            mode="tags"
-            maxCount={1}
             style={{ minWidth: 240 }}
-            placeholder="从目录选择，或直接填写员工标识"
+            placeholder="只能选择已纳管的数字员工"
             options={candidates.data.items.map((item) => ({
               value: item.agent_key,
               label: item.name ? `${item.name}（${item.agent_key}）` : item.agent_key,
