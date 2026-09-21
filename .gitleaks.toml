@@ -1,0 +1,42 @@
+# gitleaks 配置 —— 密钥扫描基线
+#
+# ⚠️ 验证状态（如实，不得省略）：
+#   本文件**尚未实跑过**——本机**未安装 gitleaks**、CI（.github/workflows/ci.yml）**尚未接入**扫描步骤。
+#   ⇒ 不得把本文件读成"密钥扫描已上线"。
+#   本次仅完成：**TOML 语法可解析性校验**（已执行，见 decision-log D-047）。
+#
+# 版本口径：`[[allowlists]]`（复数）为 gitleaks **v8.19+** 的键；旧版本用 `[allowlist]`（单数）。
+#   首次实跑前请先确认版本，并按真实误报**收敛**允许清单——
+#   **禁止为了"扫描跑绿"而放宽允许清单**（那会把基线变成装饰）。
+#
+# 首次实跑建议命令（不写入 CI，先人工跑一次看真实结果）：
+#   gitleaks detect --no-git --source . --config .gitleaks.toml -v
+
+title = "company-workbench"
+
+# 继承 gitleaks 内置规则集（不自己发明规则；自定义规则必须说明理由）
+[extend]
+useDefault = true
+
+# 允许清单 1：环境变量**模板**（按定义只含占位符，不含真实凭据）
+#   `.env` / `.env.*` 真实文件已由 .gitignore 排除，不在版本库内。
+[[allowlists]]
+description = "环境变量模板（占位符），非真实密钥"
+paths = [
+  '''\.env\.example$''',
+  '''\.env\.staging\.example$''',
+  '''\.env\.sso\.example$''',
+]
+
+# 允许清单 2：本机临时目录（已被 .gitignore 排除，不进入版本库）
+#   ⚠️ 这里**只按路径**豁免；若该目录将来被纳入版本库，本条必须重审。
+[[allowlists]]
+description = "本机临时目录（gitignored，不入库）"
+paths = [
+  '''^tmp/''',
+]
+
+# 说明（为什么不预设更多允许清单）：
+#   本机尚无实跑记录 ⇒ 无法知道真实误报在哪里。
+#   预设 `docs/`、`tests/` 这类**大范围**豁免会显著削弱扫描能力，
+#   故**不预设**；首次实跑后按**具体命中项 + 具体理由**逐条收敛。

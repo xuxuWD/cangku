@@ -100,7 +100,10 @@ def test_customer_admin_can_fetch_own_export_package_only():
     main.commercial_repository.ensure_test_tenant(tenant, owner_id="owner-1", admins={"admin-1"})
     # 他租户也**登记在册**（否则会先因"租户不存在"404，测不到导出包的归属比对）。
     main.commercial_repository.ensure_test_tenant(other, owner_id="owner-2", admins={"admin-9"})
-    now = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    # 取回端点不接受注入 `now`（服务层默认取真实时间）⇒ 这里必须用相对时间：
+    # 原先写死 `datetime(2026, 9, 14, 8, 0, UTC)` + 7 天 TTL，过期时刻正好是 `2026-09-21 08:00Z`，
+    # 到点当天该包即被判过期 ⇒ 用例变红（时间相关的用例腐化，非产品缺陷）。
+    now = datetime.now(UTC)
     package = main.commercial_lifecycle.store_export_package(
         tenant, "job-api-1", created_at=now, expires_at=now + timedelta(days=7)
     )
@@ -164,7 +167,9 @@ def test_list_export_packages_is_admin_only_scoped_and_paginated():
     other = "tenant-commercial-list-other"
     main.commercial_repository.ensure_test_tenant(tenant, owner_id="owner-1", admins={"admin-1"})
     main.commercial_repository.ensure_test_tenant(other, owner_id="owner-2", admins={"admin-9"})
-    now = datetime(2026, 9, 19, 8, 0, tzinfo=UTC)
+    # 同一类隐患（同类排查）：本用例只走「列表」（过期行在清理前仍可见），故写死日期尚未致红；
+    # 但仍改用相对时间，避免日后一旦补上取回断言就变成新的时间相关腐化。
+    now = datetime.now(UTC)
     first = main.commercial_lifecycle.store_export_package(
         tenant, "job-api-list-1", created_at=now, expires_at=now + timedelta(days=7)
     )
