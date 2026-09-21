@@ -6,6 +6,7 @@ from enum import StrEnum
 from uuid import uuid4
 
 from .redaction import has_sensitive_key
+from ..domain import PolicyError, UserContext
 
 
 class AuditAction(StrEnum):
@@ -298,3 +299,49 @@ def build_record(
         phone_masked=phone_masked,
         detail=payload,
     )
+
+
+# ------------------------------------------------------------ 审计查询的角色分档（第 10 轮）
+
+# 可查看审计记录的业务角色：口径 = `permission-matrix.md` §3「审计：查询」
+# （`employee` ⚠️仅本人相关 / `department_lead` ✅ / `ceo` ✅ / `super_admin` ✅；`customer_admin` ❌）。
+# 2026-09-20 第 10 轮：实现原只收 `{ceo, super_admin}`（其余 403），与矩阵冲突（与第 7 / 8 轮同一类），
+# 按「实现向矩阵对齐、不改矩阵口径」修复。
+AUDIT_READ_ROLES = frozenset({"employee", "department_lead", "ceo", "super_admin"})
+# 「仅本人相关」档：只能看到自己作为**操作者**的记录。
+AUDIT_SELF_SCOPED_ROLES = frozenset({"employee"})
+
+
+def can_read_audits(context: UserContext) -> bool:
+    """是否可查看审计记录（四个业务角色；`customer_admin` ❌）。"""
+    return context.role in AUDIT_READ_ROLES
+
+
+def ensure_can_read_audits(context: UserContext) -> None:
+    """审计查询前置判定；否则 403。
+
+    文案刻意用「当前岗位…」：原「只有 CEO 或超级管理员可以查看审计日志」在分档放开后已不成立。
+    """
+    if not can_read_audits(context):
+        raise PolicyError("当前岗位不能查看审计日志")
+
+
+def is_self_scoped_audit(context: UserContext) -> bool:
+    """该角色是否只能看「本人相关」记录（矩阵 §3：`employee` ⚠️）。"""
+    return context.role in AUDIT_SELF_SCOPED_ROLES
+
+
+def resolve_actor_filter(context: UserContext, requested: str | None) -> str | None:
+    """把调用方给的 `actor_id` 解析为**服务端最终生效**的过滤值。
+
+    - 管理三档（`department_lead` / `ceo` / `super_admin`）：原样返回（本租户内自由筛选）；
+    - `employee`（自限）：强制 `actor_id = 自己`；**显式传他人 ⇒ `PolicyError`（403 + 原文）**。
+
+    为什么不"静默忽略"：静默忽略会让调用方以为筛选生效（结果看起来"没有别人的记录"），
+    同时把越权尝试掩盖成正常请求 —— 与第 7 轮知识域「自身角色自限」同一手法：显式拒绝并给原因。
+    """
+    if not is_self_scoped_audit(context):
+        return requested
+    if requested is not None and requested != context.user_id:
+        raise PolicyError("只能查看本人的审计记录，不能按他人筛选")
+    return context.user_id

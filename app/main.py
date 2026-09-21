@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .audit.logging import configure_audit_logging
-from .audit.models import AuditAction
+from .audit.models import AuditAction, ensure_can_read_audits, resolve_actor_filter
 from .audit.redaction import mask_phone
 from .bootstrap import allowed_tool_names, build_account_service, build_agent_config_service, build_audit_service, build_commercial_components, build_content_generator, build_content_publisher, build_content_scraper, build_content_store, build_conversation_execution_service, build_conversation_member_store, build_conversation_service, build_conversation_store, build_conversation_stream_store, build_conversation_stream_writer, build_crm_service, build_dead_letter_store, build_event_bus, build_evolution_service, build_exec_callback_guard, build_execution_idempotency_store, build_inbox_service, build_knowledge_access_registry, build_knowledge_governance_service, build_login_rate_limiter, build_memory_service, build_orchestration_proposal_service, build_planner_service, build_publication_service, build_run_metrics, build_runtime_service, build_runtime_state_store, build_run_acceptance_decision_store, build_run_promotion_store, build_run_artifact_store, build_session_revocation_store, build_skills_service, build_task_repository, build_tool_action_store, build_tool_execution, build_weknora_search_runtime, build_workforce_directory_store, registered_model_keys
 from .events import EventEnvelope
@@ -3798,6 +3798,17 @@ class AuditListView(BaseModel):
     offset: int
 
 
+class AuditActionListView(BaseModel):
+    """审计动作目录（第 10 轮新增）：动作码全集。
+
+    为什么由后端给：`AuditAction` 有 90+ 项且随功能持续新增 ⇒ 前端复制一份必然漂移
+    （撞宪法「单一可信来源」）；界面只负责展示与选择。
+    """
+
+    items: list[str]
+    total: int
+
+
 def _parse_audit_actions(values: list[str] | None) -> list[AuditAction] | None:
     """把查询参数里的动作码转成枚举；未知动作码直接拒绝，不做静默忽略。"""
     if not values:
@@ -3820,6 +3831,21 @@ def _require_aware(value: datetime | None, *, name: str) -> datetime | None:
     return value
 
 
+@app.get("/api/v1/audits/actions", response_model=AuditActionListView)
+def list_audit_actions(context: UserContext = Depends(current_user)) -> AuditActionListView:
+    """审计动作目录（第 10 轮新增）：与「审计：查询」同档（能查记录即能取筛选选项）。
+
+    门禁 = `ensure_can_read_audits`（四个业务角色；`customer_admin` ⇒ 403）。
+    返回**动作码全集**（不含中文标签 —— 标签不在后端枚举里，界面按码值原样呈现，不编造）。
+    """
+    try:
+        ensure_can_read_audits(context)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    actions = sorted(action.value for action in AuditAction)
+    return AuditActionListView(items=actions, total=len(actions))
+
+
 @app.get("/api/v1/audits", response_model=AuditListView)
 def list_audits(
     action: list[str] | None = Query(default=None),
@@ -3832,15 +3858,25 @@ def list_audits(
     offset: int = Query(default=0, ge=0),
     context: UserContext = Depends(current_user),
 ) -> AuditListView:
-    """通用审计查询：仅 CEO/超级管理员，且只返回当前租户的记录（tenant_id 为空的全局记录不返回）。"""
-    if context.role not in {"ceo", "super_admin"}:
-        raise HTTPException(status_code=403, detail="只有 CEO 或超级管理员可以查看审计日志")
+    """通用审计查询（第 10 轮按矩阵 §3 分档）：`employee` 仅本人相关，其余三档本租户全量。
+
+    - `employee`（矩阵 ⚠️「仅本人相关」）：服务端**强制** `actor_id = 自己`；
+      显式传他人 `actor_id` ⇒ `403`（见 `app/audit/models.py` 的 `resolve_actor_filter`）；
+    - `department_lead` / `ceo` / `super_admin`：本租户内自由筛选；
+    - `customer_admin` ⇒ `403`（矩阵 §3 末列）；
+    - 只返回当前租户的记录（租户由**鉴权上下文**注入，不接受客户端指定）；`tenant_id` 为空的全局记录不返回。
+    """
+    try:
+        ensure_can_read_audits(context)
+        effective_actor = resolve_actor_filter(context, actor_id)
+    except PolicyError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     items, total = audit_service.query(
         context.tenant_id,
         actions=_parse_audit_actions(action),
         target_type=target_type,
         target_id=target_id,
-        actor_id=actor_id,
+        actor_id=effective_actor,
         since=_require_aware(since, name="since"),
         until=_require_aware(until, name="until"),
         limit=limit,

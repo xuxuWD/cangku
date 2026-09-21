@@ -72,10 +72,28 @@ def test_ceil_and_super_admin_can_read_audits() -> None:
         }
 
 
-def test_requires_login_and_approver_role() -> None:
+def test_role_tiers_follow_permission_matrix() -> None:
+    """角色分档（**2026-09-20 第 10 轮按矩阵 §3「审计：查询」对齐**）。
+
+    原实现把审计查询收在 `{ceo, super_admin}` 之下 ⇒ `employee` / `department_lead` 一律 `403`，
+    与矩阵冲突（矩阵：`employee` ⚠️**仅本人相关** / `department_lead` ✅本租户 / `ceo` ✅ / `super_admin` ✅ / `customer_admin` ❌）。
+    本用例原为 `test_requires_login_and_approver_role`（**钉住旧口径**），本轮随实现一并更正；
+    逐档细节（含"传他人 `actor_id` ⇒ 403"）见 `tests/test_audit_role_matrix.py`。
+    """
     assert client.get("/api/v1/audits").status_code == 401
-    assert client.get("/api/v1/audits", headers=headers(role="employee")).status_code == 403
-    assert client.get("/api/v1/audits", headers=headers(role="department_lead")).status_code == 403
+
+    employee = client.get("/api/v1/audits", headers=headers(role="employee", user_id="u-1"))
+    assert employee.status_code == 200
+    assert employee.json()["total"] == 1  # 仅本人相关（t-1 里只有 u-1 的一条）
+    assert {item["actor_id"] for item in employee.json()["items"]} == {"u-1"}
+
+    lead = client.get("/api/v1/audits", headers=headers(role="department_lead", user_id="lead-1"))
+    assert lead.status_code == 200
+    assert lead.json()["total"] == 2  # 本租户全量（不含他租户）
+
+    denied = client.get("/api/v1/audits", headers=headers(role="customer_admin", user_id="cust-1"))
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "当前岗位不能查看审计日志"
 
 
 def test_other_tenant_records_are_invisible() -> None:

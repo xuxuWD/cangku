@@ -17,15 +17,32 @@ export const REQUEST_TIMEOUT_MS = 10_000
  */
 export const DETAIL_MAX_LENGTH = 120
 
-/** 查询参数（`undefined` / `null` / 空串一律不拼进 URL）。 */
-export type QueryParams = Record<string, string | number | boolean | undefined | null>
+/**
+ * 查询参数（`undefined` / `null` / 空串一律不拼进 URL）。
+ *
+ * 值可以是**数组**（第 10 轮新增）：审计接口的 `action` 是**可重复 query**
+ * （`?action=a&action=b`，见 `app/main.py` 的 `Query(list[str])`）⇒ 需要按重复键展开，
+ * 逗号拼接**不被 FastAPI 识别**。
+ */
+export type QueryValue = string | number | boolean | undefined | null | readonly string[]
+export type QueryParams = Record<string, QueryValue>
 
 /** 拼 URL：所有键值都过 `encodeURIComponent`；**token 一律不进 URL**（只走 Authorization 头）。 */
 export function buildUrl(path: string, query?: QueryParams): string {
   const base = `${API_BASE_URL}${path}`
   if (!query) return base
-  const parts = Object.entries(query)
-    .filter(([, value]) => value !== undefined && value !== null && value !== '')
-    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+  const parts: string[] = []
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null || value === '') continue
+    if (Array.isArray(value)) {
+      // 数组值 ⇒ 重复键（空串项与空数组一律不拼）
+      for (const item of value) {
+        if (item === '') continue
+        parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(item)}`)
+      }
+      continue
+    }
+    parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+  }
   return parts.length === 0 ? base : `${base}?${parts.join('&')}`
 }

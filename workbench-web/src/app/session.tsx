@@ -135,6 +135,7 @@ export type Capability =
   | 'skill.submit'
   | 'skill.bind'
   | 'audit.view'
+  | 'audit.scope.tenant'
   | 'data.export'
   | 'data.delete'
 
@@ -149,6 +150,7 @@ export const CAPABILITY_LABEL: Record<Capability, string> = {
   'skill.submit': 'Skill 包提交',
   'skill.bind': '技能绑定',
   'audit.view': '审计日志查看',
+  'audit.scope.tenant': '审计全租户范围',
   'data.export': '数据导出',
   'data.delete': '数据删除',
 }
@@ -170,6 +172,8 @@ const ACCESS_ROLES: readonly Role[] = ['employee', 'department_lead', 'ceo', 'su
 const GOVERNANCE_ROLES: readonly Role[] = ['ceo', 'super_admin']
 /** 绑定 / 解绑技能：矩阵 §3 **未列**该行 ⇒ 沿用原口径，仅 `super_admin`（第 8 轮 D-026 已裁决不放开）。 */
 const BIND_ROLES: readonly Role[] = ['super_admin']
+/** 审计「本租户全量」档：矩阵 §3「审计：查询」里 `employee` 只到「仅本人相关」⇒ 不含在内。 */
+const AUDIT_TENANT_ROLES: readonly Role[] = ['department_lead', 'ceo', 'super_admin']
 
 /**
  * **2026-09-20 技能域对齐矩阵 §3（第 8 轮）**：`permission-matrix.md` §3「技能」两行 ⇒
@@ -177,6 +181,12 @@ const BIND_ROLES: readonly Role[] = ['super_admin']
  * `customer_admin` 在技能域一律 ❌（不授予任何能力，导航也不显示入口）。
  * 后端同一口径见 `app/skills/models.py` 的 `SUBMIT_ROLES` / `REVIEW_ROLES`
  * （复核行本轮由 `{super_admin}` 扩为 `{ceo, super_admin}`；**绑定不在此列**，后端仍仅 `super_admin`）。
+ *
+ * **2026-09-20 审计域对齐矩阵 §3（第 10 轮）**：`audit.view` 对四个业务角色开放
+ * （其中 `employee` 是矩阵里的 ⚠️**仅本人相关**档，服务端强制自限），
+ * `audit.scope.tenant` = 本租户全量（`department_lead` + `ceo` + `super_admin`），
+ * `customer_admin` 在审计域 ❌。后端同一口径见
+ * `app/audit/models.py` 的 `AUDIT_READ_ROLES` / `AUDIT_SELF_SCOPED_ROLES` / `resolve_actor_filter`。
  */
 const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
   super_admin: [
@@ -189,6 +199,7 @@ const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
     'skill.submit',
     'skill.bind',
     'audit.view',
+    'audit.scope.tenant',
     'data.export',
     'data.delete',
   ],
@@ -199,10 +210,18 @@ const ROLE_CAPABILITIES: Record<Role, readonly Capability[]> = {
     'skill.manage',
     'skill.submit',
     'audit.view',
+    'audit.scope.tenant',
     'data.export',
   ],
-  department_lead: ['knowledge.search', 'knowledge.register', 'skill.submit', 'data.export'],
-  employee: ['knowledge.search', 'knowledge.register', 'skill.submit'],
+  department_lead: [
+    'knowledge.search',
+    'knowledge.register',
+    'skill.submit',
+    'audit.view',
+    'audit.scope.tenant',
+    'data.export',
+  ],
+  employee: ['knowledge.search', 'knowledge.register', 'skill.submit', 'audit.view'],
   customer_admin: [],
 }
 
@@ -220,6 +239,8 @@ export const CAPABILITY_ROLES: Partial<Record<Capability, readonly Role[]>> = {
   'skill.submit': ACCESS_ROLES,
   'skill.manage': GOVERNANCE_ROLES,
   'skill.bind': BIND_ROLES,
+  'audit.view': ACCESS_ROLES,
+  'audit.scope.tenant': AUDIT_TENANT_ROLES,
 }
 
 /** 角色显示名（`null` = 未登录 ⇒ "未登录"）：避免各处对可空角色做下标。 */
