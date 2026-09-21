@@ -192,6 +192,13 @@ describe('我的操作视图（employee：矩阵 ⚠️ 仅本人相关）', () 
     expect(await screen.findByText('skill.enabled')).toBeInTheDocument()
     expect(screen.queryByLabelText('操作人')).not.toBeInTheDocument()
     expect(screen.getByText(SELF_SCOPE_NOTE)).toBeInTheDocument()
+    // 真机走查修正的回归钉（2026-09-21）：渲染处是**纯文本**，文案里写 `**` 会让星号原样显示
+    const rendered = screen
+      .getAllByText(/此处只显示/)
+      .map((el) => el.textContent ?? '')
+      .join('')
+    expect(rendered).not.toContain('**')
+    expect(rendered).toContain('「你自己」')
     // 导出（矩阵给 super_admin）在员工视图**不出现**，避免暗示自己有该能力
     expect(screen.queryByText(AUDIT_EXPORT_NOT_CONNECTED_NOTE)).not.toBeInTheDocument()
   })

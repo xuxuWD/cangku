@@ -59,9 +59,14 @@ export const AUDITS_NO_MATCH_NOTE = '当前筛选条件下没有命中的审计�
 export const MY_AUDITS_EMPTY_NOTE = '你还没有审计记录。'
 export const MY_AUDITS_NO_MATCH_NOTE = '当前筛选条件下没有你本人的审计记录，可放宽条件后重试。'
 
-/** 「仅本人相关」档的如实说明（服务端强制，不是界面隐藏）。 */
+/** 「仅本人相关」档的如实说明（服务端强制，不是界面隐藏）。
+ *
+ *  2026-09-21 真机走查修正：原文写作 `**你自己**`，但渲染处是**纯文本**（不是 Markdown）
+ *  ⇒ 界面把星号原样显示成「此处只显示**你自己**的操作记录」。改为项目通行的「」标注，
+ *  既保留强调又不依赖 Markdown（回归用例：`auditService.test.ts` 的"界面文案不用 Markdown 标记" +
+ *  `AuditLogPage.test.tsx` 员工档的渲染断言）。 */
 export const SELF_SCOPE_NOTE =
-  '此处只显示**你自己**的操作记录（由服务端按岗位强制，界面上的筛选不能扩大范围）。'
+  '此处只显示「你自己」的操作记录（由服务端按岗位强制，界面上的筛选不能扩大范围）。'
 
 /** 「审计导出」的如实说明：矩阵要求 `super_admin` 可导出，但**后端零实现** ⇒ 不给假入口。 */
 export const AUDIT_EXPORT_NOT_CONNECTED_NOTE =

@@ -8,7 +8,22 @@
  *  - 形状不符即抛错（不臆测、不静默补空）；`403` ⇒ `forbidden` 并保留服务端原文；
  *  - 样例模式：**不发任何请求**，`sample: true`。
  */
-import { AuditError, fetchAuditActions, fetchAudits, setServiceMode } from '../services/auditService'
+import {
+  AUDITS_EMPTY_NOTE,
+  AUDITS_NO_MATCH_NOTE,
+  AUDIT_EXPORT_NOT_CONNECTED_NOTE,
+  AUDIT_PERMISSION_REASON,
+  AuditError,
+  CONNECTED_DESCRIPTION,
+  CONNECTED_NOTICE,
+  MY_AUDITS_EMPTY_NOTE,
+  MY_AUDITS_NO_MATCH_NOTE,
+  SAMPLE_DESCRIPTION,
+  SELF_SCOPE_NOTE,
+  fetchAuditActions,
+  fetchAudits,
+  setServiceMode,
+} from '../services/auditService'
 import { detailEntries, isBlankQuery } from '../types'
 import type { AuditQuery } from '../types'
 
@@ -169,5 +184,32 @@ describe('明细渲染与空条件判定（纯函数）', () => {
     expect(isBlankQuery({ actions: ['skill.enabled'] })).toBe(false)
     expect(isBlankQuery({ actions: [], actor_id: 'acct-1' })).toBe(false)
     expect(isBlankQuery({ actions: [], since: '2026-09-20T00:00:00.000Z' })).toBe(false)
+  })
+})
+
+describe('界面文案（真机走查修正的回归钉，2026-09-21）', () => {
+  /** 本模块**全部**导出文案（新增常量请一并登记，否则守卫覆盖不到）。 */
+  const COPY: [string, string][] = [
+    ['CONNECTED_NOTICE', CONNECTED_NOTICE],
+    ['CONNECTED_DESCRIPTION', CONNECTED_DESCRIPTION],
+    ['SAMPLE_DESCRIPTION', SAMPLE_DESCRIPTION],
+    ['AUDITS_EMPTY_NOTE', AUDITS_EMPTY_NOTE],
+    ['AUDITS_NO_MATCH_NOTE', AUDITS_NO_MATCH_NOTE],
+    ['MY_AUDITS_EMPTY_NOTE', MY_AUDITS_EMPTY_NOTE],
+    ['MY_AUDITS_NO_MATCH_NOTE', MY_AUDITS_NO_MATCH_NOTE],
+    ['SELF_SCOPE_NOTE', SELF_SCOPE_NOTE],
+    ['AUDIT_EXPORT_NOT_CONNECTED_NOTE', AUDIT_EXPORT_NOT_CONNECTED_NOTE],
+    ['AUDIT_PERMISSION_REASON', AUDIT_PERMISSION_REASON],
+  ]
+
+  it('不得含 Markdown 标记（** / __）—— 渲染处是纯文本，星号会原样显示给用户', () => {
+    // 背景：员工档说明原文写作 `**你自己**`，界面把星号原样渲染出来（真机走查发现）。
+    const offenders = COPY.filter(([, text]) => /\*\*|__/.test(text)).map(([name]) => name)
+
+    expect(offenders).toEqual([])
+  })
+
+  it('强调用「」而不是 Markdown（员工档说明的既定写法）', () => {
+    expect(SELF_SCOPE_NOTE).toContain('「你自己」')
   })
 })
