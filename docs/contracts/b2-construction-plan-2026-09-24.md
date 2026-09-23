@@ -59,24 +59,28 @@ CREATE TABLE IF NOT EXISTS workbench_employee_shares (
 ### ③ 新增 `workbench_role_templates`（**因 V2=B 而新增**，此前建议走代码常量）
 
 ```sql
+-- ⚠️ 字段名**按规格 §4.3 的模板字段结构**（role_key / display_name / soul_md / system_prompt /
+--    default_tool_allowlist / default_skills / default_autonomy_level），**不是本文自造**。
 CREATE TABLE IF NOT EXISTS workbench_role_templates (
   tenant_id     TEXT NOT NULL,
-  template_key  TEXT NOT NULL,
-  name          TEXT NOT NULL,
-  soul_md       TEXT NOT NULL DEFAULT '',
-  system_prompt TEXT NOT NULL DEFAULT '',
-  tool_allowlist JSONB NOT NULL DEFAULT '[]'::jsonb,
-  risk_threshold TEXT NOT NULL DEFAULT 'high' CHECK (risk_threshold IN ('low','medium','high')),
-  is_builtin    BOOLEAN NOT NULL DEFAULT false,   -- 6 类预置 = true；租户自建 = false
+  role_key      TEXT NOT NULL,                       -- 规格 §4.3 的键名
+  display_name  TEXT NOT NULL,
+  soul_md       TEXT NOT NULL DEFAULT '',            -- 「是谁」
+  system_prompt TEXT NOT NULL DEFAULT '',            -- 「怎么做」
+  default_tool_allowlist JSONB NOT NULL DEFAULT '[]'::jsonb,
+  default_skills         JSONB NOT NULL DEFAULT '[]'::jsonb,
+  default_autonomy_level TEXT NOT NULL DEFAULT 'approval_for_risky',
+  is_builtin    BOOLEAN NOT NULL DEFAULT false,      -- ⚠️**本文新增**：规格未表态，见 §6 N-b
   created_by    TEXT NOT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, template_key)
+  PRIMARY KEY (tenant_id, role_key)
 );
 ```
 
-> ⚠️ **字段名本文是"按现有表对齐推的"，不是规格原文**（规格 §3.2 只写了"须建表"，没给 DDL）。
-> **落地前必须与 B1 §3.3 / 规格 §4 对一遍**。
+> ✅ **已更正**：上表字段名**已按规格 §4.3 的模板字段结构逐字对齐**（初稿曾用自造名 `template_key` / `name` /
+> `tool_allowlist` / `risk_threshold`，**那是错的**，本版已改）。§3.2 只写了"须建表"未给 DDL，字段结构以 **§4.3** 为准。
+> 仍属**本文推断**的只有 `is_builtin`（见 §6 N-b）。
 > ⚠️ `is_builtin` 是**本文新增的**：6 类预置与租户自建**必须能区分**（否则租户改预置模板会污染所有租户的基线）。
 > 规格对这一点**未表态** ⇒ **需补裁决**。
 
@@ -215,3 +219,72 @@ SELECT count(*) FROM workbench_digital_employees WHERE created_by IS NULL OR cre
 5. **`GET /workforce/roles` 响应形状未读** ⇒ C2 与它的边界只能说"待划清"。
 6. **`created_by` 空串实际条数未查**（需真库）。
 7. **未运行任何测试**；本文**未改动任何文件**。
+
+---
+
+# 9. 补：规格 §4 / §7 / §8 读后追加（2026-09-24）
+
+> 上一版本文未读这三节。读后补入 —— **其中 §4.3 更正了上文一处 DDL 字段名错误**（见 §1③ 的更正注）。
+
+## 9.1 创建流程：**五步向导**（规格 §4.1）
+
+规格明确要求做成**界面向导**（`CreateAgentDrawer`）而不是 Skill，理由：客户端是**桌面为主的人机界面**，
+「**表单向导比对话更能保证"该问的都问了"**」。五步：
+
+```
+① 澄清需求（先问再写）：服务谁 / 典型任务 2~3 个 / 输出形态 / 绝对不做的事 / 是否需要联网·终端·文件写入
+② 确认 agent_key 可用（小写+连字符、不与已有冲突）
+③ 盘点技能（只从**真实目录**勾选，禁止臆造）
+④ 盘点工具（**最小权限**：能只读就不给写盘，能不用终端就不给）
+⑤ 起草并让用户确认（**落盘前展示完整配置**）
+```
+
+**⇒ 对施工的影响**：`POST /workforce/agents` 的**请求体要能承载"从模板创建"**（把 ①②③④ 的答案填进去），
+这就是 C1「复用 + 扩展」的具体内容；**不是新端点**。
+
+## 9.2 三条护栏（规格 §4.2）—— **服务端必须做**
+
+| # | 约束 | 落地方式（规格原文） |
+| --- | --- | --- |
+| **G1** | **名称必须来自真实目录** | 服务端校验 `skills` / `tools` 每一项都在运行时目录内；**不合法则拒绝（不是忽略）** |
+| **G2** | **最小权限默认** | 新建时 `tool_allowlist` **默认只读集**；加写权限需**显式勾选** |
+| **G3** | **`system_prompt` 拒绝控制字符** | 服务端 sanitize（防注入） |
+
+**⇒ 对施工的影响**：G1 对应验收 **A6**；G2 与 V1=C 的口径（值班只做不需审批的动作）**天然一致** ——
+两条一起看：**新建默认只读 + 值班只做不需审批的动作**，权限面是收紧的。
+
+## 9.3 验收标准（规格 §7）—— **A1–A8，只认证据**
+
+| # | 验收项 | 证据形式 |
+| --- | --- | --- |
+| **A1** | 普通员工能打开「我的数字员工」，**不再是 403** | 真机截图 + 接口响应码 |
+| **A2** | 能从 6 类岗位模板中选一个建出数字员工 | 真机截图 + **库内新行** |
+| **A3** | 另一个员工**看不到**这个数字员工 | **双账号交叉验证** |
+| **A4** | 共享给他人后，对方能在「共享给我的」看到 | 双账号交叉验证 |
+| **A5** | `read` 档**不能派活**（403）；`use` 档**能派活但不能改配置** | 逐档实测 |
+| **A6** | 填非法技能名 / 工具名 ⇒ **被拒绝**（不是忽略） | 接口返回 + **库内无行** |
+| **A7** | 创建并派活，产出可在审计里查到 | 审计查询接口 |
+| **A8** | **反假测试**：故意在权限判定里造错（让 A3 失效）⇒ 测试**必须变红** | 反假记录 |
+
+**⚠️ A3 / A5 需要「双账号」** ⇒ 走查环境必须能起**两个账号**（本会话之前的真机走查只用了一个）。
+
+**⚠️ A7 的依赖（规格原文）**：若派活后的执行走**服务端容器**（B1 未落地时只能如此）⇒ A7 可验收；
+**走桌面执行则依赖 B1**。而 **B1 也仍未评审** ⇒ **A7 可能连带卡在 B1 上**。
+
+## 9.4 与既有能力的关系（规格 §8）—— **扩展，不另起**
+
+| 既有 | 关系 |
+| --- | --- |
+| `app/workforce/`（**1,455 行**，规格实测） | **扩展**，不另起 |
+| `workbench_job_roles`（岗位表） | **保留不动** —— "岗位"与 owner **正交** |
+| `workbench_conversations.agent_key` | **复用** —— 会话已能绑定数字员工 |
+| P2c-6 会话成员表（`read`/`write`） | **刻意对齐** —— 共享表照抄其两档语义（改名 `read`/`use`），**不引入第二套心智模型** |
+| P3 记忆 / P4 技能 | 数字员工是它们的**归属主体** |
+
+**⇒ 对施工的影响**：`workbench_employee_shares` 是**照抄 P2c-6 成员表**（我在 §1② 写的 DDL 与之一致 ✓）。
+
+## 9.5 本次追补后仍未覆盖的
+
+- 规格 **§2.2「范围（做什么）」** 我仍未逐条读（§2.3「不做什么」此前读过）。
+- **A3/A5 的双账号走查环境**未准备（本轮真机走查都只用了一个账号）。
+- 上述追加内容**来自规格原文转述**，未与本仓库代码逐条核对。
