@@ -6,7 +6,7 @@
 > **依赖的上游规格**：[`2026-09-22-desktop-execution-and-client-merge-design.md`](file:///d:/徐徐AI学习/公司工作台/docs/superpowers/specs/2026-09-22-desktop-execution-and-client-merge-design.md) **§3**（`Agent` / `Assignment` 两层数据模型与四档可见性口径——**本文复用，不重写**）。
 > **台账**：[`decision-log.md`](file:///d:/徐徐AI学习/公司工作台/docs/contracts/decision-log.md) **D-050⑥**（数字员工六项裁决）· **D-051②(d)**。
 > **日期**：2026-09-22
-> **状态**：**未评审**。待裁决项见 §9.1。 **用户已于 2026-09-24 裁决立项**（见 `decision-log.md` D-057）。
+> **状态**：**未评审**。待裁决项见 §9.1。 **用户已于 2026-09-24 裁决立项**（见 `decision-log.md` D-057）。 **✅ 已评审通过（2026-09-24，用户）**（`decision-log.md` **D-058①**）。**上文「未评审」保留，为历史留痕。**
 > **一句话定位**：**这是产品心脏**——用户的原话是「策划、拍剪、开发、销售、管理、文案……**各自配置数字员工下属去分担工作**」。而当前实测：**后端只做了一半**（见 §1）。
 
 ---
@@ -175,6 +175,9 @@ default_tool_allowlist / default_skills / default_autonomy_level
 | **文案** | `coreyhaines31/marketingskills` + `LLL-178/cn-skills` + `199-biotechnologies/humanise-text-skill` | ✅ **均 MIT** |
 | **策划** | `Weizhena/Deep-Research-skills` + `AgriciDaniel/claude-blog` | ✅ **均 MIT**（⚠️ claude-blog 的 `brain/` 子目录有许可冲突，**只引 `skills/`**） |
 | **拍剪** | ❌ **无对口现成**（EvoFlow 有 25 个媒体 skill 但不可引；TabTin 只有 `cowart` 图片） | **必须自研** |
+
+> **⚠️ 2026-09-24 用户裁决（`decision-log.md` **D-058②-2**）**：**本表与 B4 规格的素材表结论相反** —— B4 §5.1 在「拍剪」行列了 **5 个具体 MIT 仓库**（`shang-zhu/violin` / `jianshuo/claude-skills` / `Yusuke710/manim-skill` / `heygen-com/skills` / `elevenlabs/skills`，B4:157）且**已读 LICENSE 原文**；本节原写「**❌ 无对口现成、必须自研**」**与 B4 冲突**。用户裁定**以 B4 为准**。**原文保留在上方未删。**
+> ⚠️ 因此下文「**三件事必须说清**」中的第 2 条（「拍剪岗必须自研」）**同受本裁决推翻**，以 B4 为准。
 
 **⚠️ 三件事必须说清**：
 

@@ -7,6 +7,7 @@
 > **上游待裁决**：**Q4（`single_pg` 取舍）仍未裁决**；本文**不依赖 Q4**，但在 §6 登记其影响面。
 > **日期**：2026-09-22
 > **状态**：**未评审**。待评审项见 §6。
+> **✅ 2026-09-24 用户裁决（`decision-log.md` **D-058①**）**：**已评审通过（2026-09-24，用户）· 附条件 3 处**（见 §3.2 / §3.3④ / §3.4 的就地标注）。**上文「未评审」保留，为历史留痕。**
 > **前置**：B0 已交付（真源口径统一，见 D-050 与本文 §5 的对照）。
 
 ---
@@ -96,6 +97,8 @@
 
 ### 2.3 断网处理（三选一，**建议 B**）
 
+> **✅ 2026-09-24 用户裁决（`decision-log.md` **D-058③**）**：**选 B（断网只读）** —— 即采纳本节的建议方案。原文保留。
+
 | 方案 | 做法 | 代价 |
 | --- | --- | --- |
 | A | 断网期间本地暂存，恢复后补传 | **审计有空窗期**——空窗内的操作无法被覆盖 |
@@ -155,6 +158,9 @@
 
 ### 3.2 为什么必须两层（而不是加一列）
 
+> **⚠️ 2026-09-24 标注（`decision-log.md` **D-058**）**：本节所在 **§3 的三处模型建议**已受用户 2026-09-24 裁决影响，
+> **就地标注见**：**§3.3③**（岗位模板**须建表**，V2=B）· **§3.3④**（目录可见性**改两档**）· **§3.4**（闸门**须拆三档**）。原文各处保留。
+
 **加一列不够**，因为要同时回答两个正交问题：
 
 - **「这个数字员工是谁」**（能力包：角色 / 模型 / 工具 / 技能 / 记忆策略）——**可复用、可模板化**
@@ -210,6 +216,10 @@ CREATE TABLE IF NOT EXISTS workbench_employee_shares (
 
 每套模板字段：`role_key` / `display_name` / `soul_md`（气质/价值观）/ `system_prompt`（步骤/边界）/ `default_tool_allowlist` / `default_skills` / `default_autonomy_level`。
 
+> **⚠️ 2026-09-24 用户裁决（`decision-log.md` **D-057⑤·5.3**，`D-058` 复核）**：用户裁 **V2=B（允许租户自定义岗位）**
+> ⇒ **岗位模板须建表**，本节原建议「**代码内常量、不建表**」**被推翻**（理由"模板是产品预设、改它应走代码评审"随之不成立——建表后改模板是 DB 操作，须另设治理口径）。
+> **原文保留在上方未删。** 实际 DDL 见 [`b2-construction-plan-2026-09-24.md`](file:///d:/徐徐AI学习/公司工作台/docs/contracts/b2-construction-plan-2026-09-24.md) **§1③**（表名 `workbench_role_templates`；字段名以本文 §4.3 的模板字段结构为准）。
+
 **④ 目录查询的权限口径（三档可见性）**
 
 ```
@@ -221,6 +231,9 @@ CREATE TABLE IF NOT EXISTS workbench_employee_shares (
 
 **⇒ 这一条直接修掉「普通员工看到 403」**。
 
+> **⚠️ 2026-09-24 用户裁决（`decision-log.md` **D-058**）**：经核实，上文**第三档**（`visibility='shared' AND role_key ∈ 我的岗位`）**缺数据支撑** —— 仓库无「用户 → 岗位」映射（账号侧 `position` 是自由文本，见 `app/accounts/models.py:54`，账号侧无 `role_key`）。
+> ⇒ 用户 2026-09-24 裁定 **砍掉该档、改为两档**：可见 = **owner ∪ shares**（＋ `super_admin` 管理视角）。**原文保留在上方未删。** 与 §6.1 V5「岗位共享档 ⇒ 不做」一致。
+
 ### 3.4 迁移的影响面
 
 | 影响 | 处置 |
@@ -229,6 +242,13 @@ CREATE TABLE IF NOT EXISTS workbench_employee_shares (
 | 存量行 `visibility` | 默认 `private`（**最保守**——不因迁移而扩大可见性） |
 | 目录接口 | 从"仅超管"改为 §3.3④ 的四档口径 —— **这是行为变更，须在契约里写明** |
 | 前端三分区 | 「归属无法判定」分区**可以撤掉**（不再需要容错） |
+
+> **⚠️ 2026-09-24 评审附条件（`decision-log.md` **D-058①**）——本节两处缺口**：
+>
+> **① 闸门拆法（本节未给）**：实测 `_require_workforce_directory_admin`（`app/main.py:1362`）**守着 9 个端点**（实测调用点 9 处）。**直接放宽它会同时放开**：建 / 改岗位、改 / 停用**别人的**员工、读**任意**员工的 `config`（提示词 / 模型 / 日预算 / 审批档）——与 `use` 档「能派活、**不能改配置、不能停用**」**直接冲突**。
+> ⇒ **须拆三档**（`_require_directory_reader` / `_require_employee_creator` / 原 `_require_workforce_directory_admin` 保持 `super_admin`），拆法见 [`b2-construction-plan-2026-09-24.md`](file:///d:/徐徐AI学习/公司工作台/docs/contracts/b2-construction-plan-2026-09-24.md) **§2**。**按宪法属「权限模型（地基级）」变更 ⇒ 应单列评审。**
+>
+> **② 租户模板链三处同步（本节未提）**：新表（`workbench_employee_shares` / `workbench_role_templates`）与新增列须同步 **三处** —— `migrations/tenant_template/0001_tenant_baseline.sql` + `migrations/tenant_template/classification.json` + 跑 `scripts/tenant_schema.py verify --apply`。详见 `b2-construction-plan-2026-09-24.md` **§1⑤**。
 
 ---
 
@@ -243,6 +263,8 @@ CREATE TABLE IF NOT EXISTS workbench_employee_shares (
 ```
 
 ### 4.2 逐模块归属（**待你勾选，本文不预判**）
+
+> **✅ 2026-09-24 用户裁决（`decision-log.md` **D-058③**）**：用户**同意全部建议** —— 即下表「**建议去向**」一列**全部采纳**（`contentWorkbench` / `contentHistory` 除外，见 §6.1 V1 ⏳ **仍未定**）。原文保留。
 
 **`admin-web`（17 视图）**
 
@@ -341,11 +363,11 @@ CREATE TABLE IF NOT EXISTS workbench_employee_shares (
 
 | # | 待裁决 | 影响 |
 | --- | --- | --- |
-| **V1** | `contentWorkbench` / `contentHistory` 是否属本期产品边界 | 决定它们是"合并"还是"剥离" |
-| **V2** | `collaborationDynamics` 是员工视图还是管理视图 | 决定它进主界面还是设置 |
-| **V3** | 桌面前端外壳用 **Tauri 还是继续 Electron** | 影响打包链与体积（EvoFlow 用 Tauri + 系统 WebView2，硬性禁止包里出现 Chromium） |
-| **V4** | CRM 现有代码的处置（保留 / 归档 / 删除） | D-050③ 已登记待裁决 |
-| **V5** | **岗位共享档**（§3.3④ 第三档）是否要 ⭐ **本条是唯一裁决点** | 要则同岗位的人自动可见彼此的员工。**B2 规格 §9.1 V3 已改为引用本条，不重复裁决**（修正留痕见 `decision-log.md` **D-055⑮**） |
+| **V1** | `contentWorkbench` / `contentHistory` 是否属本期产品边界 | 决定它们是"合并"还是"剥离" · **⏳ 仍未定（2026-09-24）**：这是**事实问题**（内容岗是否实际在用那个公众号工作台），**待用户答复**；在此之前 §4.2 无法定稿。**本条未裁。** 见 `decision-log.md` **D-058②-4** |
+| **V2** | `collaborationDynamics` 是员工视图还是管理视图 | 决定它进主界面还是设置 · **✅ 已裁决（2026-09-24，用户）**：**员工视图**（放主界面）。见 `decision-log.md` **D-058③** |
+| **V3** | 桌面前端外壳用 **Tauri 还是继续 Electron** | 影响打包链与体积（EvoFlow 用 Tauri + 系统 WebView2，硬性禁止包里出现 Chromium） · **✅ 已裁决（2026-09-24，用户）**：**Tauri**；但**不急**，可放到前端合并之后。见 `decision-log.md` **D-058③** |
+| **V4** | CRM 现有代码的处置（保留 / 归档 / 删除） | D-050③ 已登记待裁决 · **✅ 已裁决（2026-09-24，用户）**：**归档（先不删）**。见 `decision-log.md` **D-058③** |
+| **V5** | **岗位共享档**（§3.3④ 第三档）是否要 ⭐ **本条是唯一裁决点** | 要则同岗位的人自动可见彼此的员工。**B2 规格 §9.1 V3 已改为引用本条，不重复裁决**（修正留痕见 `decision-log.md` **D-055⑮**） · **✅ 已裁决（2026-09-24，用户）**：**不做**（与 §3.3④ 砍掉第三档一致）。见 `decision-log.md` **D-058③** |
 
 ### 6.2 风险（按严重度）
 
