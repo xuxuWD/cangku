@@ -29,17 +29,30 @@ export interface ApiErrorInit {
   status: number
   failure: ApiFailure
   message: string
+  /** 服务端自己写的、已 sanitize 的 `detail`（**没有则为 `undefined`**）。 */
+  detail?: string
 }
 
 export class ApiError extends Error {
   readonly status: number
   readonly failure: ApiFailure
+  /**
+   * **服务端自己写的中文原因**（已 sanitize），没有则为 `undefined`。
+   *
+   * ⚠️ 为什么单独留一个字段、而不是让调用方去翻 `message`：
+   * `message` 是"服务端 detail **或**本层兜底文案"二选一的结果，**从外面分不出是哪个**。
+   * 业务模块（对话 / 运行）都有**比自己兜底更具体**的文案，得靠这个字段才知道
+   * "服务端到底说没说"。2026-09-23 合并 `runDetail` 时被一条用例照出来
+   * （干预类 409 无服务端原因时，误把基座兜底文案当成了服务端原因）。
+   */
+  readonly detail?: string
 
-  constructor({ status, failure, message }: ApiErrorInit) {
+  constructor({ status, failure, message, detail }: ApiErrorInit) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.failure = failure
+    this.detail = detail
   }
 }
 
@@ -74,7 +87,7 @@ function toApiError(status: number, payload: unknown): ApiError {
     message: status >= 500 ? '服务暂时不可用，请稍后重试。' : '请求失败，请稍后重试。',
   }
   const detail = safeDetail((payload as { detail?: unknown } | null)?.detail)
-  const error = new ApiError({ status, failure: mapped.failure, message: detail ?? mapped.message })
+  const error = new ApiError({ status, failure: mapped.failure, message: detail ?? mapped.message, detail })
   if (mapped.failure === 'unauthorized') {
     // 令牌失效：清本地会话，界面据此回到登录页（不做静默重试、不假装还能用）
     clearSession()
@@ -102,6 +115,30 @@ export interface RequestOptions {
   signal?: AbortSignal
   /** 测试注入的 fetch（不引 MSW）；默认用全局 `fetch`。 */
   fetchImpl?: typeof fetch
+  /**
+   * 覆盖 `Accept`（默认由 `request` / `requestRaw` 决定）。
+   * 2026-09-23 新增，用途只有一个：**SSE 读流**要 `text/event-stream`。
+   */
+  accept?: string
+  /**
+   * 追加自定义请求头（如 SSE 续播的 `Last-Event-ID`）。
+   *
+   * ⚠️ **不得用来传认证令牌** —— 令牌由本层从会话注入。为防止被绕过，
+   * `Authorization` 在拼装时**排在最后**，调用方传什么都不可能覆盖它。
+   */
+  headers?: Record<string, string>
+  /**
+   * **长连接 / 流式响应**专用（2026-09-23 新增，用途只有 SSE）。
+   *
+   * 不加这个开关会踩两个坑（都由 `features/conversation` 的移植用例当场照出来）：
+   *  ① **超时**：默认 `REQUEST_TIMEOUT_MS` 会在 10 秒时把整条流掐断 —— 长连接本来就会超过它；
+   *  ② **中止失效**：默认在响应头到达后（`performRequest` 的 `finally`）就**拆掉** abort 转发，
+   *     而流式响应此时才开始读体 ⇒ 调用方之后再怎么 `abort()` 都传不到底层 `fetch`，
+   *     **流永远停不下来**（用例名：「切走即断」）。
+   *
+   * 置 `true` 时：**不设超时**，且 abort 转发**保留到调用方中止为止**（中止时自行摘除监听，不泄漏）。
+   */
+  streaming?: boolean
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -126,21 +163,28 @@ async function performRequest(
   options: RequestOptions,
   accept: string,
 ): Promise<Response> {
-  const { method = 'GET', body, query } = options
+  const { method = 'GET', body, query, accept: acceptOverride, headers: extraHeaders } = options
   const doFetch = options.fetchImpl ?? globalThis.fetch
   const token = readToken()
 
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-  const forwardAbort = () => controller.abort()
+  // 流式（长连接）不设请求超时 —— 它本来就是长命连接（见 RequestOptions.streaming）
+  const timer = options.streaming ? undefined : setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const forwardAbort = () => {
+    controller.abort()
+    // 流式下监听要留到中止为止；中止即自行摘除，避免泄漏
+    options.signal?.removeEventListener('abort', forwardAbort)
+  }
   options.signal?.addEventListener('abort', forwardAbort)
 
   try {
     const response = await doFetch(buildUrl(path, query), {
       method,
       headers: {
-        Accept: accept,
+        Accept: acceptOverride ?? accept,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        // 调用方自定义头排在**认证之前**：`Authorization` 永远由本层决定，不可被覆盖
+        ...extraHeaders,
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -159,7 +203,9 @@ async function performRequest(
     // 网络失败 / 超时 / 中止：一律"服务不可达"，不暴露底层错误原文
     throw new ApiError({ status: 0, failure: 'unavailable', message: '服务不可达：请检查网络后重试。' })
   } finally {
-    clearTimeout(timer)
-    options.signal?.removeEventListener('abort', forwardAbort)
+    if (timer !== undefined) clearTimeout(timer)
+    // ⚠️ 流式响应在**响应头到达**时本函数就返回，后面调用方才开始读体 ⇒
+    // 此时**不能**摘掉转发，否则读体期间中止不了（用例「切走即断」就是照这个的）。
+    if (!options.streaming) options.signal?.removeEventListener('abort', forwardAbort)
   }
 }

@@ -15,7 +15,12 @@ import type { TodoItem, TodoKind } from '../types'
 import { PanelCard } from './PanelCard'
 
 /** 类型 → 中文标签（受控枚举：不在调用处随手写状态字符串）。 */
-const TODO_KIND_LABEL: Record<TodoKind, string> = {
+/**
+ * 待办类型 → 中文标签（**唯一来源**）。
+ * 2026-09-23 改为导出：`MyWorkbenchPage` 把待办上报给壳的右栏时需要同一个标签，
+ * 页面**不该再抄一份**文案表。
+ */
+export const TODO_KIND_LABEL: Record<TodoKind, string> = {
   task_approval: '任务审批',
   plan_proposal: '计划提案',
   run_approval: '运行审批',

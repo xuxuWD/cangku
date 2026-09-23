@@ -16,10 +16,13 @@ import { PageContainer } from '../../components'
 import type { ContentStateKind } from '../../components'
 import { ApiError } from '../../api/client'
 import { tokens } from '../../theme/tokens'
+import { showObject } from '../../app/shellStore'
+import { navigateShell, shellRoute } from '../../app/shellRouter'
+import type { NavKey } from '../../app/navigation'
 import { QuickActions } from './components/QuickActions'
 import { RecentPanel } from './components/RecentPanel'
 import { SchedulePanel } from './components/SchedulePanel'
-import { TodoPanel, todoRowKey } from './components/TodoPanel'
+import { TODO_KIND_LABEL, TodoPanel, todoRowKey } from './components/TodoPanel'
 import {
   RECENT_NOTE,
   SAMPLE_DATA_BADGE,
@@ -56,6 +59,33 @@ function failureMessage(error: unknown, fallback: string): string {
 export function MyWorkbenchPage() {
   const queryClient = useQueryClient()
   const [notice, setNotice] = useState<string | null>(null)
+
+  /**
+   * 快捷入口 → 真跳转（2026-09-23 换壳后 URL 路由可用）。
+   *
+   * **映射是显式的**：没有落点的那两个（发起对话 / 新建任务）**如实说明**为什么不能跳
+   * —— 对话页与任务页尚未合并（B3 §4 对话常驻待做），**不给点了没反应的按钮**。
+   * 设置类两个（数字员工配置 / 权限配置）走 `?view=`，权限仍由服务端判定（前端只做界面自适应）。
+   */
+  const QUICK_ACTION_VIEW: Record<string, NavKey> = {
+    'search-knowledge': 'knowledge',
+    'my-agents': 'my-agents',
+    'agent-config': 'agent-admin',
+    'permission-config': 'permissions',
+  }
+  const QUICK_ACTION_NO_LANDING: Record<string, string> = {
+    'start-conversation': '对话页尚未合并进本工作台（B3 §4「对话常驻」待做），暂时不能从这里发起对话。',
+    'new-task': '任务页尚未合并进本工作台，暂时不能从这里新建任务。',
+  }
+  const handleQuickAction = (action: QuickActionItem) => {
+    const view = QUICK_ACTION_VIEW[action.key]
+    if (view) {
+      setNotice(null)
+      navigateShell(shellRoute(view))
+      return
+    }
+    setNotice(QUICK_ACTION_NO_LANDING[action.key] ?? `「${action.label}」尚未接入。`)
+  }
   const [markingKey, setMarkingKey] = useState<string | null>(null)
 
   const todos = useQuery({ queryKey: ['my-workbench', 'todos'], queryFn: () => fetchTodos() })
@@ -107,7 +137,19 @@ export function MyWorkbenchPage() {
                 todos.isError ? failureMessage(todos.error, '待办列表加载失败，请稍后重试。') : undefined
               }
               onRetry={() => void todos.refetch()}
-              onOpen={() => setNotice('跳转目标页尚未接入：本批只接数据，不接路由。')}
+              // 2026-09-23 换壳后：右栏「当前对象」（B3 §5）已可用 ⇒ 把该待办指向的对象**上报**给壳。
+              // 完整页面（任务详情 / 运行详情）仍未合并，所以这里只到"摘要"这一档，不假装能跳全页。
+              onOpen={(item) =>
+                showObject(
+                  {
+                    id: String(item.target_id),
+                    type: item.target_type ?? 'task',
+                    title: item.title,
+                    status: TODO_KIND_LABEL[item.kind],
+                  },
+                  { view: 'my-workbench', panel: 'brief' },
+                )
+              }
               onMarkRead={(item) => {
                 setNotice(null)
                 setMarkingKey(todoRowKey(item))
@@ -125,6 +167,12 @@ export function MyWorkbenchPage() {
                   : failureMessage(recent.error, '最近使用加载失败，请稍后重试。')
               }
               onRetry={() => void recent.refetch()}
+              onOpen={(item) =>
+                showObject(
+                  { id: item.target_id, type: item.kind, title: item.title },
+                  { view: 'my-workbench', panel: 'brief' },
+                )
+              }
             />
           </Space>
         </Col>
@@ -142,6 +190,7 @@ export function MyWorkbenchPage() {
               state={panelState(actions)}
               stateDescription={failureMessage(actions.error, '快捷入口加载失败，请稍后重试。')}
               onRetry={() => void actions.refetch()}
+              onRun={handleQuickAction}
             />
           </Space>
         </Col>

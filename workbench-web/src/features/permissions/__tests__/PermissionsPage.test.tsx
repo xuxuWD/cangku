@@ -316,10 +316,12 @@ describe('PermissionsPage（权限配置）', () => {
     expect(await screen.findByText(AGENT_EMPTY_NOTE)).toBeInTheDocument()
   })
 
-  it('⑧ 壳里选中「权限配置」即渲染本页（导航可到达）', async () => {
+  it('⑧ 从**设置弹窗**进入「权限配置」即渲染本页（收敛后仍可到达 —— B3 验收 A8）', async () => {
+    // ⚠️ 2026-09-23 改：B3 §7 侧栏收敛后该入口不在侧栏，改走设置弹窗（新的真实路径）。
     renderWithProviders(<AppShell />)
 
-    await userEvent.click(screen.getByRole('menuitem', { name: /权限配置/ }))
+    await userEvent.click(screen.getByRole('button', { name: /设\s*置/ }))
+    await userEvent.click(await screen.findByLabelText('打开权限配置'))
 
     expect(screen.getByRole('heading', { level: 1, name: '权限配置' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 2, name: '权限配置' })).toBeInTheDocument()

@@ -66,9 +66,12 @@ describe('LoginPage', () => {
     // 顶栏显示角色名（响应里没有展示名，不编造姓名）
     expect(screen.getByText('员工')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '退出登录' })).toBeInTheDocument()
-    // 只发了一次请求，且没有硬编码 / 预填的凭据
-    expect(calls).toHaveLength(1)
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ phone: '13800000000', password: 'pw-123456' })
+    // 登录**只发了一次**请求，且没有硬编码 / 预填的凭据。
+    // ⚠️ 2026-09-23：壳改成三栏 + **对话宿主常驻**（B3 §4）后，登录成功进壳会**另外**
+    // 触发一次「拉会话列表」，所以不能再对**全部** fetch 计数 —— 只数**登录那一发**。
+    const loginCalls = calls.filter((call) => call.url.includes('/auth/sessions'))
+    expect(loginCalls).toHaveLength(1)
+    expect(JSON.parse(String(loginCalls[0].init.body))).toEqual({ phone: '13800000000', password: 'pw-123456' })
   })
 
   it('表单不预填任何凭据（账号 / 密码 / 动态验证码都是空的）', () => {

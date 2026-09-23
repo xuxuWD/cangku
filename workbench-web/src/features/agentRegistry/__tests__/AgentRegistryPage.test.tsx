@@ -303,10 +303,13 @@ describe('AgentRegistryPage（数字员工注册中心）', () => {
     expect(within(row).getByText('暂无运行统计')).toBeInTheDocument()
   })
 
-  it('壳里选中「数字员工管理」即渲染本页（并给出 6 个岗位选项）', async () => {
+  it('从**设置弹窗**进入「数字员工管理」即渲染本页（并给出 6 个岗位选项）', async () => {
+    // ⚠️ 2026-09-23 改：B3 §7 侧栏收敛后，管理类入口不再在侧栏，而是**收进设置弹窗**。
+    // 这个用例因此改走新的真实路径 —— 顺带验了「收敛可逆：功能仍可到达」（B3 验收 A8）。
     renderWithProviders(<AppShell />)
 
-    await userEvent.click(screen.getByRole('menuitem', { name: /数字员工管理/ }))
+    await userEvent.click(screen.getByRole('button', { name: /设\s*置/ }))
+    await userEvent.click(await screen.findByLabelText('打开数字员工管理'))
 
     expect(screen.getByRole('heading', { level: 1, name: '数字员工管理' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 2, name: '数字员工管理' })).toBeInTheDocument()
