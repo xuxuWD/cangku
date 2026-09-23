@@ -115,7 +115,7 @@ def _require_workforce_directory_admin(context):
         raise HTTPException(403, "只有超级管理员可以管理岗位与数字员工目录")
 ```
 
-**一个函数守着 10 个端点**（实测调用点：`roles` 的 GET/POST/PATCH、`agents` 的 GET/POST/PATCH、
+**一个函数守着 9 个端点**（实测调用点：`roles` 的 GET/POST/PATCH、`agents` 的 GET/POST/PATCH、
 `candidates` GET、`agents/{key}/config` GET，及另 2 处未定位）。
 
 ### ⚠️ 不能"放宽它"
