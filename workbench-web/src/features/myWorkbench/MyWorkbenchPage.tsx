@@ -127,7 +127,7 @@ export function MyWorkbenchPage() {
       )}
 
       <Row gutter={[tokens.spacing.md, tokens.spacing.lg]}>
-        <Col xs={24} lg={16}>
+        <Col xs={24}>
           <Space direction="vertical" size={tokens.spacing.md} style={{ width: '100%' }}>
             <TodoPanel
               items={todos.data?.items ?? EMPTY_TODOS.items}
@@ -174,11 +174,6 @@ export function MyWorkbenchPage() {
                 )
               }
             />
-          </Space>
-        </Col>
-
-        <Col xs={24} lg={8}>
-          <Space direction="vertical" size={tokens.spacing.md} style={{ width: '100%' }}>
             <SchedulePanel
               availability={schedule.data ?? SCHEDULE_ABSENT}
               state={panelState(schedule)}
