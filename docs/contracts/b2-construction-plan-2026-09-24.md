@@ -126,9 +126,18 @@ def _require_workforce_directory_admin(context):
 
 ### 拆法（建议）
 
+> **⚠️ 2026-09-24 更正（据 [`gate-split-review-2026-09-24.md`](gate-split-review-2026-09-24.md) 实测）**：
+> **本节的两处前提均不成立** ——
+> **① 不是"一个函数"**：同口径闸门实测**共 5 处、35 个调用点**
+> （`app/main.py:1362` 9 处 · `app/workforce/store.py:108` 22 处 · `app/workforce/config.py:217` 2 处 ·
+> **`app/main.py:1344` 内联判定** 1 处 · `app/main.py:1621` `_require_model_catalog_admin` 1 处）。
+> **② `roster` 不归 `_require_directory_reader`**：`GET /api/v1/workforce/roster`（`app/main.py:1338`）
+> 用的是**函数体内联判定**（L1344），**不受共享函数保护** ⇒ **只拆该函数，roster 一点不变**。
+> **⇒ 施工前须先读过专项评审材料，不要据本表直接动手。** 原文保留在下方未删。
+
 | 新闸门 | 覆盖 | 口径 |
 | --- | --- | --- |
-| ① `_require_directory_reader` | `roster` / `agents` 列表 | 四档角色 + **按 `owner_user_id` / `visibility` / shares 过滤**（**过滤在仓储层做，不是在路由层**） |
+| ① `_require_directory_reader` | `roster`（⚠️ **见上更正**）/ `agents` 列表 | 四档角色 + **按 `owner_user_id` / `visibility` / shares 过滤**（**过滤在仓储层做，不是在路由层**） |
 | ② `_require_employee_creator`（新） | 员工侧创建 | 四档 + **owner 只能是自己** + **只能从模板创建** |
 | ③ `_require_workforce_directory_admin`（**原函数不动**） | `roles` 增改 / `agents` 改停用 / **config 读写** | **保持仅 `super_admin`** |
 

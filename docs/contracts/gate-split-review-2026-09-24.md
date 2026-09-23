@@ -1,0 +1,196 @@
+# OP-01 岗位目录面 · 权限闸门拆分 —— 专项评审材料
+
+> **性质**：**评审材料，不是真源**。权威仍在：
+> - 权限真源 [`permission-matrix.md`](permission-matrix.md)
+> - 数据模型真源 [B1 规格 §3.3](../superpowers/specs/2026-09-22-desktop-execution-and-client-merge-design.md)
+> - 施工材料 [`b2-construction-plan-2026-09-24.md`](b2-construction-plan-2026-09-24.md)
+> - 已落契约 [`api-contract.md`](../api-contract.md)「数字员工归属与共享（B2）」
+>
+> **为什么必须单列评审**（不是我加的流程）：**权限模型属「地基级」变更**（宪法 4.1），且
+> [`permission-matrix.md:238-240`](permission-matrix.md) **早就把这件事登记为「另立专项」** ——
+> 原文：「裁决 = **不放宽目录闸门**（属 **OP-01 面**，另立专项）」。**本文即该专项。**
+>
+> **⚠️ 本文未改动任何产品代码、未改动任何真源。** 全部数字为 2026-09-24 实测。
+
+---
+
+## 一、现状实测：**是三道闸门，不是一道**
+
+[`b2-construction-plan-2026-09-24.md`](b2-construction-plan-2026-09-24.md) §2 写的是「**一个**函数守着 **9** 个端点」。
+**实测不是 —— 同一个口径散在 5 个地方，共 35 个调用点：**
+
+| # | 位置 | 函数 / 形态 | 调用点 | 失败形态 | 文案 |
+| --- | --- | --- | --- | --- | --- |
+| **①** | `app/main.py:1362` | `_require_workforce_directory_admin` | **9** | `HTTPException(403)` | 「只有超级管理员可以管理岗位与数字员工目录」 |
+| **②** | `app/workforce/store.py:108` | `_ensure_admin` | **22** | `PolicyError` | 同上 |
+| **③** | `app/workforce/config.py:217` | `_ensure_admin` | **2** | `PolicyError` | 「只有超级管理员可以**配置**数字员工」 |
+| **④** | `app/main.py:1344` | **内联判定**，在 `workforce_roster` 函数体内 | **1** | `HTTPException(403)` | 「只有超级管理员可以查看岗位与数字员工**清单**」 |
+| **⑤** | `app/main.py:1621` | `_require_model_catalog_admin` | **1**（守 2 个端点） | `HTTPException(403)` | 「只有超级管理员可以读取模型与工具候选」 |
+
+五处判定条件**完全相同**：`context.role != "super_admin"`。
+
+### ⚠️ ④ 直击 B2，而且**施工方案把它归错了**
+
+施工方案 §2 拆法写「① `_require_directory_reader` ｜ 覆盖 **`roster`** / `agents` 列表」——
+**但 `GET /api/v1/workforce/roster`（`app/main.py:1338`）根本不受 ① 保护**，它用的是**函数体内的内联判定**（L1344）。
+**⇒ 只拆 ① 那个函数，`roster` 一点都不会变。** 员工侧的"我的员工清单"仍会 `403`。
+
+### ⚠️ ⑤ 守的是模型 / 工具候选，与 B2 相关但不属目录面
+
+`GET /api/v1/workforce/model-candidates` 与 `GET /api/v1/tools/catalog`
+（**P2c-4 新增的只读候选端点**，`api-contract.md` 有载）用的是独立的 `_require_model_catalog_admin`。
+它与目录面**路径同前缀但不是同一件事** ⇒ **本专项的边界建议不含它**（见 §八 V3）。
+
+**② 的 22 处 = 11 个方法 × 2 套实现**（内存实现 + PostgreSQL 实现），方法名与两套实现**逐一对齐**：
+
+| 方法 | 内存 | PG | 读 / 写 | 路由层 ① 是否也挡 |
+| --- | --- | --- | --- | --- |
+| `create_role` | L128 | L408 | 写 | ✅ `POST /workforce/roles` |
+| `update_role` | L146 | L431 | 写 | ✅ `PATCH /workforce/roles/{role_key}` |
+| **`list_roles`** | L163 | L457 | **读** | ✅ `GET /workforce/roles` |
+| **`create_employee`** | L176 | L478 | 写 | ✅ `POST /workforce/agents` |
+| `update_employee` | L197 | L503 | 写 | ✅ `PATCH /workforce/agents/{agent_key}` |
+| **`list_employees`** | L244 | L533 | **读** | ✅ `GET /workforce/agents` |
+| **`read_agent_config`** | L260 | L557 | **读** | ✅ `GET /workforce/agents/{key}/config` |
+| `update_agent_config` | L269 | L571 | 写 | ✅ `PATCH /workforce/agents/{key}/config` |
+| **`known_keys`** | L296 | L662 | **读** | ❌ `GET /workforce/candidates` 只挡路由层 |
+| **`role_is_active`** | L314 | L687 | **读** | ❌ 无路由 |
+| **`agent_is_active`** | L322 | L692 | **读** | ❌ 无路由 |
+
+**③ 的 2 处**：`read_config`（L246）/ `update_config`（L257），与 ① 的 `agents/{key}/config` 两个端点重叠。
+
+### ⇒ 由此得出两条**必须写进评审结论**的事实
+
+**事实 A：只拆路由层（①）拆了也没用。**
+`list_employees` / `list_roles` 在**仓储层**同样要求 `super_admin`。只放宽 ① 的 9 个端点
+⇒ 普通员工过了路由闸门，**仍会在仓储层拿到 `PolicyError`**。B2 §2 的拆法**不完整**。
+
+**事实 B：`known_keys` / `role_is_active` / `agent_is_active` 是跨模块消费的。**
+它们**没有对应的路由**，却被别的模块调用。既有先例已经踩过这个坑 ——
+`app/main.py` 的执行入口当初就是因为 `agent_is_active` 要求 `super_admin` 而**另造了一个语义等价的
+`read_agent_governance`**（见契约「工具执行（P2a 段二）」变更点 2 的实现注）。
+**⇒ 放宽这三个只读方法的闸门，会同时放宽那些消费方的可达范围。** 影响面不在本模块内。
+
+---
+
+## 二、为什么**不能**整体放宽
+
+只把 `role != "super_admin"` 改宽，会**同时放开**：
+
+1. 建 / 改**岗位**（`create_role` / `update_role`）；
+2. 改 / **停用别人的**数字员工（`update_employee`）；
+3. 读**任意**员工的 `config` —— 即**提示词 / 模型 / 日预算 / 审批档**（`read_agent_config`）。
+
+而 B2 给 `use` 档定的语义是「**能派活；不能改配置、不能停用**」（B1 §3.3② 表）
+—— **与第 1/2/3 条直接冲突**。⇒ **必须拆，不能放宽。**
+
+---
+
+## 三、拆分方案（三档，逐档对应到**三道闸门**）
+
+| 档 | 闸门名 | 开放给 | 覆盖方法 | 过滤口径 |
+| --- | --- | --- | --- | --- |
+| **读** | `_require_directory_reader`（**新**） | 登录用户 | `list_roles` · `list_employees` · `read_agent_config`（**仅本人可见范围内**）**＋ ④ 的 `roster`（内联判定须一并改为该档）** | ⚠️ **过滤在仓储层做，不在路由层**（路由层只判"是不是登录用户"） |
+| **创建** | `_require_employee_creator` | 登录用户 | `create_employee`（**仅员工侧创建**） | **owner 只能是自己** + **只能从模板创建** |
+| **管理** | `_require_workforce_directory_admin` / `_ensure_admin`（**原函数不动**） | 仅 `super_admin` | `create_role` · `update_role` · `update_employee` · `update_agent_config` · `known_keys` · `role_is_active` · `agent_is_active` · `read_config` · `update_config` | — |
+
+### 关键设计约束
+
+1. **读档的可见性口径**（用户已裁 = 两档）：`owner_user_id = 我 ∪ 我在 workbench_employee_shares 里 ∪ 我是 super_admin`。
+   **⚠️ 原设计的第三档**（`visibility='shared' AND role_key ∈ 我的岗位`）**已砍**（`decision-log.md` D-058③）——
+   仓库**无「用户 → 岗位」映射**（账号侧 `position` 是自由文本）。
+2. **过滤必须在仓储层**：路由层拿到的是"这个人是谁"，仓储层才知道"他属于哪一行"。
+   在路由层过滤 = 先取全量再筛 = **越权数据已经出库**，且性能随租户规模退化。
+3. **`known_keys` / `role_is_active` / `agent_is_active` 暂**不**放宽**（事实 B）——
+   它们的消费方不在本模块内，放宽属**跨模块影响面**，须**单独评估**（见 §六）。
+4. **五处必须同口径**：现有设计是"路由层判一次、仓储层再判一次"
+   （`app/workforce/store.py:3` 自述：*避免调用方绕过接口层直接读写*）。
+   **五处都要改，且改法要一致**，否则会出现"接口能过、仓储拒绝"或反之的**双口径**。
+   **⚠️ 尤其注意 ④**：它是**内联**判定，不在共享函数里 —— **只改函数名会漏掉它**。
+   建议改造时把它**收敛为调用新的 `_require_directory_reader`**，消灭内联判定这种"改不动的角落"。
+
+---
+
+## 四、权限矩阵前后对照（[`permission-matrix.md`](permission-matrix.md)）
+
+| 面 | 现在（实测） | 拆分后 |
+| --- | --- | --- |
+| 读**岗位**列表 | `super_admin` only | 登录用户（**岗位不属任一 owner，读档口径待裁**，见 §九 V1） |
+| 读**员工**列表 | `super_admin` only | 登录用户，**按 owner ∪ shares 过滤** |
+| 读**员工 config** | `super_admin` only | **归属人可读自己的**；`use` 档**不可读 config**（与"不能改配置"同口径） |
+| **创建**员工 | `super_admin` only | 登录用户，**owner 只能是自己** |
+| 改 / 停用员工 | `super_admin` only | **不变**（`super_admin` + **归属人**？见 §九 V2） |
+| 建 / 改岗位 | `super_admin` only | **不变** |
+| `candidates` / `known_keys` | `super_admin` only | **不变**（跨模块，见 §六） |
+
+**⚠️ 连带更正**：[`permission-matrix.md:66`](permission-matrix.md) 那行
+「知识：授权绑定（角色/员工 ↔ 库）」现标 **⚠️ 读可、写待目录放开**，
+**其脚注理由（第 80 / 238-240 行）正是指本专项**。**本专项落地后该行须回改为 ✅ 并撤掉脚注。**
+
+---
+
+## 五、影响面：会波及哪些**已交付**模块
+
+| 模块 | 为什么受影响 |
+| --- | --- |
+| `app/knowledge_policy.py` | 解析知识范围时用 `known_keys` / `agent_is_active` 做白名单校验；口径变化会改变"哪些键可解析" |
+| `app/skills/` | 技能绑定走 `ensure_agent_binding_available`（底层 `agent_is_active`） |
+| `app/main.py` 执行入口 | **已有先例**：因 `agent_is_active` 要求 `super_admin`，当初另造了 `read_agent_governance` |
+| 前端「数字员工设置」/「我的数字员工」 | 目录从"403"变为"可见"，两个前端的空态 / 无权限态分支都要重走 |
+| `admin-web` / `workbench-web` 的目录消费处 | 现假定"只有超管能读"；放开后**四种占位态**（加载/空/错误/无权限）须重新验收 |
+
+---
+
+## 六、风险与缓解
+
+| # | 风险 | 严重度 | 缓解 |
+| --- | --- | --- | --- |
+| **R1** | **只改一处，形成双口径**（路由放行、仓储拒绝，或反之） | 🔴 | **两道必须同批次改**；加守护测试断言"同一角色在两层得到同一结论" |
+| **R2** | **跨模块连带放宽**（`agent_is_active` 等被别的模块消费） | 🔴 | **本批不放宽这三个只读方法**；若确需放宽，**另开一轮**并逐个消费方评估 |
+| **R3** | **越权数据先出库再过滤**（在路由层筛） | 🔴 | 过滤下沉仓储层；验收项要求**用两账号交叉验证** |
+| **R4** | 历史会话 / 历史任务在员工停用后仍须可读 | 🟠 | 读路径**不做启用校验**（沿用 P1 既有语义） |
+| **R5** | 前端无权限态缺失（现状：两页都没有 403 分支） | 🟠 | 放开后 403 变少，但**"无权限"仍是四种占位态之一**，须补 |
+| **R6** | `candidates` 实时求差集的性能（放宽读档后调用者变多） | 🟡 | 既有实现是实时差集**不落库**；压测属未验证项 |
+
+---
+
+## 七、验收标准（含反假测试）
+
+| # | 验收项 | 证据形式 |
+| --- | --- | --- |
+| **A1** | 普通员工 `GET /workforce/agents` **不再 403**，且**只看到 owner 是自己 ∪ 被共享的** | 两账号交叉验证（甲方看不到乙方的员工） |
+| **A2** | 普通员工**看不到**别人的员工（**不是前端隐藏，是服务端不返回**） | 直接调接口 + 查响应体 |
+| **A3** | 普通员工 `POST /workforce/agents` **成功且 `owner_user_id` 是自己**（不可指定他人） | 请求体带他人 id ⇒ 拒绝；查库验 owner |
+| **A4** | 普通员工改 / 停用**别人的**员工 ⇒ **拒绝** | 越权调用 |
+| **A5** | 普通员工读**别人的** `config` ⇒ **拒绝** | 越权调用 |
+| **A6** | `use` 档成员**能派活**、**不能改配置 / 不能停用** | 逐条实测 |
+| **A7** | **两层同口径**：同一角色在路由层与仓储层得到**同一结论** | 守护测试（直接调仓储方法，绕过接口） |
+| **A8** | `known_keys` / `read_config` 等**本批不放宽**的方法，权限**与改动前逐字一致** | 回归测试（回归前后 diff 为空） |
+| **A9** | **反假测试**：故意把仓储层过滤注释掉 ⇒ **A2 必须变红** | 反假记录（造错必须红，否则测试无效） |
+| **A10** | 审计：放开的读路径**不新增敏感明细**（不落他人提示词 / 模型 / 预算） | 审计明细抽查 |
+
+---
+
+## 八、待评审裁决
+
+| # | 待裁决 | 选项 | 影响 |
+| --- | --- | --- | --- |
+| **V1** | **岗位列表（`list_roles`）读档开放给谁？** | **A** 全部登录用户（岗位是公共字典）<br>**B** 仅 `super_admin` + 归属人（岗位无 owner ⇒ 等于仍仅超管）<br>**C** 登录用户可读，但**只返回 `status='active'` 的** | 决定 `GET /workforce/roles` 是否放开 |
+| **V2** | **归属人能否改 / 停用「自己的」员工？** | **A** 能（"我的员工我自己管"）<br>**B** 不能（改配置仍是管理动作，须超管） | 决定 `update_employee` 是否进"创建档"而非"管理档" |
+| **V3** | **本专项的边界**：`known_keys` / `agent_is_active` 等**跨模块只读方法**，以及 **⑤ `_require_model_catalog_admin`**（模型 / 工具候选） | **A** 本批**只动目录面**（①②③④），**⑤ 与跨模块只读方法不动**（推荐，零连带）<br>**B** 一并放宽（须逐个消费方评估，工作量与风险显著上升） | 决定本专项的**范围**，以及 §五影响面是否成立 |
+| **V4** | **`use` 档成员读 config 的口径** | **A** 不可读（与"不能改配置"对称）<br>**B** 可读（能派活就该看得见用的是什么） | 决定 `read_agent_config` 的过滤粒度 |
+
+---
+
+## 九、未验证（不得读成已验）
+
+1. **本文全部结论均为静态阅读 + `grep` 实测**；**未跑任何测试、未启动服务、未连数据库**。
+2. **9 / 22 / 2 三个调用点数字为实测**，但**每个调用点"保护什么业务语义"是我从方法名推断的**，
+   未逐个读方法体确认（尤其 `known_keys` / `role_is_active` / `agent_is_active` 的调用方）。
+3. **§五「影响面」是据模块名与既有注释推断的**，**未逐条追调用链**。
+4. **全仓 `role != "super_admin"` 模式扫描 —— 已做**（2026-09-24）。命中 5 处，**其中 2 处（④⑤）是首轮
+   按函数名 grep 时漏掉的**。**⇒ 教训：按函数名找闸门会漏掉内联判定**，须按**判定条件**扫。
+   **⚠️ 仍未排除**：以 `context.role not in (...)` / `has_role(...)` 等其他写法表达的等价判定
+   —— 本次只扫了 `role != "super_admin"` / `role == "super_admin"` 两种字面。
+5. **验收标准 A1–A10 全部未执行**（本专项尚未开工）。
+6. 本文**未改动任何产品代码、未改动任何真源**。
