@@ -63,10 +63,13 @@
 ## 客户端
 
 - `admin-web/`：网页管理台（React + Vite），面向管理和远程协作。
+- `workbench-web/`：**员工工作台前端独立包**（React + Vite + AntD，不依赖其他客户端的构建产物）。面向**员工日常**：我的工作台 / 我的数字员工 / 知识库 / 团队协作（管理员另有 4 项）。**状态**：第 1~5 轮交付（应用壳 / 组件库 / 我的工作台 / 我的数字员工 / 数字员工注册中心），第 6 轮接线轮批 1 已接真实后端，**其余模块仍在接线中**（未接入的抛 `not_connected` 并给说明，不返回空数据）。
 - `companion-pwa/`：手机 PWA 伴侣端（React + Vite，手写 service worker），只做登录、待办与审批；提醒为**轮询式**（非 Web Push）。
 - `desktop/`：Windows 桌面端 Electron 安全壳，加载网页端界面；打包与签名尚未验收。
 
-三端都只调用版本化 `/api/v1`，不直连数据库；「待我审批」由 `GET /api/v1/approvals/pending` 按角色聚合（任务审批、计划提案、账号注册）。
+⚠️ **`admin-web` 与 `workbench-web` 的职责收敛属未决项**（两者均有审计 / 知识 / 员工与岗位等重叠功能）。收敛方案**尚未裁决**，本节**只做如实登记、不定分工** —— 已登记于 `docs/contracts/decision-log.md` **D-050⑤**（含"1 份前端产物 + 2 种投递"的方向，但**未决**）。
+
+四端都只调用版本化 `/api/v1`，不直连数据库；「待我审批」由 `GET /api/v1/approvals/pending` 按角色聚合（任务审批、计划提案、账号注册）。
 
 事件总线按存储模式选择：开发环境使用内存总线验证接口流程；PostgreSQL 模式使用 Redis Streams，任务事务只写 Outbox，Celery Worker 负责发布，API 进程不再重复直发事件。
 

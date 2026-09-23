@@ -122,7 +122,10 @@ python extract_pdf.py --input "资料路径.pdf" --output pdf_text.txt
 ## 客户端工程
 
 - `admin-web/`：网页管理台（内容工作台、通知、员工与岗位、知识权限管理、数字员工设置、用量与费用、历史草稿、协同动态、安全与审计；另有运行详情页）。
+- `workbench-web/`：**员工工作台前端独立包**（不依赖 `admin-web` / `companion-pwa` / `desktop` 的构建产物）。导航含员工 4 项（我的工作台 / 我的数字员工 / 知识库 / 团队协作）与管理员 4 项（数字员工管理 / 权限配置 / Skill & MCP / 审计日志）。**第 1~5 轮交付**（应用壳 / 组件库 / 我的工作台 / 我的数字员工 / 数字员工注册中心），**第 6 轮「接线轮」批 1 已接真实后端**（真实登录会话 + 我的工作台待办）；**其余模块仍在接线中**，逐模块进度见 `docs/contracts/` 下对应契约（**未接入的一律抛 `not_connected` 并给说明，不返回空数据**）。详见 `workbench-web/README.md`。
 - `companion-pwa/`：手机端 PWA 伴侣端，提供登录、待办轮询提醒与四类审批（任务、计划提案、账号注册、运行审批）。
 - `desktop/`：Windows 桌面端 Electron 安全壳，加载网页端界面；真实安装包构建、代码签名、公证与干净电脑测试属未验收项，详见 `desktop/README.md`。
 
-三个客户端都通过版本化 `/api/v1` 接口工作，不直连数据库。待办聚合接口为 `GET /api/v1/approvals/pending`。
+⚠️ **客户端职责收敛属未决项**：`admin-web`（管理视角）与 `workbench-web`（员工视角）存在功能重叠（两者都有审计 / 知识 / 员工与岗位），**收敛方案尚未裁决**——已登记为待办（见 `docs/contracts/decision-log.md` D-050⑤）。本节**只做登记，不定分工**。
+
+四个客户端都通过版本化 `/api/v1` 接口工作，不直连数据库。待办聚合接口为 `GET /api/v1/approvals/pending`。
