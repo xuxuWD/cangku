@@ -175,6 +175,16 @@ def _require_workforce_directory_admin(context):
 
 ## 5. 🔴 动手前的**第一件事**：跑那条只读 SQL
 
+> **✅ 2026-09-24 更新：本条**已不再是人工前置** —— 迁移 045 已落地，并把它变成了**声明式守卫**。**
+> `migrations/045_digital_employee_trunk.sql` 在回填 `owner_user_id` 之后加了一道
+> `CHECK (owner_user_id <> '')`：**存量若存在空串归属人，回填即撞约束 ⇒ 整个迁移事务回滚**（fail-closed），
+> 报错文案 `check constraint "workbench_digital_employees_owner_not_blank" ... is violated by some row`。
+> **⇒ 不需要"先跑 SQL 再决定能不能迁移"；直接跑迁移，数据库自己会挡住。**
+> **实测证据**：本机 `wb-test-postgres-1` / `workbench_test` —— ① 空值/空串 = **0 条**（表总 1 行）；
+> 迁移应用成功；**7 道守卫逐条反向验证全部拦截生效**。
+> **⚠️ 但"看到那条报错该怎么办"仍需要人决定**（兜底归属 or 清脏数据）—— 只是**排查时机从"事前"挪到了"报错时"**。
+> **下文为原文，保留未删。**
+
 ```sql
 -- ① 空串/空值各多少
 SELECT count(*) FROM workbench_digital_employees WHERE created_by IS NULL OR created_by = '';

@@ -519,3 +519,51 @@
 1. **未改动任何产品代码**；未提交、未推送。
 2. **B4 / B5 的标注文字未逐个重读核对**，只更正了其**出处的条号**（`D-058③` → `D-060`）。
 3. **㉓「先标定再定」等于仍不拍数** —— 即**衰减参数至今没有具体值**，**不得读成"已定参数"**。
+
+---
+
+### D-061 · 2026-09-24 · **迁移 045 已落地 —— 并把「先跑只读 SQL」的人工前置变成声明式守卫**
+
+> **来源**：用户 2026-09-24 指令「继续」（承接 D-059④ 的下一步）。
+> **性质**：**本轮首次改动产品代码（新增迁移 + 生成物 + 脚本常量）**；**未提交（本轮结束时随批次提交）**；未推送。
+
+#### ① 做了什么
+
+| # | 产物 | 说明 |
+| --- | --- | --- |
+| 1 | **新增** `migrations/045_digital_employee_trunk.sql` | `workbench_digital_employees` **加 4 列**（`visibility` / `owner_user_id` / `soul_md` / `duty_window`）+ **建 2 表**（`workbench_employee_shares` / `workbench_role_templates`）+ 3 个索引 + 7 道 CHECK 约束；含完整回退脚本 |
+| 2 | `migrations/tenant_template/classification.json` | A 组 **51 → 53**（新增 2 张表，按字母序插入），并更新计数注记与 `_verified_at` |
+| 3 | `migrations/tenant_template/0001_tenant_baseline.sql` | **由生成器重建**（`build-template`，+54/−5），非手改 |
+| 4 | `scripts/tenant_schema.py` | 硬校验常量 `tenant_schema` **51 → 53**（该硬校验是**故意**的，防清单被误改后静默通过）；同步两处文档字符串 |
+
+#### ② ⭐ 关键设计：用**声明式守卫**替换人工前置
+
+施工方案 §5 原要求「迁移前必须先跑一条只读 SQL」查 `created_by` 空串 —— 因为
+022 把 `created_by` 定为 `TEXT NOT NULL`（**允许空串**），空串回填后会被 `SET NOT NULL` 放过 ⇒ **静默写坏归属人**。
+
+**本迁移改为**：回填之后加 `CHECK (owner_user_id <> '')`。
+**存量若有空串归属人 ⇒ 撞约束 ⇒ 整个迁移事务回滚**（`app/migrations.py` 把整个文件包在一个事务里）。
+报错文案：`check constraint "workbench_digital_employees_owner_not_blank" ... is violated by some row`。
+
+**⇒ 排查时机从"事前人工跑 SQL"挪到"迁移自己报错"**，且该约束是**永久不变量**（不只在迁移期生效）。
+**⚠️ 但不等于"看到报错会自动修复"** —— 兜底归属 or 清脏数据**仍需人决定**。
+
+#### ③ 验证证据（全部实测，非推断）
+
+| 验证项 | 结果 |
+| --- | --- |
+| 迁移应用（走应用自身执行器 `app.migrations.apply_migrations`） | `NEWLY APPLIED: ['045_digital_employee_trunk']` |
+| 新增列 | `duty_window` / `owner_user_id` / `soul_md` / `visibility` 四列均在 |
+| 新增表 | `workbench_employee_shares` / `workbench_role_templates` 两表均在 |
+| 回填正确性 | 唯一 1 行：`owner_user_id` = `created_by`，`visibility` = `private` |
+| **守卫反向验证（反假测试）** | **7/7 全部拦截生效**：空串归属人 / NULL 归属人 / 非法 visibility / `duty_window` 非对象 / 非法 permission / 空串 grantee / 模板 jsonb 非数组 |
+| 双链对齐 | `tenant_schema.py verify --apply` **三阶段全通过**（A 53 + B 4 + C 6；模板 53 张一致；空库试跑表/列含默认值/索引/约束**完全一致**，临时 schema 残留 0） |
+| 只读前置查询 | `wb-test-postgres-1` / `workbench_test`：`created_by` 空值/空串 = **0 条**（表总 1 行） |
+
+#### ④ 未做 / 未验证（不得读成已完成）
+
+1. **种子数据未写** —— D-058④ N-a「平台级一份 + 租户可覆盖」**未给到可执行的存储形态**（哨兵租户？物化时机？平台升级如何更新各租户预置行？两条读法在**覆盖语义**与**升级路径**上不等价）。**⇒ 迁移 045 不替规格预判，种子留作独立迁移 `046_*`，前置 = 该读法定案。** 见 `migrations/045_*.sql` §⑤ 的就地说明。
+2. **只在测试库验证过** —— **生产库未跑**（也不应由 AI 跑）。生产若撞守卫报错，须人工处置。
+3. **闸门拆分（本专项的核心）尚未开始** —— 本文只到"数据模型就位"。
+4. **接口实现未动** —— `app/` 下无任何代码改动；契约（已落 `api-contract.md`）与实现仍未对齐。
+5. **租户模板的 `verify --apply` 依赖本机 Docker**（`wb-test-postgres-1`）—— **CI 里是否跑该步骤未核实**。
