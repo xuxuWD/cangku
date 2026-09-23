@@ -1,8 +1,9 @@
 {
   "_generated_from": "容器 wb-test-postgres-1 / 库 workbench_test / PostgreSQL 16.15 的 information_schema.columns 实测（table_name LIKE 'workbench_%'，按 tenant_id 列是否存在二分）",
-  "_verified_at": "2026-09-19",
+  "_verified_at": "2026-09-24",
   "_source_plan": "docs/contracts/schema-per-tenant-plan.md（§2 现状事实 / §3 D2 表归属清单）",
-  "_note": "本文件是表归属的唯一权威清单，脚本 scripts/tenant_schema.py 以它为准校验实测库与租户模板。测试库中另有他项目表（tenants / roles / approval_events / content_versions / document_blocks / schema_migrations 等），不在本项目范围，一律忽略。tenant_schema 共 51 张 = 实测 55 张含 tenant_id 表中提出 4 张平台表；platform_core 6 张为实测不含 tenant_id 的 workbench_ 表。",
+  "_note": "本文件是表归属的唯一权威清单，脚本 scripts/tenant_schema.py 以它为准校验实测库与租户模板。测试库中另有他项目表（tenants / roles / approval_events / content_versions / document_blocks / schema_migrations 等），不在本项目范围，一律忽略。tenant_schema 共 53 张 = 实测 57 张含 tenant_id 表中提出 4 张平台表；platform_core 6 张为实测不含 tenant_id 的 workbench_ 表。",
+  "_updated_2026-09-24": "迁移 045_digital_employee_trunk 新增 2 张 A 组（租户）表：workbench_employee_shares、workbench_role_templates ⇒ tenant_schema 51 → 53，实测库含 tenant_id 表 55 → 57；platform_tenant_scoped / platform_core 两组不变。已跑 py scripts/tenant_schema.py verify --apply 复核。",
   "tenant_schema": [
     "workbench_accounts",
     "workbench_audit_events",
@@ -26,6 +27,7 @@
     "workbench_crm_targets",
     "workbench_dead_letters",
     "workbench_digital_employees",
+    "workbench_employee_shares",
     "workbench_eval_case_results",
     "workbench_eval_cases",
     "workbench_eval_runs",
@@ -43,6 +45,7 @@
     "workbench_plan_proposals",
     "workbench_plan_versions",
     "workbench_retention_policies",
+    "workbench_role_templates",
     "workbench_run_acceptance_decisions",
     "workbench_run_artifacts",
     "workbench_run_promotions",

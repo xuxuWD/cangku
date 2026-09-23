@@ -8,7 +8,7 @@
 子命令
     build-template
         在测试容器内跑 ``pg_dump --schema-only``，按语句解析 -> 只保留
-        ``migrations/tenant_template/classification.json`` 中 ``tenant_schema``（A 组 51 张）的
+        ``migrations/tenant_template/classification.json`` 中 ``tenant_schema``（A 组 53 张）的
         ``CREATE TABLE`` / ``CREATE [UNIQUE] INDEX`` / ``ALTER TABLE ... ADD CONSTRAINT`` /
         ``CREATE SEQUENCE`` / ``ALTER SEQUENCE ... OWNED BY`` /
         ``ALTER TABLE ... ALTER COLUMN ... SET DEFAULT nextval(...)``（后三类仅当序列**由 A 组表拥有**）；
@@ -113,8 +113,11 @@ def load_classification() -> dict:
     if not CLASSIFICATION_PATH.exists():
         raise SystemExit(f"缺少分类清单：{CLASSIFICATION_PATH}")
     data = json.loads(CLASSIFICATION_PATH.read_text(encoding="utf-8"))
+    # ⚠️ 这三个数是**硬校验**（防清单被误改后静默通过）⇒ 结构变更导致表数合法变化时，
+    #    **必须同步改这里**，否则 build-template / verify 会直接 SystemExit。
+    #    2026-09-24：迁移 045 新增 2 张 A 组表 ⇒ tenant_schema 51 → 53。
     for key, expected in (
-        ("tenant_schema", 51),
+        ("tenant_schema", 53),
         ("platform_tenant_scoped", 4),
         ("platform_core", 6),
     ):
@@ -752,7 +755,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    build = subparsers.add_parser("build-template", help="从测试库抽取 A 组 51 张表，生成租户模板 DDL")
+    build = subparsers.add_parser("build-template", help="从测试库抽取 A 组 53 张表，生成租户模板 DDL")
     build.set_defaults(func=cmd_build_template)
 
     verify = subparsers.add_parser("verify", help="校验分类清单 / 模板覆盖，可选空库试跑")

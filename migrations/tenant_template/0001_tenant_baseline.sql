@@ -1,13 +1,13 @@
 -- =========================================================================
 -- 租户 schema 基线 DDL（S0 生成物 · 自动生成，请勿手工编辑）
 -- 生成器：tenant_schema.py/1.1.0（scripts/tenant_schema.py build-template）
--- 生成日期：2026-09-19（UTC）
+-- 生成日期：2026-09-23（UTC）
 -- 生成命令：py scripts/tenant_schema.py build-template
 --           -> docker exec wb-test-postgres-1 pg_dump -U workbench_test --schema-only --no-owner --no-privileges --dbname=workbench_test
 -- 源库：容器 wb-test-postgres-1 / 库 workbench_test / schema public（PostgreSQL 16.15）
--- 表数：51（= classification.json 的 tenant_schema 集合）
--- 索引数：53
--- 约束数：98
+-- 表数：53（= classification.json 的 tenant_schema 集合）
+-- 索引数：56
+-- 约束数：101
 -- 序列数（CREATE SEQUENCE，均由 A 组表拥有）：2
 -- SET DEFAULT nextval 条数：2
 -- ${PLATFORM_SCHEMA} 改写：4 处（指向 B/C 组平台表的外键）
@@ -402,12 +402,30 @@ CREATE TABLE workbench_digital_employees (
     risk_threshold text DEFAULT 'high'::text NOT NULL,
     approval_timeout_minutes integer DEFAULT 60 NOT NULL,
     daily_budget_cents bigint DEFAULT 0 NOT NULL,
+    visibility text DEFAULT 'private'::text NOT NULL,
+    owner_user_id text NOT NULL,
+    soul_md text DEFAULT ''::text NOT NULL,
+    duty_window jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT workbench_digital_employees_approval_timeout_minutes_check CHECK (((approval_timeout_minutes >= 5) AND (approval_timeout_minutes <= 10080))),
     CONSTRAINT workbench_digital_employees_autonomy_level_check CHECK ((autonomy_level = ANY (ARRAY['approval_for_all'::text, 'approval_for_risky'::text, 'full_auto'::text]))),
     CONSTRAINT workbench_digital_employees_daily_budget_cents_check CHECK ((daily_budget_cents >= 0)),
+    CONSTRAINT workbench_digital_employees_duty_window_is_object CHECK ((jsonb_typeof(duty_window) = 'object'::text)),
+    CONSTRAINT workbench_digital_employees_owner_not_blank CHECK ((owner_user_id <> ''::text)),
     CONSTRAINT workbench_digital_employees_risk_threshold_check CHECK ((risk_threshold = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text, 'critical'::text]))),
     CONSTRAINT workbench_digital_employees_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text]))),
-    CONSTRAINT workbench_digital_employees_temperature_check CHECK (((temperature >= 0.00) AND (temperature <= 2.00)))
+    CONSTRAINT workbench_digital_employees_temperature_check CHECK (((temperature >= 0.00) AND (temperature <= 2.00))),
+    CONSTRAINT workbench_digital_employees_visibility_valid CHECK ((visibility = ANY (ARRAY['private'::text, 'shared'::text])))
+);
+
+CREATE TABLE workbench_employee_shares (
+    tenant_id text NOT NULL,
+    agent_key text NOT NULL,
+    grantee_user_id text NOT NULL,
+    permission text NOT NULL,
+    granted_by text NOT NULL,
+    granted_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT workbench_employee_shares_no_blank_users CHECK (((grantee_user_id <> ''::text) AND (granted_by <> ''::text))),
+    CONSTRAINT workbench_employee_shares_permission_check CHECK ((permission = ANY (ARRAY['read'::text, 'use'::text])))
 );
 
 CREATE TABLE workbench_eval_case_results (
@@ -656,6 +674,22 @@ CREATE TABLE workbench_retention_policies (
     policy jsonb NOT NULL,
     updated_by text NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE TABLE workbench_role_templates (
+    tenant_id text NOT NULL,
+    role_key text NOT NULL,
+    display_name text NOT NULL,
+    soul_md text DEFAULT ''::text NOT NULL,
+    system_prompt text DEFAULT ''::text NOT NULL,
+    default_tool_allowlist jsonb DEFAULT '[]'::jsonb NOT NULL,
+    default_skills jsonb DEFAULT '[]'::jsonb NOT NULL,
+    default_autonomy_level text DEFAULT 'approval_for_risky'::text NOT NULL,
+    is_builtin boolean DEFAULT false NOT NULL,
+    created_by text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT workbench_role_templates_json_shapes CHECK (((jsonb_typeof(default_tool_allowlist) = 'array'::text) AND (jsonb_typeof(default_skills) = 'array'::text)))
 );
 
 CREATE TABLE workbench_run_acceptance_decisions (
@@ -930,6 +964,9 @@ ALTER TABLE ONLY workbench_dead_letters
 ALTER TABLE ONLY workbench_digital_employees
     ADD CONSTRAINT workbench_digital_employees_pkey PRIMARY KEY (tenant_id, agent_key);
 
+ALTER TABLE ONLY workbench_employee_shares
+    ADD CONSTRAINT workbench_employee_shares_pkey PRIMARY KEY (tenant_id, agent_key, grantee_user_id);
+
 ALTER TABLE ONLY workbench_eval_case_results
     ADD CONSTRAINT workbench_eval_case_results_pkey PRIMARY KEY (tenant_id, eval_run_id, case_id);
 
@@ -986,6 +1023,9 @@ ALTER TABLE ONLY workbench_plan_versions
 
 ALTER TABLE ONLY workbench_retention_policies
     ADD CONSTRAINT workbench_retention_policies_pkey PRIMARY KEY (tenant_id);
+
+ALTER TABLE ONLY workbench_role_templates
+    ADD CONSTRAINT workbench_role_templates_pkey PRIMARY KEY (tenant_id, role_key);
 
 ALTER TABLE ONLY workbench_run_acceptance_decisions
     ADD CONSTRAINT workbench_run_acceptance_decisions_pkey PRIMARY KEY (tenant_id, run_id, decision_id);
@@ -1083,6 +1123,8 @@ CREATE INDEX idx_wb_stream_state_expires ON workbench_conversation_stream_state 
 
 CREATE INDEX idx_wb_stream_state_stalled ON workbench_conversation_stream_state USING btree (status, updated_at);
 
+CREATE INDEX idx_wde_owner ON workbench_digital_employees USING btree (tenant_id, owner_user_id);
+
 CREATE INDEX idx_workbench_accounts_status ON workbench_accounts USING btree (status, requested_at DESC);
 
 CREATE INDEX idx_workbench_content_publications_task ON workbench_content_publications USING btree (tenant_id, task_id, created_at DESC);
@@ -1096,6 +1138,8 @@ CREATE INDEX idx_workbench_conversations_operator ON workbench_conversations USI
 CREATE INDEX idx_workbench_dead_letters_pending ON workbench_dead_letters USING btree (tenant_id, recorded_at) WHERE (replayed_at IS NULL);
 
 CREATE INDEX idx_workbench_digital_employees_role ON workbench_digital_employees USING btree (tenant_id, role_key);
+
+CREATE INDEX idx_workbench_employee_shares_grantee ON workbench_employee_shares USING btree (tenant_id, grantee_user_id);
 
 CREATE INDEX idx_workbench_event_outbox_pending ON workbench_event_outbox USING btree (published_at, occurred_at) WHERE (published_at IS NULL);
 
@@ -1120,6 +1164,8 @@ CREATE INDEX idx_workbench_orchestration_proposals_status ON workbench_orchestra
 CREATE INDEX idx_workbench_plan_proposals_status ON workbench_plan_proposals USING btree (tenant_id, status);
 
 CREATE INDEX idx_workbench_plan_proposals_task ON workbench_plan_proposals USING btree (tenant_id, task_id, created_at DESC);
+
+CREATE INDEX idx_workbench_role_templates_builtin ON workbench_role_templates USING btree (tenant_id, is_builtin);
 
 CREATE INDEX idx_workbench_run_records_runtime ON workbench_run_records USING btree (tenant_id, runtime_key);
 
@@ -1206,6 +1252,9 @@ ALTER TABLE ONLY workbench_crm_quotes
 
 ALTER TABLE ONLY workbench_digital_employees
     ADD CONSTRAINT workbench_digital_employees_tenant_id_role_key_fkey FOREIGN KEY (tenant_id, role_key) REFERENCES workbench_job_roles(tenant_id, role_key);
+
+ALTER TABLE ONLY workbench_employee_shares
+    ADD CONSTRAINT workbench_employee_shares_tenant_id_agent_key_fkey FOREIGN KEY (tenant_id, agent_key) REFERENCES workbench_digital_employees(tenant_id, agent_key);
 
 ALTER TABLE ONLY workbench_eval_case_results
     ADD CONSTRAINT workbench_eval_case_results_tenant_id_case_id_fkey FOREIGN KEY (tenant_id, case_id) REFERENCES workbench_eval_cases(tenant_id, case_id);
