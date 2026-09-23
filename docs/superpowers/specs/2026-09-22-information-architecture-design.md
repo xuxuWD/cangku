@@ -40,7 +40,7 @@
 | | `workbench-web`（19,068 行） | `admin-web`（19,621 行） |
 | --- | --- | --- |
 | **UI 框架** | **AntD + `@ant-design/pro-components`** | ❌ **无**（只有 react / react-dom / eventsource-parser） |
-| **样式方案** | AntD 主题 + Tailwind 类 | **手写 CSS**（base / legacy / pages / shell / **tokens** / ui） |
+| **样式方案** | AntD 主题 + **规范令牌**（**2026-09-23 核正：实测无 Tailwind** —— `grep -rn tailwind workbench-web/{package.json,src,vite.config.ts}` 零命中） | **手写 CSS**（base / legacy / pages / shell / **tokens** / ui） |
 | **状态管理** | `zustand` + `@tanstack/react-query` | ❌ 无外部库 |
 | **路由库** | ❌ **无** | ❌ **无** |
 | **设计令牌** | `theme/tokens.ts`（122 行）+ **两个守卫测试** | `styles/tokens.css` + `app/theme.ts` + `ThemeProvider.tsx` |
