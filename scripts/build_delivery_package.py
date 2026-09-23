@@ -29,9 +29,21 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# ---- 输出编码：强制 UTF-8（2026-09-24 修复）------------------------------------------------
+# 本脚本的报告正文含 `⇒` / `★` 等**非 GBK 字符**。Windows 中文控制台默认 cp936 ⇒
+# 末尾的 `print(report.to_text())` 会抛 `UnicodeEncodeError: 'gbk' codec can't encode
+# character '⇒'`，子进程以非预期返回码退出、stdout 为空。
+# 本机实测：`tests/test_delivery_package.py` **13 项全红**；**CI 跑 Linux/UTF-8，故该缺陷在 CI 里不可见**。
+# 测试侧一律以 `encoding="utf-8"` 解码 stdout（`tests/test_delivery_package.py` 多处）
+# ⇒ **脚本本就应当输出 UTF-8**，此处对齐该契约；`errors="replace"` 兜底，保证任何终端都不再崩。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # ---- 真源 §7 的六项必含内容 → 仓库内落点（缺失即 fail-closed）------------------------------
 REQUIRED_REPO_ITEMS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
