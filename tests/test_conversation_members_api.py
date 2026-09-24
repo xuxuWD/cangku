@@ -115,7 +115,10 @@ def _isolate(monkeypatch):
     directory = InMemoryWorkforceDirectoryStore()
     admin = UserContext(TENANT, "admin-1", "super_admin")
     directory.create_role(admin, role_key="writer", name="内容岗")
-    directory.create_employee(admin, agent_key=AGENT, name="内容员工", role_key="writer")
+    # O3 派生授权：AGENT 归属人 = 会话发起人 `OWNER`（`u-1`）——本文件验的是「发起人分享会话给成员、
+    # `write` 成员按其本人身份执行」；前提是发起人**对该员工有 owner∪use**。由 `admin-1` 代建会
+    # 让发起人无 `use` 档 ⇒ 成员的下游执行 403，那是夹具造成的假红，不是 P2c-6 语义被打破。
+    directory.create_employee(UserContext(TENANT, OWNER, "employee"), agent_key=AGENT, name="内容员工", role_key="writer")
 
     execution = ConversationExecutionService(
         conversations=conversations,

@@ -73,7 +73,8 @@ def _isolate(monkeypatch):
     directory = InMemoryWorkforceDirectoryStore()
     admin = UserContext(TENANT, "admin-1", "super_admin")
     directory.create_role(admin, role_key="writer", name="内容岗")
-    directory.create_employee(admin, agent_key=AGENT, name="内容员工", role_key="writer")
+    # O3 派生授权：归属人 = 会话发起人本人（`EMPLOYEE` = `u-1`），与 `_wire` 同口径。
+    directory.create_employee(UserContext(TENANT, EMPLOYEE, "employee"), agent_key=AGENT, name="内容员工", role_key="writer")
 
     monkeypatch.setattr(main, "store", task_store)
     monkeypatch.setattr(main, "run_metrics_service", metrics)
@@ -90,7 +91,8 @@ def _wire(monkeypatch, tool_execution) -> FakeToolExecution:
     directory = InMemoryWorkforceDirectoryStore()
     admin = UserContext(TENANT, "admin-1", "super_admin")
     directory.create_role(admin, role_key="writer", name="内容岗")
-    directory.create_employee(admin, agent_key=AGENT, name="内容员工", role_key="writer")
+    # O3 派生授权：归属人 = 会话发起人本人（`EMPLOYEE` = `u-1`），使会话对该员工**合法可用**。
+    directory.create_employee(UserContext(TENANT, EMPLOYEE, "employee"), agent_key=AGENT, name="内容员工", role_key="writer")
     service = ConversationExecutionService(
         conversations=main.conversation_service,
         conversation_store=main.conversation_store,

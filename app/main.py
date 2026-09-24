@@ -400,6 +400,8 @@ conversation_execution_service = build_conversation_execution_service(
     idempotency=execution_idempotency_store,
     audit=audit_service,
     directory_store=workforce_directory_store,
+    # O3 派生授权：解析**会话发起人**角色（`super_admin` 直通）的账号来源，与 `conversation_service` 同一实例。
+    accounts=account_repository,
     stream_writer=conversation_stream_writer,
 )
 # 段二（dsh 接入段）执行回调接收 + ②④ 判定（§3.5 P1 第 3 条 / §8 U21 裁决「候选②」）：

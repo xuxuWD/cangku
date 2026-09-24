@@ -71,7 +71,8 @@ def wired(monkeypatch, tmp_path):
     idempotency = InMemoryExecutionIdempotencyStore()
     directory = InMemoryWorkforceDirectoryStore()
     directory.create_role(ADMIN, role_key="writer", name="内容岗")
-    directory.create_employee(ADMIN, agent_key=AGENT, name="内容员工", role_key="writer")
+    # O3 派生授权：AGENT 归属人 = 会话发起人本人（`EMPLOYEE` = `u-1`），使会话对该员工**合法可用**。
+    directory.create_employee(UserContext(TENANT, EMPLOYEE, "employee"), agent_key=AGENT, name="内容员工", role_key="writer")
     # 自治三档 = `full_auto`（免批档）：用于证明 `plan` **强制待批**是「取更严」而非继承配置。
     directory.update_agent_config(ADMIN, AGENT, autonomy_level="full_auto", risk_threshold="high")
 

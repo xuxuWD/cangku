@@ -566,4 +566,101 @@
 2. **只在测试库验证过** —— **生产库未跑**（也不应由 AI 跑）。生产若撞守卫报错，须人工处置。
 3. **闸门拆分（本专项的核心）尚未开始** —— 本文只到"数据模型就位"。
 4. **接口实现未动** —— `app/` 下无任何代码改动；契约（已落 `api-contract.md`）与实现仍未对齐。
-5. **租户模板的 `verify --apply` 依赖本机 Docker**（`wb-test-postgres-1`）—— **CI 里是否跑该步骤未核实**。
+5. **租户模板的 `verify --apply` 依赖本机 Docker**（`wb-test-postgres-1`）—— **CI 里是否跑该步骤尚未核实**。
+
+---
+
+### D-062 · 2026-09-24 · **会话派活路径的授权口径 = O3「派生授权」；与目录面同口径**
+
+> **来源**：用户 2026-09-24 裁决「按你的建议来」（答复勘察报告中的 O2 / O3 二选一）。
+> **性质**：**口径裁决 + 契约回写**；**本轮不改产品代码**。落地（失败测试 → 实现 → 反向验证）在后续轮次。
+
+#### ① 裁决内容（二选一，用户选 O3）
+
+**O3 · 派生授权**：**执行期**以「**会话发起人当前**对 `conversation.agent_key` 享有 `owner ∪ use`（**或**超管）
+**且** 发言者是该会话的 `write` 成员」**每次**重判。
+
+| 效果 | 说明 |
+| --- | --- |
+| 堵陌生人 | 陌生人自建会话 ⇒ 发起人＝自己，无 `use` ⇒ 执行期 `403` |
+| 保住 P2c-6 | 发起人有 `use` / 超管 + 成员被点名 ⇒ 放行（`tests/test_conversation_members_api.py` 的 write-成员执行用例不推翻） |
+| 覆盖存量与撤销窗口 | 执行期**每次**重判 ⇒ 改造前已建、绑他人 `agent_key` 的会话下次执行即被拦；发起人被撤 `use` 档后成员**立即**失去传递权 |
+
+**同批第二项裁决**：「**超管代建员工、普通用户去用**」这条流程**保留，但须管理员显式加 `use` 档共享**后普通用户才可用（不再有「代建 ⇒ 隐式可用」）。
+
+**未采纳 O2**（只在建会话时校验）：存量会话漏、撤销窗口漏，且仍要一次产品裁决 —— O3 覆盖面更完整。
+
+#### ② 依据
+
+- 勘察实测：全仓**共 3 条** `Task` 落库路径 —— `app/main.py`（已装 `ensure_can_dispatch`）、
+  `app/conversation/execution.py`（**无闸门**，`employee_key = conversation.agent_key`）、
+  `app/content/service.py`（`employee_key` **硬编码** `"content-writer"`，调用者不可选目标）。
+- 已复现：任何登录身份都能把他人纳管员工绑进**自建**会话并触发执行（`201` 且落库）。
+- 契约既有面：`api-contract.md`「会话协作」节（`write` 成员「可发言并**触发执行**」）与 B2 节（共享两档**照抄** P2c-6、不引入第二套）。
+- 冲突面（**本条刻意保住**）：`tests/test_conversation_members_api.py` 中「write 成员执行按本人身份」用例 —— 它属**真语义**，不得改断言。
+
+#### ③ 回写落点（本轮已改，仅文档）
+
+| # | 文件 | 位置 | 改了什么 |
+| --- | --- | --- | --- |
+| 1 | `docs/api-contract.md` | 「会话协作：分享与多端协同（P2c-6）」节 | 新增「**使用权的传递上限（O3 · 派生授权）**」条：两条同时成立的执行期判定式、`403` 与零落库、不泄露存在性、与「以发言者本人身份」的**关系说明**（两授权轴，非冲突）、**闸门次序硬约束**（须在「存在且启用 ⇒ `422`」之后）、三条落库路径边界 |
+| 2 | `docs/api-contract.md` | 「数字员工归属与共享（B2）」C4 节末 | 新增「**派活权两面同口径**」与「**超管代建流程的变化**」两条 |
+| 3 | `docs/contracts/decision-log.md` | 本条（D-062） | 裁决留痕 |
+
+#### ④ 未做 / 未验证（不得读成已完成）
+
+1. **产品代码未动** —— `app/conversation/execution.py` 尚无闸门；本轮只做契约 + 失败测试。
+2. **失败测试已落**（`tests/test_conversation_dispatch_gate.py`）—— **当前必红**；红的具体条数与"为什么红"见该轮报告。
+3. **既有会话测试的夹具影响未处置** —— 估算约 39 例的夹具用 `admin-1` 建员工而派活人是 `u-1`（owner 不匹配）；
+   逐条判定「夹具问题 vs 真语义」在实现轮完成（**改断言须逐条给理由**）。
+4. **`app/content/service.py` 那条路径**未纳入本闸门（调用者不可选目标）；是否另立裁决**待定**。
+
+#### ⑤ 落地记录（2026-09-24 实现轮，**对 ④ 的更正，不删原文**）
+
+1. **产品代码已落** —— `app/conversation/execution.py` 新增 `_ensure_can_dispatch_derived`（＋`_initiator_role`），
+   调用点位于 `_governance`（存在且启用 ⇒ `422`）**之后**、`ensure_can_create` 之前；
+   `bootstrap.build_conversation_execution_service` / `app/main.py` 装配传入 `accounts`（解析发起人角色的来源，
+   缺省回落 `ConversationService.accounts`）。**⇒ ④-1 的「产品代码未动」已不成立。**
+2. **失败测试已转绿** —— `tests/test_conversation_dispatch_gate.py` **9 passed**；反假实测：把判定函数改为恒真后
+   A / H / C / D / D2 **全红**（拿到 `201` 而非 `403`），还原后全绿 ⇒ 用例确由本判定产生。
+3. **夹具影响已处置，且**未改任何断言** —— 受影响用例的红均为**夹具合法性**（发起人 `u-1` 对 `admin-1` 代建的员工无
+   `owner∪use`），一律把 `create_employee` 的归属人改为**会话发起人本人**（9 处，8 个文件，含真库门控的
+   `tests/test_dsh_execution_postgres.py`）；`grep` 实测测试目录**无 `assert` 行变动**。
+   `tests/test_conversation_members_api.py`（含 P2c-6 的 write-成员执行）**17 passed**，其真语义未被打破。
+4. **全量**：`pytest -q -o addopts=""` ⇒ **2658 passed / 182 skipped / 0 failed**。
+5. **仍存的边界（未验证 / 未做）**：
+   - **同键重放不过本闸门** —— 本判定排在幂等查表**之后**（契约硬约束要求排在 `_governance` 之后，而 `_governance` 在幂等之后）
+     ⇒ 撤销 `use` 后，**用同一个幂等键重放**仍返回首次结果（`§4.1.3` 幂等语义优先）；**新键**的下一次执行才 `403`。
+     是否要把「重放也纳入重判」单列，**待裁**。
+   - **超管作为他人会话的 `write` 成员发言**：契约字面以**发起人**为准（无 `use` ⇒ `403`），而目录面对超管无条件放行；
+     两轴相遇的口径**未裁、未写用例**（见失败测试文件的未覆盖说明）。
+   - **`app/content/service.py` 那条落库路径**仍未纳入（同 ④-4）。
+
+#### ⑥ 对抗验证修复轮（2026-09-25，**只修阻断/严重三项**）
+
+**契约先行**：`api-contract.md`「会话协作」节 O3 条新增「**⚠️ 推进处（审批决议）同样重判 —— 2026-09-25 补**」，
+并更正原文把「员工被停用」列为 `403` 成因的自相矛盾（按闸门次序硬约束应为 `422`）。**契约先于代码**。
+
+1. **[严重] 推进处（审批决议）漏接 O3 闸门 —— 已修**（`app/conversation/execution.py::ensure_resume_allowed`）。
+   - **修前复现**：归属人 `u-1` 给 `u-9` 加 `use` → `u-9` 自建会话发 `fs.write`（带键）得 `202` 待批 →
+     `remove_share` 撤销 → 同一 `run` 经 `POST /runs/{id}/approvals/{aid}/approval` 由 CEO 批准仍 `200`、
+     `execution={'outcome':'executed','code':201}`、executor 调用 `0→1`（工具**真实执行**）。
+     —— `decide_run_approval` 原只调 `ensure_resume_allowed`（仅查 `ask` 模式），未接 O3 重判。
+   - **修法**：`ensure_resume_allowed` 扩为「**O3 派生授权 → `ask` 模式**」双检（由 `run_id` 经幂等行反查会话，
+     以 `conversation.operator_id` 复用同一 `_ensure_can_dispatch_derived`，不复制规则）；失败 `403` 且
+     **不落决议、不调 `resume`**；目录读异常 `503` fail-closed。
+   - **修后证明**：新增 `tests/test_conversation_approval_gate.py`（真实 `ToolExecutionService` + 假执行器）：
+     撤销后决议端点 `403` / executor 零调用 / `027` 待批行仍 `PENDING`；对照组（不撤销）`200` + executor 一次。
+     反假实测：把推进处的重判**摘除**（变异 A）⇒ 撤销用例**必红**（`200`），还原后全绿 ⇒ `403` 确由本重判产生。
+2. **[严重] 工作树留有 `MUTATION-*` 变异探针 —— 经核已不存在**。
+   - `grep -rn "MUTATION" app/ tests/ --include=*.py` ⇒ **零命中**；`grep -rn "raise AssertionError" app/` ⇒ 零命中；
+     `app/conversation/execution.py` md5 = `060180728c97ea1dfef6daf4b2d60695`（本轮修复后稳定，mtime 未再变动）。
+     `git diff -- app/` 逐行复核：仅 O3 闸门 + 本轮推进处重判，无「恒真/恒假」短路残留。
+3. **[严重] 会话面「`read` 档不能派活」测试零保护 —— 已补**（`tests/test_conversation_dispatch_gate.py::test_C2_read_tier_share_cannot_dispatch`）。
+   - **修前复现**：把闸门档位判定由 `share_permission(...) == "use"` 放宽为 `is not None`（变异 B）⇒
+     旧全仓 `2658 passed` 与未变异**逐字相同**（该变异体存活）。
+   - **修后证明**：变异 B 下新用例 `test_C2` **红**（`1 failed, 2660 passed`）；还原后全量 `2661 passed / 182 skipped / 0 failed`。
+
+**本轮未处置（仍存的边界，见 ⑤-5）**：同键重放不过重判（`§4.1.3` 幂等语义优先，待裁）；
+超管作为他人会话 `write` 成员的两轴口径未裁；`app/content/service.py` 落库路径未纳入。
+

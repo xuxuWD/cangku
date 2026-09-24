@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Mapping
 
+from ..accounts.models import SUPER_ADMIN_ROLE
 from ..audit.models import AuditAction
 from ..domain import (
     AuditEvent,
@@ -69,6 +70,10 @@ INVOCATION_PARAMS_FIELD = "params"
 
 # 承载任务口径（§3.7 Y2 表）。组 10.5（迁移 044）：金额口径统一为**整数分**。
 CONVERSATION_TASK_BUDGET_CENTS = 0
+
+# O3 派生授权拒绝文案：**刻意与目录面同一条**（`WorkforceDirectoryService.ensure_can_dispatch`），
+# 且不区分「员工不存在 / 无 `use` 档 / 撤销后失效」（契约「使用权的传递上限（O3 · 派生授权）」）。
+DISPATCH_DENIED_MESSAGE = "没有使用该数字员工的权限（需归属人或 use 档共享）"
 
 _logger = logging.getLogger(__name__)
 
@@ -132,6 +137,7 @@ class ConversationExecutionService:
         catalog=None,
         audit=None,
         directory_store=None,
+        accounts=None,
         tool_invocation_resolver: Callable[[str], ToolInvocation | None] | None = None,
         runtime_key: str = "mock",
         mode: str = "product_manager",
@@ -149,6 +155,10 @@ class ConversationExecutionService:
         self.catalog = catalog
         self.audit = audit
         self.directory_store = directory_store
+        # O3 派生授权（2026-09-24 用户裁决）：判定式要判**会话发起人**的角色（`super_admin` 直通），
+        # 而 `conversation` 只存 `operator_id` ⇒ 需账号仓储解析。缺省回落会话服务已持有的同一实例
+        # （`ConversationService.accounts`，装配处已注入），使既有构造处无需逐个改造。
+        self.accounts = accounts if accounts is not None else getattr(conversations, "accounts", None)
         self._resolve = tool_invocation_resolver or parse_tool_invocation
         self.runtime_key = runtime_key
         self.mode = mode
@@ -265,6 +275,9 @@ class ConversationExecutionService:
         # agent_key 校验收紧（执行入口）：存在且启用，否则 422；同时取回治理两字段。
         governance = self._governance(context, conversation)
         autonomy_level, risk_threshold = governance
+        # O3 派生授权（2026-09-24 用户裁决）：**必须在 `_governance` 之后** —— 否则「员工已停用」
+        # 会从契约规定的 `422` 变成 `403`（契约「使用权的传递上限（O3 · 派生授权）」闸门次序硬约束）。
+        self._ensure_can_dispatch_derived(context, conversation)
         # P2c-4 §2.9：`plan` = 先计划后执行 ⇒ **强制待批**（合成取更严）——等价 `approval_for_all`
         # 并经**唯一判定入口** `needs_approval` 生效（不另造判定；`critical` 仍仅 CEO / 超管可发起）。
         if conversation.mode is ConversationMode.PLAN:
@@ -521,13 +534,20 @@ class ConversationExecutionService:
     # ------------------------------------------------------------------ P2c-4 模式判定（推进处）
 
     def ensure_resume_allowed(self, context: UserContext, run_id: str) -> None:
-        """**推进处**（审批决议后重跑）的模式判定：会话为 `ask` 时一律拒绝（fail-closed）。
+        """**推进处**（审批决议后重跑）的判定：**O3 派生授权 + 会话 `ask` 模式**双重放行（fail-closed）。
 
         运行经**幂等行**反查会话（`find_by_run`，与 P2c-2 的推进帧同源）：
           * 无幂等行 / 未知会话（非对话触发的运行、或会话内容已物理删除）⇒ **不拦截**（已知边界，见契约）；
-          * 查得会话且模式为 `ask` ⇒ 写审计 `conversation.execution.rejected` 并抛 `409`
-            （**决议整体拒绝**：调用方须在落决议前调用本方法，宁可拒绝决议也不产生悬挂授权位）；
-          * **校验本身失败**（读幂等 / 读会话异常）⇒ `503` fail-closed（不猜测、不放行）。
+          * 查得会话 ⇒ **先判 O3 派生授权**（`_ensure_can_dispatch_derived`：发起人**当前**对
+            `conversation.agent_key` 享有 `owner ∪ use`（或超管））—— **必须在这里**：否则撤销 `use` 后，
+            已挂起的待批动作仍会经决议端点被批准并**真实执行工具**（契约「推进处（审批决议）同样重判」）。
+            不成立 ⇒ `403`，调用方须在**落决议前**调用本方法 ⇒ **不落决议、不调 `resume`**；
+            再判会话为 `ask` ⇒ 写审计 `conversation.execution.rejected` 并抛 `409`
+            （**决议整体拒绝**：宁可拒绝决议也不产生悬挂授权位）；
+          * **校验本身失败**（读幂等 / 读会话 / 读目录异常）⇒ `503` fail-closed（不猜测、不放行）。
+
+        ⚠️ 次序：先派生授权（`403`）再 `ask` 模式（`409`）—— 两条都 fail-closed；先判 `403`
+        可避免对「本就无权使用该员工的会话」写 `ask` 模式拒绝审计（那是误导性落库）。
         """
         if self.idempotency is None:
             return
@@ -543,6 +563,13 @@ class ConversationExecutionService:
         except ConversationNotFound:
             return
         except Exception as exc:  # noqa: BLE001 - 同上：校验失败不放行
+            raise ConversationExecutionError("审批前校验暂时不可用，请稍后重试", http_status=503) from exc
+        # O3 派生授权（推进处重判，2026-09-25）：与首次执行口同一判定函数，不复制规则。
+        try:
+            self._ensure_can_dispatch_derived(context, conversation)
+        except ConversationExecutionError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 目录读异常同口径 fail-closed（不放行）
             raise ConversationExecutionError("审批前校验暂时不可用，请稍后重试", http_status=503) from exc
         if conversation.mode is not ConversationMode.ASK:
             return
@@ -687,6 +714,55 @@ class ConversationExecutionService:
         if setter is None:
             return
         setter(context, task_id)
+
+    # ------------------------------------------------------------------ O3 派生授权（会话派活闸门）
+
+    def _ensure_can_dispatch_derived(self, context: UserContext, conversation) -> None:
+        """O3 派生授权：会话发起人**当前**对 `conversation.agent_key` 享有 `owner ∪ use`（或超管）才放行。
+
+        口径来源：契约「会话协作：分享与多端协同（P2c-6）」§「使用权的传递上限（O3 · 派生授权）」。
+        与目录面 `WorkforceDirectoryService.ensure_can_dispatch` **同口径**（`owner ∪ use` / 超管直通 /
+        未纳管不拦），只是判据落在**会话发起人**而非**发言者**——两条授权轴：
+          * 「以谁的身份执行」= 发言者本人（`_ensure_can_speak` + 既有全部闸门，本闸门**不改**）；
+          * 「这条会话能用哪个数字员工」= 发起人当前权限（**本闸门**）。
+        **执行期每次重判**（覆盖存量会话与事后撤销窗口：发起人失去 `use` 后，`write` 成员下一次请求即被拦）。
+
+        `read` 成员已在 `_ensure_can_speak` 处 `403`；非成员 `404` ⇒ 调用到这里时发言者写权限已成立。
+        不成立 ⇒ `403` 且**零落库**（本判定在创建承载任务 / 运行 / 幂等行**之前**）。
+        """
+        agent_key = conversation.agent_key
+        if not agent_key or self.directory_store is None:
+            # 无绑定员工已由 `_governance` 拦下（422）；未装配目录仓储时无可判据，按既有语义不拦。
+            return
+        initiator_id = conversation.operator_id
+        if not initiator_id:
+            return
+        initiator_role = self._initiator_role(initiator_id)
+        if initiator_role == SUPER_ADMIN_ROLE:
+            return
+        # 归属人 / 共享查询与目录面同一仓储方法（`read_agent_owner` / `share_permission`），不复制规则。
+        # 只用到 `tenant_id`（与发言者同租户，仓储层已判定）与显式 `user_id`。
+        initiator = UserContext(
+            tenant_id=context.tenant_id, user_id=initiator_id, role=initiator_role or "employee"
+        )
+        owner = self.directory_store.read_agent_owner(initiator, agent_key)
+        if owner is None or owner == initiator_id:
+            # `None` = 未纳管标识（与目录面一致：不拦）；`owner == 我` = 归属人。
+            return
+        if self.directory_store.share_permission(initiator, agent_key, initiator_id) == "use":
+            return
+        raise ConversationExecutionError(DISPATCH_DENIED_MESSAGE, http_status=403)
+
+    def _initiator_role(self, user_id: str) -> str | None:
+        """解析会话发起人的角色（判定「超管直通」的唯一来源）。**查不到 / 仓储异常一律 `None`**
+        （fail-closed：不把未知账号当作超管）。"""
+        if self.accounts is None or not user_id:
+            return None
+        try:
+            account = self.accounts.get(user_id)
+        except Exception:  # noqa: BLE001 - 未知账号与仓储异常同口径（不泄露是否存在）
+            return None
+        return getattr(account, "role", None)
 
     # ------------------------------------------------------------------ 承载任务
 

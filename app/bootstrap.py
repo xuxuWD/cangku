@@ -1141,6 +1141,7 @@ def build_conversation_execution_service(
     idempotency=None,
     audit=None,
     directory_store=None,
+    accounts=None,
     catalog=None,
     stream_writer=None,
 ):
@@ -1169,6 +1170,7 @@ def build_conversation_execution_service(
         catalog=catalog,
         audit=audit,
         directory_store=directory_store,
+        accounts=accounts,
         stream_writer=stream_writer,
         # P2c-3：帧 payload 的**契约边界**按 `WORKBENCH_FILE_CHANGES_MAX` 再次截断。
         file_changes_max=settings.file_changes_max,

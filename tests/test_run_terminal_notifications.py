@@ -252,7 +252,8 @@ def conversation_wired(monkeypatch, tmp_path):
     directory = InMemoryWorkforceDirectoryStore()
     admin = UserContext("t-1", "admin-1", "super_admin")
     directory.create_role(admin, role_key="writer", name="内容岗")
-    directory.create_employee(admin, agent_key=AGENT, name="内容员工", role_key="writer")
+    # O3 派生授权：AGENT 归属人 = 会话发起人本人（`u-1`，见 `headers()` 默认），使会话合法可用。
+    directory.create_employee(UserContext("t-1", "u-1", "employee"), agent_key=AGENT, name="内容员工", role_key="writer")
 
     trusted = tmp_path / "trusted"
     trusted.mkdir(exist_ok=True)

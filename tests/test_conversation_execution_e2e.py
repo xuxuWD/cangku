@@ -60,7 +60,8 @@ def wired(monkeypatch, tmp_path):
     directory = InMemoryWorkforceDirectoryStore()
     admin = UserContext(TENANT, "admin-1", "super_admin")
     directory.create_role(admin, role_key="writer", name="内容岗")
-    directory.create_employee(admin, agent_key=AGENT, name="内容员工", role_key="writer")
+    # O3 派生授权：AGENT 归属人 = 会话发起人本人（`u-1`），使会话对该员工**合法可用**（见 gate 用例夹具）。
+    directory.create_employee(UserContext(TENANT, EMPLOYEE, "employee"), agent_key=AGENT, name="内容员工", role_key="writer")
 
     trusted = tmp_path / "trusted"
     trusted.mkdir(exist_ok=True)

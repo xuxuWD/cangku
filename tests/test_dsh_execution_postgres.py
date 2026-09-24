@@ -433,7 +433,9 @@ def _build_execution_service(connection, *, tool_execution=None):
     directory = InMemoryWorkforceDirectoryStore()
     admin = UserContext(TENANT, ADMIN, "super_admin")
     directory.create_role(admin, role_key="writer", name="内容岗")
-    directory.create_employee(admin, agent_key=AGENT, name="内容员工", role_key="writer")
+    # O3 派生授权：AGENT 归属人 = 会话发起人本人（`ACTOR` = `u-1`），使会话对该员工**合法可用**；
+    # 否则真库路径下会先拿 `403`（而非本文件要验的 `503`/执行语义）。
+    directory.create_employee(UserContext(TENANT, ACTOR, "employee"), agent_key=AGENT, name="内容员工", role_key="writer")
 
     service = ConversationExecutionService(
         conversations=None,

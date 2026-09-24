@@ -70,7 +70,10 @@ def _isolate(monkeypatch):
     directory = InMemoryWorkforceDirectoryStore()
     admin = UserContext(TENANT, "admin-1", "super_admin")
     directory.create_role(admin, role_key="writer", name="内容岗")
-    directory.create_employee(admin, agent_key=AGENT, name="内容员工", role_key="writer")
+    # O3 派生授权：AGENT 归属人 = 会话发起人本人（`u-1`）—— 场景要验的是「对话触发执行」的机制，
+    # 前提是该会话**合法可用**这个员工；由 `admin-1` 代建会让发起人无 `use` 档（403），
+    # 那验的就不是本文件的语义了（见 `test_conversation_dispatch_gate.py` 夹具同口径）。
+    directory.create_employee(UserContext(TENANT, EMPLOYEE, "employee"), agent_key=AGENT, name="内容员工", role_key="writer")
 
     monkeypatch.setattr(main, "store", task_store)
     monkeypatch.setattr(main, "run_metrics_service", metrics)
