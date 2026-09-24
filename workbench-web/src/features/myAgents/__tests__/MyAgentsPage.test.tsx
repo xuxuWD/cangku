@@ -81,7 +81,10 @@ describe('MyAgentsPage', () => {
     render(<MyAgentsPage />)
     // 与 error 态文案明确区分：这是"无权限"，不是"加载失败"
     expect(await screen.findByText('无访问权限')).toBeInTheDocument()
-    expect(screen.getByText('无权限查看数字员工列表，请确认该员工是否已共享给你，或联系管理员。')).toBeInTheDocument()
+    // 2026-09-25（真机走查后）文案更改：原句「请确认该员工是否已共享给你」的前提已失效 ——
+    // OP-01 后**未共享的员工根本不出现在列表里**（服务端按 owner∪shares 过滤，不是 403），
+    // 把"没被共享"写进 403 文案会引导用户去找一个不存在的"共享开关"。
+    expect(screen.getByText('无权限查看数字员工列表，请联系管理员确认你的角色。')).toBeInTheDocument()
     expect(screen.queryByText('数字员工列表加载失败，请稍后重试。')).not.toBeInTheDocument()
     expect(screen.queryByText('还没有数字员工。可以从岗位模板创建一个。')).not.toBeInTheDocument()
   })
@@ -117,7 +120,10 @@ describe('MyAgentsPage', () => {
     // 创建本批未接入 ⇒ 禁用 + 给原因（入口保留，不静默隐藏）
     const create = screen.getByRole('button', { name: '从岗位模板创建' })
     expect(create).toBeDisabled()
-    expect(create).toHaveAttribute('title', expect.stringContaining('创建尚未接入'))
+    // 2026-09-25（真机走查后）措辞由「创建尚未**接入**」改为「创建尚未**接线**」：
+    // 「接线」是本项目既定术语，且要点在于区分「**后端已开放**员工侧创建（OP-01）」
+    // 与「**前端入口**仍未接线」—— 原文案「后端没有员工侧创建接口」已与事实相反。
+    expect(create).toHaveAttribute('title', expect.stringContaining('创建尚未接线'))
 
     // 归属无法判定：单独成区，**不混进"我创建的"**
     expect(screen.getByRole('heading', { level: 3, name: /归属无法判定（1）/ })).toBeInTheDocument()
