@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -93,6 +94,14 @@ def test_cmd_run_mapping_is_unchanged() -> None:
 
 # ------------------------------------------------------------ ② 脚本语义（宿主侧执行）
 
+# ⚠️ 父子进程的编码必须**显式锁成一致**（2026-09-24 修复）：
+# `subprocess.run(..., text=True)` **不给 `encoding`** 时会用**本地编码**解码（Windows 中文机 = GBK），
+# 而子进程的**写出**编码由继承来的 `PYTHONIOENCODING` 决定 —— 两者一旦被拆开就炸。
+# 实测：外部设了 `PYTHONIOENCODING=utf-8` ⇒ 本文件 8 个用例全红（`UnicodeDecodeError: 'gbk'`），
+# **与 DSN 无关**（对照实验：只设该变量、不设 DSN 同样全红）。
+# Linux / CI 上处处 UTF-8，故**该缺陷在 CI 里永不可见**。此处两端都锁 UTF-8，与本地 locale 解耦。
+_SUBPROCESS_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
 
 def run_op(tool_key: str, params: dict, workspace: Path, *, diff_excerpt_max_bytes: int = 8192):
     command = build_fs_command(
@@ -102,7 +111,12 @@ def run_op(tool_key: str, params: dict, workspace: Path, *, diff_excerpt_max_byt
         diff_excerpt_max_bytes=diff_excerpt_max_bytes,
     )
     completed = subprocess.run(
-        [sys.executable, *command[1:]], capture_output=True, text=True, check=False
+        [sys.executable, *command[1:]],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=_SUBPROCESS_ENV,
+        check=False,
     )
     changes, excerpt = parse_marker(completed.stdout)
     return completed, changes, excerpt
@@ -243,7 +257,12 @@ def test_script_diff_excerpt_is_bounded(tmp_path: Path) -> None:
         diff_excerpt_max_bytes=10,
     )
     completed = subprocess.run(
-        [sys.executable, *command[1:]], capture_output=True, text=True, check=False
+        [sys.executable, *command[1:]],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=_SUBPROCESS_ENV,
+        check=False,
     )
     changes, _ = parse_marker(completed.stdout)
     assert completed.returncode == 0
