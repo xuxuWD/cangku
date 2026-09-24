@@ -117,6 +117,7 @@
 | --- | --- | --- |
 | 读**岗位**列表 | `super_admin` only | 登录用户（**岗位不属任一 owner，读档口径待裁**，见 §九 V1） |
 | 读**员工**列表 | `super_admin` only | 登录用户，**按 owner ∪ shares 过滤** |
+| 读**清单 / `roster`** | `super_admin` only（函数体内联判定，L1344） | **登录四档角色 + 按 owner ∪ shares 过滤任务计数子源**（⚠️ **本节初版漏列此行**，2026-09-24 补；见文末「落地更正」） |
 | 读**员工 config** | `super_admin` only | **归属人可读自己的**；`use` 档**不可读 config**（与"不能改配置"同口径） |
 | **创建**员工 | `super_admin` only | 登录用户，**owner 只能是自己** |
 | 改 / 停用员工 | `super_admin` only | **不变**（`super_admin` + **归属人**？见 §九 V2） |
@@ -126,6 +127,11 @@
 **⚠️ 连带更正**：[`permission-matrix.md:66`](permission-matrix.md) 那行
 「知识：授权绑定（角色/员工 ↔ 库）」现标 **⚠️ 读可、写待目录放开**，
 **其脚注理由（第 80 / 238-240 行）正是指本专项**。**本专项落地后该行须回改为 ✅ 并撤掉脚注。**
+**⚠️ 回写清单补漏（2026-09-24）**：除第 66 行外，还须回写
+[`permission-matrix.md:60`](permission-matrix.md)（「数字员工：全员注册中心查看」行 —— **本节初版整表漏了 `roster` 这一行**，
+该行原写 `employee ❌`）与 [`delivery-gates.md:48`](file:///d:/徐徐AI学习/公司工作台/docs/delivery-gates.md)
+（roster 门禁描述「仅 `super_admin`」），以及 [`api-contract.md:568`](../api-contract.md)
+（目录面「通用约定 · 权限」的「四角色一律 403」）。
 
 ---
 
@@ -210,5 +216,32 @@
    按函数名 grep 时漏掉的**。**⇒ 教训：按函数名找闸门会漏掉内联判定**，须按**判定条件**扫。
    **⚠️ 仍未排除**：以 `context.role not in (...)` / `has_role(...)` 等其他写法表达的等价判定
    —— 本次只扫了 `role != "super_admin"` / `role == "super_admin"` 两种字面。
-5. **验收标准 A1–A10 全部未执行**（本专项尚未开工）。
+5. ~~**验收标准 A1–A10 全部未执行**（本专项尚未开工）。~~
+   **✅ 2026-09-24 更正：本专项已开工并落地** —— A1–A10 中可自动化的部分**已由测试执行**
+   （`tests/test_workforce_directory_gate_split.py` 由 13 例增至 16 例，全绿）。
+   **仍未验证的是**：真 PostgreSQL 路径、前端四态、审计明细遍历 —— 见 §十 的落地记录与该节末的未验证清单。
+   **本行原为开工前残留，保留以留痕。**
 6. 本文**未改动任何产品代码、未改动任何真源**。
+
+---
+
+## 十、落地更正（2026-09-24 · 对抗验证后）
+
+> **性质**：本文仍是**评审材料**；正源以 `permission-matrix.md` / B1 规格 / `api-contract.md` 为准。
+> 下面是**完工前的对抗验证**揪出的四处**已修**缺陷，及其与 §八之二默认取值的差异。
+
+| # | 缺陷（验证轮发现） | 处置 |
+| --- | --- | --- |
+| 1 | `roster` 只改了闸门、**没做过滤**：`counts = store.count_by_employee(tenant_id)` 是租户级全量 ⇒ 任意登录身份拿到本租户全量员工标识 + 任务数（含只出现在他人任务里的键） | **修**：非 `super_admin` 先取 `owner ∪ shares` 可见集再筛（`service.visible_agent_keys`，两层同 SQL 口径）；补跨账号用例 |
+| 2 | `use`「能派活」/ `read`「不能派活」**未接线**：`_store_new_task` 从不校验 `employee_key` 归属/共享 | **修**：`_store_new_task` 首行加 `ensure_can_dispatch`（非 `super_admin` 只放 owner ∪ `use` 档；**未纳管标识不拦**，沿用任务字段自由文本语义）；补 A6 反向用例 |
+| 3 | 读档 / 创建档只判 `user_id` 非空 ⇒ **`customer_admin` 被放行**，与 §八之二 V1/V3 只写「登录用户」且未裁决它、`permission-matrix.md:60` 及施工材料「四档角色」冲突 | **修**：读 / 创建档加角色白名单 = **四档业务角色**（`employee`/`department_lead`/`ceo`/`super_admin`），`customer_admin` 一律 `403`；已回写 `permission-matrix.md:60`、`delivery-gates.md:48`、`api-contract.md:568` |
+| 4 | `read` 档读 config 被拒 ⇒ `read` / `use` 两档**行为完全等价**，与 B1 §3.3② 表 / 契约 C4「`read` = 能看配置」相反 | **修（按真源）**：`_ensure_config_reader` 放行 `read` 档（`use` 档仍不可读，V4=A）；补 `read` 档读 config 用例 |
+
+**⚠️ 与 §八之二默认取值的差异**：V1–V4 的取值本身**未推翻**；差异只在**角色范围**——
+§八之二 V1/V3 措辞是「登录用户」，实际落地收窄为**四档业务角色**（排除 `customer_admin`）。
+**这是一处需要用户确认的口径**：若用户裁「目录面含 `customer_admin`」，则须回改
+`permission-matrix.md:57-60`（现在四行都是 `❌`）与本表，并把白名单加回 `customer_admin`。
+
+**✅ 已回归**：全量 `pytest -q -o addopts=""` **2649 passed / 173 skipped / 0 failed**；
+`tests/test_workforce_directory_gate_split.py` **16 passed 且无 `xfail` 残留**；
+四条修复各做**反向验证**（注释掉修复 ⇒ 对应用例必红）。
