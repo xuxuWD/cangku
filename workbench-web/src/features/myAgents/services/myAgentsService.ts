@@ -32,6 +32,7 @@ import {
   type SamplePayload,
 } from '../../../utils/serviceKit'
 import { request } from '../../../api/client'
+import { readStoredUserId } from '../../../app/session'
 import type {
   AgentItem,
   AgentOwnership,
@@ -93,12 +94,27 @@ export const ROLE_TEMPLATE_NOTE = '岗位模板尚未接入：后端无模板实
 
 /**
  * 归属无法判定的原因（界面必须可见，不允许把"无法判定"当成"我创建的"）。
+ *
+ * ⚠️ 2026-09-24（OP-01）更新：原文写「后端不下发当前用户标识，也没有『共享』实体」。
+ * **两条前提均已失效** —— 登录响应自带 `user_id`（`app/session.tsx:63`），
+ * 后端也已有 `workbench_employee_shares` 共享实体 + 视图下发 `owner_user_id`。
+ * 现仅在**两侧信息缺一**时（未登录 / 后端未下发归属）才落到本态，属 fail-closed 兜底。
  */
 export const OWNERSHIP_UNKNOWN_NOTE =
-  '归属无法判定：后端不下发当前用户标识，也没有「共享」实体；本批按"他人创建"同口径处理，配置与停用需要「数字员工管理」能力。'
+  '归属无法判定：本次响应未携带归属人，或当前会话没有本人标识；为避免误判，按"他人创建"同口径处理 —— 配置与停用需要「数字员工管理」能力。'
 
-/** http 模式下归属恒为"无法判定"（见 `OWNERSHIP_UNKNOWN_NOTE`）。 */
-const OWNERSHIP: AgentOwnership = 'unknown'
+/**
+ * 归属判定：**逐行按后端下发的 `owner_user_id` 与本人标识比对**（OP-01 起可判）。
+ *
+ * fail-closed：**缺本人标识或后端未下发归属 ⇒ `unknown`**，绝不臆测成 `mine`
+ * （界面必须把"无法判定"与"我创建的"分开呈现）。
+ */
+function ownershipOf(view: WorkforceAgentView): AgentOwnership {
+  const me = readStoredUserId()
+  const owner = view.owner_user_id
+  if (!me || !owner) return 'unknown'
+  return owner === me ? 'mine' : 'shared'
+}
 
 /**
  * 岗位模板（能力包）—— 逐字对齐 `role-templates.md` §1 + §2。
@@ -246,7 +262,13 @@ const MOCK_AGENTS: AgentItem[] = import.meta.env.DEV ? [
 ]
   : []
 
-/** 后端数字员工视图（`DigitalEmployeeView`，`app/main.py:1399`）—— 8 个键，**逐个点名**。 */
+/**
+ * 后端数字员工视图（`DigitalEmployeeView`，`app/main.py:1399`）—— **10 个键，逐个点名**。
+ *
+ * ⚠️ 2026-09-24（OP-01）：新增 `owner_user_id` / `visibility`。
+ * 此前视图**不下发归属**，故前端只能把 `ownership` 恒判为 `unknown`（见 `OWNERSHIP_UNKNOWN_NOTE`）；
+ * OP-01 的目录闸门拆分把「我创建的 ∪ 共享给我的」在后端**定义了**，归属自此可判。
+ */
 export interface WorkforceAgentView {
   agent_key: string
   name: string
@@ -256,6 +278,10 @@ export interface WorkforceAgentView {
   created_by: string
   created_at: string | null
   updated_at: string | null
+  /** 归属人账号标识（OP-01 新增）。缺省 / 空串 ⇒ 前端按"无法判定"处理，**不臆测**。 */
+  owner_user_id?: string | null
+  /** 可见性档位 `private` / `shared`（OP-01 新增；当前实现恒为 `private`，见评审材料 §十）。 */
+  visibility?: string | null
 }
 
 /** 列表响应（`DigitalEmployeeListView`）：`items / total / limit / offset`。 */
@@ -325,16 +351,21 @@ function agentOfView(view: WorkforceAgentView): AgentItem {
     updated_at: view.updated_at ?? '',
     // 后端目录视图不下发运行时间 ⇒ 恒为 null（界面按"未验证"呈现，绝不给 0 / 成功）
     last_run_at: null,
-    ownership: OWNERSHIP,
+    ownership: ownershipOf(view),
     template: resolveRoleTemplate(view.role_key),
   }
 }
 
 /**
- * 数字员工列表：`GET /api/v1/workforce/agents`（**后端管理目录口径，仅 super_admin**）。
+ * 数字员工列表：`GET /api/v1/workforce/agents`。
  *
- * ⚠️ 员工侧「我创建的 ∪ 共享给我的」在后端**未定义**：本接口是管理目录，非 super_admin 会 `403`
- * （界面进"无权限"态，与"加载失败"分开）。归属无法判定 ⇒ `ownership = 'unknown'`。
+ * ⚠️ 2026-09-24（OP-01）**口径已变更** —— 原文写「后端管理目录口径，仅 `super_admin`；
+ * 员工侧『我创建的 ∪ 共享给我的』在后端**未定义**，非 super_admin 会 `403`」。**该前提已失效**：
+ * 目录读档已对**四档业务角色**放开（`employee` / `department_lead` / `ceo` / `super_admin`），
+ * 服务端在**仓储层**按 `owner ∪ shares` 过滤后返回 ⇒ **普通员工拿到的是 200 + 已过滤列表**，
+ * 不再是 `403`。归属由响应里的 `owner_user_id` 判定（见 `ownershipOf`）。
+ *
+ * **仍会 `403` 的**：`customer_admin`（权限矩阵数字员工四行全 ❌），以及未登录（`401`）。
  */
 export async function fetchMyAgents(fetchImpl?: typeof fetch): Promise<SamplePayload<AgentItem>> {
   if (mode === 'mock') return { sample: true, items: MOCK_AGENTS }

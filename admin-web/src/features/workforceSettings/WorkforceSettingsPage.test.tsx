@@ -282,7 +282,13 @@ describe('WorkforceSettingsPage', () => {
     await screen.findByText('内容创作数字员工')
     await userEvent.click(screen.getByRole('button', { name: '配置' }))
 
-    expect(await screen.findByText('仅超级管理员可查看与修改数字员工配置。')).toBeInTheDocument()
+    // 文案逐字钉住（**刻意不复用 `CONFIG_FORBIDDEN_MESSAGE` 常量** —— 复用会让断言同义反复、
+    // 失去"改文案必回改测试"的逼迫作用）。
+    // 2026-09-24（OP-01）更新：读档已放开到「归属人 ∪ 被共享成员 ∪ 超管」，
+    // 故原文案「仅超级管理员可查看与修改」与实际不符 —— 403 现在意味着**三者都不是**。
+    expect(
+      await screen.findByText('仅该数字员工的归属人、被共享的成员或超级管理员可查看配置；修改需要超级管理员。')
+    ).toBeInTheDocument()
   })
 
   it('warns that full_auto is super-admin only and audited when it is selected', async () => {

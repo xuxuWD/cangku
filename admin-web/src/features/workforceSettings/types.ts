@@ -150,8 +150,10 @@ export const FULL_AUTO_NOTICE = '除「极高（critical）」风险外免人工
 // `model_key` 为空是合法状态（后端语义 = 用默认模型），界面上要写明而不是留空。
 export const EMPTY_MODEL_KEY_LABEL = '未指定（用默认模型）'
 
-// 非超管读取配置会 403；给配置区一句专用文案，避免只显示目录权限文案或空白。
-export const CONFIG_FORBIDDEN_MESSAGE = '仅超级管理员可查看与修改数字员工配置。'
+// 配置读档在 OP-01（2026-09-24）起为「归属人 ∪ 被共享成员（`read` 档）∪ 超级管理员」；
+// 走到 403 说明**三者都不是** —— 文案必须说清"谁能看"，不能笼统写"仅超管"（那是旧口径）。
+export const CONFIG_FORBIDDEN_MESSAGE =
+  '仅该数字员工的归属人、被共享的成员或超级管理员可查看配置；修改需要超级管理员。'
 
 export const RISK_THRESHOLD_LABELS: Record<string, string> = {
   low: '低',

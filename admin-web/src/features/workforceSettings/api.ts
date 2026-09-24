@@ -67,7 +67,9 @@ export function listCandidates(): Promise<WorkforceCandidates> {
   return request<WorkforceCandidates>('/workforce/candidates')
 }
 
-// 员工配置：仅超级管理员可读写；非超管服务端一律 403。
+// 员工配置（OP-01，2026-09-24 起口径变更）：
+//   **读** = 归属人 ∪ 被共享成员（`read` 档）∪ 超级管理员；**写**仍仅超级管理员。
+// 原注释写「仅超级管理员可读写；非超管一律 403」—— 该前提已失效。
 export function readAgentConfig(agentKey: string): Promise<AgentConfig> {
   return request<AgentConfig>(`/workforce/agents/${encodeURIComponent(agentKey)}/config`)
 }

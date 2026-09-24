@@ -214,11 +214,60 @@ describe('myAgentsService 适配层', () => {
         updated_at: '2026-09-19T09:00:00+08:00',
         // 后端目录视图**不下发运行时间** ⇒ 恒为 null，界面按"未验证"呈现（绝不给 0 / 成功）
         last_run_at: null,
-        // 归属无法判定（拿不到当前用户标识，后端也无"共享"实体）⇒ 不编造"我创建的"
+        // 本用例**未建会话**（无 `workbench.user`）⇒ 归属判不了 ⇒ `unknown`，不编造"我创建的"。
+        // 注：原注释写「后端也无『共享』实体」—— OP-01（2026-09-24）起该前提已失效，
+        // 后端已有共享实体且视图下发 `owner_user_id`；此处落到 `unknown` 是因为**缺本人标识**。
         ownership: 'unknown',
         // 能力包按 role_key 解析自项目级唯一目录（role-templates.md）；后端未下发 template 字段
         template: ROLE_TEMPLATES.find((template) => template.role_key === 'ops'),
       })
+    })
+
+    it('归属判定（OP-01 起可判）：按后端下发的 `owner_user_id` 与本人标识逐行比对', async () => {
+      sessionStorage.setItem('workbench.token', 'token-for-test')
+      sessionStorage.setItem('workbench.user', 'acct-0001')
+      const { fetchImpl } = stubFetch({
+        '/api/v1/workforce/agents': {
+          body: {
+            items: [
+              { ...AGENT_VIEW, agent_key: 'mine', owner_user_id: 'acct-0001' },
+              { ...AGENT_VIEW, agent_key: 'theirs', owner_user_id: 'acct-9999' },
+              // 后端未下发归属 ⇒ fail-closed 落到 unknown，**绝不**当成 mine
+              { ...AGENT_VIEW, agent_key: 'no-owner', owner_user_id: null },
+            ],
+            total: 3,
+            limit: AGENT_PAGE_LIMIT,
+            offset: 0,
+          },
+        },
+      })
+
+      const payload = await fetchMyAgents(fetchImpl)
+
+      expect(payload.items.map((agent) => [agent.agent_key, agent.ownership])).toEqual([
+        ['mine', 'mine'],
+        ['theirs', 'shared'],
+        ['no-owner', 'unknown'],
+      ])
+    })
+
+    it('归属判定 fail-closed：没有本人标识 ⇒ 一律 unknown（即便后端下发了归属）', async () => {
+      sessionStorage.setItem('workbench.token', 'token-for-test')
+      sessionStorage.removeItem('workbench.user')
+      const { fetchImpl } = stubFetch({
+        '/api/v1/workforce/agents': {
+          body: {
+            items: [{ ...AGENT_VIEW, owner_user_id: 'acct-0001' }],
+            total: 1,
+            limit: AGENT_PAGE_LIMIT,
+            offset: 0,
+          },
+        },
+      })
+
+      const payload = await fetchMyAgents(fetchImpl)
+
+      expect(payload.items[0].ownership).toBe('unknown')
     })
 
     it('列表：岗位键不在项目级目录里 ⇒ `template` 为 null（不编造模板）', async () => {
