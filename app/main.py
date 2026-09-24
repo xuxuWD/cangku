@@ -4480,7 +4480,13 @@ def _store_new_task(
     fingerprint_source: dict | None = None,
     task_id: str | None = None,
 ) -> tuple[Task, bool]:
-    """**唯一**的任务落库路径（`POST /tasks` 与 S2「存成任务」共用）。
+    """任务落库路径之一（`POST /tasks` 与 S2「存成任务」共用）。
+
+    ⚠️ 2026-09-24 更正：原文写「**唯一**的任务落库路径」——**与代码事实相反**。
+    全仓实测**共 3 处** `task_store.create`：本函数（`app/main.py`）·
+    `app/conversation/execution.py:745`（**不经本函数，故不受本处派活闸门保护**）·
+    `app/content/service.py:161`（`employee_key` 硬编码 `"content-writer"`，调用者不可选目标）。
+    **后两处的归属闸门问题已登记**，见 `docs/contracts/gate-split-review-2026-09-24.md` 与本轮勘察结论。
 
     纪律：审批判定与幂等语义只有这一处（不另写一套），因此「存成任务」走的治理闸门、
     指纹比对、事件发布与手工创建**逐条同源**。
