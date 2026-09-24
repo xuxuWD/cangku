@@ -101,6 +101,14 @@ class DirectoryNotFound(LookupError):
     pass
 
 
+class InvalidShare(DirectoryError):
+    """共享入参非法（档位不在 `read` / `use`、被授权人为空）→ 422。
+
+    刻意继承 `DirectoryError`（而不是 `PolicyError`）：它是**取值**错误，
+    不能与「无权限」混为一谈。
+    """
+
+
 class InvalidAgentConfig(DirectoryError):
     """数字员工配置校验失败（含 D11 提示词防护）→ 422。
 
@@ -119,6 +127,19 @@ class DirectoryStatus(StrEnum):
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+# 共享两档（B1 §3.3②；与迁移 045 的 `CHECK (permission IN ('read','use'))` 一字不差）：
+#   `read` = 能看配置、看它干过的活（**不能派活**）；`use` = 能派活（**不能改配置 / 不能停用**）。
+# ⚠️ 2026-09-24 修复：`read` 档**可读 config**（B1 §3.3② 表 + 契约 C4 逐字），`use` 档**不可读**
+#   （V4=A）—— 两档的差异 = 「read 看得见怎么配的 / use 能派活」，不再是"只差一个字段值"。
+SHARE_PERMISSIONS = ("read", "use")
+
+# 目录面「读档 / 创建档」的角色白名单（施工材料 `b2-construction-plan-2026-09-24.md` §2「四档角色」）：
+# `employee` / `department_lead` / `ceo` / `super_admin`。
+# ⚠️ 刻意**不含** `customer_admin` —— 权限矩阵「数字员工」四行 `customer_admin` 一律 ❌
+# （与技能域 `BIND_ROLES`、工具面 `AGENT_TOOLS_ROLES` 的既有裁决同一口径）。
+DIRECTORY_ACCESS_ROLES = frozenset({"employee", "department_lead", "ceo", "super_admin"})
 
 
 @dataclass(frozen=True)
@@ -142,6 +163,12 @@ class DigitalEmployee:
     status: DirectoryStatus = DirectoryStatus.ACTIVE
     description: str = ""
     created_by: str = ""
+    # B2 归属与可见性（迁移 045，**只增**）：
+    #   `owner_user_id` —— 归属人；默认空串是**非法态**（045 有 `CHECK (owner_user_id <> '')`），
+    #     服务端写入时恒填「创建者」或管理员指定值；
+    #   `visibility` —— 默认 `private`（最保守，不因新增字段而扩大任何行的可见范围）。
+    owner_user_id: str = ""
+    visibility: str = "private"
     created_at: datetime | None = field(default_factory=now)
     updated_at: datetime | None = field(default_factory=now)
     # 配置字段（§7.2 / D11）；默认值即「fail-closed」：用默认模型、无提示词、无工具
@@ -154,6 +181,18 @@ class DigitalEmployee:
     risk_threshold: str = "high"
     approval_timeout_minutes: int = DEFAULT_APPROVAL_TIMEOUT_MINUTES
     daily_budget_cents: int = 0
+
+
+@dataclass(frozen=True)
+class DigitalEmployeeShare:
+    """`workbench_employee_shares` 一行（迁移 045）：把某数字员工按档位共享给某账号。"""
+
+    tenant_id: str
+    agent_key: str
+    grantee_user_id: str
+    permission: str
+    granted_by: str
+    granted_at: datetime | None = field(default_factory=now)
 
 
 def normalize_key(value: str) -> str:

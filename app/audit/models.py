@@ -59,6 +59,9 @@ class AuditAction(StrEnum):
     WORKFORCE_AGENT_CONFIG_READ = "workforce.agent.config.read"
     WORKFORCE_AGENT_CONFIG_UPDATED = "workforce.agent.config.updated"
     WORKFORCE_AGENT_CONFIG_REJECTED = "workforce.agent.config.rejected"
+    # B2 数字员工归属与共享（迁移 045）：明细只含标识与受控档位，不含姓名 / 手机号 / 正文
+    WORKFORCE_AGENT_SHARE_ADDED = "workforce.agent.share.added"
+    WORKFORCE_AGENT_SHARE_REMOVED = "workforce.agent.share.removed"
     # 段二（dsh 接入段）工具执行：⑨ 成功 / 被拒（含黑名单、路径、参数拒）
     TOOL_EXECUTED = "tool.executed"
     TOOL_BLOCKED = "tool.blocked"
@@ -176,6 +179,9 @@ ALLOWED_DETAIL_KEYS = frozenset(
         "stub",
         # 配置被拒时记录被拒字段名
         "rejected_fields",
+        # B2 数字员工共享（只记被授权人标识与受控档位枚举，不记姓名 / 手机号 / 正文）
+        "grantee_user_id",
+        "permission",
         # 运行审批的授权来源（服务端判定的受控枚举，非自由文本）
         "authorized_by_source",
         # 服务端生成的任务标识（S2 沉淀入口：只记标识，不记用户填写的标题正文）

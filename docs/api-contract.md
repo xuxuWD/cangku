@@ -543,7 +543,12 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 `GET /api/v1/workforce/roster`
 
-- **权限**：仅 `super_admin`；其他角色 `403`「只有超级管理员可以查看岗位与数字员工清单」；未认证 `401`。
+- **权限**（⚠️ **2026-09-24 闸门拆分后回写**）：**读档** = `employee` / `department_lead` / `ceo` / `super_admin`
+  （功能位已登录）；`customer_admin` 一律 `403`「当前角色不能查看岗位与数字员工目录」；未认证 `401`。
+  原口径「仅 `super_admin`」经 OP-01 专项（`docs/contracts/gate-split-review-2026-09-24.md`）拆分后作废。
+- **可见性过滤**（⚠️ **2026-09-24 修复**）：非 `super_admin` 的**任务计数子源**与 `agent` 绑定子源
+  按 `owner_user_id = 我 ∪ workbench_employee_shares 里被授权的我` 过滤（与 `GET /workforce/agents` 同一口径）；
+  `role` 绑定子源仍走知识治理读档（`ceo` / `super_admin`，非治理角色降级为空）。
 - **租户隔离**：只统计与列出当前租户的数据。
 - **数据来源（三个事实源的并集）**：知识范围里的 `role` 绑定、`agent` 绑定、以及任务中出现过的 `employee_key`；同一标识只出现一次。
 - 响应：`{"items": [{"key", "role_knowledge_base_ids", "agent_knowledge_base_ids", "task_count"}], "total": <条数>}`
@@ -565,7 +570,16 @@ Redis Streams 生产适配器使用消费组读取事件，处理成功后显式
 
 **通用约定（适用于本节全部接口）**
 
-- **权限**：仅 `super_admin` 可读写；`ceo`、`customer_admin`、`department_lead`、`employee` 一律 `403`「只有超级管理员可以管理岗位与数字员工目录」；未认证 `401`。权限在仓储层与接口层各强制一次。
+- **权限**（⚠️ **2026-09-24 闸门拆分后回写**）：目录面拆**三档**，角色白名单 = **四档业务角色**
+  （`employee` / `department_lead` / `ceo` / `super_admin`）：
+  **读档** = 四档且已登录（`GET /workforce/roles`、`GET /workforce/agents`、
+  归属人 ∪ `read` 档读 `GET .../config`、`GET /workforce/roster`）；
+  **创建档** = 四档（`POST /workforce/agents`，`owner_user_id` **由服务端置为调用者本人**）；
+  **管理档** = 仅 `super_admin`（建 / 改岗位、改 / 停用员工、改配置、
+  `candidates` 等跨模块只读方法），文案仍为「只有超级管理员可以管理岗位与数字员工目录」。
+  `customer_admin` **一律 `403`**「当前角色不能查看/创建岗位与数字员工」（原口径「四角色一律 403」
+  中业务角色的部分已作废；依据 `docs/contracts/gate-split-review-2026-09-24.md` 与
+  `permission-matrix.md` §3「数字员工」行）；未认证 `401`。权限在仓储层与接口层各强制一次。
 - **租户隔离**：只读写当前租户；他租户的标识按「不存在」处理（`404`），不泄露存在性。
 - **标识规则**：`^[a-z0-9][a-z0-9._-]{0,63}$`；提交前 `strip()` 并转小写（大小写不同视为同一标识）；**创建后不可修改**（任务、知识绑定、运行记录都引用了它）。
 - **停用不删除**：`status` 只有 `active` / `disabled`；停用只影响「能否挂载新员工 / 后续指派」，不撤销既有知识绑定，也不影响历史任务与运行。

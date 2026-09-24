@@ -93,10 +93,26 @@ def test_roster_sorts_by_task_count_then_key() -> None:
     ]
 
 
-def test_roster_requires_super_admin() -> None:
+def test_roster_read_is_open_to_logged_in_users() -> None:
+    """**闸门 2026-09-24 由内联判定收敛为读档**（评审材料 §一 ④）：登录用户可读。
+
+    ⚠️ 知识绑定子源仍走它自己的治理闸门（`ceo` + `super_admin`，V3=A 本批不动）——
+    非治理角色取不到绑定 ⇒ **降级为空绑定**，清单可读但**不含知识库明细**（最小必要）。
+    """
     assert client.get("/api/v1/workforce/roster").status_code == 401
-    assert client.get("/api/v1/workforce/roster", headers=headers(role="ceo")).status_code == 403
-    assert client.get("/api/v1/workforce/roster", headers=headers(role="employee")).status_code == 403
+
+    ceo = client.get("/api/v1/workforce/roster", headers=headers(role="ceo"))
+    assert ceo.status_code == 200
+    # ceo 属知识治理读档 ⇒ 仍看得到知识绑定明细
+    assert any(item["role_knowledge_base_ids"] for item in ceo.json()["items"])
+
+    employee = client.get("/api/v1/workforce/roster", headers=headers(role="employee"))
+    assert employee.status_code == 200
+    # 非治理角色：清单可读，但**不得**返回任何知识库明细
+    assert all(
+        not item["role_knowledge_base_ids"] and not item["agent_knowledge_base_ids"]
+        for item in employee.json()["items"]
+    )
 
 
 def test_roster_is_scoped_to_the_calling_tenant() -> None:

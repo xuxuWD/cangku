@@ -137,7 +137,7 @@ from .workforce import (
 )
 # 目录键的**唯一**归一化实现（去空白 + 小写 + 字符集校验）：绑定面第 12 轮复用同一份，
 # 避免"技能面按原样键存、目录面按小写键判"两套口径（专项方案 §11 裁决 ④A）。
-from .workforce.models import normalize_key
+from .workforce.models import DIRECTORY_ACCESS_ROLES, DigitalEmployeeShare, normalize_key
 from .memory.models import (
     InvalidMemory,
     MemoryBudgetExceeded,
@@ -1340,11 +1340,33 @@ def workforce_roster(context: UserContext = Depends(current_user)) -> WorkforceR
 
     数据来自三个事实源的并集：知识范围里的岗位绑定、数字员工绑定、以及任务中出现过的
     `employee_key`；不含账号 PII，也不提供增删改（编辑走「知识权限管理」）。
+
+    ⚠️ **闸门 2026-09-24 由内联判定收敛为 `_require_directory_reader`**（读档 = 四档业务角色）：
+    原先是函数体内的内联 `role != "super_admin"`，只改共享函数**一点也不会变**它（评审材料 §一 ④）。
+    知识绑定子源仍走**它自己的**治理闸门（`ceo` + `super_admin`，本批不动，见 V3=A）——
+    非治理角色取不到绑定 ⇒ 降级为空绑定（**不 403**：清单本身对登录用户开放），
+    响应因此**不含**该角色的知识库明细（最小必要）。
+
+    ⚠️ **2026-09-24 修复（越权数据出库）**：`keys` 里的**任务计数子源**原先取**租户级全量**
+    （`store.count_by_employee` 不按调用者过滤）⇒ 任意登录身份都能拿到本租户全部数字员工标识
+    + 任务数（含只出现在**他人任务**里、目录中并不存在的键）。现非 `super_admin`
+    **先收敛到 `owner ∪ shares` 可见集**再筛，与 `GET /workforce/agents` 同一口径
+    （`workforce_directory_service.visible_agent_keys`）。
     """
-    if context.role != "super_admin":
-        raise HTTPException(status_code=403, detail="只有超级管理员可以查看岗位与数字员工清单")
-    bindings = knowledge_access_registry.list_bindings(context)
+    _require_directory_reader(context)
+    try:
+        bindings = knowledge_access_registry.list_bindings(context)
+    except PolicyError:
+        bindings = {"role": {}, "agent": {}}
     counts = store.count_by_employee(context.tenant_id)
+    # ⚠️ 过滤在**数据侧**（不是先出库再让前端隐藏）：非 super_admin 只看「归属自己 ∪ 被共享」。
+    visible = workforce_directory_service.visible_agent_keys(context)
+    if visible is not None:
+        counts = {key: count for key, count in counts.items() if key in visible}
+        bindings = {
+            "role": bindings["role"],
+            "agent": {key: ids for key, ids in bindings["agent"].items() if key in visible},
+        }
     keys = set(bindings["role"]) | set(bindings["agent"]) | set(counts)
     items = [
         WorkforceRosterItem(
@@ -1360,8 +1382,36 @@ def workforce_roster(context: UserContext = Depends(current_user)) -> WorkforceR
 
 
 def _require_workforce_directory_admin(context: UserContext) -> None:
+    """**管理档**：仅 `super_admin`（建 / 改岗位、改 / 停用员工、改配置、跨模块只读方法）。"""
     if context.role != "super_admin":
         raise HTTPException(status_code=403, detail="只有超级管理员可以管理岗位与数字员工目录")
+
+
+def _require_directory_reader(context: UserContext) -> None:
+    """**读档**：四档业务角色（`employee` / `department_lead` / `ceo` / `super_admin`）**且已登录**。
+
+    ⚠️ 这一层**只判「谁进得了门」**；「看得见哪些行」由**仓储层**按 `owner ∪ shares`
+    过滤（`list_employees` / `read_agent_config` / `roster` 的计数子源）。
+    在路由层先取全量再筛 = 越权数据已经出库。
+
+    ⚠️ 2026-09-24 修复：原实现只判 `user_id` 非空 ⇒ `customer_admin` 被一并放行，
+    与施工材料 §2「四档角色」及 `permission-matrix.md` §3（数字员工四行 customer_admin 一律 ❌）冲突。
+    """
+    if context.role not in DIRECTORY_ACCESS_ROLES:
+        raise HTTPException(status_code=403, detail="当前角色不能查看岗位与数字员工目录")
+    if not context.user_id:
+        raise HTTPException(status_code=401, detail="请先登录后再查看岗位与数字员工目录")
+
+
+def _require_employee_creator(context: UserContext) -> None:
+    """**创建档**：四档业务角色**且已登录**；归属人由仓储层置为**调用者本人**。
+
+    ⚠️ 2026-09-24 修复：同读档，原实现漏判角色 ⇒ `customer_admin` 可创建数字员工。
+    """
+    if context.role not in DIRECTORY_ACCESS_ROLES:
+        raise HTTPException(status_code=403, detail="当前角色不能创建数字员工")
+    if not context.user_id:
+        raise HTTPException(status_code=401, detail="请先登录后再创建数字员工")
 
 
 def _workforce_status_query(value: str | None) -> str | None:
@@ -1427,6 +1477,9 @@ class DigitalEmployeeView(BaseModel):
     role_key: str
     status: str
     created_by: str
+    # B2（**只增**）：归属人与可见性档位；既有字段与分页口径不变
+    owner_user_id: str
+    visibility: str
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -1444,6 +1497,9 @@ class DigitalEmployeeCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     role_key: str = Field(min_length=1, max_length=64)
     description: str = Field(default="", max_length=200)
+    # B2：归属人。**仅 `super_admin` 可指定**；非管理员传了也会被服务端置为调用者本人
+    # （一切输入默认不可信 —— 归属人由服务端决定，见 `store._resolve_owner`）。
+    owner_user_id: str | None = Field(default=None, max_length=128)
 
 
 class DigitalEmployeeUpdateRequest(BaseModel):
@@ -1481,6 +1537,8 @@ def _digital_employee_view(employee: DigitalEmployee) -> DigitalEmployeeView:
         role_key=employee.role_key,
         status=employee.status.value,
         created_by=employee.created_by,
+        owner_user_id=employee.owner_user_id,
+        visibility=employee.visibility,
         created_at=employee.created_at,
         updated_at=employee.updated_at,
     )
@@ -1493,8 +1551,8 @@ def list_workforce_roles(
     offset: int = Query(default=0, ge=0),
     context: UserContext = Depends(current_user),
 ) -> JobRoleListView:
-    """岗位目录列表：仅超级管理员、严格本租户、必须分页。"""
-    _require_workforce_directory_admin(context)
+    """岗位目录列表：登录用户可读（**非管理员只看到启用岗位**，V1=C）；严格本租户、必须分页。"""
+    _require_directory_reader(context)
     items, total = workforce_directory_service.list_roles(
         context, status=_workforce_status_query(role_status), limit=limit, offset=offset
     )
@@ -1545,8 +1603,9 @@ def list_workforce_agents(
     offset: int = Query(default=0, ge=0),
     context: UserContext = Depends(current_user),
 ) -> DigitalEmployeeListView:
-    """数字员工目录列表：可按状态与所属岗位过滤；仅超级管理员、严格本租户、必须分页。"""
-    _require_workforce_directory_admin(context)
+    """数字员工目录列表：可按状态与所属岗位过滤；登录用户可读、**按 owner ∪ shares 过滤**、
+    严格本租户、必须分页（`super_admin` 为管理视角，看本租户全部）。"""
+    _require_directory_reader(context)
     try:
         items, total = workforce_directory_service.list_employees(
             context,
@@ -1570,8 +1629,12 @@ def list_workforce_agents(
 def create_workforce_agent(
     payload: DigitalEmployeeCreateRequest, context: UserContext = Depends(current_user)
 ) -> DigitalEmployeeView:
-    """新建数字员工：标识重复 409，所属岗位不存在或已停用 409。"""
-    _require_workforce_directory_admin(context)
+    """新建数字员工：标识重复 409，所属岗位不存在或已停用 409。
+
+    **创建档**（登录用户）。归属人由**服务端**决定：非管理员恒为调用者本人，
+    `super_admin` 可指定 `owner_user_id`（缺省仍为调用者本人）。
+    """
+    _require_employee_creator(context)
     try:
         employee = workforce_directory_service.create_employee(
             context,
@@ -1579,6 +1642,7 @@ def create_workforce_agent(
             name=payload.name,
             role_key=payload.role_key,
             description=payload.description,
+            owner_user_id=payload.owner_user_id,
         )
     except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
         _raise_directory_http(exc)
@@ -1767,6 +1831,9 @@ class AgentConfigView(BaseModel):
     risk_threshold: str
     approval_timeout_minutes: int
     daily_budget_cents: int
+    # B2（**只增**）：归属人与可见性档位 —— 归属人读自己的配置时能确认归属
+    owner_user_id: str
+    visibility: str
     updated_at: datetime | None = None
 
 
@@ -1823,6 +1890,8 @@ def _agent_config_view(employee: DigitalEmployee) -> AgentConfigView:
         risk_threshold=employee.risk_threshold,
         approval_timeout_minutes=employee.approval_timeout_minutes,
         daily_budget_cents=employee.daily_budget_cents,
+        owner_user_id=employee.owner_user_id,
+        visibility=employee.visibility,
         updated_at=employee.updated_at,
     )
 
@@ -3061,8 +3130,13 @@ def save_skill_experience(
 def read_workforce_agent_config(
     agent_key: str, context: UserContext = Depends(current_user)
 ) -> AgentConfigView:
-    """读数字员工配置；仅超级管理员，跨租户按不存在处理（404）。"""
-    _require_workforce_directory_admin(context)
+    """读数字员工配置：**仅归属人 ∪ `super_admin`**（V4=A：`use` 档成员亦不可读）；
+    跨租户 / 非归属人一律 `403`（`_raise_directory_http` 把 `PolicyError` 映射过去）。
+
+    ⚠️ 归属判定在**仓储层**（`store.read_agent_config`）—— 它才知道「这一行属于谁」；
+    路由层只判「是不是登录用户」。
+    """
+    _require_directory_reader(context)
     try:
         employee = agent_config_service.read_config(context, agent_key)
     except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
@@ -3086,6 +3160,106 @@ def update_workforce_agent_config(
     except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
         _raise_directory_http(exc)
     return _agent_config_view(employee)
+
+
+# ------------------------------------------------------------ B2 共享管理（契约 C4 · 迁移 045）
+
+
+class DigitalEmployeeShareView(BaseModel):
+    """共享视图：只含**被授权人标识与档位**，不含姓名 / 手机号（最小必要）。"""
+
+    grantee_user_id: str
+    permission: str
+    granted_by: str
+    granted_at: datetime | None = None
+
+
+class DigitalEmployeeShareListView(BaseModel):
+    items: list[DigitalEmployeeShareView]
+    total: int
+    limit: int
+    offset: int
+
+
+class DigitalEmployeeShareCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    grantee_user_id: str = Field(min_length=1, max_length=128)
+    permission: str = Field(pattern="^(read|use)$")
+
+
+def _employee_share_view(share: DigitalEmployeeShare) -> DigitalEmployeeShareView:
+    return DigitalEmployeeShareView(
+        grantee_user_id=share.grantee_user_id,
+        permission=share.permission,
+        granted_by=share.granted_by,
+        granted_at=share.granted_at,
+    )
+
+
+@app.post(
+    "/api/v1/workforce/agents/{agent_key}/shares",
+    response_model=DigitalEmployeeShareView,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_workforce_agent_share(
+    agent_key: str,
+    payload: DigitalEmployeeShareCreateRequest,
+    context: UserContext = Depends(current_user),
+) -> DigitalEmployeeShareView:
+    """添加共享（B2 契约 C4）：**仅归属人**；他人 / 跨租户 `404`（不泄露存在性）；档位非法 `422`。
+
+    同一 `(员工, 被授权人)` 重复添加 = **覆盖档位**（幂等一行）；审计 `workforce.agent.share.added`。
+    """
+    _require_directory_reader(context)
+    try:
+        share = workforce_directory_service.add_share(
+            context,
+            agent_key,
+            grantee_user_id=payload.grantee_user_id,
+            permission=payload.permission,
+        )
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return _employee_share_view(share)
+
+
+@app.get("/api/v1/workforce/agents/{agent_key}/shares", response_model=DigitalEmployeeShareListView)
+def list_workforce_agent_shares(
+    agent_key: str,
+    limit: int = Query(default=200, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    context: UserContext = Depends(current_user),
+) -> DigitalEmployeeShareListView:
+    """列出共享者（B2 契约 C4）：**仅归属人**；他人 / 跨租户 `404`；必须分页（`limit` 1–200 + `offset` + `total`）。"""
+    _require_directory_reader(context)
+    try:
+        items, total = workforce_directory_service.list_shares(
+            context, agent_key, limit=limit, offset=offset
+        )
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return DigitalEmployeeShareListView(
+        items=[_employee_share_view(item) for item in items], total=total, limit=limit, offset=offset
+    )
+
+
+@app.delete(
+    "/api/v1/workforce/agents/{agent_key}/shares/{grantee_user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def remove_workforce_agent_share(
+    agent_key: str, grantee_user_id: str, context: UserContext = Depends(current_user)
+) -> Response:
+    """撤销共享（B2 契约 C4）：**仅归属人**；他人 / 跨租户 `404`。
+
+    **幂等**：复删 / 目标不是共享者一律 `204`（no-op，**不重复写审计**）。
+    """
+    _require_directory_reader(context)
+    try:
+        workforce_directory_service.remove_share(context, agent_key, grantee_user_id)
+    except (DirectoryError, DirectoryNotFound, PolicyError) as exc:
+        _raise_directory_http(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _knowledge_access_view(binding_type: str, binding_key: str, knowledge_base_ids: set[str]) -> dict[str, object]:
@@ -4286,6 +4460,9 @@ def create_task(
         )
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PolicyError as exc:
+        # 派活闸门（`_store_new_task` 内）：非归属人 / 非 `use` 档 ⇒ 403。
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not created:
         response.status_code = status.HTTP_200_OK
     return to_view(stored)
@@ -4307,7 +4484,13 @@ def _store_new_task(
 
     纪律：审批判定与幂等语义只有这一处（不另写一套），因此「存成任务」走的治理闸门、
     指纹比对、事件发布与手工创建**逐条同源**。
+
+    ⚠️ 2026-09-24 修复：**派活闸门也在这一处**（`ensure_can_dispatch`）—— 此前本路径
+    **从不校验** `employee_key` 的归属 / 共享，`read` 档成员与零共享同事都能用他人的
+    纳管员工建任务（`use` = 能派活、`read` = 不能派活 在可执行路径上形同虚设）。
+    越过 ⇒ `PolicyError`（HTTP 层映射 `403`）。
     """
+    workforce_directory_service.ensure_can_dispatch(context, agent_key=employee_key)
     # 审批判定收敛到 workforce 服务一处（段一规格 §2.2）：有纳管员工按其治理配置，
     # 否则回落「风险不低于 high 即审批」的既有口径。
     requires_approval = workforce_directory_service.task_requires_approval(

@@ -186,17 +186,45 @@ def test_list_agents_filters_and_paginates() -> None:
 # ------------------------------------------------------------ 权限与租户隔离
 
 
-def test_directory_endpoints_require_super_admin() -> None:
+def test_directory_management_requires_super_admin_but_read_is_open() -> None:
+    """未登录一律 401；**读档**自 2026-09-24 闸门拆分起对**四档业务角色**放开，**管理档不变**。
+
+    口径源：`docs/contracts/gate-split-review-2026-09-24.md`（V1=C / V3=A）
+    + 施工材料 §2「四档角色」：`customer_admin` **不在**目录面（读 / 创建）白名单内，
+    与 `permission-matrix.md` §3「数字员工」四行 `customer_admin` 一律 ❌ 一致。
+    """
     assert client.get("/api/v1/workforce/roles").status_code == 401
     assert client.post("/api/v1/workforce/roles", json={"role_key": "content-operator", "name": "岗位"}).status_code == 401
     assert client.get("/api/v1/workforce/candidates").status_code == 401
 
-    for role in ("ceo", "customer_admin", "employee", "department_lead"):
-        assert client.get("/api/v1/workforce/roles", headers=headers(role=role)).status_code == 403
-        assert client.get("/api/v1/workforce/agents", headers=headers(role=role)).status_code == 403
+    for role in ("ceo", "employee", "department_lead"):
+        # ⚠️ 行为按设计变更（闸门拆分）：读档放开 —— 普通员工读目录不再 403（B2 前置）。
+        assert client.get("/api/v1/workforce/roles", headers=headers(role=role)).status_code == 200
+        assert client.get("/api/v1/workforce/agents", headers=headers(role=role)).status_code == 200
+        # 管理档与跨模块只读方法**逐字不变**
         assert client.get("/api/v1/workforce/candidates", headers=headers(role=role)).status_code == 403
         assert client.post("/api/v1/workforce/roles", headers=headers(role=role), json={"role_key": "content-operator", "name": "岗位"}).status_code == 403
         assert client.patch("/api/v1/workforce/roles/content-operator", headers=headers(role=role), json={"name": "岗位"}).status_code == 403
+
+
+def test_customer_admin_is_excluded_from_the_directory_faces() -> None:
+    """`customer_admin` 在**读档 / 创建档**一律 403（2026-09-24 修复）。
+
+    ⚠️ 原实现只判 `user_id` 非空 ⇒ `customer_admin` 可读目录、也可 `POST /workforce/agents`
+    创建数字员工，与 `permission-matrix.md` §3（数字员工四行 `customer_admin` 全 ❌）
+    及施工材料「四档角色」口径冲突。本用例同时钉住**写路径**（此前无人守护）。
+    """
+    admin = headers(role="customer_admin", user_id="u-ca")
+
+    assert client.get("/api/v1/workforce/roles", headers=admin).status_code == 403
+    assert client.get("/api/v1/workforce/agents", headers=admin).status_code == 403
+    assert client.get("/api/v1/workforce/roster", headers=admin).status_code == 403
+    # 写路径：读档 / 创建档 / 管理档**三档全拒**
+    assert client.post(
+        "/api/v1/workforce/agents",
+        headers=admin,
+        json={"agent_key": "ca-agent", "name": "越权", "role_key": "content-operator"},
+    ).status_code == 403
 
 
 def test_directory_is_scoped_to_the_calling_tenant() -> None:
@@ -226,6 +254,68 @@ def test_candidates_list_unmanaged_identifiers_then_shrink_after_adoption() -> N
     # content-operator 作为「岗位」已纳管，但任务里仍把它当作 employee_key 使用，
     # 因此它仍留在员工候选里（命名不对齐是已登记的已知限制，不在这里静默合并）。
     assert after == {"roles": [], "agents": ["content-operator", "unbound-agent"]}
+
+
+# ------------------------------------------------------------ B2 共享管理（契约 C4 · 迁移 045）
+
+
+def test_share_endpoints_are_owner_only_and_paged() -> None:
+    create_role()
+    created = client.post(
+        "/api/v1/workforce/agents",
+        headers=headers(),
+        json={
+            "agent_key": "content-writer",
+            "name": "员工",
+            "role_key": "content-operator",
+            "owner_user_id": "u-owner",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["owner_user_id"] == "u-owner"
+    assert created.json()["visibility"] == "private"
+
+    owner = headers(role="employee", user_id="u-owner")
+    other = headers(role="employee", user_id="u-other")
+    path = "/api/v1/workforce/agents/content-writer/shares"
+
+    # 仅归属人可增：他人 404（不泄露存在性）；档位非法 / 未知字段 422
+    assert client.post(path, headers=other, json={"grantee_user_id": "u-x", "permission": "read"}).status_code == 404
+    assert client.post(path, headers=owner, json={"grantee_user_id": "u-x", "permission": "admin"}).status_code == 422
+    assert client.post(path, headers=owner, json={"grantee_user_id": "u-x", "permission": "read", "extra": 1}).status_code == 422
+
+    added = client.post(path, headers=owner, json={"grantee_user_id": "u-sharee", "permission": "read"})
+    assert added.status_code == 201
+    assert set(added.json()) == {"grantee_user_id", "permission", "granted_by", "granted_at"}
+    assert added.json()["granted_by"] == "u-owner"
+
+    listed = client.get(path, headers=owner, params={"limit": 1, "offset": 0})
+    assert listed.status_code == 200
+    body = listed.json()
+    assert (body["total"], body["limit"], body["offset"]) == (1, 1, 0)
+    assert [item["grantee_user_id"] for item in body["items"]] == ["u-sharee"]
+    assert client.get(path, headers=owner, params={"limit": 0}).status_code == 422
+    assert client.get(path, headers=other).status_code == 404
+
+    # 幂等撤销：成功 204；复删仍 204 且**不重复写审计**
+    assert client.delete(f"{path}/u-sharee", headers=other).status_code == 404
+    assert client.delete(f"{path}/u-sharee", headers=owner).status_code == 204
+    assert client.delete(f"{path}/u-sharee", headers=owner).status_code == 204
+    assert client.get(path, headers=owner).json()["total"] == 0
+
+    added_records, added_total = main.audit_service.query(
+        "t-1", actions=[AuditAction.WORKFORCE_AGENT_SHARE_ADDED]
+    )
+    assert added_total == 1
+    assert added_records[0].detail == {
+        "agent_key": "content-writer",
+        "grantee_user_id": "u-sharee",
+        "permission": "read",
+    }
+    _removed, removed_total = main.audit_service.query(
+        "t-1", actions=[AuditAction.WORKFORCE_AGENT_SHARE_REMOVED]
+    )
+    assert removed_total == 1
 
 
 # ------------------------------------------------------------ 审计

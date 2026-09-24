@@ -13,6 +13,7 @@ from app.workforce.models import (
     DirectoryNotFound,
     InvalidDirectoryKey,
     InvalidDirectoryName,
+    InvalidShare,
     RoleNotAvailable,
 )
 from app.workforce.store import (
@@ -23,6 +24,8 @@ from app.workforce.store import (
 ADMIN = UserContext("t-1", "admin-1", "super_admin")
 OTHER_ADMIN = UserContext("t-2", "admin-2", "super_admin")
 CEO = UserContext("t-1", "ceo-1", "ceo")
+OWNER_EMPLOYEE = UserContext("t-1", "u-owner", "employee")
+OTHER_EMPLOYEE = UserContext("t-1", "u-other", "employee")
 
 
 # ------------------------------------------------------------ 标识与名称规范化
@@ -65,13 +68,18 @@ def test_create_role_conflicts_on_duplicate_key() -> None:
         store.create_role(ADMIN, role_key="Content-Operator", name="重复岗位")
 
 
-def test_directory_requires_super_admin() -> None:
+def test_directory_management_requires_super_admin() -> None:
+    """管理档仍仅超管；**读档**（`list_roles`）自 2026-09-24 闸门拆分起对登录用户放开。
+
+    口径源：`docs/contracts/gate-split-review-2026-09-24.md`（V1=C）。
+    """
     store = InMemoryWorkforceDirectoryStore()
 
     with pytest.raises(PolicyError):
         store.create_role(CEO, role_key="content-operator", name="岗位")
-    with pytest.raises(PolicyError):
-        store.list_roles(CEO)
+    # ⚠️ 行为按设计变更：读档放开 ⇒ 登录用户不再被拒（岗位列表只返回 active，此处空库 ⇒ 空结果）。
+    assert store.list_roles(CEO) == ([], 0)
+    # 跨模块只读方法（V3=A）**不动**
     with pytest.raises(PolicyError):
         store.known_keys(CEO)
 
@@ -196,6 +204,101 @@ def test_known_keys_includes_disabled_and_scopes_tenant() -> None:
     assert agent_keys == {"content-writer"}
 
 
+# ------------------------------------------------------------ B2 归属与共享（迁移 045）
+
+
+def _seed_owned_store() -> InMemoryWorkforceDirectoryStore:
+    store = InMemoryWorkforceDirectoryStore()
+    store.create_role(ADMIN, role_key="content-operator", name="自媒体运营岗")
+    store.create_employee(
+        ADMIN,
+        agent_key="content-writer",
+        name="内容创作",
+        role_key="content-operator",
+        owner_user_id="u-owner",
+    )
+    return store
+
+
+def test_employee_creation_resolves_owner_server_side() -> None:
+    """归属人**由服务端决定**（一切输入默认不可信）：非管理员恒为自己，`super_admin` 可指定。"""
+    store = InMemoryWorkforceDirectoryStore()
+    store.create_role(ADMIN, role_key="content-operator", name="自媒体运营岗")
+
+    # 员工侧：请求体指定他人 ⇒ 被服务端覆盖回自己
+    mine = store.create_employee(
+        OWNER_EMPLOYEE, agent_key="mine", name="我的", role_key="content-operator", owner_user_id="u-other"
+    )
+    assert mine.owner_user_id == "u-owner"
+    assert store.list_employees(OWNER_EMPLOYEE)[0] == [mine]
+    assert store.list_employees(OTHER_EMPLOYEE) == ([], 0)
+
+    # 管理员：可指定归属人
+    theirs = store.create_employee(
+        ADMIN, agent_key="theirs", name="他的", role_key="content-operator", owner_user_id="u-other"
+    )
+    assert theirs.owner_user_id == "u-other"
+    # 管理员不指定 ⇒ 归自己
+    admin_own = store.create_employee(ADMIN, agent_key="admin-own", name="管理员的", role_key="content-operator")
+    assert admin_own.owner_user_id == "admin-1"
+    # `super_admin` 是管理视角：看得到本租户全部
+    assert {item.agent_key for item in store.list_employees(ADMIN)[0]} == {"mine", "theirs", "admin-own"}
+
+
+def test_shares_extend_visibility_and_are_owner_scoped() -> None:
+    store = _seed_owned_store()
+
+    share = store.add_share(OWNER_EMPLOYEE, "content-writer", grantee_user_id="u-sharee", permission="use")
+    assert (share.grantee_user_id, share.permission, share.granted_by) == ("u-sharee", "use", "u-owner")
+
+    # 被授权人可见；无关同事不可见
+    assert [
+        item.agent_key
+        for item in store.list_employees(UserContext("t-1", "u-sharee", "employee"))[0]
+    ] == ["content-writer"]
+    assert store.list_employees(OTHER_EMPLOYEE) == ([], 0)
+
+    # 仅归属人可管理：他人 / 跨租户一律 404（不泄露存在性）
+    with pytest.raises(DirectoryNotFound):
+        store.add_share(OTHER_EMPLOYEE, "content-writer", grantee_user_id="u-x", permission="read")
+    with pytest.raises(DirectoryNotFound):
+        store.add_share(
+            UserContext("t-2", "u-owner", "employee"), "content-writer", grantee_user_id="u-x", permission="read"
+        )
+    with pytest.raises(DirectoryNotFound):
+        store.list_shares(OTHER_EMPLOYEE, "content-writer")
+    with pytest.raises(DirectoryNotFound):
+        store.remove_share(OTHER_EMPLOYEE, "content-writer", "u-sharee")
+    # `super_admin` 亦不例外（共享归归属人管；管理员处置员工走 update_employee）
+    with pytest.raises(DirectoryNotFound):
+        store.add_share(ADMIN, "content-writer", grantee_user_id="u-x", permission="read")
+
+    items, total = store.list_shares(OWNER_EMPLOYEE, "content-writer")
+    assert (total, [item.grantee_user_id for item in items]) == (1, ["u-sharee"])
+
+    # 幂等：复删 / 本就不是共享者 ⇒ False（调用方据此不重复写审计）
+    assert store.remove_share(OWNER_EMPLOYEE, "content-writer", "u-nobody") is False
+    assert store.remove_share(OWNER_EMPLOYEE, "content-writer", "u-sharee") is True
+    assert store.remove_share(OWNER_EMPLOYEE, "content-writer", "u-sharee") is False
+    assert store.list_shares(OWNER_EMPLOYEE, "content-writer")[1] == 0
+
+
+@pytest.mark.parametrize("permission", ["admin", "", "READ", " read", "use,read"])
+def test_add_share_rejects_invalid_permission(permission: str) -> None:
+    """档位**逐字**匹配（与路由层 `pattern` 同口径，不做 strip / lower 归一）。"""
+    store = _seed_owned_store()
+
+    with pytest.raises(InvalidShare):
+        store.add_share(OWNER_EMPLOYEE, "content-writer", grantee_user_id="u-x", permission=permission)
+
+
+def test_add_share_rejects_blank_grantee() -> None:
+    store = _seed_owned_store()
+
+    with pytest.raises(InvalidShare):
+        store.add_share(OWNER_EMPLOYEE, "content-writer", grantee_user_id="   ", permission="read")
+
+
 # ------------------------------------------------------------ PostgreSQL 实现
 
 
@@ -289,7 +392,8 @@ def test_postgres_create_employee_checks_role_status_before_insert() -> None:
 
 
 def test_postgres_list_employees_applies_filters_and_count() -> None:
-    row = ("t-1", "content-writer", "内容创作", "", "content-operator", "active", "admin-1", None, None)
+    # 迁移 045 起员工读模型末尾追加 `owner_user_id` / `visibility`（**追加在末尾**，既有列序号不变）。
+    row = ("t-1", "content-writer", "内容创作", "", "content-operator", "active", "admin-1", None, None, "admin-1", "private")
     # 假连接按真实 psycopg 的形状返回：fetchall → 行列表，fetchone → 单个行元组。
     connection = RecordingConnection([[row], (1,)])
 
@@ -302,10 +406,13 @@ def test_postgres_list_employees_applies_filters_and_count() -> None:
     assert "AND role_key = %s" in statements[0][0]
     assert "AND status = %s" in statements[0][0]
     assert "LIMIT %s OFFSET %s" in statements[0][0]
+    # `super_admin` 是管理视角 ⇒ **不加**可见性过滤（故无额外参数）
     assert statements[0][1] == ("t-1", "content-operator", "active", 10, 0)
     assert "SELECT COUNT(*) FROM workbench_digital_employees" in statements[1][0]
     assert total == 1
     assert [item.agent_key for item in items] == ["content-writer"]
+    assert items[0].owner_user_id == "admin-1"
+    assert items[0].visibility == "private"
 
 
 def test_postgres_known_keys_queries_both_tables_scoped_by_tenant() -> None:
@@ -320,6 +427,162 @@ def test_postgres_known_keys_queries_both_tables_scoped_by_tenant() -> None:
     assert statements[1][1] == ("t-1",)
     assert role_keys == {"content-operator"}
     assert agent_keys == {"content-writer"}
+
+
+def test_postgres_list_employees_pushes_visibility_filter_into_sql() -> None:
+    """非 `super_admin` 的可见性过滤**下推 SQL**（不是取全量再筛）——两套实现同口径。"""
+    row = ("t-1", "content-writer", "内容创作", "", "content-operator", "active", "admin-1", None, None, "u-owner", "private")
+    connection = RecordingConnection([[row], (1,)])
+
+    items, total = PostgresWorkforceDirectoryStore(connection).list_employees(OWNER_EMPLOYEE, limit=10)
+
+    statement, params = connection.cursor_instance.statements[0]
+    assert "owner_user_id = %s" in statement
+    assert "workbench_employee_shares" in statement
+    # 归属人参数出现两次（owner 判定 + 共享子查询的 grantee 判定），租户外层参数一次
+    assert params == ("t-1", "u-owner", "t-1", "u-owner", 10, 0)
+    assert total == 1
+    assert [item.agent_key for item in items] == ["content-writer"]
+    assert items[0].owner_user_id == "u-owner"
+
+
+def test_postgres_create_employee_writes_server_resolved_owner() -> None:
+    """员工侧创建：`owner_user_id` 由服务端置为调用者本人并**写入该列**。"""
+    row = ("t-1", "content-writer", "内容创作", "", "content-operator", "active", "u-owner", None, None, "u-owner", "private")
+    connection = RecordingConnection([("active",), row])
+
+    employee = PostgresWorkforceDirectoryStore(connection).create_employee(
+        OWNER_EMPLOYEE, agent_key="content-writer", name="内容创作", role_key="content-operator"
+    )
+
+    statement, params = connection.cursor_instance.statements[1]
+    assert "INSERT INTO workbench_digital_employees" in statement
+    assert "owner_user_id" in statement.split("VALUES")[0]
+    assert params == ("t-1", "content-writer", "内容创作", "", "content-operator", "active", "u-owner", "u-owner")
+    assert employee.owner_user_id == "u-owner"
+
+
+def test_postgres_agent_config_columns_map_after_trunk_columns() -> None:
+    """迁移 045 起配置列**整体后移两位**（`owner_user_id` / `visibility` 插在员工列之后）。
+
+    用一条满列行钉住 `_hydrate_agent_config` 的下标 —— 错位会**静默串字段**
+    （把提示词读成模型键之类），这类错在假连接测试之外很难被发现。
+    """
+    row = (
+        "t-1", "content-writer", "内容创作", "", "content-operator", "active", "admin-1", None, None,
+        "u-owner", "private",
+        "提示词", "deepseek-chat", 0.5, ["knowledge_search"], {"short_term_enabled": True},
+        "full_auto", "critical", 30, 1234,
+    )
+    connection = RecordingConnection([row])
+
+    employee = PostgresWorkforceDirectoryStore(connection).read_agent_config(ADMIN, "content-writer")
+
+    statement, params = connection.cursor_instance.statements[0]
+    assert "owner_user_id, visibility, system_prompt" in statement
+    assert params == ("t-1", "content-writer")
+    assert employee.owner_user_id == "u-owner"
+    assert employee.visibility == "private"
+    assert employee.system_prompt == "提示词"
+    assert employee.model_key == "deepseek-chat"
+    assert employee.temperature == 0.5
+    assert employee.tool_allowlist == ("knowledge_search",)
+    assert employee.memory_policy == {"short_term_enabled": True}
+    assert employee.autonomy_level == "full_auto"
+    assert employee.risk_threshold == "critical"
+    assert employee.approval_timeout_minutes == 30
+    assert employee.daily_budget_cents == 1234
+
+
+def test_postgres_share_management_requires_ownership() -> None:
+    """PG 侧同口径：他人 / 跨租户 `DirectoryNotFound`（不泄露存在性），查的是 `owner_user_id`。"""
+    connection = RecordingConnection([("u-someone-else",)])
+    store = PostgresWorkforceDirectoryStore(connection)
+
+    with pytest.raises(DirectoryNotFound):
+        store.add_share(OWNER_EMPLOYEE, "content-writer", grantee_user_id="u-x", permission="read")
+
+    assert "SELECT owner_user_id FROM workbench_digital_employees" in connection.cursor_instance.statements[0][0]
+    # 归属人不符 ⇒ 不得继续写共享行
+    assert len(connection.cursor_instance.statements) == 1
+
+
+# ------------------------------------------------------------ 可见性 / 配置读档（2026-09-24 修复）
+
+
+def _agent_config_row(owner: str):
+    return (
+        "t-1", "content-writer", "内容创作", "", "content-operator", "active", "admin-1", None, None,
+        owner, "private",
+        "提示词", "deepseek-chat", 0.5, ["knowledge_search"], {"short_term_enabled": True},
+        "full_auto", "critical", 30, 1234,
+    )
+
+
+def test_postgres_config_read_allows_read_share() -> None:
+    """`read` 档读 config：PG 侧也要查共享表并放行（与内存实现同口径）。"""
+    connection = RecordingConnection([_agent_config_row("u-owner"), ("read",)])
+    reader = UserContext("t-1", "u-read", "employee")
+
+    employee = PostgresWorkforceDirectoryStore(connection).read_agent_config(reader, "content-writer")
+
+    assert employee.agent_key == "content-writer"
+    statements = connection.cursor_instance.statements
+    assert "SELECT permission FROM workbench_employee_shares" in statements[1][0]
+    assert statements[1][1] == ("t-1", "content-writer", "u-read")
+
+
+def test_postgres_config_read_rejects_use_share() -> None:
+    """`use` 档**不可读** config（V4=A）——两档必须真的不同。"""
+    connection = RecordingConnection([_agent_config_row("u-owner"), ("use",)])
+    user = UserContext("t-1", "u-use", "employee")
+
+    with pytest.raises(PolicyError):
+        PostgresWorkforceDirectoryStore(connection).read_agent_config(user, "content-writer")
+
+
+def test_postgres_visible_agent_keys_owner_union_shares() -> None:
+    """`visible_agent_keys` 下推 SQL（`owner ∪ shares`）；`super_admin` 不受限且不查库。"""
+    connection = RecordingConnection([[("a-owner",), ("shared-agent",)]])
+
+    keys = PostgresWorkforceDirectoryStore(connection).visible_agent_keys(OWNER_EMPLOYEE)
+
+    assert keys == {"a-owner", "shared-agent"}
+    statement, params = connection.cursor_instance.statements[0]
+    assert "workbench_employee_shares" in statement
+    assert params == ("t-1", "u-owner", "t-1", "u-owner")
+
+    unrestricted = RecordingConnection([])
+    assert PostgresWorkforceDirectoryStore(unrestricted).visible_agent_keys(ADMIN) is None
+    assert unrestricted.cursor_instance.statements == []
+
+
+@pytest.mark.parametrize("role", ["employee", "department_lead", "ceo", "super_admin"])
+def test_directory_read_roles_are_the_four_business_roles(role: str) -> None:
+    """读档 / 创建档白名单 = 四档业务角色（施工材料 §2）；`super_admin` 亦可读。"""
+    store = InMemoryWorkforceDirectoryStore()
+
+    assert store.list_roles(UserContext("t-1", f"u-{role}", role)) == ([], 0)
+
+
+def test_customer_admin_is_excluded_from_directory_read_and_create() -> None:
+    """`customer_admin` 不在目录面（读 / 创建）白名单（2026-09-24 修复）。
+
+    依据：`permission-matrix.md` §3「数字员工」四行 `customer_admin` 一律 ❌
+    + 施工材料 §2「四档角色」。
+    """
+    store = InMemoryWorkforceDirectoryStore()
+    ca = UserContext("t-1", "ca-1", "customer_admin")
+
+    with pytest.raises(PolicyError):
+        store.list_roles(ca)
+    with pytest.raises(PolicyError):
+        store.list_employees(ca)
+    with pytest.raises(PolicyError):
+        store.create_employee(ca, agent_key="ca-agent", name="越权", role_key="content-operator")
+    # 管理档 / 跨模块只读方法本就不放行（逐字不变）
+    with pytest.raises(PolicyError):
+        store.known_keys(ca)
 
 
 # ------------------------------------------------------------ 可用性判定（阶段 2 写路径闸门）

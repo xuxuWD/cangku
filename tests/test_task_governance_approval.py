@@ -51,7 +51,17 @@ def create_employee(
     autonomy_level: str,
     risk_threshold: str,
 ) -> None:
-    store.create_employee(ADMIN, agent_key=agent_key, name=f"员工-{agent_key}", role_key="content-operator")
+    # ⚠️ 2026-09-24：纳管员工的归属人必须是**派活的调用者**（`u-1`，见 `headers`）——
+    # 本文件用例统一由 `ceo` / `super_admin` 以 `u-1` 建任务，而新增的**派活闸门**
+    # （`_store_new_task` → `ensure_can_dispatch`）要求非超管只能派「归属自己 ∪ `use` 共享」的员工。
+    # 本文件考的是**治理判定**（自治档 × 风险档 ⇒ 是否待批），不是归属，故把 owner 对齐到调用者。
+    store.create_employee(
+        ADMIN,
+        agent_key=agent_key,
+        name=f"员工-{agent_key}",
+        role_key="content-operator",
+        owner_user_id="u-1",
+    )
     store.update_agent_config(
         ADMIN, agent_key, autonomy_level=autonomy_level, risk_threshold=risk_threshold
     )

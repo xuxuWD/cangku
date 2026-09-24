@@ -1,7 +1,9 @@
 """数字员工配置的写入闸门：D11 提示词防护 + 取值校验 + 审计。
 
 🔴 D11：提示词必须在**写入阶段**拦截，不允许留到运行期。
-🔴 只有 `super_admin` 可读写（与岗位/数字员工目录管理同权限）。
+🔴 写配置**仅 `super_admin`**（与岗位/数字员工目录的管理档同权限）；
+   读配置为**归属人 ∪ `super_admin`**（V4=A：`use` 档成员亦不可读），
+   该判定在**仓储层**（需要「这一行属于谁」，路由层拿不到）。
 """
 
 from __future__ import annotations
@@ -243,7 +245,11 @@ class AgentConfigService:
         self.allowed_tools = frozenset(allowed_tools)
 
     def read_config(self, context: UserContext, agent_key: str) -> DigitalEmployee:
-        _ensure_admin(context)
+        """读配置：**仅归属人 ∪ `super_admin`**（V4=A）。
+
+        闸门**在仓储层**（`store.read_agent_config`）—— 因为它需要「这一行属于谁」，
+        路由层拿不到；这里不再另判一次角色，避免两层口径漂移。
+        """
         employee = self.store.read_agent_config(context, agent_key)
         self._record(
             context,

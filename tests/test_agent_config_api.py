@@ -51,12 +51,37 @@ def test_config_endpoints_require_authentication() -> None:
     assert client.patch(DEFAULT_PATH, json={"model_key": "deepseek-chat"}).status_code == 401
 
 
-def test_config_endpoints_require_super_admin() -> None:
+def test_config_read_requires_ownership_and_update_requires_super_admin() -> None:
+    """2026-09-24 闸门拆分（V4=A）：读配置 = **归属人 ∪ 超管**；写配置仍**仅超管**。
+
+    ⚠️ 原用例用 `headers(role=role)`（`user_id` 仍是**归属人** `admin-1`）—— 归属人读自己的配置
+    本就该放行，故此处改用**非归属人**账号，才测得到「非归属人不可读」。
+    """
     for role in ("ceo", "department_lead", "employee", "customer_admin"):
-        assert client.get(DEFAULT_PATH, headers=headers(role=role)).status_code == 403
+        assert client.get(DEFAULT_PATH, headers=headers(role=role, user_id=f"u-{role}")).status_code == 403
         assert client.patch(
-            DEFAULT_PATH, headers=headers(role=role), json={"model_key": "deepseek-chat"}
+            DEFAULT_PATH, headers=headers(role=role, user_id=f"u-{role}"), json={"model_key": "deepseek-chat"}
         ).status_code == 403
+
+
+def test_config_owner_can_read_own_config_regardless_of_role(_isolate) -> None:
+    """**拆闸门后的新行为**：归属人（任意角色，非超管）可读**自己的**配置。"""
+    directory_store, _audit_store = _isolate
+    directory_store.create_employee(
+        ADMIN,
+        agent_key="own-agent",
+        name="我的员工",
+        role_key="content-operator",
+        owner_user_id="u-employee",
+    )
+
+    response = client.get(
+        "/api/v1/workforce/agents/own-agent/config",
+        headers=headers(role="employee", user_id="u-employee"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["owner_user_id"] == "u-employee"
 
 
 def test_config_is_scoped_to_the_calling_tenant_and_reports_missing() -> None:

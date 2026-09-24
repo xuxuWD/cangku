@@ -91,6 +91,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'workforce.agent.config.read': '数字员工配置已查看',
   'workforce.agent.config.updated': '数字员工配置已更新',
   'workforce.agent.config.rejected': '数字员工配置被拒绝',
+  'workforce.agent.share.added': '数字员工已共享',
+  'workforce.agent.share.removed': '数字员工共享已撤销',
   'tool.executed': '工具已执行',
   'tool.blocked': '工具执行被拦截',
   'commercial.retention.updated': '保留策略已更新',

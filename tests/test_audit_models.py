@@ -111,7 +111,12 @@ def test_action_values_are_stable_strings() -> None:
     assert AuditAction.COMMERCIAL_RETENTION_PURGED.value == "commercial.retention.purged"
     # 第 13 轮（2026-09-21）：一个动作码（审计导出留痕；明细只记 `format` / `rows` / `filters`）。
     assert AuditAction.AUDIT_EXPORTED.value == "audit.exported"
-    assert len(set(AuditAction)) == 95
+    # B2 数字员工归属与共享（2026-09-24，迁移 045）：两个动作码
+    # （共享增删；明细只记 `agent_key` / `grantee_user_id` / `permission`，不含姓名 / 手机号 / 正文）。
+    assert AuditAction.WORKFORCE_AGENT_SHARE_ADDED.value == "workforce.agent.share.added"
+    assert AuditAction.WORKFORCE_AGENT_SHARE_REMOVED.value == "workforce.agent.share.removed"
+    # 95 → 97：B2 共享两码
+    assert len(set(AuditAction)) == 97
 
 
 def test_build_record_rejects_undeclared_detail_keys() -> None:

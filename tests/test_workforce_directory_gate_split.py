@@ -30,21 +30,14 @@ from app.audit.store import InMemoryAuditStore
 from app.domain import PolicyError, TaskStore, UserContext
 from app.knowledge_policy import KnowledgeAccessRegistry
 from app.main import app
+from app.workforce.config import AgentConfigService
 from app.workforce.service import WorkforceDirectoryService
 from app.workforce.store import InMemoryWorkforceDirectoryStore
 
 client = TestClient(app)
 
-# ⚠️ 实现尚未开始的用例全部标 xfail(strict=True)：
-#   · 现在 ⇒ **XFAIL**（CI 保持绿，不因"先写失败测试"而变红）；
-#   · 实现完成后 ⇒ 它们会变 **XPASS**，strict 下 **XPASS 即 FAIL** ⇒ **强制摘掉本标记**，
-#     不允许"实现了但忘了摘标记"的静默通过。（宪法 2.2：测试必须会红）
-#   · 下面两项**未**加标记 —— 它们改不改都应当绿（纯回归护栏）：
-#     `test_employee_cannot_forge_owner`、`test_admin_only_gates_stay_untouched`。
-NOT_IMPLEMENTED = pytest.mark.xfail(
-    strict=True,
-    reason="OP-01 闸门拆分尚未实现 —— 见 docs/contracts/gate-split-review-2026-09-24.md",
-)
+# 11 个用例在实现完成后即应全绿；`@NOT_IMPLEMENTED` 标记**已摘除**
+# （strict=True 下 XPASS 即 FAIL，不允许"实现了但忘了摘标记"静默通过 —— 宪法 2.2）。
 
 ADMIN = UserContext("t-1", "admin-1", "super_admin")
 OWNER = UserContext("t-1", "u-owner", "employee")      # 员工甲：创建者 / 归属人
@@ -58,9 +51,10 @@ DIRECTORY_ADMIN_MESSAGE = "只有超级管理员可以管理岗位与数字员�
 def _isolate(monkeypatch):
     registry = KnowledgeAccessRegistry()
     directory_store = InMemoryWorkforceDirectoryStore()
+    audit = AuditService(InMemoryAuditStore())
     service = WorkforceDirectoryService(
         directory_store,
-        audit=AuditService(InMemoryAuditStore()),
+        audit=audit,
         knowledge_registry=registry,
         task_store=TaskStore(),
     )
@@ -68,6 +62,12 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(main, "knowledge_access_registry", registry)
     monkeypatch.setattr(main, "workforce_directory_store", directory_store)
     monkeypatch.setattr(main, "workforce_directory_service", service)
+    # ⚠️ 必须**一并**换掉 `agent_config_service`：它在装配期就绑定了**旧**的目录仓储实例，
+    # 只换 `workforce_directory_store` 会让 `{agent_key}/config` 打到空仓储（`404`）——
+    # A10 的 PATCH 置提示词正是踩这个（测试隔离缺陷，非断言放宽）。
+    monkeypatch.setattr(
+        main, "agent_config_service", AgentConfigService(directory_store, audit=audit)
+    )
     return directory_store
 
 
@@ -94,7 +94,6 @@ def seed() -> None:
 # --------------------------------------------------------------------------- A1 / A2
 
 
-@NOT_IMPLEMENTED
 def test_employee_can_read_directory_without_403() -> None:
     """**A1**：普通员工读目录**不再** 403。（现状：403「只有超级管理员可以管理岗位与数字员工目录」）"""
     seed()
@@ -104,7 +103,6 @@ def test_employee_can_read_directory_without_403() -> None:
     assert response.status_code == 200, "普通员工读目录应放开（B2 前置）；现状 403 即本用例为红"
 
 
-@NOT_IMPLEMENTED
 def test_employee_sees_only_own_or_shared_agents() -> None:
     """**A2**：可见性 = owner 是自己 ∪ 被共享的 ∪ super_admin —— **不是前端隐藏，是服务端不返回**。"""
     seed()
@@ -120,7 +118,6 @@ def test_employee_sees_only_own_or_shared_agents() -> None:
     assert len(client.get("/api/v1/workforce/agents", headers=admin_headers()).json()["items"]) == 1
 
 
-@NOT_IMPLEMENTED
 def test_shares_extend_visibility() -> None:
     """**A2 续**：被共享者能看到该员工（两档 `read` / `use`）。"""
     seed()
@@ -134,7 +131,6 @@ def test_shares_extend_visibility() -> None:
     assert [i["agent_key"] for i in seen["items"]] == ["a-owner"]
 
 
-@NOT_IMPLEMENTED
 def test_roster_is_not_behind_the_admin_gate() -> None:
     """**A1 续 · 评审材料 §一 ④**：`GET /workforce/roster` 用的是**内联判定**，不在共享函数里。
 
@@ -150,7 +146,6 @@ def test_roster_is_not_behind_the_admin_gate() -> None:
 # --------------------------------------------------------------------------- A3
 
 
-@NOT_IMPLEMENTED
 def test_employee_creation_sets_self_as_owner() -> None:
     """**A3**：员工侧创建 ⇒ `owner_user_id` **由服务端置为调用者本人**。"""
     assert client.post(
@@ -190,7 +185,6 @@ def test_employee_cannot_forge_owner() -> None:
 # --------------------------------------------------------------------------- A4 / A5
 
 
-@NOT_IMPLEMENTED
 def test_employee_cannot_modify_or_disable_others_agent() -> None:
     """**A4**（V2=B 默认）：归属人**也不能**改 / 停用 —— 改配置仍是管理动作。"""
     seed()
@@ -206,7 +200,6 @@ def test_employee_cannot_modify_or_disable_others_agent() -> None:
     assert disabled.status_code in (403, 404), "无关同事不得停用他人员工"
 
 
-@NOT_IMPLEMENTED
 def test_employee_cannot_read_others_agent_config() -> None:
     """**A5**：`config` 含**提示词 / 模型 / 日预算 / 审批档** ⇒ 非归属人不可读。"""
     seed()
@@ -219,7 +212,6 @@ def test_employee_cannot_read_others_agent_config() -> None:
 # --------------------------------------------------------------------------- A6
 
 
-@NOT_IMPLEMENTED
 def test_use_share_can_dispatch_but_not_configure() -> None:
     """**A6 / V4=A**：`use` 档能派活，**不能改配置、不能停用**，且**不可读 config**。"""
     seed()
@@ -241,10 +233,115 @@ def test_use_share_can_dispatch_but_not_configure() -> None:
     ).status_code in (403, 404)
 
 
+def test_read_share_can_read_config_but_use_share_cannot() -> None:
+    """**A5 / V4 真源对齐**（2026-09-24 修复）：`read` 档 = **能看配置**；`use` 档 = 不能读配置。
+
+    B1 §3.3② 表与契约 C4 逐字写「`read`｜能看配置…；`use`｜能派活」。原实现两档都读不到配置
+    ⇒ 与真源相反、且两档行为完全等价。反假：把 `_ensure_config_reader` 里的 `read` 分支删掉 ⇒ 本用例必红。
+    """
+    seed()
+    assert client.post(
+        "/api/v1/workforce/agents/a-owner/shares",
+        headers=headers(user_id="u-owner"),
+        json={"grantee_user_id": "u-read", "permission": "read"},
+    ).status_code == 201
+    assert client.post(
+        "/api/v1/workforce/agents/a-owner/shares",
+        headers=headers(user_id="u-owner"),
+        json={"grantee_user_id": "u-use", "permission": "use"},
+    ).status_code == 201
+
+    readable = client.get("/api/v1/workforce/agents/a-owner/config", headers=headers(user_id="u-read"))
+    assert readable.status_code == 200, "`read` 档应能看配置（真源 C4）"
+
+    denied = client.get("/api/v1/workforce/agents/a-owner/config", headers=headers(user_id="u-use"))
+    assert denied.status_code in (403, 404), "`use` 档不可读 config（V4=A）"
+
+
+def test_read_share_and_strangers_cannot_dispatch_tasks() -> None:
+    """**A6 反向（派活闸门）**（2026-09-24 修复）：`use` = 能派活、`read` = 不能派活。
+
+    此前任务落库路径**从不校验** `employee_key` 的归属 / 共享 ⇒ `read` 档、零共享同事
+    都能用他人的纳管员工建任务。反假：删掉 `_store_new_task` 里的 `ensure_can_dispatch` 调用 ⇒ 本用例必红。
+    """
+    seed()
+    assert client.post(
+        "/api/v1/workforce/agents/a-owner/shares",
+        headers=headers(user_id="u-owner"),
+        json={"grantee_user_id": "u-read", "permission": "read"},
+    ).status_code == 201
+    assert client.post(
+        "/api/v1/workforce/agents/a-owner/shares",
+        headers=headers(user_id="u-owner"),
+        json={"grantee_user_id": "u-use", "permission": "use"},
+    ).status_code == 201
+
+    def dispatch(user_id: str) -> int:
+        return client.post(
+            "/api/v1/tasks",
+            headers=headers(user_id=user_id),
+            json={
+                "title": "派活",
+                "employee_key": "a-owner",
+                "risk_level": "low",
+                "budget": 0,
+                "idempotency_key": f"dispatch-{user_id}",
+            },
+        ).status_code
+
+    assert dispatch("u-owner") == 201, "归属人可派活"
+    assert dispatch("u-use") == 201, "`use` 档可派活"
+    assert dispatch("u-read") == 403, "`read` 档不得派活"
+    assert dispatch("u-other") == 403, "零共享同事不得派活他人的纳管员工"
+
+
+def test_roster_does_not_leak_other_peoples_employee_keys() -> None:
+    """**A2 / A9 反假（读路径）**（2026-09-24 修复）：`roster` 的任务计数子源必须过 owner ∪ shares。
+
+    此前 `counts = store.count_by_employee(tenant_id)` 是**租户级全量** ⇒ 任意登录身份都能拿到
+    本租户全部员工标识 + 任务数（含只出现在**他人任务**里、目录中并不存在的键）。
+    反假：把 `workforce_roster` 里的 `visible` 过滤注释掉 ⇒ 本用例必红。
+    """
+    seed()
+    # 归属人：用自己的纳管员工建任务
+    assert client.post(
+        "/api/v1/tasks",
+        headers=headers(user_id="u-owner"),
+        json={
+            "title": "甲的任务",
+            "employee_key": "a-owner",
+            "risk_level": "low",
+            "budget": 0,
+            "idempotency_key": "roster-leak-owner",
+        },
+    ).status_code == 201
+    # 超管：建一个**未纳管**的键（只出现在任务里 —— 正是 admin-only 的 /candidates 所保护的数据）
+    assert client.post(
+        "/api/v1/tasks",
+        headers=admin_headers(),
+        json={
+            "title": "超管的任务",
+            "employee_key": "ghost-unmanaged-key",
+            "risk_level": "low",
+            "budget": 0,
+            "idempotency_key": "roster-leak-admin",
+        },
+    ).status_code == 201
+
+    theirs = client.get("/api/v1/workforce/roster", headers=headers(user_id="u-other")).json()
+    assert theirs["items"] == [], "roster 不得把本租户全量员工标识与任务数发给无关身份"
+
+    mine = client.get("/api/v1/workforce/roster", headers=headers(user_id="u-owner")).json()
+    assert [(item["key"], item["task_count"]) for item in mine["items"]] == [("a-owner", 1)]
+
+    # 超管：管理视角，仍看得到全部三源并集（回归护栏）
+    admin = client.get("/api/v1/workforce/roster", headers=admin_headers()).json()
+    assert {item["key"] for item in admin["items"]} == {"a-owner", "ghost-unmanaged-key"}
+
+
 # --------------------------------------------------------------------------- A7
 
 
-@NOT_IMPLEMENTED
 def test_route_layer_and_store_layer_agree() -> None:
     """**A7 · 两层同口径**：同一角色在**路由层**与**仓储层**必须得到同一结论。
 
@@ -284,7 +381,6 @@ def test_admin_only_gates_stay_untouched() -> None:
         ).status_code == 403
 
 
-@NOT_IMPLEMENTED
 def test_super_admin_behavior_unchanged() -> None:
     """**A8 续**：超管的行为**零变化**（回归护栏）。"""
     seed()
@@ -298,7 +394,6 @@ def test_super_admin_behavior_unchanged() -> None:
 # --------------------------------------------------------------------------- A10
 
 
-@NOT_IMPLEMENTED
 def test_read_path_does_not_leak_others_secrets() -> None:
     """**A10**：放开的读路径**不得**把他人提示词 / 模型 / 预算落进响应或审计明细。"""
     seed()

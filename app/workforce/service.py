@@ -7,16 +7,17 @@
 from __future__ import annotations
 
 from ..audit.models import AuditAction
-from ..domain import RISK_ORDER, RiskLevel, UserContext
+from ..domain import RISK_ORDER, PolicyError, RiskLevel, UserContext
 from .models import (
     DigitalEmployee,
+    DigitalEmployeeShare,
     DirectoryNotManaged,
     DirectoryStatus,
     JobRole,
     needs_approval,
     normalize_key,
 )
-from .store import WorkforceDirectoryStore
+from .store import WorkforceDirectoryStore, _safe_key
 
 
 class WorkforceDirectoryService:
@@ -71,8 +72,18 @@ class WorkforceDirectoryService:
 
     # ------------------------------------------------------------ 数字员工
 
-    def create_employee(self, context: UserContext, *, agent_key: str, name: str, role_key: str, description: str = "") -> DigitalEmployee:
-        employee = self.store.create_employee(context, agent_key=agent_key, name=name, role_key=role_key, description=description)
+    def create_employee(self, context: UserContext, *, agent_key: str, name: str, role_key: str, description: str = "", owner_user_id: str | None = None) -> DigitalEmployee:
+        """创建数字员工。**归属人由仓储层决定**：非管理员恒为自己（请求体指定的一律忽略），
+        `super_admin` 可指定（缺省仍为调用者本人）—— 见 `store._resolve_owner`。
+        """
+        employee = self.store.create_employee(
+            context,
+            agent_key=agent_key,
+            name=name,
+            role_key=role_key,
+            description=description,
+            owner_user_id=owner_user_id,
+        )
         self._record(
             context,
             AuditAction.WORKFORCE_AGENT_CREATED,
@@ -110,6 +121,74 @@ class WorkforceDirectoryService:
 
     def list_employees(self, context: UserContext, *, status: str | None = None, role_key: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[DigitalEmployee], int]:
         return self.store.list_employees(context, status=status, role_key=role_key, limit=limit, offset=offset)
+
+    def visible_agent_keys(self, context: UserContext) -> set[str] | None:
+        """调用者可见的员工标识集合；`None` = 不受限（`super_admin`）。
+
+        供 `GET /workforce/roster` 的任务计数子源复用**同一** `owner ∪ shares` 口径
+        （2026-09-24 修复：该端点原先不过滤，把本租户全量员工标识+计数发给了任意登录身份）。
+        """
+        return self.store.visible_agent_keys(context)
+
+    # ------------------------------------------------------------ 派活闸门（B2 · `use` 档的专有语义）
+
+    def ensure_can_dispatch(self, context: UserContext, *, agent_key: str) -> None:
+        """**派活**闸门：非 `super_admin` 只能用「归属自己 ∪ 被 `use` 共享」的**纳管**数字员工。
+
+        2026-09-24 修复：此前任务落库路径（`_store_new_task`）**从不校验** `employee_key` 的归属/共享
+        ⇒ `read` 档成员、乃至零共享的同事都能用他人的数字员工建任务（`use` = 能派活、
+        `read` = 不能派活 在可执行路径上形同虚设）。
+
+        ⚠️ **未纳管标识**（不在目录里）**不拦** —— 任务字段历史上是自由文本
+        （`employee_key` 与目录 `agent_key` 同值不同名，见契约「岗位与数字员工目录」），
+        它不属于任何人的员工，故沿用既有语义；只有「**他人的**纳管员工」才判 403。
+        """
+        if context.role == "super_admin":
+            return
+        owner = self.store.read_agent_owner(context, agent_key)
+        if owner is None:
+            return
+        if context.user_id and owner == context.user_id:
+            return
+        if self.store.share_permission(context, agent_key, context.user_id) == "use":
+            return
+        raise PolicyError("没有使用该数字员工的权限（需归属人或 use 档共享）")
+
+    # ------------------------------------------------------------ 共享管理（B2 · 迁移 045）
+
+    def add_share(self, context: UserContext, agent_key: str, *, grantee_user_id: str, permission: str) -> DigitalEmployeeShare:
+        """把**自己的**员工按档位共享给某人（**仅归属人**；他人 / 跨租户 404）。"""
+        share = self.store.add_share(
+            context, agent_key, grantee_user_id=grantee_user_id, permission=permission
+        )
+        self._record(
+            context,
+            AuditAction.WORKFORCE_AGENT_SHARE_ADDED,
+            "digital_employee",
+            share.agent_key,
+            {
+                "agent_key": share.agent_key,
+                "grantee_user_id": share.grantee_user_id,
+                "permission": share.permission,
+            },
+        )
+        return share
+
+    def list_shares(self, context: UserContext, agent_key: str, *, limit: int = 200, offset: int = 0) -> tuple[list[DigitalEmployeeShare], int]:
+        return self.store.list_shares(context, agent_key, limit=limit, offset=offset)
+
+    def remove_share(self, context: UserContext, agent_key: str, grantee_user_id: str) -> bool:
+        """撤销共享；**幂等**：本就不是共享者返回 `False` ⇒ **不重复写审计**（契约 C4）。"""
+        removed = self.store.remove_share(context, agent_key, grantee_user_id)
+        if removed:
+            self._record(
+                context,
+                AuditAction.WORKFORCE_AGENT_SHARE_REMOVED,
+                "digital_employee",
+                _safe_key(agent_key),
+                {"agent_key": _safe_key(agent_key), "grantee_user_id": str(grantee_user_id).strip()},
+            )
+        return removed
 
     # ------------------------------------------------------------ 任务创建的治理判定
 
